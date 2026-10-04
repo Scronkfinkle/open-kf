@@ -20,6 +20,19 @@
 //!
 //! Step B4: the rocket (state FireMissile): over 500 away, PreFireMissile,
 //! a BossLAWProj from `tip` when it ends (`fireball.rs`), FireEndMissile.
+//!
+//! Step B5: cloak and sneak. States InitialSneak (from spawn, until he first
+//! sees the player) and SneakAround (RangedAttack, every 20 s at most, 70%):
+//! both extend Escaping, which extends Charging. Cloaked, running at
+//! GroundSpeed x 2.5 (normal speed while attacking), only MeleeClaw when
+//! close (uncloaking), and the first damage check ends the sneak.
+//!
+//! Step B6: knockdown, escape and healing. TakeDamage: under the next
+//! HealingLevel (Health / 1.25, / 2, / 3.2 of his starting health) with
+//! fewer than 3 syringes used, KnockDown (full body); then cloaked state
+//! Escaping (extends Charging) to a hiding spot (BossZombieController
+//! SyrRetreat), where BeginHealing plays Heal: a syringe at NotifySyringeA,
+//! + Health / 4 at NotifySyringeB.
 
 use crate::skinned::SkinnedModel;
 
@@ -56,6 +69,13 @@ pub const MG_TRACER_SPEED: f32 = 10000.0;
 /// puts it off for FRand() x 5 s, else the next is in 10 + FRand() x 15 s.
 const MISSILE_MIN_DISTANCE: f32 = 500.0;
 const MISSILE_SKIP_CHANCE: f32 = 0.25;
+/// RangedAttack: sneak when LastSneakedTime is over 20 s ago; FRand() <
+/// 0.3 puts it off another 20 s. SneakAround ends after 10 s.
+const SNEAK_GAP: f32 = 20.0;
+const SNEAK_SKIP_CHANCE: f32 = 0.3;
+const SNEAK_SECONDS: f32 = 10.0;
+/// The sneak states' Begin loops: Sleep(0.5).
+const SNEAK_LOOP: f32 = 0.5;
 /// FireChaingun.TakeDamage: shot from closer than this, charge instead.
 pub const MG_CLOSE_DAMAGE_DISTANCE: f32 = 100.0;
 
@@ -82,6 +102,11 @@ pub struct BossClass {
     pub tip_bone: Option<usize>,
     /// PreFireMissile, FireEndMissile: (sequence, seconds).
     pub missile_anims: Option<[(usize, f32); 2]>,
+    /// KnockDown and Heal: (sequence, seconds).
+    pub knockdown_anim: Option<(usize, f32)>,
+    pub heal_anim: Option<(usize, f32)>,
+    /// Syrange1..3: hidden one per syringe used (PostNetReceive SetBoneScale 0).
+    pub syringe_bones: [Option<usize>; 3],
 }
 
 /// State FireMissile: PreFireMissile, then (at its AnimEnd) the rocket and
@@ -247,6 +272,50 @@ impl Chaingun {
     }
 }
 
+/// Heal's notifies (fractions of the animation, from the mesh):
+/// NotifySyringeA (SyringeCount++, a syringe bone hidden), NotifySyringeB
+/// (Health += HealingAmount).
+pub const HEAL_SYRINGE_A: f32 = 0.068;
+pub const HEAL_SYRINGE_B: f32 = 0.464;
+/// Our addition, not KF's: an escape that has not reached its hiding spot
+/// after this long heals where it is (KF's route finding would have given up
+/// and called BeginHealing; ours walks straight on instead).
+pub const ESCAPE_GIVE_UP: f32 = 30.0;
+
+/// State Escaping: running to `goal` (a navigation point; None = not
+/// chosen yet).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Escape {
+    pub seconds: f32,
+    next_check: f32,
+    pub goal: Option<usize>,
+}
+
+/// State Healing: the Heal animation, `seconds` into it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Heal {
+    pub seconds: f32,
+    pub syringe_done: bool,
+    pub health_done: bool,
+}
+
+/// A sneak in progress (SneakAround, or InitialSneak from spawn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sneak {
+    pub seconds: f32,
+    /// Time to the next pass of the Begin loop.
+    next_check: f32,
+    pub initial: bool,
+}
+
+/// What the sneak loop did this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SneakChange {
+    /// CloakBoss: cloaked again (after an attack had uncloaked him).
+    Cloaked,
+    Ended(&'static str),
+}
+
 /// A charge in progress.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Charge {
@@ -258,7 +327,22 @@ pub struct Charge {
 /// The Patriarch's own state, on his Zed.
 #[derive(Clone, Copy, Debug)]
 pub struct BossState {
+    /// State KnockDown: seconds of the animation left.
+    pub knockdown: Option<f32>,
+    pub escape: Option<Escape>,
+    pub heal: Option<Heal>,
+    /// TakeDamage asked for a knockdown (started by the think code).
+    pub pending_knockdown: bool,
+    /// SyringeCount, HealingLevels, HealingAmount.
+    pub syringes: usize,
+    pub healing_levels: [f32; 3],
+    pub healing_amount: f32,
     pub charge: Option<Charge>,
+    pub sneak: Option<Sneak>,
+    /// Seconds since LastSneakedTime.
+    pub since_sneak: f32,
+    /// bCloaked.
+    pub cloaked: bool,
     pub chaingun: Option<Chaingun>,
     pub missile: Option<Missile>,
     /// Seconds until LastMissileTime (0 = may fire).
@@ -283,6 +367,10 @@ pub enum Decision {
     EndCharge(&'static str),
     StartChaingun { shots: i32 },
     StartMissile,
+    /// GoToState('SneakAround') (ends a charge first).
+    StartSneak,
+    /// RangedAttack put the sneak off another 20 s (FRand() < 0.3).
+    DelaySneak,
     /// RangedAttack put the rocket off (FRand() > 0.75).
     DelayMissile(f32),
     /// RangedAttack put the chaingun off (FRand() > 0.85).
@@ -291,8 +379,32 @@ pub enum Decision {
 
 impl Default for BossState {
     fn default() -> Self {
+        BossState::new(4000.0)
+    }
+}
+
+impl BossState {
+    /// ZombieBoss.PostBeginPlay: HealingLevels and HealingAmount from his
+    /// Health (4000: 3200, 2000, 1250; 1000), truncated to whole points.
+    pub fn new(health: f32) -> Self {
         BossState {
+            knockdown: None,
+            escape: None,
+            heal: None,
+            pending_knockdown: false,
+            syringes: 0,
+            healing_levels: [(health / 1.25).trunc(), (health / 2.0).trunc(), (health / 3.2).trunc()],
+            healing_amount: (health / 4.0).trunc(),
+            // MakeGrandEntry -> InitialSneak: he arrives cloaked (we skip the
+            // Entrance animation), and LastSneakedTime is set when it ends.
             charge: None,
+            sneak: Some(Sneak {
+                seconds: 0.0,
+                next_check: SNEAK_LOOP,
+                initial: true,
+            }),
+            since_sneak: f32::MAX,
+            cloaked: true,
             chaingun: None,
             missile: None,
             missile_wait: 0.0,
@@ -312,6 +424,9 @@ impl BossState {
         self.since_charge += dt;
         self.since_force_charge += dt;
         self.chaingun_wait = (self.chaingun_wait - dt).max(0.0);
+        if self.sneak.is_none() {
+            self.since_sneak += dt;
+        }
         self.missile_wait = (self.missile_wait - dt).max(0.0);
         let c = self.charge.as_mut()?;
         c.seconds += dt;
@@ -331,6 +446,164 @@ impl BossState {
         if self.charge.take().is_some() {
             self.since_charge = 0.0;
         }
+    }
+
+    /// The sneak states' Begin loops, every 0.5 s: SneakAround ends after
+    /// 10 s; InitialSneak when he has found the player (bAlreadyFoundEnemy,
+    /// set by InitialHunting.SeePlayer: `sees`); both cloak again when
+    /// uncloaked and not attacking.
+    pub fn sneak_step(&mut self, dt: f32, sees: bool, attacking: bool) -> Option<SneakChange> {
+        let s = self.sneak.as_mut()?;
+        s.seconds += dt;
+        s.next_check -= dt;
+        if s.next_check > 0.0 {
+            return None;
+        }
+        s.next_check += SNEAK_LOOP;
+        let ended = if s.initial {
+            sees.then_some("found_player")
+        } else {
+            (s.seconds > SNEAK_SECONDS).then_some("time")
+        };
+        if let Some(why) = ended {
+            self.end_sneak();
+            return Some(SneakChange::Ended(why));
+        }
+        if !self.cloaked && !attacking {
+            self.cloaked = true;
+            return Some(SneakChange::Cloaked);
+        }
+        None
+    }
+
+    /// Escaping.EndState (uncloak) and SneakAround.EndState
+    /// (LastSneakedTime = now).
+    pub fn end_sneak(&mut self) {
+        if self.sneak.take().is_some() {
+            self.cloaked = false;
+            self.since_sneak = 0.0;
+        }
+    }
+
+    /// The sneak states (SneakAround, InitialSneak).
+    pub fn sneaking(&self) -> bool {
+        self.sneak.is_some()
+    }
+
+    /// State Escaping or one extending it (the sneak states): run at x 2.5
+    /// with ChargingAnim, only MeleeClaw (uncloaking), push x 1.5.
+    pub fn escaping(&self) -> bool {
+        self.sneak.is_some() || self.escape.is_some()
+    }
+
+    /// ZombieBoss.TakeDamage, after the damage: below the next healing level,
+    /// knocked down. Not when dead, after 3 syringes, or in states Escaping
+    /// (KF quirk, kept: IsInState('Escaping') is also true in the sneak
+    /// states, which extend it, so he cannot be knocked down while sneaking),
+    /// KnockDown or RadialAttack. Returns whether it asked for one.
+    pub fn check_knockdown(&mut self, health: f32) -> bool {
+        if health <= 0.0 || self.syringes >= 3 || self.escaping() || self.knockdown.is_some() || self.pending_knockdown {
+            return false;
+        }
+        if health < self.healing_levels[self.syringes] {
+            self.pending_knockdown = true;
+            return true;
+        }
+        false
+    }
+
+    /// GoToState('KnockDown') from whatever he was doing: each state's
+    /// EndState (Charging: LastChargeTime; FireChaingun: LastChainGunTime).
+    pub fn start_knockdown(&mut self, seconds: f32, roll: f32) {
+        self.pending_knockdown = false;
+        // Healing is a state too: a knockdown ends it.
+        self.heal = None;
+        self.end_charge();
+        self.end_chaingun(roll);
+        self.missile = None;
+        self.knockdown = Some(seconds);
+    }
+
+    /// KnockDown's Begin: when the animation is done, CloakBoss and
+    /// GoToState('Escaping'). Returns true when that happens.
+    pub fn knockdown_step(&mut self, dt: f32) -> bool {
+        let Some(left) = self.knockdown.as_mut() else {
+            return false;
+        };
+        *left -= dt;
+        if *left > 0.0 {
+            return false;
+        }
+        self.knockdown = None;
+        self.cloaked = true;
+        self.escape = Some(Escape {
+            seconds: 0.0,
+            next_check: SNEAK_LOOP,
+            goal: None,
+        });
+        true
+    }
+
+    /// Escaping's Begin loop (every 0.5 s): cloak again when uncloaked and
+    /// not attacking.
+    pub fn escape_step(&mut self, dt: f32, attacking: bool) -> bool {
+        let Some(e) = self.escape.as_mut() else {
+            return false;
+        };
+        e.seconds += dt;
+        e.next_check -= dt;
+        if e.next_check > 0.0 {
+            return false;
+        }
+        e.next_check += SNEAK_LOOP;
+        if !self.cloaked && !attacking {
+            self.cloaked = true;
+            return true;
+        }
+        false
+    }
+
+    /// Escaping.BeginHealing: Heal (full body), state Healing;
+    /// Escaping.EndState uncloaks him.
+    pub fn begin_healing(&mut self) {
+        self.escape = None;
+        self.cloaked = false;
+        self.heal = Some(Heal {
+            seconds: 0.0,
+            syringe_done: false,
+            health_done: false,
+        });
+    }
+
+    /// The Heal animation, `length` seconds long. Returns what happened
+    /// this frame: (a syringe used, health added, finished).
+    pub fn heal_step(&mut self, dt: f32, length: f32) -> (bool, Option<f32>, bool) {
+        let Some(h) = self.heal.as_mut() else {
+            return (false, None, false);
+        };
+        h.seconds += dt;
+        let f = h.seconds / length.max(1e-3);
+        let mut syringe = false;
+        let mut added = None;
+        if f >= HEAL_SYRINGE_A && !h.syringe_done {
+            h.syringe_done = true;
+            // NotifySyringeA: if( SyringeCount<3 ) SyringeCount++.
+            if self.syringes < 3 {
+                self.syringes += 1;
+                syringe = true;
+            }
+        }
+        if f >= HEAL_SYRINGE_B && !h.health_done {
+            h.health_done = true;
+            // NotifySyringeB: Health += HealingAmount. KF quirk, kept: not
+            // capped at HealthMax.
+            added = Some(self.healing_amount);
+        }
+        let done = f >= 1.0;
+        if done {
+            self.heal = None;
+        }
+        (syringe, added, done)
     }
 
     /// FireChaingun.EndState: LastChainGunTime = now + 5 + FRand() x 10.
@@ -364,19 +637,41 @@ impl BossState {
     /// 10 s of LastDamageTime" branch, and LastDamageTime starts at 0, so
     /// the first branch (ChargeDamage = 0) is taken on every hit.
     pub fn decide(&mut self, dist: f32, attacking: bool, rng: &mut impl FnMut() -> f32) -> Decision {
-        if self.charge.is_some() {
-            // Charging.RangedAttack: too far, then the global one, which
-            // does nothing more while charging alone with the player.
-            if dist > CHARGE_DISTANCE && self.since_force_charge > 3.0 {
-                self.end_charge();
-                return Decision::EndCharge("far");
-            }
+        // Escaping.RangedAttack (the sneak states): only the claw, when
+        // close (done by the caller).
+        if self.escaping() {
             return Decision::Nothing;
         }
+        // Charging.RangedAttack: too far, then the global one.
+        if self.charge.is_some() && dist > CHARGE_DISTANCE && self.since_force_charge > 3.0 {
+            self.end_charge();
+            return Decision::EndCharge("far");
+        }
+        let desire_chaingun = rng() < DESIRE_CHAINGUN_CHANCE && self.chaingun_wait <= 0.0;
         if attacking {
             return Decision::Nothing;
         }
-        let desire_chaingun = rng() < DESIRE_CHAINGUN_CHANCE && self.chaingun_wait <= 0.0;
+        // (Close enough: the melee, done by the caller before this.)
+        // The sneak comes before the charge checks, so it can also cut a
+        // charge short.
+        if self.since_sneak > SNEAK_GAP {
+            if rng() < SNEAK_SKIP_CHANCE {
+                self.since_sneak = 0.0;
+                return Decision::DelaySneak;
+            }
+            self.end_charge();
+            self.sneak = Some(Sneak {
+                seconds: 0.0,
+                next_check: SNEAK_LOOP,
+                initial: false,
+            });
+            self.cloaked = true;
+            return Decision::StartSneak;
+        }
+        // Charging alone with the player (bOnlyE): nothing more.
+        if self.charge.is_some() {
+            return Decision::Nothing;
+        }
         if !desire_chaingun && dist < CHARGE_DISTANCE && self.since_charge > 5.0 + 5.0 * rng() {
             let attacks = if rng() < 0.5 { 1 } else { 2 };
             self.charge = Some(Charge { seconds: 0.0, attacks_left: attacks });
@@ -439,6 +734,9 @@ impl BossClass {
                 let anim = |n: &str| model.sequence(n).map(|s| (s, model.length(s) / model.rate(s).max(1e-3)));
                 anim("PreFireMissile").zip(anim("FireEndMissile")).map(|(a, b)| [a, b])
             },
+            knockdown_anim: model.sequence("KnockDown").map(|s| (s, model.length(s) / model.rate(s).max(1e-3))),
+            heal_anim: model.sequence("Heal").map(|s| (s, model.length(s) / model.rate(s).max(1e-3))),
+            syringe_bones: ["Syrange1", "Syrange2", "Syrange3"].map(|n| model.find_bone(n)),
         })
     }
 
@@ -477,7 +775,119 @@ mod tests {
             mg_anims: None,
             tip_bone: None,
             missile_anims: None,
+            knockdown_anim: None,
+            heal_anim: None,
+            syringe_bones: [None; 3],
         }
+    }
+
+    /// After the initial sneak, with the next sneak far off.
+    fn awake() -> BossState {
+        BossState {
+            sneak: None,
+            cloaked: false,
+            since_sneak: 0.0,
+            ..BossState::default()
+        }
+    }
+
+    #[test]
+    fn boss_initial_sneak_until_seen() {
+        let mut b = BossState::default();
+        assert!(b.sneaking() && b.cloaked);
+        // Escaping.RangedAttack: no other attacks while sneaking.
+        assert_eq!(b.decide(900.0, false, &mut rolls(&[])), Decision::Nothing);
+        // Checked every 0.5 s; ends once he has seen the player.
+        assert_eq!(b.sneak_step(0.4, true, false), None);
+        assert_eq!(b.sneak_step(0.2, true, false), Some(SneakChange::Ended("found_player")));
+        assert!(!b.sneaking() && !b.cloaked);
+        assert_eq!(b.since_sneak, 0.0);
+    }
+
+    #[test]
+    fn boss_sneak_every_20s_and_10s_long() {
+        let mut b = BossState { chaingun_wait: 100.0, missile_wait: 100.0, ..awake() };
+        b.tick(20.1);
+        // 30%: put off another 20 s.
+        assert_eq!(b.decide(900.0, false, &mut rolls(&[0.9, 0.1])), Decision::DelaySneak);
+        assert_eq!(b.since_sneak, 0.0);
+        b.tick(20.1);
+        assert_eq!(b.decide(900.0, false, &mut rolls(&[0.9, 0.5])), Decision::StartSneak);
+        assert!(b.cloaked);
+        // An attack uncloaks him; the loop cloaks him again when it ends.
+        b.cloaked = false;
+        assert_eq!(b.sneak_step(0.5, false, true), None);
+        assert_eq!(b.sneak_step(0.5, false, false), Some(SneakChange::Cloaked));
+        // Ends after 10 s (checked every 0.5 s).
+        let mut ended = None;
+        for _ in 0..30 {
+            if let Some(SneakChange::Ended(why)) = b.sneak_step(0.5, true, false) {
+                ended = Some((b.since_sneak, why));
+                break;
+            }
+        }
+        assert_eq!(ended, Some((0.0, "time")));
+        // A sneak also cuts a charge short.
+        let mut b = BossState { since_sneak: 25.0, ..awake() };
+        b.charge = Some(Charge { seconds: 1.0, attacks_left: 2 });
+        assert_eq!(b.decide(300.0, false, &mut rolls(&[0.9, 0.5])), Decision::StartSneak);
+        assert!(b.charge.is_none());
+    }
+
+    #[test]
+    fn boss_knockdown_levels() {
+        let mut b = awake();
+        assert_eq!(b.healing_levels, [3200.0, 2000.0, 1250.0]);
+        assert_eq!(b.healing_amount, 1000.0);
+        assert!(!b.check_knockdown(3200.0));
+        assert!(b.check_knockdown(3199.0));
+        // Not again while one is pending or under way.
+        assert!(!b.check_knockdown(3000.0));
+        b.start_knockdown(2.0, 0.5);
+        assert!(!b.check_knockdown(3000.0));
+        // KF quirk: not while sneaking (the sneak states extend Escaping).
+        let mut b = BossState::default();
+        assert!(b.sneaking());
+        assert!(!b.check_knockdown(100.0));
+        // Not after three syringes, nor when dead.
+        let mut b = BossState { syringes: 3, ..awake() };
+        assert!(!b.check_knockdown(100.0));
+        let mut b = awake();
+        assert!(!b.check_knockdown(0.0));
+    }
+
+    #[test]
+    fn boss_knockdown_escape_heal() {
+        let mut b = BossState { chaingun: Some(Chaingun::start(40, 1.0)), ..awake() };
+        b.check_knockdown(3100.0);
+        b.start_knockdown(2.0, 0.5);
+        // FireChaingun.EndState: the next chaingun in 5 + 10 x 0.5 s.
+        assert!(b.chaingun.is_none());
+        assert_eq!(b.chaingun_wait, 10.0);
+        assert!(!b.knockdown_step(1.9));
+        assert!(b.knockdown_step(0.2));
+        assert!(b.escape.is_some() && b.cloaked && b.escaping());
+        // Escaping.RangedAttack: no other attacks.
+        assert_eq!(b.decide(900.0, false, &mut rolls(&[])), Decision::Nothing);
+        b.begin_healing();
+        assert!(!b.cloaked && b.escape.is_none());
+        // Heal 5 s: syringe at 0.068, +1000 at 0.464, done at the end.
+        let mut events = Vec::new();
+        for i in 0..400 {
+            let (syringe, added, done) = b.heal_step(1.0 / 60.0, 5.0);
+            if syringe || added.is_some() || done {
+                events.push((i, syringe, added, done));
+            }
+            if done {
+                break;
+            }
+        }
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert!(events[0].1 && (20..=21).contains(&events[0].0), "{events:?}");
+        assert_eq!(events[1].2, Some(1000.0));
+        assert!((138..=140).contains(&events[1].0), "{events:?}");
+        assert!(events[2].3);
+        assert_eq!(b.syringes, 1);
     }
 
     /// FRand() values in order, then 0.5 forever.
@@ -488,7 +898,7 @@ mod tests {
 
     #[test]
     fn boss_charge_start_and_limits() {
-        let mut b = BossState { chaingun_wait: 100.0, missile_wait: 100.0, ..Default::default() };
+        let mut b = BossState { chaingun_wait: 100.0, missile_wait: 100.0, ..awake() };
         // Over 700 away, or wanting the chaingun (it is not ready, so the
         // wish does not count): no charge without the gap.
         assert_eq!(b.decide(701.0, false, &mut rolls(&[0.9])), Decision::Nothing);
@@ -510,7 +920,7 @@ mod tests {
 
     #[test]
     fn boss_charge_ends_on_hit_or_attacks_used() {
-        let mut b = BossState::default();
+        let mut b = awake();
         b.decide(300.0, false, &mut rolls(&[0.9, 0.0, 0.7]));
         // A miss uses an attack; a landed hit ends the charge.
         assert!(!b.charge_hit(false));
@@ -527,13 +937,13 @@ mod tests {
 
     #[test]
     fn boss_chaingun_choice() {
-        let mut b = BossState::default();
+        let mut b = awake();
         // Close and ready to charge, but the 15% chaingun wish: chaingun.
         // Rolls: wish 0.1, skip check 0.5, wait 0.5 (10 s), shots 0.0 (35).
         assert_eq!(b.decide(300.0, false, &mut rolls(&[0.1, 0.5, 0.5, 0.0])), Decision::StartChaingun { shots: 35 });
         assert_eq!(b.chaingun_wait, 10.0);
         // Far, ready (rocket not ready): 15% puts it off for FRand() x 4 s.
-        let mut b = BossState { missile_wait: 100.0, ..Default::default() };
+        let mut b = BossState { missile_wait: 100.0, ..awake() };
         assert_eq!(b.decide(900.0, false, &mut rolls(&[0.9, 0.9, 0.5])), Decision::DelayChaingun(2.0));
         assert_eq!(b.decide(900.0, false, &mut rolls(&[0.9])), Decision::Nothing);
         b.tick(2.1);
@@ -543,14 +953,14 @@ mod tests {
     #[test]
     fn boss_missile_choice_and_timing() {
         // Over 500 away, chaingun not ready: rocket; next in 10 + 15 x 0.4 s.
-        let mut b = BossState { chaingun_wait: 100.0, ..Default::default() };
+        let mut b = BossState { chaingun_wait: 100.0, ..awake() };
         assert_eq!(b.decide(900.0, false, &mut rolls(&[0.9, 0.5, 0.4])), Decision::StartMissile);
         assert_eq!(b.missile_wait, 16.0);
         // 25%: put off for FRand() x 5 s.
-        let mut b = BossState { chaingun_wait: 100.0, ..Default::default() };
+        let mut b = BossState { chaingun_wait: 100.0, ..awake() };
         assert_eq!(b.decide(900.0, false, &mut rolls(&[0.9, 0.8, 0.5])), Decision::DelayMissile(2.5));
         // Within 500 (and just charged): no rocket (the chaingun's turn, if ready).
-        let mut b = BossState { chaingun_wait: 100.0, since_charge: 0.0, ..Default::default() };
+        let mut b = BossState { chaingun_wait: 100.0, since_charge: 0.0, ..awake() };
         assert_eq!(b.decide(450.0, false, &mut rolls(&[0.9, 0.9])), Decision::Nothing);
         // PreFireMissile 2 s, then fire, FireEndMissile 1 s, then done.
         let mut m = Missile::start(2.0);

@@ -1210,7 +1210,7 @@ Hits do not interrupt his attacks. Not done: aim error, other zeds getting
 out of the way or taking fire damage, view shake, HuskChargeUp's beam
 emitter (beam emitters are not drawn), FlameThrowerFlame (an xEmitter).
 
-## Patriarch (planned 2026-10-04; B1-B4 implemented 2026-10-04)
+## Patriarch (B1-B6 implemented 2026-10-04)
 
 Sources: ZombieBoss, ZombieBossBase (defaults), BossZombieController,
 BossLAWProj / LAWProj (KFChar, KFMod), animation notifies of
@@ -1312,9 +1312,33 @@ per heal.
   `gore::load_piece_with_mesh`. Aim: MonsterController.AdjustAim as for the
   Husk without bTrySplash (lead, middle, else head); aim error not done.
 - B5. Cloak and sneak. Check: cloak/uncloak log lines; a screenshot.
-- B6. Knockdown, escape, heal. Needs a test option to start him with less
-  health (e.g. `--zed-health 3300`). Check: knockdown at < 3200, hide
-  spot not visible to the player, +1000 health, syringe count.
+  Done: he spawns in InitialSneak (MakeGrandEntry's state after the
+  Entrance animation, which we skip), cloaked until he first sees the
+  player. SneakAround: RangedAttack's second branch (20 s since the last
+  sneak, 30% put off another 20 s), before the charge checks, so it can cut
+  a charge short. Both sneak states extend Escaping: run at x 2.5 with RunF
+  (normal speed while attacking), only MeleeClaw, uncloak to attack, push x
+  1.5; SneakAround.MeleeDamageTarget ends the sneak at the first damage
+  check, hit or miss; otherwise it ends after 10 s. The cloak is drawn like
+  the Stalker's (a faint copy of each texture), not KF's refraction shader;
+  the commando "spotted" glow needs perks (not done). RangedAttack rolls
+  the 15% chaingun wish before its bShotAnim check, as KF does.
+- B6. Knockdown, escape, heal. Check: knockdown at < 3200, hide
+  spot not visible to the player, +1000 health, syringe count. Done
+  (tested with the scripted `hurt_zeds` action, 100 damage each, instead
+  of a new option). TakeDamage -> `check_knockdown` (levels from his
+  starting health, truncated); KnockDown (full body, 2.03 s) ends charges,
+  the chaingun (its EndState wait) and rockets, and also healing; then
+  cloaked Escaping: SyrRetreat.FindHideSpot (points within 2500, unseen by
+  the player, reachable; the score above), FindRandomDest when he cannot
+  see the player; our route-finder runs to it (the spot as its goal);
+  claws only if caught. On arrival BeginHealing: uncloak, Heal (5.03 s),
+  NotifySyringeA (syringe count, Syrange bone hidden) and NotifySyringeB
+  (+1000). KF quirks kept: no knockdown while sneaking (the sneak states
+  extend Escaping); the heal is not capped at HealthMax (3100 -> 4100).
+  Our addition: an escape that has not arrived after 30 s heals where he
+  is. Not done: AddBossBuddySquad (game mode: zeds summoned on
+  knockdown), the BossHPNeedle prop in his hand, voice lines.
 
 **Not planned:** the entrance animation and the boss-wave intro, the radial
 attack (needs 3 players around him), the victory laugh and death camera,

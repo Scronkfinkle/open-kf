@@ -346,6 +346,8 @@ fn damage_zed(
         attacker: source.attacker,
     });
     let killed = z.health <= 0.0;
+    // ZombieBoss.TakeDamage: below the next healing level, knocked down.
+    z.note_boss_health();
     if killed {
         z.kill();
         kills.0 += 1;

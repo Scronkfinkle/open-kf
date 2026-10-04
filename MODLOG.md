@@ -1903,3 +1903,66 @@ run (`--walk --input 120:fire,180:fire`); tests; clippy.
 length, thickness and brightness match KF is unverified; the speed-stretch
 formula is my reading of the setting names, not KF's code.
 **Next:** Compare with your in-game screenshot.
+
+## 2026-10-04 Patriarch step B5: cloak and sneak
+
+**Changed:** `boss.rs`: `Sneak` (InitialSneak from spawn, SneakAround),
+`sneak_step` (the states' 0.5 s Begin loop: initial ends when he sees the
+player, SneakAround after 10 s, re-cloak when not attacking), `end_sneak`,
+the sneak branch of RangedAttack (20 s gap, 30% put off; ends a charge);
+RangedAttack now rolls the chaingun wish before its bShotAnim check (KF's
+order). `zed.rs`: sneaking = claw only (uncloaks), x 2.5 run with RunF
+(normal speed while attacking), push x 1.5, the sneak ends at the claw's
+damage check; cloak drawn per part (`cloak_parts`, Stalker-style); he
+spawns cloaked. Tests updated (the boss now starts sneaking) and two new.
+DESIGN and README updated.
+**Why:** Patriarch step B5.
+**Tested how:** `cargo test --release` (new `boss_initial_sneak_until_seen`,
+`boss_sneak_every_20s_and_10s_long`); `cargo run --release -- --walk
+--spawn patriarch --god --frames 3000`.
+**Result:** Tests 40/40 pass. Log: spawned at t=4.83, `boss_sneak end
+reason=found_player initial=true` at 5.24 (0.4 s: first loop pass); at
+33.11 `boss_sneak start distance_unreal=101`, `uncloak reason=attack` 0.12 s
+later, `end reason=melee landed=true` at the claw's hit. Charges, chaingun
+and rocket as before.
+**Still broken / not tested:** Not looked at by eye (cloak look). A long
+sneak from far away (running cloaked) did not happen in the run; the 10 s
+limit is unit-tested only. KF's refraction cloak shader, the commando
+glow, and the shadow being hidden while cloaked are not done. Not
+play-tested by you.
+**Next:** B6, knockdown, escape and healing.
+
+## 2026-10-04 Patriarch step B6: knockdown, escape, healing
+
+**Changed:** `boss.rs`: `BossState::new(health)` (HealingLevels 3200, 2000,
+1250; HealingAmount 1000), `check_knockdown`, `start_knockdown` (ends
+charge / chaingun / rocket / healing), `knockdown_step` (cloak, Escaping),
+`escape_step`, `begin_healing`, `heal_step` (syringe at 0.068, +1000 at
+0.464), `escaping()`; RangedAttack does nothing while escaping. `zed.rs`:
+knockdown start (BossBusy), `boss_busy` runs KnockDown and Heal (hides
+Syrange1..3), `boss_escape` + `find_hide_spot` (SyrRetreat), the route-finder
+aims at the hiding spot; escaping uses the sneak rules (x 2.5, RunF, claw
+only, push x 1.5). `combat.rs` and the `hurt_zeds` test action call
+`note_boss_health`. Two new tests. DESIGN and README updated.
+**Why:** Patriarch step B6, the last planned one.
+**Tested how:** `cargo test --release`; `cargo run --release -- --walk
+--spawn patriarch --god --input <hurt_zeds at frames 400-408, 1900-1921,
+3300-3307, 4400-4420> --frames 5200` (first try failed: my zsh loop turned
+`$f:hurt_zeds` into `$f:h...`, a shell modifier; rerun with `${f}`).
+**Result:** Tests 42/42 pass. Level 1: knocked down at 3100 (2.03 s),
+`hide_spot=PathNode186 distance_unreal=1251 spot_seen_by_player=false`,
+arrived in 6.0 s, syringe 1 at +0.35 s, 3100 -> 4100 at +2.35 s, done at
++5.05 s. Level 2: at 1900, PathNode73 (1312 away), arrived in 4.8 s,
+1900 -> 2900, syringes 2. Level 3: at 1200 (health then fell to 100 from
+the test's continued hurts); clawed the player twice while escaping (he was
+beside him), ran cloaked at 300, then fell off a ledge near (-2969, 493,
+-3790) and stood stuck (`zed_stuck` every second) until the run ended 11 s
+in, before healing.
+**Still broken / not tested:** The stuck after falling is the shared
+movement code (likely the same spot as the falling / walking flip-flop
+seen in B3); the 30 s give-up would heal him there; not investigated. A
+third heal and "no fourth knockdown" are unit-tested only. Not looked at
+by eye; not play-tested by you.
+**Next:** The Patriarch's planned steps are done. Open: the stuck-after-
+fall in the shared movement code; the not-planned parts (entrance, radial
+attack, death camera, buddy squad, needle prop).

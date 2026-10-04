@@ -196,7 +196,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   you; no tracer or muzzle flash drawn yet. Rocket: over 500 units away,
   a 2.4 s wind-up, then a rocket (2600 units/s, smoke trail) that explodes
   for up to 75 in a 500-unit radius with a scorch mark; every 10-25 s.
-  His cloaking and healing are not done yet.
+  Cloak: he arrives invisible until he sees you, and every 20 s or so
+  (70%) sneaks up invisible for up to 10 s, running, uncloaking to claw.
+  Knockdown and healing: below 3200, 2000 and 1250 health he is knocked
+  down, runs off cloaked to a spot you cannot see, and injects a syringe
+  for +1000 health (three times at most). Test: add
+  `--input 400:hurt_zeds,401:hurt_zeds,...` (100 damage each).
 - Firing effects: the 9mm's muzzle flash and ejected shells (with smoke)
   on the gun; tracers and bullet impacts (puff and bullet hole) when a shot
   hits the level. As in KF, a shot that hits a zed or nothing draws no

@@ -180,6 +180,10 @@ struct ZedClass {
     /// Stalker: the cloaked look (KF: Shader stalker_invisible, a refraction
     /// effect; here a faint see-through skin, an approximation).
     cloak_material: Option<Handle<StandardMaterial>>,
+    /// Patriarch: one cloaked look per part (KF: patriarch_invisible_gun and
+    /// patriarch_invisible, refraction shaders we cannot draw; approximated
+    /// like the Stalker's, from each part's own texture).
+    cloak_parts: Vec<Handle<StandardMaterial>>,
     /// Scrake: SawImpaleLoop (the attack repeated in state SawingLoop) and
     /// ChargeF (the walk while charging or raging).
     saw_impale: Option<usize>,
@@ -909,6 +913,47 @@ fn boss_busy(
         z.state = ZedState::Chase;
         return;
     };
+    // State KnockDown: when the animation is done, cloak and escape.
+    if b.knockdown.is_some() {
+        b.tick(dt);
+        if b.knockdown_step(dt) {
+            z.state = ZedState::Chase;
+            z.sequence = None;
+            z.cloaked = true;
+            z.cloak_dirty = true;
+            z.router = Default::default();
+            runlog::kv("boss_escape", &format!("id={} start health={:.0}", z.id, z.health));
+        }
+        b.hit_from_close = false;
+        z.boss = Some(b);
+        return;
+    }
+    // State Healing: the Heal animation and its syringe notifies.
+    if b.heal.is_some()
+        && let Some((_, secs)) = bc.heal_anim
+    {
+        b.tick(dt);
+        let (syringe, added, done) = b.heal_step(dt, secs);
+        if syringe {
+            if let Some(bone) = bc.syringe_bones.get(b.syringes - 1).copied().flatten() {
+                z.hidden_bones.push(bone);
+            }
+            runlog::kv("boss_heal", &format!("id={} syringe={}", z.id, b.syringes));
+        }
+        if let Some(amount) = added {
+            let before = z.health;
+            z.health += amount;
+            runlog::kv("boss_heal", &format!("id={} health={before:.0}->{:.0}", z.id, z.health));
+        }
+        if done {
+            z.state = ZedState::Chase;
+            z.sequence = None;
+            runlog::kv("boss_heal", &format!("id={} done health={:.0} syringes={}", z.id, z.health, b.syringes));
+        }
+        b.hit_from_close = false;
+        z.boss = Some(b);
+        return;
+    }
     // State FireMissile: turn to the player, fire when PreFireMissile ends.
     if let (Some(mut m), Some(anims)) = (b.missile, bc.missile_anims) {
         b.tick(dt);
@@ -1008,6 +1053,130 @@ fn boss_busy(
         b.chaingun = Some(mg);
     }
     z.boss = Some(b);
+}
+
+/// The Patriarch in state Escaping, once per think: Escaping's Begin loop
+/// (cloak again), SyrRetreat.FindHideSpot once, and BeginHealing on
+/// arriving (or after ESCAPE_GIVE_UP, our addition). Returns where to run
+/// (Bevy), or None when not escaping.
+fn boss_escape(z: &mut Zed, c: &ZedClass, player: Vec3, dt: f32, nav: &crate::nav::NavNetwork, spatial: &SpatialQuery) -> Option<Vec3> {
+    let (Some(bc), Some(mut b)) = (c.boss.as_ref(), z.boss) else {
+        return None;
+    };
+    b.escape?;
+    if z.state != ZedState::Chase {
+        return None;
+    }
+    if b.escape_step(dt, z.attack.is_some()) {
+        z.cloaked = true;
+        z.cloak_dirty = true;
+        runlog::kv("boss_sneak", &format!("id={} cloak reason=escaping", z.id));
+    }
+    let mut e = b.escape.expect("checked");
+    if e.goal.is_none() {
+        // SyrRetreat.BeginState clears Enemy; SeePlayer sets it again. Seen:
+        // FindHideSpot scores points; not: FindRandomDest.
+        let enemy = sees(spatial, z.centre, player).then_some(player);
+        let mut seed = z.random() | 1;
+        e.goal = find_hide_spot(nav, spatial, z.centre, enemy, &mut seed);
+        match e.goal {
+            Some(g) => runlog::kv(
+                "boss_escape",
+                &format!(
+                    "id={} hide_spot={} distance_unreal={:.0} player_known={} spot_seen_by_player={}",
+                    z.id,
+                    nav.points[g].name,
+                    (nav.points[g].pos - z.centre).length() / SCALE,
+                    enemy.is_some(),
+                    sees(spatial, nav.points[g].pos, player)
+                ),
+            ),
+            None => runlog::kv("boss_escape", &format!("id={} hide_spot=none", z.id)),
+        }
+    }
+    let goal = e.goal.map(|g| nav.points[g].pos);
+    let arrived = goal.is_none_or(|g| {
+        let d = g - z.centre;
+        d.with_y(0.0).length() / SCALE <= crate::nav::HUNT_RADIUS + 8.0 && (d.y / SCALE).abs() <= 2.0 * c.collision_height
+    });
+    let gave_up = e.seconds > crate::boss::ESCAPE_GIVE_UP;
+    if (arrived || gave_up)
+        && z.attack.is_none()
+        && let Some((seq, _)) = bc.heal_anim
+    {
+        b.begin_healing();
+        z.boss = Some(b);
+        z.cloaked = false;
+        z.cloak_dirty = true;
+        z.overlay = None;
+        z.state = ZedState::BossBusy;
+        z.sequence = None;
+        start_anim(z, Some(seq), false);
+        let why = if gave_up && !arrived { "gave_up" } else { "arrived" };
+        runlog::kv(
+            "boss_heal",
+            &format!("id={} start reason={why} escape_seconds={:.1} health={:.0} player_sees={}", z.id, e.seconds, z.health, sees(spatial, z.centre, player)),
+        );
+        return None;
+    }
+    b.escape = Some(e);
+    z.boss = Some(b);
+    goal
+}
+
+/// SyrRetreat.FindHideSpot: of the navigation points within 2500 that the
+/// enemy cannot see and that have a path, the best by distance from the
+/// enemy / max(distance from him / 800, 1.5), divided by 10 when the
+/// direction from the point to the enemy is not within 0.2 (dot) of his own
+/// direction to the enemy (a point past or beside the enemy). No enemy:
+/// FindRandomDest, a random point with a path. "Has a path": reachable over
+/// the network from a point near him that he can see (our stand-in for
+/// FindPathToward).
+fn find_hide_spot(nav: &crate::nav::NavNetwork, spatial: &SpatialQuery, pawn: Vec3, enemy: Option<Vec3>, seed: &mut u32) -> Option<usize> {
+    let mut reachable = vec![false; nav.points.len()];
+    let mut queue: Vec<usize> = nav
+        .near(pawn, 800.0 * SCALE)
+        .into_iter()
+        .filter(|(i, _)| sees(spatial, pawn, nav.points[*i].pos))
+        .map(|(i, _)| i)
+        .collect();
+    for &i in &queue {
+        reachable[i] = true;
+    }
+    while let Some(u) = queue.pop() {
+        for &(v, _) in &nav.links[u] {
+            if !reachable[v] {
+                reachable[v] = true;
+                queue.push(v);
+            }
+        }
+    }
+    let Some(enemy) = enemy else {
+        let all: Vec<usize> = (0..nav.points.len()).filter(|&i| reachable[i]).collect();
+        if all.is_empty() {
+            return None;
+        }
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 17;
+        *seed ^= *seed << 5;
+        return Some(all[*seed as usize % all.len()]);
+    };
+    let enemy_dir = (enemy - pawn).normalize_or_zero();
+    let mut best: Option<(usize, f32)> = None;
+    for (i, n) in nav.points.iter().enumerate() {
+        let mdist = (n.pos - pawn).length() / SCALE;
+        if mdist >= 2500.0 || !reachable[i] || sees(spatial, n.pos, enemy) {
+            continue;
+        }
+        let mut score = (n.pos - enemy).length() / SCALE / (mdist / 800.0).max(1.5);
+        if enemy_dir.dot((enemy - n.pos).normalize_or_zero()) < 0.2 {
+            score /= 10.0;
+        }
+        if best.is_none_or(|(_, b)| b < score) {
+            best = Some((i, score));
+        }
+    }
+    best.map(|(i, _)| i)
 }
 
 /// Turns a zed toward `at` (Bevy) at its RotationRate; returns the wanted yaw.
@@ -1548,6 +1717,27 @@ fn load_class(
             None
         },
         burst_bone: if kind == ZedKind::Bloat { name_of("SpineBone2").and_then(|n| model.find_bone(&n)) } else { None },
+        cloak_parts: if kind == ZedKind::Patriarch {
+            model
+                .parts
+                .iter()
+                .map(|p| {
+                    let texture = materials.get(&p.material).and_then(|m| m.base_color_texture.clone());
+                    materials.add(StandardMaterial {
+                        base_color: Color::srgba(0.85, 0.9, 1.0, 0.15),
+                        base_color_texture: texture,
+                        alpha_mode: AlphaMode::Blend,
+                        perceptual_roughness: 0.2,
+                        reflectance: 0.5,
+                        cull_mode: None,
+                        double_sided: true,
+                        ..default()
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
         cloak_material: (kind == ZedKind::Stalker).then(|| {
             let texture = model.parts.first().and_then(|p| materials.get(&p.material)).and_then(|m| m.base_color_texture.clone());
             materials.add(StandardMaterial {
@@ -1735,6 +1925,19 @@ impl Zed {
         }
         // ZombieScrake RunningState.RemoveHead: the rage ends.
         self.raging = false;
+    }
+
+    /// ZombieBoss.TakeDamage: knocked down below the next healing level.
+    pub fn note_boss_health(&mut self) {
+        let health = self.health;
+        if let Some(b) = self.boss.as_mut()
+            && b.check_knockdown(health)
+        {
+            runlog::kv(
+                "boss_knockdown",
+                &format!("id={} asked health={health:.0} level={} syringes={}", self.id, b.healing_levels[b.syringes], b.syringes),
+            );
+        }
     }
 
     /// ZombieBoss FireChaingun.TakeDamage: who shot him, `distance` from
@@ -2157,14 +2360,14 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 small_arms_scale: c.small_arms_scale,
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
-                boss: c.boss.is_some().then(crate::boss::BossState::default),
+                boss: c.boss.is_some().then(|| crate::boss::BossState::new(c.health)),
                 mg_flash: None,
                 mg_flash_shots: 0,
                 // ZombieStalker.PostBeginPlay: CloakStalker.
-                cloaked: c.cloak_material.is_some(),
+                cloaked: c.cloak_material.is_some() || c.boss.is_some(),
                 since_uncloak: f32::MAX,
                 cloak_check: 0.0,
-                cloak_dirty: c.cloak_material.is_some(),
+                cloak_dirty: c.cloak_material.is_some() || c.boss.is_some(),
                 yaw,
                 state: ZedState::Idle,
                 vertical_speed: 0.0,
@@ -2409,6 +2612,7 @@ fn think_and_move(
             z.health -= 100.0;
             z.note_damage(100.0);
             runlog::kv("zed_hurt_test", &format!("id={} health={:.0}", z.id, z.health));
+            z.note_boss_health();
         }
         if c.fp_rage_anim.is_some() {
             z.fp_since_damaged = (z.fp_since_damaged + dt).min(1e6);
@@ -2486,8 +2690,24 @@ fn think_and_move(
             }
             z.state = ZedState::Chase;
         }
-        // Patriarch, state FireChaingun: stands, turns to the player, and
-        // `boss.rs` runs the bursts.
+        // Patriarch: TakeDamage asked for a knockdown (full body, waits).
+        if let (Some(bc), Some(mut b)) = (c.boss.as_ref(), z.boss)
+            && b.pending_knockdown
+            && !matches!(z.state, ZedState::Dead | ZedState::Falling)
+            && let Some((seq, secs)) = bc.knockdown_anim
+        {
+            let roll = (z.random() % 1000) as f32 / 1000.0;
+            b.start_knockdown(secs, roll);
+            z.boss = Some(b);
+            z.attack = None;
+            z.overlay = None;
+            z.state = ZedState::BossBusy;
+            z.sequence = None;
+            start_anim(&mut z, Some(seq), false);
+            runlog::kv("boss_knockdown", &format!("id={} start health={:.0} seconds={secs:.2}", z.id, z.health));
+        }
+        // Patriarch, a full-body action (chaingun, rocket, knockdown, heal):
+        // `boss_busy` runs it.
         if z.state == ZedState::BossBusy {
             if active.0 {
                 let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
@@ -2511,8 +2731,15 @@ fn think_and_move(
             // Where to head: the player when in reach or attacking, else the
             // hunting route's target (a navigation point, or the player when
             // it can be walked to directly).
-            let steer = if z.attack.is_some() || dist <= reach || nav.points.is_empty() {
-                target
+            // Patriarch, state Escaping (BossZombieController SyrRetreat): to a
+            // hiding spot instead of the player; BeginHealing when there.
+            let escape_goal = boss_escape(&mut z, c, target, dt, &nav, &spatial);
+            let (goal, touch) = match escape_goal {
+                Some(g) => (g, crate::nav::HUNT_RADIUS),
+                None => (target, crate::nav::HUNT_RADIUS + PLAYER_RADIUS),
+            };
+            let steer = if (escape_goal.is_none() && (z.attack.is_some() || dist <= reach)) || nav.points.is_empty() {
+                goal
             } else {
                 let others: Vec<(Vec3, f32)> = blockers
                     .iter()
@@ -2531,8 +2758,8 @@ fn think_and_move(
                 let input = crate::nav::RouteInput {
                     id: z.id,
                     pos: z.centre,
-                    player: target,
-                    touch_player: crate::nav::HUNT_RADIUS + PLAYER_RADIUS,
+                    player: goal,
+                    touch_player: touch,
                     speed,
                     radius: hunt.0,
                     half_height: hunt.1,
@@ -2629,8 +2856,19 @@ fn think_and_move(
                     // Charging.MeleeDamageTarget: push x 1.5; each check uses
                     // one of the charge's attacks, a landed hit ends it.
                     let charging = z.boss.is_some_and(|b| b.charge.is_some());
-                    let push_scale = if charging { crate::boss::CHARGE_PUSH } else { 1.0 };
+                    // Escaping.MeleeDamageTarget (the sneak states): push x 1.5
+                    // too; SneakAround.MeleeDamageTarget then ends the sneak,
+                    // hit or miss.
+                    let sneaking = z.boss.is_some_and(|b| b.sneaking());
+                    let escaping = z.boss.is_some_and(|b| b.escaping());
+                    let push_scale = if charging || escaping { crate::boss::CHARGE_PUSH } else { 1.0 };
                     let id = z.id;
+                    if sneaking && let Some(b) = z.boss.as_mut() {
+                        b.end_sneak();
+                        z.cloaked = false;
+                        z.cloak_dirty = true;
+                        runlog::kv("boss_sneak", &format!("id={id} end reason=melee landed={}", in_range && level));
+                    }
                     if let Some(b) = z.boss.as_mut()
                         && charging
                     {
@@ -2847,7 +3085,16 @@ fn think_and_move(
                 && crate::boss::is_close_enough(dist, (target.y - z.centre.y) / SCALE, c.collision_radius, c.collision_height, PLAYER_RADIUS, PLAYER_HALF_HEIGHT)
             {
                 let roll = (z.random() % 1000) as f32 / 1000.0;
-                let seq = boss.choose_melee(z.health, roll).seq;
+                // Escaping.RangedAttack (the sneak states): MeleeClaw only,
+                // and UnCloakBoss first.
+                let escaping = z.boss.is_some_and(|b| b.escaping());
+                let seq = if escaping { boss.claw.seq } else { boss.choose_melee(z.health, roll).seq };
+                if escaping && let Some(b) = z.boss.as_mut() {
+                    b.cloaked = false;
+                    z.cloaked = false;
+                    z.cloak_dirty = true;
+                    runlog::kv("boss_sneak", &format!("id={} uncloak reason=attack", z.id));
+                }
                 z.overlay = Some((seq, 0.0, root));
                 z.attack = Some(Attack {
                     seq,
@@ -2876,6 +3123,21 @@ fn think_and_move(
             {
                 if let Some(why) = b.tick(dt) {
                     runlog::kv("boss_charge", &format!("id={} end reason={why} distance_unreal={dist3:.0}", z.id));
+                }
+                let initial = b.sneak.is_some_and(|s| s.initial);
+                let seen = b.sneaking() && sees(&spatial, z.centre, target);
+                match b.sneak_step(dt, seen, z.attack.is_some()) {
+                    Some(crate::boss::SneakChange::Cloaked) => {
+                        runlog::kv("boss_sneak", &format!("id={} cloak", z.id));
+                    }
+                    Some(crate::boss::SneakChange::Ended(why)) => {
+                        runlog::kv("boss_sneak", &format!("id={} end reason={why} initial={initial} distance_unreal={dist3:.0}", z.id));
+                    }
+                    None => {}
+                }
+                if z.cloaked != b.cloaked {
+                    z.cloaked = b.cloaked;
+                    z.cloak_dirty = true;
                 }
                 // (Only FireChaingun reacts to being shot from close.)
                 b.hit_from_close = false;
@@ -2931,6 +3193,21 @@ fn think_and_move(
                         }
                         crate::boss::Decision::DelayMissile(wait) => {
                             runlog::kv("boss_missile", &format!("id={} put_off seconds={wait:.1}", z.id));
+                        }
+                        crate::boss::Decision::StartSneak => {
+                            // SetAnimAction('transition'), GoToState('SneakAround'):
+                            // CloakBoss at once.
+                            if z.attack.is_none()
+                                && let (Some(seq), Some(root)) = (c.boss.as_ref().and_then(|bc| bc.transition), c.fire_root_bone)
+                            {
+                                z.overlay = Some((seq, 0.0, root));
+                            }
+                            z.cloaked = true;
+                            z.cloak_dirty = true;
+                            runlog::kv("boss_sneak", &format!("id={} start distance_unreal={dist3:.0}", z.id));
+                        }
+                        crate::boss::Decision::DelaySneak => {
+                            runlog::kv("boss_sneak", &format!("id={} put_off seconds=20", z.id));
                         }
                         crate::boss::Decision::DelayChaingun(wait) => {
                             runlog::kv("boss_chaingun", &format!("id={} put_off seconds={wait:.1}", z.id));
@@ -3059,6 +3336,11 @@ fn think_and_move(
                 } else if c.scream.is_some() && z.attack.is_some() {
                     // ZombieSiren.Tick: GroundSpeed x 0.65 while attacking.
                     c.ground_speed * 0.65
+                } else if z.boss.is_some_and(|b| b.escaping()) {
+                    // Escaping.Tick (and the sneak states): x 2.5, normal speed
+                    // while attacking.
+                    let scale = if z.attack.is_some() { 1.0 } else { crate::boss::CHARGE_SPEED };
+                    c.ground_speed * scale
                 } else if z.boss.is_some_and(|b| b.charge.is_some()) {
                     // ZombieBoss Charging.Tick: x 2.5, x 1.25 while attacking.
                     let scale = if z.attack.is_some() { crate::boss::CHARGE_ATTACK_SPEED } else { crate::boss::CHARGE_SPEED };
@@ -3188,7 +3470,7 @@ fn think_and_move(
                         c.fp_charge_walk.or(c.walk)
                     } else if z.raging || z.saw_charging {
                         c.charge_anim.or(c.walk)
-                    } else if z.boss.is_some_and(|b| b.charge.is_some()) && z.attack.is_none() {
+                    } else if z.boss.is_some_and(|b| b.charge.is_some() || b.escaping()) && z.attack.is_none() {
                         // ZombieBoss.PostNetReceive: charging, MovementAnims = ChargingAnim.
                         c.boss.as_ref().and_then(|b| b.charge_walk).or(c.walk)
                     } else {
@@ -3538,6 +3820,7 @@ fn apply_cloaks(mut commands: Commands, classes: Option<Res<ZedClasses>>, mut ze
         for (i, &e) in parts.0.iter().enumerate() {
             let material = match (&c.cloak_material, z.cloaked, &c.fp_red_device) {
                 (Some(cloak), true, _) => cloak.clone(),
+                (_, true, _) if !c.cloak_parts.is_empty() => c.cloak_parts[i.min(c.cloak_parts.len() - 1)].clone(),
                 // DeviceGoRed while raging (Skins[1]).
                 (_, _, Some(red)) if i == 1 && (z.fp_rage.is_some() || z.state == ZedState::Enraging) => red.clone(),
                 _ => c.model.parts[i].material.clone(),
