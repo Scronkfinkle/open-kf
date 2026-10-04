@@ -104,9 +104,12 @@ pub enum DecalKind {
     Scorch,
     /// RocketMarkDirt (where the Patriarch's rocket explodes).
     RocketMark,
+    /// BulletHoleDirt (ROBulletHitEffect, default surface).
+    BulletHole,
 }
 
-const DECAL_CLASSES: [(DecalKind, &str); 7] = [
+const DECAL_CLASSES: [(DecalKind, &str); 8] = [
+    (DecalKind::BulletHole, "ROEffects.BulletHoleDirt"),
     (DecalKind::Scorch, "KFMod.FlameThrowerBurnMark"),
     (DecalKind::RocketMark, "ROEffects.RocketMarkDirt"),
     (DecalKind::Vomit, "KFMod.VomitDecal"),

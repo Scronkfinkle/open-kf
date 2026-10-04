@@ -31,7 +31,7 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 21] = [
+const EFFECT_CLASSES: [&str; 26] = [
     "KFMod.DismembermentJetHead",
     "KFMod.DismembermentJetDecapitate",
     "KFMod.DismembermentJetLimb",
@@ -53,6 +53,11 @@ const EFFECT_CLASSES: [&str; 21] = [
     "KFMod.FlameThrowerFlameB",
     "ROEffects.PanzerfaustTrail",
     "KFMod.LawExplosion",
+    "ROEffects.MuzzleFlash1stMP",
+    "ROEffects.KFShellEject9mm",
+    "KFMod.KFNewTracer",
+    "ROEffects.MuzzleFlash3rdMG",
+    "ROEffects.ROBulletHitRockEffect",
 ];
 
 pub struct ParticlePlugin;
@@ -161,6 +166,9 @@ pub struct EffectLibrary(HashMap<String, Arc<LoadedEffect>>);
 #[derive(Component)]
 pub struct ParticleEffect {
     effect: Arc<LoadedEffect>,
+    /// Kept when it has no particles (a muzzle flash or shell ejector that
+    /// the weapon spawns once and triggers per shot); removed by its owner.
+    persistent: bool,
     pub frame: (Vec3, Mat3),
     id: u32,
     age: f32,
@@ -173,7 +181,61 @@ pub struct ParticleEffect {
     killed: bool,
 }
 
+/// Particles each emitter spawns on Trigger, for classes whose script
+/// overrides Trigger with SpawnParticle calls (every KF muzzle flash and
+/// shell ejector does; the engine's own Trigger, which toggles emitters
+/// with TriggerDisabled, is never what these use).
+const TRIGGER_COUNTS: [(&str, &[u32]); 5] = [
+    // MuzzleFlash1stMP.Trigger: Emitters[0] 2, Emitters[1] 1.
+    ("ROEffects.MuzzleFlash1stMP", &[2, 1]),
+    // KFShellEject9mm.Trigger: the casing, and 3 smoke puffs.
+    ("ROEffects.KFShellEject9mm", &[1, 3]),
+    ("ROEffects.MuzzleFlash3rdMG", &[2, 2, 2, 2, 2, 1, 3, 3]),
+    ("ROEffects.MuzzleFlash3rdPistol", &[2, 2, 2, 2, 2, 1, 2, 2]),
+    // KFShellEject / ROMuzzleFlash1st / ROMuzzleFlash3rd: Emitters[0] 1.
+    ("ROEffects.KFShellEject", &[1]),
+];
+
 impl ParticleEffect {
+    /// The effect's script Trigger (TRIGGER_COUNTS).
+    pub fn trigger(&mut self) {
+        let class = self.effect.class.as_str();
+        match TRIGGER_COUNTS.iter().find(|(c, _)| c.eq_ignore_ascii_case(class)) {
+            Some((_, counts)) => {
+                for (i, n) in counts.iter().enumerate() {
+                    self.spawn_particles(i, *n);
+                }
+            }
+            None => runlog::kv("effect_trigger_unknown", &format!("class={class}")),
+        }
+    }
+
+    /// ParticleEmitter.SpawnParticle(n) on one emitter: spawned on the next
+    /// update, at most MaxParticles alive (the oldest make room; assumed
+    /// from UE2's fixed particle array).
+    pub fn spawn_particles(&mut self, emitter: usize, n: u32) {
+        if let Some(s) = self.emitters.get_mut(emitter) {
+            s.pending += n;
+        }
+    }
+
+    /// Emitter.SpawnParticle(n): n on every emitter.
+    pub fn spawn_all(&mut self, n: u32) {
+        for i in 0..self.emitters.len() {
+            self.spawn_particles(i, n);
+        }
+    }
+
+    /// What a script does before SpawnParticle on a tracer: set one
+    /// emitter's StartVelocityRange to a single value (Unreal units/s, in
+    /// the effect's axes) and its LifetimeRange to a single time.
+    pub fn set_start(&mut self, emitter: usize, velocity: Vec3, lifetime: f32) {
+        if let Some(s) = self.emitters.get_mut(emitter) {
+            s.start_velocity = Some(velocity);
+            s.lifetime = Some(lifetime);
+        }
+    }
+
     /// Emitter.Kill(): stop spawning and go away once the particles are gone.
     pub fn kill(&mut self) {
         if !self.killed {
@@ -185,6 +247,11 @@ impl ParticleEffect {
 
 struct EmitterState {
     particles: Vec<Particle>,
+    /// Asked for by SpawnParticle / Trigger, spawned on the next update.
+    pending: u32,
+    /// StartVelocityRange / LifetimeRange as last set by a script.
+    start_velocity: Option<Vec3>,
+    lifetime: Option<f32>,
     /// Particles spawned so far, and the fractional spawn carry-over.
     spawned: u32,
     carry: f32,
@@ -473,8 +540,42 @@ pub fn spawn_effect_for(
     seed: u32,
     life_span: Option<f32>,
 ) -> Option<Entity> {
+    let options = SpawnOptions { life_span, ..default() };
+    spawn_effect_with(commands, library, meshes, class, location, axes, seed, options)
+}
+
+/// How an effect is spawned beyond its class defaults.
+#[derive(Clone, Copy, Default)]
+pub struct SpawnOptions {
+    /// Actor LifeSpan set by the spawner.
+    pub life_span: Option<f32>,
+    /// Kept with no particles until its owner removes it (see ParticleEffect).
+    pub persistent: bool,
+    /// Drawn on this render layer (e.g. the first-person weapon's).
+    pub layer: Option<usize>,
+}
+
+/// `spawn_effect` with options.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_effect_with(
+    commands: &mut Commands,
+    library: &EffectLibrary,
+    meshes: &mut Assets<Mesh>,
+    class: &str,
+    location: Vec3,
+    axes: Mat3,
+    seed: u32,
+    options: SpawnOptions,
+) -> Option<Entity> {
+    let SpawnOptions { life_span, persistent, layer } = options;
+    let layers = bevy::camera::visibility::RenderLayers::layer(layer.unwrap_or(0));
     static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let effect = library.0.get(class)?.clone();
+    // Unreal names ignore case (a class reference may come back as
+    // "roeffects.MuzzleFlash1stMP").
+    let effect = match library.0.get(class) {
+        Some(e) => e.clone(),
+        None => library.0.iter().find(|(k, _)| k.eq_ignore_ascii_case(class))?.1.clone(),
+    };
     let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut states = Vec::new();
     let parent = commands.spawn((Transform::IDENTITY, Visibility::Visible)).id();
@@ -489,8 +590,8 @@ pub fn spawn_effect_for(
             let mesh = empty_mesh(meshes);
             let common = (Mesh3d(mesh.clone()), Transform::IDENTITY, NoFrustumCulling, bevy::light::NotShadowCaster, ChildOf(parent));
             match material {
-                SpriteMaterial::Standard(m) => commands.spawn((common, MeshMaterial3d(m))),
-                SpriteMaterial::Modulate(m) => commands.spawn((common, MeshMaterial3d(m))),
+                SpriteMaterial::Standard(m) => commands.spawn((common, MeshMaterial3d(m), layers.clone())),
+                SpriteMaterial::Modulate(m) => commands.spawn((common, MeshMaterial3d(m), layers.clone())),
             };
             handles.push(mesh);
         }
@@ -499,6 +600,9 @@ pub fn spawn_effect_for(
             spawned: 0,
             carry: 0.0,
             meshes: handles,
+            pending: 0,
+            start_velocity: None,
+            lifetime: None,
         });
     }
     runlog::kv(
@@ -514,6 +618,7 @@ pub fn spawn_effect_for(
         ),
     );
     commands.entity(parent).insert(ParticleEffect {
+        persistent,
         frame: (location, axes),
         id,
         age: 0.0,
@@ -577,7 +682,8 @@ fn spawn_count(d: &EmitterDef, s: &mut EmitterState, dt: f32) -> u32 {
     n
 }
 
-fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, rng: &mut u32) -> Particle {
+/// `start`: StartVelocityRange and LifetimeRange as a script last set them.
+fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, start: (Option<Vec3>, Option<f32>), rng: &mut u32) -> Particle {
     // Start location: a box, plus a sphere shell for Sphere / All.
     let mut offset = in_ranges(rng, &d.start_location_range);
     if matches!(d.start_location_shape, 1 | 3) {
@@ -594,7 +700,7 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, rng:
     // the start velocity are turned with the effect, then the particle
     // moves in world space (assumed from KF's data: KFVomitJet's notify
     // turns the effect with OffsetRotation and its spray flies along X).
-    let vel = in_ranges(rng, &d.start_velocity_range);
+    let vel = start.0.unwrap_or_else(|| in_ranges(rng, &d.start_velocity_range));
     let vel = if relative { vel } else { frame.1 * vel };
     let pos = match (relative, base) {
         (_, Some(b)) => b + offset,
@@ -618,7 +724,7 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, rng:
         vel,
         size,
         age: 0.0,
-        life: in_range(rng, d.lifetime).max(0.01),
+        life: start.1.unwrap_or_else(|| in_range(rng, d.lifetime)).max(0.01),
         spin: if d.spin_particles { in_ranges(rng, &d.start_spin_range) } else { Vec3::ZERO },
         spin_rate: if d.spin_particles { spin_rate } else { Vec3::ZERO },
         damping: in_ranges(rng, &d.damping_factor_range),
@@ -716,7 +822,19 @@ fn update_effects(
                     Some(_) => continue,
                     None => None,
                 };
-                let p = spawn_particle(d, &frame, base, &mut fx.rng);
+                let p = spawn_particle(d, &frame, base, (s.start_velocity, s.lifetime), &mut fx.rng);
+                s.particles.push(p);
+                s.spawned += 1;
+            }
+            // SpawnParticle / Trigger requests: at most MaxParticles alive,
+            // the oldest dropped to make room.
+            let asked = std::mem::take(&mut s.pending);
+            let max = d.max_particles.max(1) as usize;
+            for _ in 0..asked {
+                if s.particles.len() >= max {
+                    s.particles.remove(0);
+                }
+                let p = spawn_particle(d, &frame, None, (s.start_velocity, s.lifetime), &mut fx.rng);
                 s.particles.push(p);
                 s.spawned += 1;
             }
@@ -733,7 +851,8 @@ fn update_effects(
                 _ => {}
             }
         }
-        if fx.log_timer >= 0.5 || fx.age <= dt {
+        let alive: usize = fx.emitters.iter().map(|s| s.particles.len()).sum();
+        if (fx.log_timer >= 0.5 || fx.age <= dt) && !(fx.persistent && alive == 0) {
             fx.log_timer = 0.0;
             let counts: Vec<String> = fx.emitters.iter().map(|s| format!("{}/{}", s.particles.len(), s.spawned)).collect();
             runlog::kv(
@@ -743,7 +862,7 @@ fn update_effects(
         }
         let expired = fx.life_span > 0.0 && fx.age > fx.life_span;
         let killed_and_empty = fx.killed && fx.emitters.iter().all(|s| s.particles.is_empty());
-        if expired || killed_and_empty || (all_done && fx.age > 0.1) {
+        if expired || killed_and_empty || (all_done && fx.age > 0.1 && !fx.persistent) {
             let spawned: u32 = fx.emitters.iter().map(|s| s.spawned).sum();
             runlog::kv(
                 "effect_removed",
@@ -767,8 +886,9 @@ fn update_effects(
 }
 
 /// Sprites: one quad per particle, full width = size (assumed), facing the
-/// camera (UseDirectionAs None) or, for UpAndNormal, stretched along the
-/// velocity in the plane of ProjectionNormal.
+/// camera (UseDirectionAs None), with its up (Up) or right (Right) along the
+/// velocity, or, for UpAndNormal, stretched along the velocity in the plane
+/// of ProjectionNormal.
 fn build_sprites(
     d: &EmitterDef,
     frame: &(Vec3, Mat3),
@@ -785,11 +905,21 @@ fn build_sprites(
     let (mut positions, mut uvs, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for p in particles {
         let t = (p.age / p.life).clamp(0.0, 1.0);
-        let mut size = p.size.x;
+        // Width and height: Size.X for both with UniformSize, else X and Y.
+        let mut size = if d.uniform_size { Vec2::splat(p.size.x) } else { Vec2::new(p.size.x, p.size.y) };
         if d.use_size_scale
             && let Some(k) = curve(&d.size_scale, t, |a, b, f| a + (b - a) * f)
         {
             size *= k;
+        }
+        // ScaleSizeXByVelocity / Y: size x speed x ScaleSizeByVelocityMultiplier,
+        // at least 1x and at most ScaleSizeByVelocityMax (assumed: the
+        // native code is not in the scripts). Makes tracers long streaks.
+        let speed = p.vel.length();
+        for a in 0..2 {
+            if d.scale_size_by_velocity[a] {
+                size[a] *= (speed * d.scale_size_by_velocity_multiplier[a]).clamp(1.0, d.scale_size_by_velocity_max.max(1.0));
+            }
         }
         // Fading, in seconds of the particle's life.
         let mut alpha = d.opacity;
@@ -810,7 +940,14 @@ fn build_sprites(
             rgb = c.truncate();
         }
         let centre = world_pos(d, frame, p);
-        let (right, up) = if d.use_direction_as == 1 && p.vel.length_squared() > 1e-6 {
+        let (right, up) = if d.use_direction_as == 2 && p.vel.length_squared() > 1e-6 {
+            // PTDU_Right: the sprite's right (its width) along the velocity,
+            // facing the camera (KFNewTracer).
+            let vel = if d.coordinate_system == 1 { frame.1 * p.vel } else { p.vel };
+            let right = vel.normalize();
+            let up = right.cross(cam_forward).normalize_or(cam_up);
+            (right, up)
+        } else if d.use_direction_as == 1 && p.vel.length_squared() > 1e-6 {
             // PTDU_Up: the sprite's up along the velocity, facing the camera.
             let vel = if d.coordinate_system == 1 { frame.1 * p.vel } else { p.vel };
             let up = vel.normalize();
@@ -831,7 +968,7 @@ fn build_sprites(
         let h = size * 0.5;
         let base = positions.len() as u32;
         for (sx, sy) in [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
-            positions.push(coords::pos((centre + right * (sx * h) + up * (sy * h)).to_array()).to_array());
+            positions.push(coords::pos((centre + right * (sx * h.x) + up * (sy * h.y)).to_array()).to_array());
         }
         // Texture subdivision: by age unless random (BlendBetweenSubdivisions
         // is not blended here).

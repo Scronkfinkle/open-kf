@@ -417,6 +417,10 @@ pub struct Zed {
     no_hit_reactions: bool,
     /// Patriarch: his own state (charge, ...).
     boss: Option<crate::boss::BossState>,
+    /// Patriarch: the chaingun's MuzzleFlash3rdMG (mMuzzleFlash) on `tip`,
+    /// and AddTraceHitFX calls not yet shown on it.
+    mg_flash: Option<Entity>,
+    mg_flash_shots: u32,
     /// Bloat: hits do not interrupt his attacks (HitCanInterruptAction);
     /// died by bleeding out (no burst); the death burst is done; notify
     /// effects to start (animate_zeds has the effect library).
@@ -899,6 +903,7 @@ fn boss_busy(
     player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
     push: &mut MessageWriter<crate::walk::PlayerPush>,
     fireball: &mut MessageWriter<crate::fireball::SpawnFireball>,
+    bullet_fx: &mut MessageWriter<crate::bullet_fx::BulletFx>,
 ) {
     let (Some(bc), Some(mut b)) = (c.boss.as_ref(), z.boss) else {
         z.state = ZedState::Chase;
@@ -989,7 +994,7 @@ fn boss_busy(
                 }
             }
             crate::boss::MgEvent::Shoot => {
-                boss_mg_shot(z, tip, aim_at, want_yaw, target, spatial, player_damage, push, mg.shots_left);
+                boss_mg_shot(z, tip, aim_at, want_yaw, target, spatial, player_damage, push, bullet_fx, mg.shots_left);
             }
             crate::boss::MgEvent::Done => done = true,
         }
@@ -1034,6 +1039,7 @@ fn boss_mg_shot(
     spatial: &SpatialQuery,
     player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
     push: &mut MessageWriter<crate::walk::PlayerPush>,
+    bullet_fx: &mut MessageWriter<crate::bullet_fx::BulletFx>,
     shots_left: i32,
 ) {
     let yaw_err = (want_yaw - z.yaw).rem_euclid(65536.0);
@@ -1076,6 +1082,22 @@ fn boss_mg_shot(
     } else {
         "nothing".to_string()
     };
+    // AddTraceHitFX (only when the trace hit something: A != None): the
+    // muzzle flash on `tip`, a tracer at 10000 and ROBulletHitEffect at the
+    // hit point, rotated along the shot, whatever was hit (the player too).
+    if let Some(d) = on_player.or(world) {
+        let hit = ue_pos(origin + dir_bevy * d);
+        z.mg_flash_shots += 1;
+        bullet_fx.write(crate::bullet_fx::BulletFx {
+            shooter: crate::bullet_fx::Shooter::Zed(z.id),
+            start: Some(tip),
+            hit,
+            into: (hit - tip).normalize_or_zero(),
+            impact: true,
+            tracer_speed: crate::boss::MG_TRACER_SPEED,
+            min_distance: 10.0,
+        });
+    }
     runlog::kv("boss_mg_shot", &format!("id={} left={shots_left} hit={what} turning={turning}", z.id));
 }
 
@@ -1935,6 +1957,8 @@ impl Zed {
             keeps_head: false,
             no_hit_reactions: false,
             boss: None,
+            mg_flash: None,
+            mg_flash_shots: 0,
             cloaked: false,
             since_uncloak: f32::MAX,
             cloak_check: 0.0,
@@ -2134,6 +2158,8 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
                 boss: c.boss.is_some().then(crate::boss::BossState::default),
+                mg_flash: None,
+                mg_flash_shots: 0,
                 // ZombieStalker.PostBeginPlay: CloakStalker.
                 cloaked: c.cloak_material.is_some(),
                 since_uncloak: f32::MAX,
@@ -2267,10 +2293,11 @@ fn think_and_move(
     player: Query<(&Transform, Option<&Walker>), With<FlyCamera>>,
     mut zeds: Query<(Entity, &mut Zed, &mut Transform, Option<&RagdollState>), Without<FlyCamera>>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
-    (mut vomit, mut push, mut fireball): (
+    (mut vomit, mut push, mut fireball, mut bullet_fx): (
         MessageWriter<crate::vomit::SpawnVomit>,
         MessageWriter<crate::walk::PlayerPush>,
         MessageWriter<crate::fireball::SpawnFireball>,
+        MessageWriter<crate::bullet_fx::BulletFx>,
     ),
     mut kills: ResMut<crate::combat::KillCount>,
     mut pinned: ResMut<crate::combat::PlayerPinned>,
@@ -2464,7 +2491,7 @@ fn think_and_move(
         if z.state == ZedState::BossBusy {
             if active.0 {
                 let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
-                boss_busy(&mut z, c, &t, target, player_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball);
+                boss_busy(&mut z, c, &t, target, player_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball, &mut bullet_fx);
             }
             t.translation = z.centre;
             continue;
@@ -3256,6 +3283,50 @@ fn animate_zeds(
         let seed = z.random();
         for effect in std::mem::take(&mut z.pending_fx) {
             notify_effect(&mut commands, &mut meshes, library.as_deref(), c, &mut z, t, &effect, seed);
+        }
+        // ZombieBoss.AddTraceHitFX: mMuzzleFlash. KF quirk, kept: the first
+        // call only spawns and attaches it ("if( mMuzzleFlash==None )
+        // Spawn... else SpawnParticle(1)"), so the first shot of his life
+        // shows no flash. Later shots: Emitter.SpawnParticle(1), one
+        // particle on each of its 8 emitters.
+        if z.mg_flash_shots > 0
+            && let (Some(bc), Some(lib)) = (c.boss.as_ref(), library.as_deref())
+        {
+            match z.mg_flash {
+                None => {
+                    z.mg_flash_shots -= 1;
+                    if let Some(bone) = bc.tip_bone {
+                        let anchor = EffectAnchor::Bone {
+                            bone,
+                            offset: Vec3::ZERO,
+                            rotation: Mat3::IDENTITY,
+                        };
+                        let frame = anchor_frame(c, &z, t, &anchor).unwrap_or((ue_pos(z.centre), Mat3::IDENTITY));
+                        let options = crate::particles::SpawnOptions {
+                            persistent: true,
+                            ..default()
+                        };
+                        if let Some(e) = crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, "ROEffects.MuzzleFlash3rdMG", frame.0, frame.1, seed, options) {
+                            z.mg_flash = Some(e);
+                            z.effects.push((e, anchor));
+                        }
+                    }
+                }
+                Some(e) => {
+                    if let Ok(mut fx) = effects.get_mut(e) {
+                        for _ in 0..std::mem::take(&mut z.mg_flash_shots) {
+                            fx.spawn_all(1);
+                        }
+                    }
+                }
+            }
+        }
+        // Dead: the flash goes once its particles are gone.
+        if z.state == ZedState::Dead
+            && let Some(e) = z.mg_flash.take()
+            && let Ok(mut fx) = effects.get_mut(e)
+        {
+            fx.kill();
         }
         // ZombieBloat.PlayDyingAnimation and Tick: unless he bled out
         // headless he bursts: BileExplosion (BileExplosionHeadless without a

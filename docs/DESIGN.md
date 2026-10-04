@@ -1326,6 +1326,85 @@ chaingun, escape) goes in a new `src/boss.rs`, called from `zed.rs`, like
 `fireball.rs` and `vomit.rs`. A bigger reorganisation of `zed.rs` would be
 a separate decision.
 
+## Firing effects: muzzle flashes, shells, tracers, impacts (F1-F3, F5 implemented 2026-10-04)
+
+Today a shot draws nothing. What KF does (KFFire, WeaponFire,
+KFWeaponAttachment, ROHitEffect; 9mm = SingleFire / SingleAttachment):
+
+- **First-person flash:** FlashEmitterClass (9mm: ROEffects.MuzzleFlash1stMP)
+  is spawned once, attached to the weapon's FlashBoneName (`tip`), and
+  `Trigger`ed on every shot (WeaponFire.FlashMuzzleFlash). It is drawn with
+  the weapon (Canvas.DrawActor at DisplayFOV), i.e. on our weapon layer.
+- **Shells:** ShellEjectClass (ROEffects.KFShellEject9mm) attached to
+  ShellEjectBoneName (`Shell_eject`), also `Trigger`ed per shot, also drawn
+  with the weapon. Its particles are in world space (they stay behind as
+  the player moves).
+- **Weapon light:** WeaponLight turns the first-person weapon's dynamic
+  light on for 0.15 s per shot.
+- **Tracer and impact:** KFFire.DoTrace calls the attachment's UpdateHit
+  only when the shot hits the level or a non-pawn actor; ThirdPersonEffects
+  then spawns ROBulletHitEffect at the hit and one KFNewTracer particle
+  from the weapon's `tip` (GetEffectStart in first person) toward the hit:
+  velocity 7500 (mTracerSpeed) along the shot, lifetime (distance - 50) /
+  7500 (mTracerPullback 50), so it ends at the hit. **KF quirk, kept:** a
+  shot that hits a zed, or hits nothing, draws no tracer and no impact
+  (only the zed's own blood).
+- **ROBulletHitEffect** (ROHitEffect): traces 16 units ahead for the hit
+  material's SurfaceType and picks one of 20 entries: a bullet-hole decal,
+  an impact emitter and a sound. Default (no material): BulletHoleDirt and
+  ROBulletHitRockEffect.
+- **Patriarch chaingun** (ZombieBoss.AddTraceHitFX, every shot): a
+  MuzzleFlash3rdMG on `tip` (spawned once; SpawnParticle(1) on later
+  shots), a KFNewTracer particle at 10000 with lifetime (distance - 50) /
+  10000, and ROBulletHitEffect at the hit point whatever was hit.
+
+What our particle system lacks: emitters that only spawn on Trigger
+(TriggerDisabled false, SpawnOnTriggerRange, SpawnOnTriggerPPS), the
+native SpawnParticle(n) with the script's per-shot StartVelocityRange and
+LifetimeRange, effects that live on with no particles (auto_destroy false,
+LifeSpan 0), following a bone every frame, and drawing on the weapon layer.
+
+**Steps** (one change each):
+- F1. Particles: read the trigger settings; `ParticleEffect::trigger()`,
+  `spawn_particles(n)` with optional velocity and lifetime for emitter 0;
+  persistent effects; a render-layer choice. Check: unit tests on spawn
+  counts; the load log for the five classes.
+- F2. 9mm first person: flash on `tip` and shells on `Shell_eject`, on the
+  weapon layer, following the bones; the 0.15 s weapon light. Check: log
+  per shot (particles spawned, bone positions); a screenshot mid-shot.
+- F3. Tracers and impacts for player shots that hit the level (default
+  surface). Check: tracer lifetime vs. distance in the log; decal count.
+- F4. Surface types: keep each collision triangle's material, read its
+  SurfaceType, pick the matching impact, decal (and later sound).
+- F5. Patriarch chaingun: flash, tracer and impact per shot.
+
+**As built.** `particles.rs`: `trigger()` uses a table copied from each
+class's Trigger script (MuzzleFlash1stMP 2+1, KFShellEject9mm casing + 3
+smoke, MuzzleFlash3rdMG ...); `spawn_particles` / `spawn_all` (requests
+spawned on the next update, at most MaxParticles alive, oldest dropped);
+`set_start` (tracer velocity and lifetime); `SpawnOptions` (persistent,
+render layer); class lookup ignores case. `weapon.rs`: the weapon's
+FireFx (classes and bones from the fire mode and weapon), bone frames in
+world space each frame (the 9mm mesh has MeshScale 5, so its `tip` is ~123
+units in front of the eye, as KF places it), `weapon_fire_fx` triggers per
+shot. `bullet_fx.rs`: tracers (one reused emitter per shooter) and
+ROBulletHitEffect (default surface only). The Patriarch's mMuzzleFlash
+follows `tip` through the zed effect anchors. **KF quirk, kept:** his first
+AddTraceHitFX only spawns the flash, so the first chaingun shot of his life
+has no flash.
+
+**Not done:** the weapon light (0.15 s dynamic light; no dynamic lights
+yet), smoke (SmokeEmitterClass is unset for the 9mm), the third-person
+pistol flash and shells (no player body), impact sounds and the tracer's
+fly-by sound (no sound), surface types (F4).
+
+**Open question:** bullet holes vanish after 2 s here. Our decal loader
+uses 3 s when a class sets no LifeSpan, then ProjectedDecal's
+FMax(0.5, LifeSpan - 1). The bullet-hole classes set none, so KF's would be
+Actor's 0 -> 0.5 s x DecalStayScale (1.0 in Default.ini), yet holes seem
+to last longer in KF; how the engine keeps an abandoned projector is native
+code I cannot read. Left as it is until checked against the game.
+
 ## Video recording (implemented 2026-10-04)
 
 A debugging aid, not part of KF. F9 starts and stops recording; the

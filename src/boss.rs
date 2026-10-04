@@ -50,6 +50,8 @@ pub const MG_SPREAD: f32 = 0.06;
 pub const MG_RANGE: f32 = 10000.0;
 pub const MG_DAMAGE: f32 = 6.0 * 0.75;
 pub const MG_MOMENTUM: f32 = 500.0;
+/// AddTraceHitFX: the tracer's speed (SpawnDir x 10000).
+pub const MG_TRACER_SPEED: f32 = 10000.0;
 /// RangedAttack: rockets only at targets over 500 away; FRand() > 0.75
 /// puts it off for FRand() x 5 s, else the next is in 10 + FRand() x 15 s.
 const MISSILE_MIN_DISTANCE: f32 = 500.0;

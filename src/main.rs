@@ -1,4 +1,5 @@
 mod boss;
+mod bullet_fx;
 mod camera;
 mod combat;
 mod collision;
@@ -207,6 +208,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
+        .add_plugins(bullet_fx::BulletFxPlugin)
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(scripted)

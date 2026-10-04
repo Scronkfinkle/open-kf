@@ -197,6 +197,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   a 2.4 s wind-up, then a rocket (2600 units/s, smoke trail) that explodes
   for up to 75 in a 500-unit radius with a scorch mark; every 10-25 s.
   His cloaking and healing are not done yet.
+- Firing effects: the 9mm's muzzle flash and ejected shells (with smoke)
+  on the gun; tracers and bullet impacts (puff and bullet hole) when a shot
+  hits the level. As in KF, a shot that hits a zed or nothing draws no
+  tracer. The Patriarch's chaingun has its muzzle flash, tracers and
+  impacts. All impacts use the default (rock) effect for now.
+  Checked by logs; not looked at by eye yet.
   Checked by logs and screenshots. Not play-tested by you.
 - Install discovery: finds the KF install and reads its build label.
 - Package table reader: all 548 Unreal packages in the install parse

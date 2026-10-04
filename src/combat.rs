@@ -18,6 +18,9 @@ pub struct ShotFired {
     pub damage: f32,
     pub headshot_mult: f32,
     pub weapon: &'static str,
+    /// The weapon's tip (KFWeapon.GetEffectStart), Unreal world: where the
+    /// tracer starts.
+    pub effect_start: Option<Vec3>,
 }
 
 /// A knife swing reaching its damage moment (KFMeleeFire).
@@ -132,6 +135,9 @@ pub struct KillCount(pub u32);
 
 #[derive(Component)]
 struct HudText;
+
+/// KFWeaponAttachment mTracerSpeed.
+const PLAYER_TRACER_SPEED: f32 = 7500.0;
 
 /// Total trace length for bullets (Unreal units).
 const TRACE_RANGE: f32 = 10000.0;
@@ -367,15 +373,15 @@ fn damage_zed(
 
 fn resolve_shots(
     mut shots: MessageReader<ShotFired>,
+    mut bullet_fx: MessageWriter<crate::bullet_fx::BulletFx>,
     spatial: SpatialQuery,
     mut zeds: Query<&mut Zed>,
     mut kills: ResMut<KillCount>,
 ) {
     for shot in shots.read() {
         let max = TRACE_RANGE * SCALE;
-        let world = spatial
-            .cast_ray(shot.origin, Dir3::new(shot.dir).unwrap_or(Dir3::NEG_Z), max, true, &crate::collision::world_filter())
-            .map_or(max, |h| h.distance);
+        let world_hit = spatial.cast_ray(shot.origin, Dir3::new(shot.dir).unwrap_or(Dir3::NEG_Z), max, true, &crate::collision::world_filter());
+        let world = world_hit.map_or(max, |h| h.distance);
         // Nearest live zed whose cylinder the ray enters before the world.
         let mut best: Option<(f32, Mut<Zed>)> = None;
         for z in &mut zeds {
@@ -415,10 +421,31 @@ fn resolve_shots(
                 };
                 damage_zed(&mut z, shot.damage, head, shot.headshot_mult, shot.weapon, t, source, &mut kills);
             }
-            None => runlog::kv(
-                "miss",
-                &format!("weapon={} world_hit_distance_unreal={:.0}", shot.weapon, world / SCALE),
-            ),
+            None => {
+                runlog::kv(
+                    "miss",
+                    &format!("weapon={} world_hit_distance_unreal={:.0}", shot.weapon, world / SCALE),
+                );
+                // KFFire.DoTrace calls UpdateHit (tracer and impact) only for
+                // the level and non-pawn actors. KF quirk, kept: a shot that
+                // hits a zed, or hits nothing, draws neither.
+                if let Some(h) = world_hit {
+                    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+                    let n = if h.normal.dot(shot.dir) > 0.0 { -h.normal } else { h.normal };
+                    let n = to_ue(n);
+                    // HitLocation + 2 x HitNormal.
+                    let hit = to_ue(shot.origin + shot.dir * h.distance) / SCALE + 2.0 * n;
+                    bullet_fx.write(crate::bullet_fx::BulletFx {
+                        shooter: crate::bullet_fx::Shooter::Player,
+                        start: shot.effect_start,
+                        hit,
+                        into: -n,
+                        impact: true,
+                        tracer_speed: PLAYER_TRACER_SPEED,
+                        min_distance: 0.0,
+                    });
+                }
+            }
         }
     }
 }

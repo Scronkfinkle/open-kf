@@ -33,7 +33,7 @@ impl Plugin for WeaponPlugin {
             .add_systems(PostStartup, load_weapons.after(crate::camera::spawn_camera))
             .add_systems(
                 Update,
-                (weapon_input, animate_weapon)
+                (weapon_input, animate_weapon, weapon_fire_fx)
                     .chain()
                     .after(crate::camera::follow_sky),
             );
@@ -73,6 +73,22 @@ struct WeaponDef {
     combat: CombatStats,
     /// Magazine and spare rounds, for weapons that use ammo.
     ammo: Option<Ammo>,
+    /// First-person firing effects (KFFire.InitEffects).
+    fx: FireFx,
+}
+
+/// The fire mode's first-person effects: FlashEmitterClass on the weapon's
+/// FlashBoneName, ShellEjectClass on ShellEjectBoneName.
+#[derive(Default)]
+struct FireFx {
+    flash_class: Option<String>,
+    flash_bone: Option<usize>,
+    shell_class: Option<String>,
+    shell_bone: Option<usize>,
+    /// The spawned effects (spawned once the effect library is loaded).
+    flash: Option<Entity>,
+    shell: Option<Entity>,
+    spawn_tried: bool,
 }
 
 /// Iron sight values from the weapon and fire mode classes.
@@ -142,6 +158,12 @@ struct Weapons {
     zoom_time: f32,
     /// Simple random number state (spread, damage rolls).
     rng: u64,
+    /// Shots whose flash and shell are still to be triggered.
+    fx_shots: u32,
+    /// The current weapon's FlashBoneName frame, Unreal world (origin,
+    /// axes), as last posed: where tracers start (KFWeapon.GetEffectStart).
+    pub tip: Option<(Vec3, Mat3)>,
+    shell_frame: Option<(Vec3, Mat3)>,
 }
 
 impl Weapons {
@@ -253,6 +275,9 @@ fn load_weapons(
         zoom: 0.0,
         zoom_time: 0.25,
         rng: 0x2545_F491_4F6C_DD1D,
+        fx_shots: 0,
+        tip: None,
+        shell_frame: None,
     };
     start_action(&mut w, Action::Select);
     commands.insert_resource(w);
@@ -319,10 +344,21 @@ fn load_weapon(
         ..default()
     };
     let mut ammo = None;
+    let mut fx = FireFx::default();
+    let mut shell_bone_name = None;
     if let Some((Value::Object(fm), fm_pkg)) = get("FireModeClass")
         && let Some(fm_class) = set.resolve(&fm_pkg, fm)
     {
         let fget = |p: &str| defaults.get(&fm_class, p);
+        let class_of = |p: &str| match fget(p) {
+            Some((Value::Object(r), rp)) => set.resolve(&rp, r).map(|h| h.path()),
+            _ => None,
+        };
+        fx.flash_class = class_of("FlashEmitterClass");
+        fx.shell_class = class_of("ShellEjectClass");
+        if let Some((Value::Name(n), np)) = fget("ShellEjectBoneName") {
+            shell_bone_name = Some(np.pkg.name(n).to_string());
+        }
         let ffloat = |p: &str, d: f32| match fget(p) {
             Some((Value::Float(f), _)) => f,
             Some((Value::Int(i), _)) => i as f32,
@@ -428,6 +464,8 @@ fn load_weapon(
         idle_anim: name("IdleAimAnim").unwrap_or_else(|| "Idle".into()),
         fire_anim: fire_aimed_anim.unwrap_or_else(|| fire_anims[0].clone()),
     });
+    fx.flash_bone = name("FlashBoneName").and_then(|n| model.find_bone(&n));
+    fx.shell_bone = shell_bone_name.and_then(|n| model.find_bone(&n));
     Ok(WeaponDef {
         class: class_path.to_string(),
         model,
@@ -442,6 +480,7 @@ fn load_weapon(
         bob_damping,
         combat,
         ammo,
+        fx,
     })
 }
 
@@ -584,6 +623,7 @@ fn weapon_input(
                 a.mag -= 1;
             }
             w.fire_count += 1;
+            w.fx_shots += 1;
             start_action(&mut w, Action::Fire);
             let stats = w.defs[cur].combat;
             if stats.melee {
@@ -602,6 +642,7 @@ fn weapon_input(
                     damage,
                     headshot_mult: stats.headshot_mult,
                     weapon: weapon_name(&w.defs[cur].class),
+                    effect_start: w.tip.map(|t| t.0),
                 });
             }
         }
@@ -728,13 +769,15 @@ fn animate_weapon(
     // Weapon bob (Pawn.WeaponBob): BobDamping x WalkBob sideways, and
     // (0.45 + 0.55 x BobDamping) x WalkBob vertically. The camera already
     // moved by WalkBob, so relative to it the weapon moves by the difference.
+    let mut part_translation = offset;
     if let Ok(main) = main_cam.single() {
         let d = w.defs[w.current].bob_damping;
         let world = bob.side * (d - 1.0) + Vec3::Y * bob.up * (0.45 + 0.55 * d - 1.0);
         let local = main.rotation.inverse() * world;
+        part_translation = offset + local;
         for &e in &w.defs[w.current].entities {
             if let Ok(mut t) = weapon_parts.get_mut(e) {
-                t.translation = offset + local;
+                t.translation = part_translation;
             }
         }
     }
@@ -750,10 +793,29 @@ fn animate_weapon(
 
     // Pose, then mesh space -> drawn: subtract MeshOrigin, scale by MeshScale (UE2).
     let def = &w.defs[w.current];
-    let skinned = def.model.pose(w.sequence, w.frame);
+    let (skinned, bones) = def.model.pose_with_bones(w.sequence, w.frame);
     let scale = Vec3::from_array(def.model.mesh.scale);
     let origin = Vec3::from_array(def.model.mesh.origin);
     def.model.upload(&skinned, |p| coords::pos(((p - origin) * scale).to_array()), &mut meshes);
+    // The effect bones in the world. The weapon camera sits where the main
+    // camera is, so the weapon's camera-space parts are in world space as KF
+    // places its first-person weapon (Instigator.Location + CalcDrawOffset).
+    let (tip, shell) = match main_cam.single() {
+        Ok(main) => {
+            let to_world = |bone: Option<usize>| -> Option<(Vec3, Mat3)> {
+                let (o, axes) = def.model.bone_frame(&bones, bone?)?;
+                let local = coords::pos(((o - origin) * scale).to_array()) + part_translation;
+                let pos = to_ue(main.transform_point(local)) / coords::SCALE;
+                let axes = axes.map(|a| to_ue(main.rotation * coords::dir((a * scale).to_array())).normalize_or_zero());
+                Some((pos, Mat3::from_cols(axes[0], axes[1], axes[2])))
+            };
+            (to_world(def.fx.flash_bone), to_world(def.fx.shell_bone))
+        }
+        Err(_) => (None, None),
+    };
+    w.tip = tip;
+    w.shell_frame = shell;
+    let def = &w.defs[w.current];
 
     *log_timer += dt;
     if *log_timer >= 1.0 {
@@ -764,6 +826,81 @@ fn animate_weapon(
             &format!(
                 "weapon={} action={:?} frame={:.1} aiming={} zoom={:.2} view_fov={:.1} display_fov={:.1} skinned_bounds_unreal=({:.1},{:.1},{:.1})..({:.1},{:.1},{:.1})",
                 def.class, w.action, w.frame, w.aiming, w.zoom, view_fov.0, display_fov, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z
+            ),
+        );
+    }
+}
+
+/// Bevy direction or position -> Unreal axes (before any SCALE).
+fn to_ue(v: Vec3) -> Vec3 {
+    Vec3::new(-v.z, v.x, v.y)
+}
+
+/// KFFire.InitEffects / FlashMuzzleFlash: each weapon's flash and shell
+/// ejector are spawned once (drawn on the weapon layer, as KF draws them
+/// with the weapon, Canvas.DrawActor at DisplayFOV), kept on their bones,
+/// and triggered on every shot.
+fn weapon_fire_fx(
+    mut commands: Commands,
+    weapons: Option<ResMut<Weapons>>,
+    library: Option<Res<crate::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut effects: Query<(&mut crate::particles::ParticleEffect, &mut Visibility)>,
+) {
+    let Some(mut w) = weapons else {
+        return;
+    };
+    let current = w.current;
+    if let Some(lib) = library.as_deref() {
+        let options = crate::particles::SpawnOptions {
+            persistent: true,
+            layer: Some(WEAPON_LAYER),
+            ..default()
+        };
+        for def in w.defs.iter_mut().filter(|d| !d.fx.spawn_tried) {
+            def.fx.spawn_tried = true;
+            for (class, slot) in [(&def.fx.flash_class, &mut def.fx.flash), (&def.fx.shell_class, &mut def.fx.shell)] {
+                if let (Some(class), None) = (class, &slot) {
+                    *slot = crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, class, Vec3::ZERO, Mat3::IDENTITY, 7, options);
+                    if slot.is_none() {
+                        runlog::kv("weapon_fx_missing", &format!("weapon={} class={class}", def.class));
+                    }
+                }
+            }
+        }
+    }
+    let shots = std::mem::take(&mut w.fx_shots);
+    let (tip, shell) = (w.tip, w.shell_frame);
+    for (i, def) in w.defs.iter().enumerate() {
+        for (entity, frame) in [(def.fx.flash, tip), (def.fx.shell, shell)] {
+            let Some(Ok((mut fx, mut vis))) = entity.map(|e| effects.get_mut(e)) else {
+                continue;
+            };
+            // Only the weapon in hand draws its effects.
+            *vis = if i == current { Visibility::Inherited } else { Visibility::Hidden };
+            if i != current {
+                continue;
+            }
+            if let Some(f) = frame {
+                fx.frame = f;
+            }
+            for _ in 0..shots {
+                fx.trigger();
+            }
+        }
+    }
+    if shots > 0 {
+        let def = &w.defs[current];
+        let fmt = |f: Option<(Vec3, Mat3)>| f.map_or("none".to_string(), |(p, _)| format!("({:.1}, {:.1}, {:.1})", p.x, p.y, p.z));
+        runlog::kv(
+            "weapon_fx",
+            &format!(
+                "weapon={} shots={shots} flash={} shell={} tip_unreal={} shell_unreal={}",
+                def.class,
+                def.fx.flash.is_some(),
+                def.fx.shell.is_some(),
+                fmt(tip),
+                fmt(shell)
             ),
         );
     }

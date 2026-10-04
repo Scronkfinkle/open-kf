@@ -75,6 +75,8 @@ pub struct EmitterDef {
     pub size_scale: Vec<(f32, f32)>,
     pub scale_size_by_velocity_multiplier: [f32; 3],
     pub scale_size_by_velocity_max: f32,
+    /// ScaleSizeXByVelocity, Y, Z.
+    pub scale_size_by_velocity: [bool; 3],
     // Colour and fading.
     pub use_color_scale: bool,
     /// (relative time, RGBA).
@@ -107,6 +109,13 @@ pub struct EmitterDef {
     pub use_random_subdivision: bool,
     pub static_mesh: Option<String>,
     pub disabled: bool,
+    // Trigger (ParticleEmitter.Trigger): with TriggerDisabled off, a
+    // trigger spawns SpawnOnTriggerRange particles at SpawnOnTriggerPPS;
+    // with it on (the default), a trigger switches Disabled.
+    pub trigger_disabled: bool,
+    pub reset_on_trigger: bool,
+    pub spawn_on_trigger: Range,
+    pub spawn_on_trigger_pps: f32,
 }
 
 /// The objects a sub-emitter draws with.
@@ -166,12 +175,22 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         Some((Value::TaggedStruct { props, .. }, lp)) => struct_range(&lp, &props).unwrap_or(d),
         _ => d,
     };
-    let range_vector = |p: &str, d: Range| match get(p) {
-        Some((Value::TaggedStruct { props, .. }, lp)) => ["X", "Y", "Z"].map(|axis| match props.get(&lp.pkg, axis) {
-            Some(Value::TaggedStruct { props: inner, .. }) => struct_range(&lp, inner).unwrap_or((0.0, 0.0)),
-            _ => (0.0, 0.0),
-        }),
-        _ => [d; 3],
+    // A struct property only stores the members that differ, so an axis
+    // the emitter leaves out keeps the class default's (e.g. StartSizeRange
+    // Y and Z stay 100 when only X is set).
+    let axes_of = |v: Option<(Value, Rc<LoadedPackage>)>| -> [Option<Range>; 3] {
+        match v {
+            Some((Value::TaggedStruct { props, .. }, lp)) => ["X", "Y", "Z"].map(|axis| match props.get(&lp.pkg, axis) {
+                Some(Value::TaggedStruct { props: inner, .. }) => Some(struct_range(&lp, inner).unwrap_or((0.0, 0.0))),
+                _ => None,
+            }),
+            _ => [None; 3],
+        }
+    };
+    let range_vector = |p: &str, d: Range| {
+        let own_axes = axes_of(own.get(pkg, p).map(|v| (v.clone(), h.package.clone())));
+        let class_axes = axes_of(defaults.get(&class, p));
+        [0, 1, 2].map(|i| own_axes[i].or(class_axes[i]).unwrap_or(d))
     };
     let object = |p: &str| match get(p) {
         Some((Value::Object(r), lp)) if r != ObjectRef::Null => set.resolve(&lp, r),
@@ -257,6 +276,7 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         size_scale,
         scale_size_by_velocity_multiplier: vector("ScaleSizeByVelocityMultiplier", [1.0; 3]),
         scale_size_by_velocity_max: float("ScaleSizeByVelocityMax", 10_000_000.0),
+        scale_size_by_velocity: [boolean("ScaleSizeXByVelocity"), boolean("ScaleSizeYByVelocity"), boolean("ScaleSizeZByVelocity")],
         use_color_scale: boolean("UseColorScale"),
         color_scale,
         opacity: float("Opacity", 1.0),
@@ -279,6 +299,10 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         use_random_subdivision: boolean("UseRandomSubdivision"),
         static_mesh: assets.static_mesh.as_ref().map(|h| h.path()),
         disabled: boolean("Disabled"),
+        trigger_disabled: boolean("TriggerDisabled"),
+        reset_on_trigger: boolean("ResetOnTrigger"),
+        spawn_on_trigger: range("SpawnOnTriggerRange", (0.0, 0.0)),
+        spawn_on_trigger_pps: float("SpawnOnTriggerPPS", 0.0),
     };
     Ok((def, assets))
 }

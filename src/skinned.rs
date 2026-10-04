@@ -289,12 +289,6 @@ impl SkinnedModel {
         self.anim.as_ref().map_or(30.0, |a| a.sequences[seq].rate)
     }
 
-    /// Skinned point positions (Unreal mesh space) for a sequence at a frame;
-    /// bones without a track (or no sequence) keep the reference pose.
-    pub fn pose(&self, seq: Option<usize>, frame: f32) -> Vec<Vec3> {
-        self.pose_with_bones(seq, frame).0
-    }
-
     /// Index of the first bone whose name matches, ignoring case, either
     /// exactly or as a `_name` suffix (KF's HeadBone 'head' vs the Clot's
     /// 'CHR_Head'; the mesh's tag table says the same, see `tag_frame`).

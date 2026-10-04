@@ -1837,3 +1837,69 @@ inside the dev shell (glibc clash), hence the flake copy. Resizing the
 window mid-recording drops frames of the new size (logged as
 `wrong_size`). No sound (the game has none yet).
 **Next:** Patriarch B5 (cloak and sneak).
+
+## 2026-10-04 Firing effects F1-F3, F5: flashes, shells, tracers, impacts
+
+**Changed:** Plan in `docs/DESIGN.md` ("Firing effects"). `ue-assets`
+`emitter.rs`: trigger settings read (TriggerDisabled, ResetOnTrigger,
+SpawnOnTriggerRange/PPS). `particles.rs`: `trigger()` (per-class table
+from the effect scripts), `spawn_particles`, `spawn_all`, `set_start`,
+`SpawnOptions` (persistent effects, render layer), case-insensitive class
+lookup; five effect classes loaded. `weapon.rs`: each weapon's flash and
+shell classes and bones; bone frames in world space; `weapon_fire_fx`
+spawns them on the weapon layer and triggers them per shot; `ShotFired`
+carries the tip. New `bullet_fx.rs`: tracers (one reused KFNewTracer per
+shooter) and ROBulletHitEffect (default surface: rock puff + BulletHoleDirt
+decal). `combat.rs`: player shots that hit the level send them (KF quirk
+kept: none for zed hits or misses). `zed.rs`: the Patriarch's chaingun
+sends them per shot; his MuzzleFlash3rdMG follows `tip` (first shot no
+flash, KF quirk kept) and is killed on death. `decals.rs`: `BulletHole`.
+`skinned.rs`: unused `pose` removed. README updated.
+**Why:** You asked for tracers and muzzle flashes; the pistol drew nothing
+when firing.
+**Tested how:** `cargo run --release -- --walk --input
+120:fire,180:fire,240:fire --frames 400` (in `nix develop`); `--walk
+--spawn patriarch --god --zed-at -4200,1313,-3818 --frames 1100`; `cargo
+test --release --workspace`; clippy.
+**Result:** First try: no effects, `weapon_fx_missing
+class=roeffects.MuzzleFlash1stMP` every frame: the class path came back
+lowercase and the effect lookup was case-sensitive (fixed; and it now tries
+once). Then per 9mm shot: flash 2+1 particles, shell 1 casing + 3 smoke
+(`alive/spawned=[2/2 1/1]`, `[1/1 3/3]`); tracer from the tip
+(-3244,1283,-3784) to a wall 1426 away, lifetime 0.184 (= (1426-50)/7500);
+impact puff and bullet-hole decal at the hit. I first thought the tip (~123
+units ahead) was wrong; logging showed MeshScale 5 on the 9mm mesh, so it
+is where our drawn gun's muzzle is. Patriarch at ~1100 units: 52 shots, 52
+tracers, 52 impacts, 52 decals; 15 hit the player, 37 the wall behind
+(spread 0.06 at that range); the flash's 8 emitters each got particles.
+Tests 38 + 21 pass, clippy clean.
+**Still broken / not tested:** Not looked at by eye (no screenshot
+inspected, per "log, don't look"): sizes, orientation and colours of the
+flash, shells and tracers are unverified. The Patriarch's first tracer
+starts ~100 units lower than the rest (PreFireMG's last pose; not looked
+into). Bullet holes last 2 s; KF's real time is an open question (DESIGN).
+No weapon light, sounds, or surface types yet.
+**Next:** F4 (surface types), after you have looked at it.
+
+## 2026-10-04 Tracers drawn as streaks (sprite width/height, direction, speed stretch)
+
+**Changed:** `ue-assets` `emitter.rs`: ScaleSizeXByVelocity / Y / Z read; a
+RangeVector property's missing axes now take the class default's (KF stores
+only differing members; StartSizeRange defaults to 100 per axis).
+`particles.rs` sprites: separate width and height when UniformSize is off;
+UseDirectionAs Right (the sprite's width along the velocity, facing the
+camera); width/height scaled by speed x ScaleSizeByVelocityMultiplier
+(clamped 1..ScaleSizeByVelocityMax; the exact native rule is assumed).
+**Why:** You saw tracers as small white squares. KFNewTracer is a 10 x 3
+sprite whose width is stretched by speed x 0.001 (7500 -> about 75 units
+long) and turned along its velocity; we drew every sprite as a square of
+Size.X facing the camera.
+**Tested how:** Dumped the settings of all 26 loaded effects: only
+KFNewTracer has UniformSize off, so no other effect changes. Short firing
+run (`--walk --input 120:fire,180:fire`); tests; clippy.
+**Result:** Tracers still spawn and time out as before (lifetime 0.184 at
+1426 units); no errors. Tests 38 + 21 pass, clippy clean.
+**Still broken / not tested:** Not looked at by eye. Whether the streak's
+length, thickness and brightness match KF is unverified; the speed-stretch
+formula is my reading of the setting names, not KF's code.
+**Next:** Compare with your in-game screenshot.
