@@ -1,0 +1,10 @@
+[package]
+name = "ue-assets"
+version = "0.1.0"
+description = "Reads Unreal Engine 2.5 (Killing Floor) packages into plain Rust data. No graphics code."
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Only used by the kfpkg tool to write PNGs for inspection.
+png = "0.18.1"

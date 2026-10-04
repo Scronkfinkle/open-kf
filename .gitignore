@@ -1,0 +1,39 @@
+# WHITELIST: ignore everything, then allow only source files and docs.
+# Game assets, extracted files, decompiled scripts, logs and build output
+# must never be tracked. Add new allowed paths deliberately.
+*
+
+# Allow walking into directories (needed so the rules below can match files inside)
+!*/
+
+# Never descend into these, even if a pattern below would match
+references/
+target/
+work/
+logs/
+.direnv/
+
+# Project config
+!/.gitignore
+!/.envrc
+!/flake.nix
+!/flake.lock
+!/Cargo.toml
+!/Cargo.lock
+!/crates/*/Cargo.toml
+
+# Rust source
+!/src/**/*.rs
+!/crates/*/src/**/*.rs
+!/crates/*/tests/**/*.rs
+
+# Docs
+!/LICENSE-MIT
+!/LICENSE-APACHE
+!/CLAUDE.md
+!/README.md
+!/MODLOG.md
+!/MODLOG-template.md
+!/STATUS-handoff.md
+!/STATUS.md
+!/docs/**/*.md
