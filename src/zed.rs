@@ -932,6 +932,10 @@ fn boss_busy(
         return;
     };
     b.tick(dt);
+    // FireChaingun.TakeDamage: only "shot from closer than 100" works. Its
+    // "ChargeDamage > 200 within 500" half never fires (ChargeDamage is
+    // always 0, see boss::BossState::decide), and its "a closer attacker
+    // than the enemy" half needs a second player.
     if std::mem::take(&mut b.hit_from_close) {
         let roll = (z.random() % 1000) as f32 / 1000.0;
         b.end_chaingun(roll);

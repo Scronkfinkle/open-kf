@@ -11,6 +11,7 @@ mod nav;
 mod particles;
 mod pawn_collision;
 mod ragdoll;
+mod record;
 mod runlog;
 mod screenshot;
 mod skinned;
@@ -193,6 +194,7 @@ fn main() -> AppExit {
             map::MapPlugin,
             camera::FlyCameraPlugin,
             screenshot::ScreenshotPlugin,
+            record::RecordPlugin,
             collision::CollisionPlugin,
             walk::WalkPlugin,
             weapon::WeaponPlugin,

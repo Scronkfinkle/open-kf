@@ -31,6 +31,9 @@
         pkgs.rustfmt
         pkgs.clippy
         pkgs.rust-analyzer
+
+        # Video recording (F9) pipes frames to ffmpeg
+        pkgs.ffmpeg
     ];
 
     # System libraries Bevy needs on Linux: audio, input devices, GPU, windowing

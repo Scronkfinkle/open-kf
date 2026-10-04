@@ -25,6 +25,12 @@ pub struct AutoScreenshot {
     pub at_frames: Vec<u32>,
 }
 
+/// The frame a screenshot was last asked for. Bevy captures a window once
+/// per frame and drops any second request for it (extract_screenshots:
+/// "Duplicate render target"), so video recording skips that frame.
+#[derive(Resource, Default)]
+pub struct ScreenshotFrame(pub Option<u32>);
+
 /// Set by the capture observer once the last automatic screenshot is saved.
 #[derive(Resource, Default)]
 struct AutoScreenshotDone(bool);
@@ -35,6 +41,7 @@ impl Plugin for ScreenshotPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AutoScreenshot>()
             .init_resource::<AutoScreenshotDone>()
+            .init_resource::<ScreenshotFrame>()
             .add_systems(Update, (take_screenshots, quit_after_auto_screenshot));
     }
 }
@@ -46,8 +53,10 @@ pub fn camera_args(t: &Transform, cam: &FlyCamera) -> String {
     format!("{:.0},{:.0},{:.0},{:.4},{:.4}", -p.z, p.x, p.y, cam.yaw, cam.pitch)
 }
 
-fn take_screenshots(
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+pub fn take_screenshots(
     mut commands: Commands,
+    mut shot_frame: ResMut<ScreenshotFrame>,
     keys: Res<ButtonInput<KeyCode>>,
     frames: Res<FrameCount>,
     auto: Res<AutoScreenshot>,
@@ -81,6 +90,7 @@ fn take_screenshots(
         "screenshot",
         &format!("file={} automatic={automatic} camera={args}", png.display()),
     );
+    shot_frame.0 = Some(frames.0);
     let mut shot = commands.spawn(Screenshot::primary_window());
     shot.observe(save_to_disk(png));
     if last_automatic {

@@ -197,6 +197,11 @@ impl Chaingun {
             if self.shots_left <= 0 {
                 return self.end(seconds, out);
             }
+            // KF quirk, kept: MGLostSightTimeout is set again at every FireMG
+            // end (every 11/30 s), not only when sight is first lost. A
+            // timeout of 0.25 + 0.35 x FRand() s longer than one FireMG is
+            // pushed back before it can run out, so he only stops on a short
+            // roll, and keeps firing at the last seen spot meanwhile.
             self.lost_sight_at = if sees { None } else { Some(self.clock + 0.25 + 0.35 * rng()) };
             if !self.fire_at_will {
                 self.fire_until = self.clock + 0.75 + 0.5 * rng();
@@ -211,6 +216,8 @@ impl Chaingun {
             if std::mem::take(&mut self.new_burst) {
                 self.fire_until = self.clock + 0.75 + 0.5 * rng();
             }
+            // KF quirk, kept: the timeout is only checked here, so not during
+            // a 0.5-1.25 s pause between bursts.
             if self.lost_sight_at.is_some_and(|t| self.clock > t) || self.shots_left <= 0 {
                 return self.end(seconds, out);
             }
@@ -348,6 +355,12 @@ impl BossState {
     /// ZombieBoss.RangedAttack after the melee check (and Charging's
     /// override), with the player in sight. `dist` in Unreal units,
     /// `attacking` = bShotAnim, `rng` gives FRand().
+    ///
+    /// KF quirk, kept by leaving it out: TakeDamage's "charge after 200
+    /// damage" (ShouldChargeFromDamage && ChargeDamage > 200) never fires.
+    /// ZombieBoss.TakeDamage only sets LastDamageTime inside the "hit within
+    /// 10 s of LastDamageTime" branch, and LastDamageTime starts at 0, so
+    /// the first branch (ChargeDamage = 0) is taken on every hit.
     pub fn decide(&mut self, dist: f32, attacking: bool, rng: &mut impl FnMut() -> f32) -> Decision {
         if self.charge.is_some() {
             // Charging.RangedAttack: too far, then the global one, which
@@ -404,6 +417,9 @@ impl BossClass {
             }
             Ok(BossMelee { seq, hits, range })
         };
+        // KF quirk, kept: MeleeClaw2 is in the mesh but never played.
+        // RangedAttack calls SetAnimAction('MeleeClaw') by name; only the
+        // name 'Claw' would pick from MeleeAnims, and he has none.
         Ok(BossClass {
             claw: attack("MeleeClaw", CLAW_RANGE)?,
             impale: attack("MeleeImpale", IMPALE_RANGE)?,

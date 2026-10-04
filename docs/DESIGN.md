@@ -1326,6 +1326,36 @@ chaingun, escape) goes in a new `src/boss.rs`, called from `zed.rs`, like
 `fireball.rs` and `vomit.rs`. A bigger reorganisation of `zed.rs` would be
 a separate decision.
 
+## Video recording (implemented 2026-10-04)
+
+A debugging aid, not part of KF. F9 starts and stops recording; the
+scripted input action `record` does the same (for tests). Each recording
+is `work/videos/<map>-<unix time>.mp4` (gitignored).
+
+- Frames: Bevy's screenshot capture of the window (the same as F12), asked
+  for at a steady 30 frames per second of game time. If the game runs
+  slower than 30 fps, the last frame is repeated so the video plays back at
+  real speed.
+- Encoding: the raw pixels go through a pipe to an `ffmpeg` process
+  (H.264, scaled down to at most 1280 wide), run on its own thread so the
+  game does not wait for disk writes. `ffmpeg` comes from the flake's dev
+  shell (`pkgs.ffmpeg`); the copy in the user profile cannot start inside
+  the shell (its libraries clash with the shell's LD_LIBRARY_PATH).
+- The window title says "REC" while recording; nothing is drawn on screen,
+  so the video shows only the game.
+- Stopping, or quitting while recording, closes the pipe and waits for
+  ffmpeg to finish the file. The log has `record_start`, `record_stop`
+  (frames asked, frames written, repeats) and `record_saved` (file,
+  bytes, ffmpeg exit status).
+- Cost: one window-sized copy per recorded frame; expect a lower frame rate
+  while recording at high resolutions.
+- Bevy captures a window at most once per frame and silently drops a
+  second request (extract_screenshots, "Duplicate render target"). So a
+  frame with an F12 / `--screenshot` capture is skipped by the recorder;
+  the next capture covers its slot. (Found when a `--screenshot` run never
+  quit: its capture had been dropped.)
+- The source is `src/record.rs`.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

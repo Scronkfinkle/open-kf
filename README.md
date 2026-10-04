@@ -28,6 +28,7 @@ cargo run --release -- --input 120:fire,200:1 --screenshot 126,330   # scripted 
 cargo run --release -- --walk --zed        # a Clot spawns in front of you and comes at you
 cargo run --release -- --walk --gorefast   # the same with a Gorefast
 cargo run --release -- --walk --spawn fleshpound   # any specimen: clot, gorefast, crawler, stalker, bloat, siren, husk, scrake, fleshpound, patriarch
+cargo run --release -- --walk --spawn patriarch --god --input 300:record,600:record   # test: record a 5 s video (scripted F9)
 cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
@@ -44,6 +45,7 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | Space or E / Ctrl or Q | up / down |
 | Shift | move 4x faster |
 | F12 | screenshot to `work/screenshots/`, with a `.txt` command that recreates the view |
+| F9 | start / stop recording a video to `work/videos/` (30 fps, H.264, up to 1280 wide); the window title shows `[REC]` |
 | V | switch between flying and walking |
 | 1 / 2 | knife / 9mm |
 | Left click (mouse captured) | fire |

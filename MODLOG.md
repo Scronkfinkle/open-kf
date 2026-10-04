@@ -1800,3 +1800,40 @@ damage falling off with distance) is not seen in game, only the Husk's
 shared code covers it. Aim error, view shake, the rocket hurting other
 zeds: not done.
 **Next:** B5, cloak and sneak.
+
+## 2026-10-04 Video recording (F9)
+
+**Changed:** New `src/record.rs`: F9 (or scripted action `record`) toggles
+recording; window captures at 30 fps of real time (a late capture covers
+the slots it missed), numbered and put back in order on a writer thread,
+piped as raw pixels to `ffmpeg` (H.264, max 1280 wide) into
+`work/videos/<map>-<time>.mp4`, with ffmpeg's messages in
+`<same name>.ffmpeg.log`. Quitting while recording finishes the file. The
+title shows `[REC]`. ffmpeg is checked when recording starts.
+`screenshot.rs`: `ScreenshotFrame` marks frames with a screenshot; the
+recorder skips them. `flake.nix`: `pkgs.ffmpeg` in the dev shell. README
+and DESIGN updated.
+**Why:** You asked for short video clips toggled on and off.
+**Tested how:** Inside `nix develop`: (1) `--walk --spawn patriarch --god
+--input 300:record,600:record --frames 800`; ffprobe on the file; average
+brightness once a second. (2) `--input 300:record --screenshot 450`
+(screenshot during recording, quit while recording); average colour of the
+screenshot vs. the video frame at the same time. (3) Outside the shell:
+`--input 200:record --frames 300`. `cargo test`, `cargo clippy`.
+**Result:** (1) `record_saved captures_written=150 ... ffmpeg_status="exit
+status: 0"`; ffprobe: h264 1280x778, 30 fps, 150 frames, 5.000 s; the game
+stayed at 60 fps; brightness 66 every second (not blank). (2) First try
+hung until the timeout: Bevy drops a second capture of the window in one
+frame, so the screenshot never arrived and the game never quit (the killed
+run left an unfinished 164 MB file, deleted). Fixed with
+`ScreenshotFrame`; second try: screenshot saved, `record_stop reason=quit`,
+79 of 80 captures written (the last was still in flight), exit Success.
+Average colour: screenshot 63/57/50, video 63/57/51 (channel order right).
+(3) prints `recording: ffmpeg cannot run; start the game inside nix
+develop ...`. Tests 38/38 pass, no clippy warnings.
+**Still broken / not tested:** The F9 key itself is not tested (scripted
+action only); not watched by a person. Your user-profile ffmpeg cannot run
+inside the dev shell (glibc clash), hence the flake copy. Resizing the
+window mid-recording drops frames of the new size (logged as
+`wrong_size`). No sound (the game has none yet).
+**Next:** Patriarch B5 (cloak and sneak).
