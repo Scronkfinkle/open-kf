@@ -4,6 +4,7 @@
 
 pub mod bsp;
 pub mod class_defaults;
+pub mod emitter;
 pub mod install;
 pub mod karma;
 pub mod level;

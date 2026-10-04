@@ -18,6 +18,7 @@ use ue_assets::properties::{Rotator, Value};
 
 use crate::camera::FlyCamera;
 use crate::gore::{self, GoreAssets, PieceModel, StumpKind};
+use crate::particles::{self, EffectLibrary, ParticleEffect};
 use crate::coords::{self, SCALE};
 use crate::map::MapRequest;
 use crate::pawn_collision::{Cylinder, clip_move};
@@ -272,6 +273,8 @@ pub struct Zed {
     last_pose: Vec<(Quat, Vec3)>,
     /// Pieces and chunks spawned so far (their ids are id x 100 + this).
     next_piece: usize,
+    /// Particle effects attached to a mesh tag (AttachEmitterEffect).
+    effects: Vec<(Entity, &'static str)>,
 
     /// Facing, Unreal rotation units.
     yaw: f32,
@@ -345,13 +348,42 @@ fn ue_dir(v: Vec3) -> Vec3 {
 }
 
 /// A mesh-space frame (origin, axes) of a zed at `t` in Unreal world space:
-/// position and rotator.
-fn world_frame(c: &ZedClass, t: &Transform, (o, axes): (Vec3, [Vec3; 3])) -> (Vec3, Vec3) {
+/// position and axes (columns X, Y, Z).
+fn world_axes(c: &ZedClass, t: &Transform, (o, axes): (Vec3, [Vec3; 3])) -> (Vec3, Mat3) {
     let to_actor = mesh_to_actor(c);
     let origin = to_actor(o);
     let axes = axes.map(|a| ue_dir(t.rotation * coords::dir((to_actor(o + a) - origin).normalize_or_zero().to_array())));
     let pos = ue_pos(t.transform_point(coords::pos(origin.to_array())));
-    (pos, coords::ue_rotator_of(Mat3::from_cols(axes[0], axes[1], axes[2])))
+    (pos, Mat3::from_cols(axes[0], axes[1], axes[2]))
+}
+
+/// Like `world_axes`, with the rotation as a rotator.
+fn world_frame(c: &ZedClass, t: &Transform, frame: (Vec3, [Vec3; 3])) -> (Vec3, Vec3) {
+    let (pos, m) = world_axes(c, t, frame);
+    (pos, coords::ue_rotator_of(m))
+}
+
+/// AttachEmitterEffect: starts `class` at the zed's tag `tag`; it follows
+/// the tag from then on.
+#[allow(clippy::too_many_arguments)]
+fn attach_effect(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    library: Option<&EffectLibrary>,
+    c: &ZedClass,
+    z: &mut Zed,
+    t: &Transform,
+    class: &str,
+    tag: &'static str,
+    seed: u32,
+) {
+    let (Some(library), Some(frame)) = (library, c.model.tag_frame(&z.last_pose, tag)) else {
+        return;
+    };
+    let (pos, axes) = world_axes(c, t, frame);
+    if let Some(e) = particles::spawn_effect(commands, library, meshes, class, pos, axes, seed) {
+        z.effects.push((e, tag));
+    }
 }
 
 /// The bone a shot hit (KF: native CalcHitLoc; here the bone segment, bone
@@ -380,6 +412,7 @@ fn apply_gore(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     gore: &GoreAssets,
+    library: Option<&EffectLibrary>,
     c: &ZedClass,
     z: &mut Zed,
     entity: Entity,
@@ -388,14 +421,30 @@ fn apply_gore(
     always_sever: bool,
 ) {
     let hits = std::mem::take(&mut z.gore_hits);
-    if z.last_pose.is_empty() {
-        return;
-    }
     let velocity = ue_dir(z.velocity) / SCALE;
     let size = c.collision_radius * c.collision_height / 1100.0;
     for hit in hits {
         // Seeded with the clock too: KF's FRand differs every game.
         let mut rng = gore::Rng((z.random() ^ clock.wrapping_mul(2_654_435_761)) | 1);
+        // KFMonster.OldPlayHit: the damage type's PawnDamageEmitter
+        // (ROBloodPuff for the 9mm and knife) at the hit point pushed one
+        // CollisionRadius away from the attacker, X axis toward the attacker.
+        if hit.damage > 0.0
+            && let Some(library) = library
+        {
+            let n = ue_dir(-hit.dir).normalize_or_zero();
+            let at = ue_pos(hit.point) + n - n * c.collision_radius;
+            let k = 65536.0 / std::f32::consts::TAU;
+            let axes = coords::ue_rotation_matrix(Rotator {
+                pitch: (n.z.clamp(-1.0, 1.0).asin() * k) as i32,
+                yaw: (n.y.atan2(n.x) * k) as i32,
+                roll: 0,
+            });
+            particles::spawn_effect(commands, library, meshes, "ROEffects.ROBloodPuff", at, axes, rng.0);
+        }
+        if z.last_pose.is_empty() {
+            continue;
+        }
         let mut next = z.id * 100 + z.next_piece;
         let first = next;
         let (point, attacker) = (ue_pos(hit.point), ue_pos(hit.attacker));
@@ -410,18 +459,25 @@ fn apply_gore(
                 continue;
             };
             let (at, head_rot) = world_frame(c, t, head);
+            // Neck spurt (NeckSpurtEmitterClass, or NeckSpurtNoGibEmitterClass
+            // for the knife's SpecialHideHead) and DecapFX's BrainSplash.
+            let jet = if hit.melee { "KFMod.DismembermentJetDecapitate" } else { "KFMod.DismembermentJetHead" };
+            attach_effect(commands, meshes, library, c, z, t, jet, "neck", rng.0);
+            if let Some(library) = library {
+                particles::spawn_effect(commands, library, meshes, "ROEffects.BrainSplash", at, Mat3::IDENTITY, rng.0 ^ 0x9e37);
+            }
             let (mut chunks, mut flying_head) = (0, false);
             if hit.melee {
                 // DecapFX(.., bSpawnDetachedHead): the head flies off.
                 if let Some(piece) = &c.severed_pieces[2] {
                     let rot_dir = gore::hit_normal_rotator(point, attacker, &mut rng);
-                    gore::spawn_severed(commands, piece, at, rot_dir, 0.06, head_rot, velocity, true, &mut next, &mut rng);
+                    gore::spawn_severed(commands, &mut gore::Effects { library, meshes: &mut *meshes }, piece, at, rot_dir, 0.06, head_rot, velocity, true, &mut next, &mut rng);
                     flying_head = true;
                 }
             } else {
                 // Brain chunks along the zed's own rotation.
                 let rot = Vec3::new(0.0, z.yaw, 0.0);
-                chunks = gore::spawn_giblets(commands, gore, 3, at, rot, 0.06, 250.0, velocity, size, &mut next, &mut rng);
+                chunks = gore::spawn_giblets(commands, &mut gore::Effects { library, meshes: &mut *meshes }, gore, 3, at, rot, 0.06, 250.0, velocity, size, &mut next, &mut rng);
             }
             runlog::kv(
                 "decap_fx",
@@ -474,13 +530,15 @@ fn apply_gore(
             let rot_dir = gore::hit_normal_rotator(point, attacker, &mut rng);
             let piece_model = c.severed_pieces[piece].as_ref();
             if let Some(m) = piece_model {
-                gore::spawn_severed(commands, m, at, rot_dir, 0.25, bone_rot, velocity, false, &mut next, &mut rng);
+                gore::spawn_severed(commands, &mut gore::Effects { library, meshes: &mut *meshes }, m, at, rot_dir, 0.25, bone_rot, velocity, false, &mut next, &mut rng);
             }
-            let chunks = gore::spawn_giblets(commands, gore, giblets, at, rot_dir, 0.25, 250.0, velocity, size, &mut next, &mut rng);
+            let chunks = gore::spawn_giblets(commands, &mut gore::Effects { library, meshes: &mut *meshes }, gore, giblets, at, rot_dir, 0.25, 250.0, velocity, size, &mut next, &mut rng);
             if let Some(b) = c.model.tag_bone(limb) {
                 z.hidden_bones.push(b);
             }
             let scale = c.attach_scale[if stump_kind == StumpKind::Arm { 1 } else { 2 }];
+            // HideBone: LimbSpurtEmitterClass on the stump's tag.
+            attach_effect(commands, meshes, library, c, z, t, "KFMod.DismembermentJetLimb", stump_tag, rng.0);
             let stump = gore::new_stump(gore, stump_kind, commands, meshes, entity);
             let has_stump = stump.is_some();
             if let Some(handles) = stump {
@@ -502,6 +560,15 @@ fn apply_gore(
             );
         }
         z.next_piece = next - z.id * 100;
+    }
+}
+
+/// Moves a zed's attached effects to their tags' current frames.
+fn follow_tags(c: &ZedClass, z: &Zed, t: &Transform, effects: &mut Query<&mut ParticleEffect>) {
+    for (e, tag) in &z.effects {
+        if let (Ok(mut fx), Some(frame)) = (effects.get_mut(*e), c.model.tag_frame(&z.last_pose, tag)) {
+            fx.frame = world_axes(c, t, frame);
+        }
     }
 }
 
@@ -1058,6 +1125,7 @@ impl Zed {
             severed: Vec::new(),
             last_pose: Vec::new(),
             next_piece: 0,
+            effects: Vec::new(),
             yaw: 0.0,
             state: ZedState::Idle,
             vertical_speed: 0.0,
@@ -1217,6 +1285,7 @@ fn spawn_in_front(
                 severed: Vec::new(),
                 last_pose: Vec::new(),
                 next_piece: 0,
+                effects: Vec::new(),
                 yaw,
                 state: ZedState::Idle,
                 vertical_speed: 0.0,
@@ -1690,6 +1759,8 @@ fn animate_zeds(
     time: Res<Time>,
     classes: Option<Res<ZedClasses>>,
     gore: Option<Res<GoreAssets>>,
+    library: Option<Res<EffectLibrary>>,
+    mut effects: Query<&mut ParticleEffect>,
     settings: Res<ZedSettings>,
     mut zeds: Query<(Entity, &mut Zed, &Transform, Option<&mut RagdollState>)>,
     bodies: Query<(&Transform, &LinearVelocity, Has<Sleeping>, &AngularVelocity), With<RagdollBody>>,
@@ -1709,7 +1780,7 @@ fn animate_zeds(
         let c = &classes.0[z.class];
         if let Some(gore) = gore.as_deref() {
             let clock = (time.elapsed_secs_f64() * 1000.0) as u32 ^ std::process::id();
-            apply_gore(&mut commands, &mut meshes, gore, c, &mut z, entity, t, clock, settings.always_sever);
+            apply_gore(&mut commands, &mut meshes, gore, library.as_deref(), c, &mut z, entity, t, clock, settings.always_sever);
         }
         // Hidden bones: the head once decapitated, and severed limbs.
         let mut collapse = z.hidden_bones.clone();
@@ -1741,6 +1812,7 @@ fn animate_zeds(
                 }
             }
             z.last_pose = pose.clone();
+            follow_tags(c, &z, t, &mut effects);
             let (fastest, max_speed) = r
                 .bodies
                 .iter()
@@ -1852,6 +1924,7 @@ fn animate_zeds(
             }
         }
         z.last_pose = bones.clone();
+        follow_tags(c, &z, t, &mut effects);
         // Extended collision: centre + (ColOffset >> Rotation), hard-attached
         // to the actor (KFMonster.PostBeginPlay).
         z.ext = c.ext_collision.map(|(offset, r, h)| {

@@ -4,6 +4,7 @@ mod collision;
 mod coords;
 mod gore;
 mod map;
+mod particles;
 mod pawn_collision;
 mod ragdoll;
 mod runlog;
@@ -171,6 +172,7 @@ fn main() -> AppExit {
             zed::ZedPlugin,
             combat::CombatPlugin,
             gore::GorePlugin,
+            particles::ParticlePlugin,
         ))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)

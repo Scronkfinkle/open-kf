@@ -17,6 +17,7 @@ use ue_assets::static_mesh::read_static_mesh;
 
 use crate::coords::{self, SCALE};
 use crate::map::MapRequest;
+use crate::particles::{self, EffectLibrary, ParticleEffect};
 use crate::runlog;
 use crate::skinned::{SkinnedModel, Skins, decode_image};
 
@@ -112,6 +113,8 @@ struct Piece {
     resting: bool,
     bounces: u32,
     rng: u32,
+    /// Its blood trail effect (SpawnTrail), which follows it.
+    trail: Option<Entity>,
 }
 
 /// Random numbers for gore, as FRand() (0..1).
@@ -377,10 +380,13 @@ fn mesh_to_local(model: &SkinnedModel, draw_scale: f32) -> impl Fn(Vec3) -> Vec3
 }
 
 /// Spawns one flying piece at `at` (Unreal world) with rotation `rot`
-/// (Unreal rotator) and velocity `velocity` (Unreal units/s).
+/// (Unreal rotator) and velocity `velocity` (Unreal units/s), and its
+/// trail (SpawnTrail): KFGib a BloodTrail living 1.8 s; SeveredAppendage
+/// its BleedingEmitterClass (ROBloodSpurt) living as long as the piece.
 #[allow(clippy::too_many_arguments)]
 fn spawn_piece(
     commands: &mut Commands,
+    fx: &mut Effects,
     model: &PieceModel,
     scale: f32,
     motion: Motion,
@@ -392,6 +398,11 @@ fn spawn_piece(
 ) {
     let translation = coords::pos(at.to_array());
     let spin = rng.spin(SPIN_SPAWN);
+    let (trail_class, trail_life) = if motion.lie_flat { ("ROEffects.ROBloodSpurt", motion.life) } else { ("ROEffects.BloodTrail", 1.8) };
+    let trail = fx.library.and_then(|lib| {
+        let axes = coords::ue_rotation_matrix(rotator(rot));
+        particles::spawn_effect_for(commands, lib, fx.meshes, trail_class, at, axes, rng.0, Some(trail_life))
+    });
     let parent = commands
         .spawn((
             Transform {
@@ -410,6 +421,7 @@ fn spawn_piece(
                 resting: false,
                 bounces: 0,
                 rng: rng.0 ^ 0x5bd1_e995,
+                trail,
             },
         ))
         .id();
@@ -440,6 +452,7 @@ fn spawn_piece(
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_giblets(
     commands: &mut Commands,
+    fx: &mut Effects,
     gore: &GoreAssets,
     count: usize,
     at: Vec3,
@@ -458,7 +471,7 @@ pub fn spawn_giblets(
         };
         let dir = z_axis(rng.jitter(rot, perturbation));
         let v = velocity + dir * speed * (1.0 + 0.25 * rng.frand());
-        spawn_piece(commands, model, model.draw_scale * size, GIB_MOTION, at, rot, v, *next_id, rng);
+        spawn_piece(commands, fx, model, model.draw_scale * size, GIB_MOTION, at, rot, v, *next_id, rng);
         *next_id += 1;
         spawned += 1;
     }
@@ -472,6 +485,7 @@ pub fn spawn_giblets(
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_severed(
     commands: &mut Commands,
+    fx: &mut Effects,
     model: &PieceModel,
     at: Vec3,
     rot_dir: Vec3,
@@ -487,8 +501,14 @@ pub fn spawn_severed(
     if head {
         v.z += 50.0;
     }
-    spawn_piece(commands, model, model.draw_scale, PIECE_MOTION, at, spawn_rot, v, *next_id, rng);
+    spawn_piece(commands, fx, model, model.draw_scale, PIECE_MOTION, at, spawn_rot, v, *next_id, rng);
     *next_id += 1;
+}
+
+/// What spawning effects needs: the effect library (if loaded) and meshes.
+pub struct Effects<'a> {
+    pub library: Option<&'a EffectLibrary>,
+    pub meshes: &'a mut Assets<Mesh>,
 }
 
 /// Spawns the meshes for a stump as children of `parent`; place them each
@@ -542,13 +562,34 @@ pub fn place_stump(
 
 /// Old2k4.Gib / SeveredAppendage movement: falling, bouncing off the level
 /// with damping (HitWall), a fixed spin, removed after LifeSpan.
-fn move_pieces(time: Res<Time>, spatial: SpatialQuery, mut commands: Commands, mut pieces: Query<(Entity, &mut Piece, &mut Transform)>) {
+fn move_pieces(
+    time: Res<Time>,
+    spatial: SpatialQuery,
+    mut commands: Commands,
+    mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
+    mut effects: Query<&mut ParticleEffect>,
+) {
     let dt = time.delta_secs().min(0.1);
     for (entity, mut g, mut t) in &mut pieces {
         g.age += dt;
         let u = t.translation / SCALE;
         let at = format!("({:.0}, {:.0}, {:.0})", -u.z, u.x, u.y);
+        // PHYS_Trailer: the trail follows the piece (not its rotation).
+        if let Some(trail) = g.trail
+            && let Ok(mut fx) = effects.get_mut(trail)
+        {
+            fx.frame.0 = Vec3::new(-u.z, u.x, u.y);
+        }
         if g.age > g.motion.life {
+            // Destroyed(): a severed piece destroys its trail, a gib kills it
+            // (it stops spawning and fades out).
+            if let Some(trail) = g.trail {
+                if g.motion.lie_flat {
+                    commands.entity(trail).try_despawn();
+                } else if let Ok(mut fx) = effects.get_mut(trail) {
+                    fx.kill();
+                }
+            }
             runlog::kv(
                 "piece_removed",
                 &format!("piece={} at_unreal={at} bounces={} resting={}", g.id, g.bounces, g.resting),
@@ -583,6 +624,10 @@ fn move_pieces(time: Res<Time>, spatial: SpatialQuery, mut commands: Commands, m
                     if speed < REST_SPEED {
                         g.resting = true;
                         if g.motion.lie_flat {
+                            // SeveredAppendage.HitWall: the trail is destroyed on landing.
+                            if let Some(trail) = g.trail.take() {
+                                commands.entity(trail).try_despawn();
+                            }
                             // LandRot.Pitch = rotator(HitNormal).Pitch + 16384.
                             let n_ue = Vec3::new(-n.z, n.x, n.y);
                             g.rotation.x = rotator_of_dir(n_ue).x + 16384.0;

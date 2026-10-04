@@ -21,6 +21,8 @@
 //! kfpkg brush <map> <ActorName>    a brush actor's polygon bounds (local, and world both ways)
 //! kfpkg skelmeshes                 read every skeletal mesh (checks only)
 //! kfpkg anims                      read every animation set (checks only)
+//! kfpkg meshtags <file> <mesh>     a skeletal mesh's bones and attach tags
+//! kfpkg emitter <Package.Class>    a particle effect's sub-emitters, values resolved
 //! ```
 //! `<file>` may be absolute or relative to the install, e.g. `Maps/KF-Farm.rom`.
 
@@ -64,7 +66,9 @@ const USAGE: &str = "usage:
   kfpkg brush <map> <ActorName>
   kfpkg skelmeshes
   kfpkg anims
-  kfpkg karma";
+  kfpkg karma
+  kfpkg meshtags <file> <mesh>
+  kfpkg emitter <Package.Class>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -98,6 +102,7 @@ fn main() -> ExitCode {
         ["skelmeshes"] => scan_skeletal(&install),
         ["anims"] => scan_anims(&install),
         ["karma"] => scan_karma(&install),
+        ["emitter", class] => emitter(&install, class),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
         ["zones", map, zone] => zone_polygons(&install, map, zone.parse().map_err(|_| "bad zone").unwrap_or(0)),
         _ => {
@@ -1376,6 +1381,18 @@ fn scan_karma(install: &Install) -> Result<bool, String> {
         }
     }
     Ok(ok)
+}
+
+/// Prints a particle effect (Emitter class) with every sub-emitter's values.
+fn emitter(install: &Install, class: &str) -> Result<bool, String> {
+    let set = ue_assets::package_set::PackageSet::new(&install.root);
+    let defaults = ue_assets::class_defaults::ClassDefaults::new(&set);
+    let e = ue_assets::emitter::read_emitter_class(&set, &defaults, class)?;
+    println!("{} auto_destroy={} life_span={} emitters={}", e.class, e.auto_destroy, e.life_span, e.emitters.len());
+    for (i, (d, _)) in e.emitters.iter().enumerate() {
+        println!("[{i}] {d:#?}");
+    }
+    Ok(true)
 }
 
 /// Prints a skeletal mesh's bones and candidate attachment tag tables.

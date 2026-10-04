@@ -60,6 +60,13 @@ pub struct ObjectHandle {
     pub export: usize,
 }
 
+/// Printed as the object's path (the package itself is large).
+impl std::fmt::Debug for ObjectHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path())
+    }
+}
+
 impl ObjectHandle {
     pub fn class_name(&self) -> &str {
         self.package.pkg.export_class_name(self.export)

@@ -1182,3 +1182,120 @@ Without it, KF's chance rule applies as before.
 **Still broken / not tested:** Nothing new. Remove the switch later if it is
 not wanted.
 **Next:** Your play test of step B.
+
+## 2026-10-04 Gore step C1: reading KF's particle effects
+
+**Changed:** New `ue-assets/src/emitter.rs`: reads an Emitter actor class
+(e.g. `KFMod.DismembermentJetHead`) into its sub-emitters, every value
+resolved (the emitter's own property, else the engine class default from
+Engine.ParticleEmitter / SpriteEmitter / MeshEmitter); ranges, vectors and
+the ColorScale / SizeScale / VelocityScale arrays decoded. Textures and
+meshes are returned separately (`EmitterAssets`). `kfpkg emitter
+Package.Class` prints one. `ObjectHandle` now prints as its path. Plan in
+`docs/DESIGN.md`, "Gore step C: particle effects".
+**Why:** Step C, the faithful route: KF's own effects.
+**Tested how:** `kfpkg emitter` on all 11 gore effect classes; compared
+DismembermentJetHead's values with the raw property dump.
+**Result:** All read: DismembermentJetHead 14 emitters (9 sprite, 5 mesh),
+JetDecapitate 8, JetLimb 5, BrainSplash 2, ROBloodSpurt 1, BloodTrail 1,
+KFGibJet 1, ROBloodPuff* 1-3. Values match the dump (e.g. SpriteEmitter104:
+75 particles at 90/s, life 0.45-0.85 s, size 5 x 1.25, 8x4 texture frames,
+spawned on emitter 5's particles). Findings: most gore sprites use draw style
+2 (Modulated: they darken what is behind them); UseColorScale is off on all of
+them, so their ColorScale curves are unused; the head jet also throws 13 meat
+meshes (eyeball, chunk, three brain pieces) upward at 300-1000 units/s.
+**Still broken / not tested:** Nothing is drawn yet (C2).
+**Next:** C2, the particle simulation.
+
+## 2026-10-04 Gore step C2 (+ mesh emitters from C3): KF's particle effects drawn
+
+**Changed:** New `src/particles.rs`: loads 11 KF effects at startup
+(DismembermentJetHead / JetDecapitate / JetLimb, BrainSplash, ROBloodSpurt,
+BloodTrail, KFGibJet, ROBloodPuff*) and simulates them: spawning
+(InitialParticlesPerSecond until MaxParticles, then ParticlesPerSecond if
+dead particles respawn), start location (box / sphere,
+AddLocationFromOtherEmitter), velocity, acceleration, velocity loss,
+MaxAbsVelocity, collision bounces with DampingFactor (mesh chunks), lifetime,
+fade in / out, size scale over life, colour scale (when UseColorScale),
+spin, texture subdivisions, camera-facing and UpAndNormal (streak) sprites,
+relative vs world coordinates, draw styles (Modulated = 2x multiply,
+Translucent = add, AlphaBlend). Mesh emitters draw their static meshes.
+`zed.rs`: gun decapitation starts DismembermentJetHead on the `neck` tag
+plus BrainSplash at the head; knife decapitation DismembermentJetDecapitate;
+a severed limb DismembermentJetLimb on the stump tag. Attached effects follow
+their tag every frame (also on ragdolls). Logs: `effect_loaded`,
+`effect_spawned`, `effect_status` (alive/spawned per emitter every 0.5 s),
+`effect_removed`.
+**Why:** Step C2, the faithful route.
+**Tested how:** Scripted gun decapitation and a forced limb sever on
+KF-WestLondon, logs and screenshots. clippy clean, tests pass.
+**Result:** All 11 effects load with textures and meshes. First attempt drew
+black squares: KF's blood textures have a mid-grey (127) background because
+UE2's Modulated style is 2 x source x destination; plain multiply turned the
+grey dark and dozens of stacked particles black. Fixed by doubling the
+texture colour at load. Now: a dark blood plume rises from the neck, 13 meat
+pieces (eyeball, chunk, brains) fly up and bounce, blood mist follows them;
+BrainSplash ends after 0.77 s; the limb jet keeps pulsing at the stump.
+**Still broken / not tested:** Faint square edges remain where many
+modulated particles overlap (the textures' compression noise around 121-125
+grey darkens slightly; KF would do the same, not compared). Rules marked
+"assumed" in `particles.rs` (spawn rates, world axes for independent
+emitters, sprite width = size, mesh spin axes, curve ends) are from what the
+settings mean, not from engine code. No mipmaps on particle textures
+(shimmer at distance). BlendBetweenSubdivisions not blended. Trails on
+flying pieces and bullet-hit blood puffs not wired up (C4). Frame rate with
+many effects not measured. Not play-tested by you.
+**Next:** Your play test; then C4 (trails, bullet-hit puffs).
+
+## 2026-10-04 Particle fixes: slab allocator errors, black squares, invisible sprites
+
+**Changed:** `particles.rs`: (1) every particle mesh has all its attributes
+(position, normal, UV, colour) from the start and is never empty (one
+zero-size triangle when no particles are alive). (2) Modulated sprites use
+their own small material and shader (`ModulateMaterial`) that outputs the
+texture colour without tone mapping, with back-face culling off.
+**Why:** You reported a flood of `bevy_render::slab_allocator: Use-after-free`
+errors and black squares. My test runs had been discarding the console
+output, so I had not seen the errors.
+**Tested how:** Same scripted decapitation run with the console captured;
+screenshots. A diagnostic run with the shader forced to pure red showed
+which sprites were drawn.
+**Result:** Errors: 4262 per run before, 0 after (mesh layout changing and
+empty meshes were the cause). Squares: the standard material tone-maps its
+output (the camera is not HDR), so "white = no change" reached the blend as
+grey and darkened everything behind. The custom shader fixed that, but then
+only the streak sprites drew: the default back-face culling dropped every
+camera-facing sprite (the red test showed only the streak). With culling
+off: blood droplets burst from the neck, mist follows the flying chunks, no
+squares, no darkening.
+**Still broken / not tested:** Additive and alpha-blended particles still use
+the standard (tone-mapped) material; none of the gore effects drawn so far
+use them. Not play-tested by you.
+**Next:** Your play test; then C4 (trails, bullet-hit puffs).
+
+## 2026-10-04 Gore step C4: hit puffs and blood trails
+
+**Changed:** `zed.rs`: every damage event spawns the damage type's
+PawnDamageEmitter, ROBloodPuff for the 9mm and knife (KFMonster.OldPlayHit:
+at the hit point pushed one CollisionRadius away from the attacker, X axis
+toward the attacker). `gore.rs`: brain chunks carry a BloodTrail (KFGib
+TrailClass, LifeSpan 1.8 s), severed pieces an ROBloodSpurt
+(SeveredAppendage BleedingEmitterClass, as long as the piece); trails follow
+their piece (PHYS_Trailer, position only); a piece's trail is destroyed when
+it lands or is removed, a chunk's trail is killed when the chunk goes.
+`particles.rs`: Emitter.Kill() (no new particles, removed when the last
+dies) and a LifeSpan set by the spawner.
+**Why:** Step C4. Research: KF's weapon damage types have no GetHitEffects
+override and pawns have no BloodEffect, so ROBloodPuff (DamageThreshold 0)
+is the whole hit effect for the 9mm and knife.
+**Tested how:** Scripted body shots and a forced limb kill on KF-WestLondon,
+console captured, logs and a screenshot. clippy clean, tests pass.
+**Result:** 0 console errors. 5 hits gave 5 ROBloodPuffs (1 particle,
+gone after 0.62 s); 3 BloodTrails and 1 ROBloodSpurt on the pieces; a small
+spray shows behind the Clot on a body hit.
+**Still broken / not tested:** The puff is small and subtle; not compared
+with the game. Not done: chunk bounce effects (KFHumanGibGroup BloodHitClass
+= KFBloodPuff, an old-style xEmitter plus floor splats) and all blood decals
+(ProjectileBloodSplat on walls, drips, streaks): decals are a separate
+engine feature. Not play-tested by you.
+**Next:** Your play test; then blood decals, or something else.

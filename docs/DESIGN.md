@@ -949,6 +949,65 @@ Not covered: shooting corpses to sever more limbs (our bullets pass
 through corpses), explosion gibbing (no explosives yet), particles and
 sounds.
 
+## Gore step C: particle effects (C1-C4 implemented 2026-10-04)
+
+You chose the faithful route: read KF's own particle effects instead of
+drawing look-alikes.
+
+**What the data says.** A KF effect (e.g. `KFMod.DismembermentJetHead`) is
+an `Emitter` actor whose `Emitters` default lists sub-emitter objects
+(`SpriteEmitter`, `MeshEmitter`, ...) stored in the same package. Each is a
+plain property list (texture, lifetime, size and colour over life, start
+velocity, acceleration, spawn rate, ...); our property reader already reads
+all 331 SpriteEmitters in KFMod.u with no failures. The *simulation* is
+native engine code, so it is rebuilt from what the properties mean
+(UE2 particle system; behaviour from memory where not obvious, labelled).
+
+Gore effects and where KF uses them:
+- `DismembermentJetHead` (9 sprite + 5 mesh emitters): gun decapitation
+  neck (NeckSpurtEmitterClass, attached at `neck`).
+- `DismembermentJetDecapitate` (7 sprite + 1 mesh): knife decapitation
+  (NeckSpurtNoGibEmitterClass).
+- `DismembermentJetLimb` (5 sprite): severed limb stumps (LimbSpurtEmitterClass).
+- `BrainSplash` (2 sprite): at the head on decapitation.
+- `ROBloodSpurt` (1 sprite): trail on flying severed pieces
+  (BleedingEmitterClass). `BloodTrail` (1 sprite): trail on brain chunks.
+- `ROBloodPuff*`: bullet hits on flesh (from the damage type's hit effects;
+  to be checked).
+
+49 properties are used by these; textures from `kf_fx_trip_t.Gore` and
+`Effects_Tex`; meshes `kf_gore_trip_sm.gibbs.Brain_Chunk_1..3`, `eyeball`,
+`EffectsSM.PlayerGibbs.Chunk1_Gibb`.
+
+**Steps.**
+- C1. `ue-assets`: read an Emitter class into a list of emitter
+  definitions (each property with the engine's class defaults filled in;
+  structs and arrays decoded). `kfpkg emitter CLASS` prints one. Check:
+  all gore effects read, values match the property dumps.
+- C2. A particle system in Bevy for sprite emitters: spawning
+  (InitialParticlesPerSecond / ParticlesPerSecond, MaxParticles,
+  RespawnDeadParticles, AutomaticInitialSpawning), start location /
+  velocity / size / spin ranges, acceleration, velocity loss, lifetime,
+  fade in / out, ColorScale and SizeScale over life, texture
+  subdivisions, draw style (alpha / translucent / modulated), facing
+  (UseDirectionAs), local vs world coordinates, AddLocationFromOtherEmitter.
+  Effects attached to a bone tag follow it. Logs: live particles per
+  emitter, effect start / end. Wire up the neck, limb and BrainSplash
+  effects first.
+- C3. Mesh emitters (the meat bits in the neck jets).
+- C4. Trails on flying pieces and chunks; bullet-hit blood puffs.
+- Later: floor and wall blood splats (projected decals, a separate engine
+  feature).
+
+**Findings.** UE2's Modulated draw style is 2 x source x destination: KF's
+blood textures are dark red on a 127 grey background (= no change). Drawn
+here as Bevy's multiply blend with the texture colour doubled at load.
+UseColorScale is off on every gore emitter, so their ColorScale curves are
+unused. Independent-coordinate emitters use world axes for velocity (the
+head jet's chunks fly up world Z); Relative ones move and turn with the
+effect, whose frame is the bone tag's (AttachEmitterEffect sets a zero
+relative rotation).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style
