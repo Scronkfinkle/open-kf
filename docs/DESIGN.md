@@ -1210,7 +1210,12 @@ Hits do not interrupt his attacks. Not done: aim error, other zeds getting
 out of the way or taking fire damage, view shake, HuskChargeUp's beam
 emitter (beam emitters are not drawn), FlameThrowerFlame (an xEmitter).
 
-## Patriarch (B1-B6 implemented 2026-10-04)
+## Patriarch (B1-B6 implemented 2026-10-04; UNFINISHED)
+
+**Status: unfinished.** The six planned steps are in, but not play-tested;
+he can get stuck after falling while escaping (shared movement code); and
+the parts listed under "Not planned" and each step's "Not done" are
+missing. The README's "What doesn't work yet" has the list.
 
 Sources: ZombieBoss, ZombieBossBase (defaults), BossZombieController,
 BossLAWProj / LAWProj (KFChar, KFMod), animation notifies of

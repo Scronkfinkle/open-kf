@@ -1966,3 +1966,13 @@ by eye; not play-tested by you.
 **Next:** The Patriarch's planned steps are done. Open: the stuck-after-
 fall in the shared movement code; the not-planned parts (entrance, radial
 attack, death camera, buddy squad, needle prop).
+
+## 2026-10-04 Note: the Patriarch is unfinished
+
+**Changed:** README ("What doesn't work yet") and DESIGN ("Patriarch")
+now say the Patriarch is unfinished and list what is missing or untested.
+**Why:** You asked for a note so it is not mistaken for done.
+**Tested how:** Docs only.
+**Result:** -
+**Still broken / not tested:** See the list in the README.
+**Next:** The stuck-after-falling movement bug, or whatever you choose.

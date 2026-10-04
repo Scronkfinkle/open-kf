@@ -227,6 +227,24 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 
 ## What doesn't work yet
 
+- **The Patriarch is unfinished.** His six planned steps work in scripted
+  runs (melee, charge, chaingun, rocket, cloak and sneak, knockdown /
+  escape / heal), but:
+  - Not play-tested by you; the cloak, flash and effects are not checked
+    by eye.
+  - After falling off a ledge while escaping he can stand stuck (shared
+    zed movement code); a 30 s give-up (ours, not KF's) makes him heal
+    where he is.
+  - Missing: the Entrance animation and boss-wave intro, the radial attack
+    (needs 3 players), the zeds he summons on knockdown (needs the wave
+    system), the syringe prop in his hand, the death camera and victory
+    laugh, KF's refraction cloak shader (ours is a see-through stand-in),
+    the commando "spotted" glow, voice lines and gun sounds, zed time.
+  - Some timings are only unit-tested: the charge's 6 s limit, "over 700
+    away ends a charge", "shot from closer than 100 while firing ->
+    charge", the third heal.
+  - See `docs/DESIGN.md`, "Patriarch", for the details.
+
 - Terrain decoration layers (grass and small meshes scattered on terrain) are
   not drawn.
 - Sky zone (3D skybox): drawn on maps that have one, behind the scene and
