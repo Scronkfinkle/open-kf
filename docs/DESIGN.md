@@ -1210,6 +1210,122 @@ Hits do not interrupt his attacks. Not done: aim error, other zeds getting
 out of the way or taking fire damage, view shake, HuskChargeUp's beam
 emitter (beam emitters are not drawn), FlameThrowerFlame (an xEmitter).
 
+## Patriarch (planned 2026-10-04; B1-B4 implemented 2026-10-04)
+
+Sources: ZombieBoss, ZombieBossBase (defaults), BossZombieController,
+BossLAWProj / LAWProj (KFChar, KFMod), animation notifies of
+`Patriarch_anim` (`kfpkg notifies Animations/KF_Freaks_Trip.ukx
+Patriarch_anim`). Normal difficulty, one player, as for the other zeds.
+
+**What he is.** Health 4000, GroundSpeed 120, MeleeDamage 75, damageForce
+170000, Mass 1000, collision 26x44 (inherited) plus the extended head
+cylinder (ColOffset Z 65, radius 27, height 25). Things he does NOT do,
+unlike other zeds: lose his head (`RemoveHead` is empty), flinch
+(`PlayDirectionalHit` is empty), flip over, get stunned by melee
+(bMeleeStunImmune), burn-panic, step out of the way. He has no MeleeAnims;
+his own RangedAttack picks every attack.
+
+**RangedAttack, in order** (D = distance to the player; "only enemy" is
+always true with one player):
+1. Close enough (`IsCloseEnuf`: flat distance < both radii + 25, heights
+   overlap): MeleeImpale if Health > 1500 and 50%, else MeleeClaw. Both on
+   the upper body from SpineBone1 (he keeps walking). ClawDamageTarget
+   notifies: MeleeClaw at 0.50 (reach ClawMeleeDamageRange 85, hits
+   everyone in front of him); MeleeImpale at 0.50 and 0.609 (reach
+   ImpaleMeleeDamageRange 45, two hits). Damage 75 -5%..+5% per hit.
+   (MeleeClaw2 exists in the mesh but is never used by the script.)
+2. 20 s since the last sneak: 30% wait another 20 s, else cloak and
+   sneak (below).
+3. Charging and D < 200 (or only enemy): nothing more.
+4. Not charging, D < 700, 5-10 s since the last charge, and not the 15%
+   "wants the chaingun" roll: charge.
+5. D > 500 and the rocket timer passed: not in sight or 25%: try again in
+   0-5 s; else PreFireMissile, rocket at its end, FireEndMissile; next
+   rocket in 10-25 s.
+6. Chaingun timer passed: not in sight or 15%: try again in 0-4 s; else
+   PreFireMG, then FireMG looped, FireEndMG; next in 5-15 s.
+
+**Charge** (state Charging): RunF at GroundSpeed x 2.5, at most 6 s and
+1-2 attacks; while attacking x 1.25 and keeps moving at the player; a
+landed hit ends it, push x 1.5. Ends if the player gets over 700 away.
+**Charge from damage:** meant to be: damage within 10 s of the previous
+adds up; over 200 from a player within 700: charge. It never happens in KF:
+TakeDamage only sets LastDamageTime inside the "within 10 s" branch, and
+LastDamageTime starts at 0, so ChargeDamage is reset to 0 on every hit. We
+copy KF and leave it out. (The same counter is used by the chaingun's
+"charge instead" rule, so only the "shot from closer than 100" half works.)
+
+**How often he decides:** BossZombieController.TimedFireWeaponAtEnemy
+re-arms its timer at 0.01 s because FireWeaponAt always returns false, so
+RangedAttack runs about every frame while he sees the player, and its
+FRand() rolls (the 15% chaingun wish, the 5 + 5 x FRand() s charge gap)
+are re-rolled each time. In practice he charges about 5 s after the last
+charge ended whenever the player is within 700 and he is not attacking.
+
+**Chaingun** (state FireChaingun): 35-94 shots. Bursts of 0.75-1.25 s, a
+shot every 0.05 s, pauses of 0.5-1.25 s. Each shot: a trace from the `tip`
+bone at the player, spread VRand x 0.06, 4-6 damage (MGDamage 6 x 0.75
+solo Normal, + Rand(3), whole points), push 500. Lost sight for 0.25-0.6 s
+ends it. Shot from closer than 100, or 200+ damage from closer than 500:
+charge instead.
+
+**Rocket** (BossLAWProj): from `tip`, aimed with lead, speed 2600 (max
+3000), explodes on touch: 200 x 0.375 = 75 in radius 500, momentum 125000,
+RocketMarkDirt decal. Same pattern as the Husk fireball (`fireball.rs`).
+
+**Sneak** (SneakAround): cloaked (patriarch_invisible shaders,
+patriarch_fizzle overlay), hunts the player, at most 10 s, ends after his
+first melee hit. Cloak drops when he attacks.
+
+**Knockdown and healing.** Each time health drops under a healing level
+(Health / 1.25, / 2, / 3.2 = 3200, 2000, 1250), and he has healed fewer
+than 3 times: KnockDown (full body), then cloak and escape: run at x 2.5
+to a hiding spot (a navigation point within 2500 that the player cannot
+see, scored by distance), claw only if cornered, then Heal: NotifySyringeB
+at 0.464 adds Health / 4 = 1000; a syringe bone (Syrange1..3) is hidden
+per heal.
+
+**Steps** (one at a time, each its own change and log entry):
+- B1. Rules and melee: no decapitation, no flinches/stun/flip; IsCloseEnuf
+  starts MeleeClaw / MeleeImpale on the upper body; damage at the
+  ClawDamageTarget notifies with each attack's reach; impale hits twice.
+  Check: log `zed_attack` / `player_hit` with `--god`; a headshot run
+  shows no `decapitated`.
+  Done: hits also push the player (damageForce 170000 / Mass 400 = 425
+  units/s, upward at least 0.4 x that). Other zeds' melee does not push
+  yet (KF does: their damageForce), a known gap outside this step.
+- B2. Charge. Check: speed in the log (300 = 120 x 2.5), attacks per
+  charge, 6 s limit. Done; the sneak branch of RangedAttack (checked
+  before the charge) waits for B5.
+- B3. Chaingun. Check: shot count, burst timing, damage per shot. Done
+  without effects: the tracer (KFNewTracer, its velocity set per shot),
+  muzzle flash (MuzzleFlash3rdMG on `tip`) and ROBulletHitEffect are a
+  later step (B3b). New zed state `BossBusy` (full body, stands, turns to
+  his aim); `boss::Chaingun::step` is the state's Begin loop and AnimEnd.
+  Quirk copied from KF: losing sight sets a 0.25-0.6 s timeout at every
+  FireMG end (every 0.37 s), and the loop only checks it when awake, so he
+  often keeps firing at where the player was last seen for a while.
+- B4. Rocket. Check: rocket timing, flight time, explosion damage at
+  distance. Done: `fireball.rs` now has two projectile kinds (Husk
+  fireball, Boss rocket) sharing LAWProj's flight and HurtRadius; the
+  rocket's mesh is named only in StaticMeshRef, loaded with
+  `gore::load_piece_with_mesh`. Aim: MonsterController.AdjustAim as for the
+  Husk without bTrySplash (lead, middle, else head); aim error not done.
+- B5. Cloak and sneak. Check: cloak/uncloak log lines; a screenshot.
+- B6. Knockdown, escape, heal. Needs a test option to start him with less
+  health (e.g. `--zed-health 3300`). Check: knockdown at < 3200, hide
+  spot not visible to the player, +1000 health, syringe count.
+
+**Not planned:** the entrance animation and the boss-wave intro, the radial
+attack (needs 3 players around him), the victory laugh and death camera,
+zed time, pipe-bomb damage scaling, voice lines (no sound yet).
+
+**Code placement.** `zed.rs` is already over 3000 lines with per-zed
+special cases in one think function. Boss-only logic (his attack choice,
+chaingun, escape) goes in a new `src/boss.rs`, called from `zed.rs`, like
+`fireball.rs` and `vomit.rs`. A bigger reorganisation of `zed.rs` would be
+a separate decision.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

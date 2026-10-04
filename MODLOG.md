@@ -1650,3 +1650,153 @@ and smoke, scorch mark, muzzle glow. No console errors.
 **Still broken / not tested:** Aim error, zeds dodging or being hurt by the
 fireball, view shake, the charge-up beam not drawn. Not play-tested by you.
 **Next:** Patriarch.
+
+## 2026-10-04 God mode for test runs
+
+**Changed:** `combat.rs`: `PlayerHealth.god`; when it is on, hits are still
+logged (`player_hit ... god=true`) but take no health. F1 toggles it
+(`god_mode on=...` in the log) and the HUD shows "(GOD)". `main.rs`: `--god`
+starts with it on. README: new flag and key.
+**Why:** So the player does not die and respawn during long scripted or
+screenshot runs.
+**Tested how:** `cargo run --release -- --walk --spawn clot --god --frames 600`,
+read `logs/latest.log`; `cargo test --release`.
+**Result:** Six Clot hits of 5.7-6.2 logged with `health_left=100 god=true`, no
+`player_died`. Tests 29/29 pass. All player damage (melee, bile, fire) goes
+through the one function that now checks god mode.
+**Still broken / not tested:** The F1 key and the HUD "(GOD)" text are not
+tested (no scripted key for F1; I can't see the screen). The Clot's grab still
+pins the player in god mode (by design: only health is protected).
+**Next:** Patriarch plan in `docs/DESIGN.md`.
+
+## 2026-10-04 Patriarch plan, and step B1: his melee and hit rules
+
+**Changed:** `docs/DESIGN.md`: new "Patriarch" section (his attack choice,
+charge, chaingun, rocket, sneak, knockdown and healing, from ZombieBoss,
+BossZombieController, BossLAWProj and his animation notifies; steps B1-B6).
+New `src/boss.rs`: MeleeClaw / MeleeImpale with their ClawDamageTarget
+notify times and reaches (85 / 45), IsCloseEnuf, the impale-or-claw choice.
+`zed.rs`: the Patriarch's attacks start when close enough, on the upper
+body from SpineBone1; hits land at each notify (impale twice), 75 -5..+5%,
+and push the player (damageForce 170000); he never flips, flinches or is
+stunned (`no_hit_reactions`). `combat.rs`: he keeps his head
+(`keeps_head`; ZombieBoss.RemoveHead is empty). README updated.
+**Why:** Patriarch step B1. Before this he walked up and stood still: he
+has no MeleeAnims, so the shared melee code had nothing to play.
+**Tested how:** `cargo test --release` (new: `boss_close_enough`,
+`boss_impale_only_above_1500_and_half_the_time`,
+`patriarch_keeps_head_and_never_flinches`).
+`cargo run --release -- --walk --spawn patriarch --god --frames 1500`, and a
+run with the camera pitched up at his head firing the 9mm
+(`--camera -3110,1313,-3768,3.1416,0.55 --input 60:2,350:fire,...`).
+**Result:** Tests 32/32 pass. Log: `boss_loaded claw_hits=[0.5]
+impale_hits=[0.5, 0.6086956]`. Attacks every ~1.5 s once within 71 units;
+the hit lands 0.77 s into the 1.53 s animation, the impale's second 0.17 s
+later; damage 71.5-77.6; push `velocity_add_unreal=(421, -8, 170)`. Mix of
+MeleeImpale and MeleeClaw at full health. Headshot: `damage=29.8
+headshot=true head_health_left=0.0 decapitated=false`, no flinch animations.
+**Still broken / not tested:** Not play-tested by you. Impale-vs-claw
+below 1500 health not seen in game (unit test only). The melee push is only
+for the Patriarch; other zeds' hits do not push yet. Noticed, not
+investigated: once the player was knocked aside, the log shows him
+switching TurnLeft / BossIdle / TurnRight within 50 ms (t=17.6), which may
+look like a twitch; probably the shared turn-in-place code.
+**Next:** B2, his charge.
+
+## 2026-10-04 Patriarch step B2: charge
+
+**Changed:** `boss.rs`: `BossState` (charge, LastChargeTime and
+LastForceChargeTime timers), `decide` (RangedAttack beyond melee, with
+Charging's override), `tick` (6 s limit, attacks used up), `charge_hit`.
+`BossClass` now has ChargingAnim (RunF) and `transition`. `zed.rs`: the
+decision runs every frame he sees the player; charging he runs with RunF at
+GroundSpeed x 2.5 (x 1.25 and the normal walk while attacking); each hit
+check uses one of the charge's 1-2 attacks, a landed hit ends the charge
+and pushes x 1.5; `transition` plays on the upper body when a charge
+starts. DESIGN and README updated.
+**Why:** Patriarch step B2.
+**Tested how:** `cargo test --release` (new `boss_charge_start_and_limits`,
+`boss_charge_ends_on_hit_or_attacks_used`);
+`cargo run --release -- --walk --spawn patriarch --god --frames 1800`.
+**Result:** Tests 34/34 pass. Log: `boss_charge start attacks=2
+distance_unreal=299`, animation RunF, `speed_unreal=300`; MeleeImpale 0.7 s
+later; `boss_charge_attack landed=true ... ended=true`, `boss_charge end
+reason=hit`; the 1.5x push left the player 134 away, so the impale's second
+hit missed. Next charge 7.3 s after the first ended (he was attacking in
+between).
+**Still broken / not tested:** Not play-tested by you. The 6 s timeout and
+the "over 700 away" end are tested by unit tests only (the scripted player
+cannot run away). Charge from damage left out on purpose: it never happens
+in KF (see DESIGN, a bug in ZombieBoss.TakeDamage). Whether the
+`transition` animation is visible is not checked (I can't look).
+**Next:** B3, the chaingun.
+
+## 2026-10-04 Patriarch step B3: chaingun
+
+**Changed:** `boss.rs`: `Chaingun` (state FireChaingun: PreFireMG, FireMG
+repeated, FireEndMG; bursts, pauses, the lost-sight timeout), the chaingun
+branch of RangedAttack (`chaingun_wait` = LastChainGunTime, 15% put off,
+35-94 shots, the 15% "wants the chaingun" wish that blocks a charge),
+`end_chaingun`, MG constants. `zed.rs`: new state `BossBusy`;
+`boss_busy` (turn to the aim, sight check from the `tip` bone, animations,
+shot from closer than 100 -> charge) and `boss_mg_shot` (trace from `tip`,
+VRand x 0.06 spread, straight ahead if still turning more than 2000, 4-6
+damage, momentum 500). `combat.rs`: `ray_cylinder` shared; damage tells
+the zed how far away the shooter was. DESIGN and README updated.
+**Why:** Patriarch step B3.
+**Tested how:** `cargo test --release` (new `boss_chaingun_choice`,
+`boss_chaingun_bursts`, `boss_chaingun_stops_when_sight_lost`); `cargo run
+--release -- --walk --spawn patriarch --god --zed-at -4000,1313,-3818
+--frames 2400`.
+**Result:** Tests 37/37 pass. First game run: the log said `boss_chaingun
+start` but he kept walking and fired nothing: the walking code set the
+state back to Chase in the same frame. Fixed (walking skips `BossBusy`).
+Second run: `boss_chaingun start shots=88` at 295 units, PreFireMG, `end
+shots_left=0 seconds=9.72`, FireEndMG, `done` 1.5 s later; 88
+`boss_mg_shot`, all `hit=player`, damage 4 (27x), 5 (26x), 6 (35x); none
+fired while turning. A test assumption was wrong first: I expected losing
+sight to stop him within ~0.6 s; KF's script resets that timeout every
+FireMG loop, so it only runs out on a short roll (test rewritten to match).
+**Still broken / not tested:** No tracer, muzzle flash or bullet impact
+drawn (B3b). "Shot from closer than 100 while firing -> charge" is not
+tested (no scripted way to knife him mid-burst). Shots only hit the
+player, not other zeds. Not play-tested by you. Seen in the run, not
+caused by this step: after a hit knocked the player onto something ~64
+units higher, he flipped between Falling and walking many times a second
+(the shared jump-obstacle code).
+**Next:** B3b (chaingun effects) or B4 (rocket).
+
+## 2026-10-04 Patriarch step B4: rocket
+
+**Changed:** `boss.rs`: the rocket branch of RangedAttack (over 500 away;
+25% put off for 0-5 s, else next in 10-25 s) and `Missile` (state
+FireMissile: PreFireMissile, fire at its end, FireEndMissile). `zed.rs`:
+`boss_busy` runs the rocket too (turns to the player, fires from `tip`);
+`shoot_fireball` takes the projectile kind and start bone (bTrySplash only
+for the Husk); `turn_toward` shared; the rocket's log line is
+`boss_rocket_shot`. `fireball.rs`: `Projectile` kinds with their values
+(BossLAWProj: speed 2600, 75 damage in radius 500, PanzerfaustTrail
+pointing back, LawExplosion, RocketMarkDirt). `gore.rs`:
+`load_piece_with_mesh` (mesh named in StaticMeshRef) sharing the static
+mesh code with `load_piece`. `particles.rs`: PanzerfaustTrail and
+LawExplosion loaded. `decals.rs`: `RocketMark`. DESIGN and README updated.
+**Why:** Patriarch step B4.
+**Tested how:** `cargo test --release` (new `boss_missile_choice_and_timing`;
+three older boss tests needed their setups changed because the rocket check
+now comes first); `cargo run --release -- --walk --spawn patriarch --god
+--zed-at X,1313,-3818 --frames 1500..2400` with X = -4000, -4200, -4400;
+Husk check: `--spawn husk --god --zed-at -4200,1313,-3818 --frames 1200`.
+**Result:** Tests 38/38 pass. Loads: `fireball_loaded
+class=KFChar.BossLAWProj draw_scale=0.7`, PanzerfaustTrail, LawExplosion,
+RocketMarkDirt. At -4000 no rocket was fired (put off twice, then he
+closed in and charged): not a bug, the rolls. At -4200: `boss_missile
+start` at 1079 units, `boss_rocket_shot aim=middle` 2.37 s later (PreFireMissile
+71 frames / 30), it hit the player after 0.42 s (~2550 units/s) for 75,
+`done` 1.05 s later, next in 15.2 s. At -4400 the same, 75 at 891 units.
+Husk unchanged: aimed at the feet, hit for 19, burn 9, 4, 2, 1.
+**Still broken / not tested:** Not play-tested by you; the trail,
+explosion and scorch mark are not checked by eye. A near miss (blast
+damage falling off with distance) is not seen in game, only the Husk's
+shared code covers it. Aim error, view shake, the rocket hurting other
+zeds: not done.
+**Next:** B5, cloak and sneak.

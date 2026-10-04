@@ -336,6 +336,45 @@ pub fn load_piece(
         return Err("StaticMesh is not an object".into());
     };
     let h = set.resolve(&mesh_pkg, mesh_ref).ok_or("static mesh not found")?;
+    static_piece(set, &h, &skins, name, draw_scale, meshes, images, materials)
+}
+
+/// Like `load_piece` for a class whose StaticMesh is only named in a string
+/// (LAWProj.StaticMeshRef, e.g. "KillingFloorStatics.LAWRocket", loaded by
+/// PreloadAssets in KF).
+#[allow(clippy::too_many_arguments)]
+pub fn load_piece_with_mesh(
+    set: &PackageSet,
+    defaults: &ClassDefaults,
+    class: &ObjectHandle,
+    mesh_path: &str,
+    name: &str,
+    meshes: &mut Assets<Mesh>,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Result<PieceModel, String> {
+    let draw_scale = match defaults.get(class, "DrawScale") {
+        Some((Value::Float(f), _)) => f,
+        _ => 1.0,
+    };
+    let skins = skins_of(defaults, class);
+    let (pkg_name, object) = mesh_path.split_once('.').ok_or("mesh path needs Package.Name")?;
+    let package = set.load(pkg_name).ok_or("mesh package not found")?;
+    let export = package.find(object, Some("StaticMesh")).ok_or("static mesh not found")?;
+    static_piece(set, &ObjectHandle { package, export }, &skins, name, draw_scale, meshes, images, materials)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn static_piece(
+    set: &PackageSet,
+    h: &ObjectHandle,
+    skins: &Skins,
+    name: &str,
+    draw_scale: f32,
+    meshes: &mut Assets<Mesh>,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Result<PieceModel, String> {
     let sm = read_static_mesh(&h.package.pkg, h.export).map_err(|e| e.to_string())?;
     let mut parts = Vec::new();
     for (si, section) in sm.sections.iter().enumerate() {

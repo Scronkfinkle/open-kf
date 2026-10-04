@@ -81,11 +81,13 @@ const BILE_FREQUENCY: f32 = 0.5;
 pub struct PlayerHealth {
     pub health: f32,
     pub deaths: u32,
+    /// God mode (`--god` or F1): hits are still logged, but take no health.
+    pub god: bool,
 }
 
 impl Default for PlayerHealth {
     fn default() -> Self {
-        PlayerHealth { health: 100.0, deaths: 0 }
+        PlayerHealth { health: 100.0, deaths: 0, god: false }
     }
 }
 
@@ -148,6 +150,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<BileBurn>()
             .init_resource::<Burning>()
             .add_systems(Startup, spawn_hud)
+            .add_systems(Update, toggle_god)
             .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage, update_hud).chain());
     }
 }
@@ -170,6 +173,14 @@ fn spawn_hud(mut commands: Commands) {
     ));
 }
 
+/// F1 switches god mode on and off.
+fn toggle_god(keys: Res<ButtonInput<KeyCode>>, mut health: ResMut<PlayerHealth>) {
+    if keys.just_pressed(KeyCode::F1) {
+        health.god = !health.god;
+        runlog::kv("god_mode", &format!("on={}", health.god));
+    }
+}
+
 fn update_hud(
     health: Res<PlayerHealth>,
     ammo: Res<AmmoDisplay>,
@@ -182,8 +193,9 @@ fn update_hud(
     };
     let ammo = ammo.0.map_or(String::new(), |(mag, spare)| format!("    AMMO {mag} / {spare}"));
     **t = format!(
-        "HEALTH {:.0}{ammo}    KILLS {}    Z: {}",
+        "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
         health.health.max(0.0),
+        if health.god { " (GOD)" } else { "" },
         kills.0,
         z_spawn.label.to_uppercase()
     );
@@ -191,7 +203,7 @@ fn update_hud(
 
 /// Ray vs a vertical cylinder (centre, radius, half-height), Bevy space.
 /// Returns the entry distance along `dir` (unit vector), if any.
-fn ray_cylinder(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, half_height: f32) -> Option<f32> {
+pub(crate) fn ray_cylinder(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, half_height: f32) -> Option<f32> {
     let o = origin - centre;
     // Side wall: solve |(o + t d).xz| = r.
     let (a, b, c) = (
@@ -290,7 +302,8 @@ fn damage_zed(
     let mut explosion = 0.0;
     if headshot && !z.decapitated {
         z.head_health -= dealt;
-        if z.head_health <= 0.0 || dealt > z.health {
+        // ZombieBoss.RemoveHead does nothing: the Patriarch keeps his head.
+        if (z.head_health <= 0.0 || dealt > z.health) && !z.keeps_head {
             // RemoveHead: the head explodes for LastDamageAmount + 0.25 x
             // HealthMax more, which goes through TakeDamage again with the
             // zed headless, so it is multiplied again.
@@ -305,6 +318,7 @@ fn damage_zed(
     }
     z.health -= total;
     z.note_damage(total);
+    z.note_attacker_distance((source.attacker - z.centre).length() / SCALE);
     if head_off {
         z.remove_head();
         if z.health > 0.0 {
@@ -499,10 +513,19 @@ fn apply_player_damage(
     time: Res<Time>,
 ) {
     for hit in hits.read() {
-        health.health -= hit.amount;
+        if !health.god {
+            health.health -= hit.amount;
+        }
         runlog::kv(
             "player_hit",
-            &format!("zed={} damage={} kind={:?} health_left={:.0}", hit.zed_id, hit.amount, hit.kind, health.health.max(0.0)),
+            &format!(
+                "zed={} damage={} kind={:?} health_left={:.0} god={}",
+                hit.zed_id,
+                hit.amount,
+                hit.kind,
+                health.health.max(0.0),
+                health.god
+            ),
         );
         // KFPawn.TakeDamage: DamTypeVomit -> BileCount 7.
         // KFPawn.TakeDamage: DamTypeBurned over 2 sets the player on fire.
@@ -593,6 +616,23 @@ mod tests {
         let far = Vec3::new(0.0, 0.0, -4.0);
         assert!(z.take_hit(70.0, front, far, false).is_some());
         assert!(z.take_hit(30.0, front, far, false).is_none());
+    }
+
+    #[test]
+    fn patriarch_keeps_head_and_never_flinches() {
+        // A headshot well over his head health: no decapitation and no head
+        // explosion damage, just the hit (x 1.1).
+        let mut z = Zed::test_patriarch();
+        let mut kills = KillCount::default();
+        damage_zed(&mut z, 200.0, true, 1.1, "9mm", 1.0, SRC, &mut kills);
+        assert!(!z.decapitated);
+        assert!(z.head_health <= 0.0);
+        assert!((z.health - 3780.0).abs() < 0.01, "{}", z.health);
+        // A second headshot still does not take the head.
+        damage_zed(&mut z, 200.0, true, 1.1, "9mm", 1.0, SRC, &mut kills);
+        assert!(!z.decapitated);
+        // Big hits from the front, close melee: no flinch, stun or knockdown.
+        assert_eq!(z.take_hit(3000.0, SRC.point, SRC.attacker, true), None);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod boss;
 mod camera;
 mod combat;
 mod collision;
@@ -51,6 +52,8 @@ struct Args {
     zed_at: Option<[f32; 3]>,
     /// Spawn this kind of zed at the start (e.g. crawler).
     spawn: Option<String>,
+    /// Start in god mode: the player takes no damage.
+    god: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -82,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--walk" => args.walk = true,
+            "--god" => args.god = true,
             "--zed" => args.zed = true,
             "--gorefast" => args.gorefast = true,
             "--always-sever" => args.always_sever = true,
@@ -113,7 +117,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -161,6 +165,10 @@ fn main() -> AppExit {
         spawn_at: args.zed_at,
         spawn_kind: args.spawn.clone(),
     };
+    let args_god = args.god;
+    if args.god {
+        runlog::kv("god_mode", "on=true source=command_line");
+    }
     let walk_settings = walk::WalkSettings {
         start_walking: args.walk,
         autowalk: args.autowalk,
@@ -201,6 +209,10 @@ fn main() -> AppExit {
         .insert_resource(walk_settings)
         .insert_resource(scripted)
         .insert_resource(zed_settings)
+        .insert_resource(combat::PlayerHealth {
+            god: args_god,
+            ..default()
+        })
         .add_systems(Startup, setup)
         .add_systems(Update, (log_frame_stats, quit_after_frame_limit))
         .run();

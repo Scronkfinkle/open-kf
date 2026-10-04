@@ -102,10 +102,13 @@ pub enum DecalKind {
     Vomit,
     /// FlameThrowerBurnMark (where a Husk fireball explodes).
     Scorch,
+    /// RocketMarkDirt (where the Patriarch's rocket explodes).
+    RocketMark,
 }
 
-const DECAL_CLASSES: [(DecalKind, &str); 6] = [
+const DECAL_CLASSES: [(DecalKind, &str); 7] = [
     (DecalKind::Scorch, "KFMod.FlameThrowerBurnMark"),
+    (DecalKind::RocketMark, "ROEffects.RocketMarkDirt"),
     (DecalKind::Vomit, "KFMod.VomitDecal"),
     (DecalKind::WallSplat, "ROEffects.ROBloodSplatter"),
     (DecalKind::Drip, "ROEffects.ROSmallBloodDrops"),

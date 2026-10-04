@@ -31,7 +31,7 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 19] = [
+const EFFECT_CLASSES: [&str; 21] = [
     "KFMod.DismembermentJetHead",
     "KFMod.DismembermentJetDecapitate",
     "KFMod.DismembermentJetLimb",
@@ -51,6 +51,8 @@ const EFFECT_CLASSES: [&str; 19] = [
     "ROEffects.HuskMuzzle",
     "KFMod.FlameImpact",
     "KFMod.FlameThrowerFlameB",
+    "ROEffects.PanzerfaustTrail",
+    "KFMod.LawExplosion",
 ];
 
 pub struct ParticlePlugin;

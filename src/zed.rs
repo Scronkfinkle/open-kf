@@ -216,6 +216,8 @@ struct ZedClass {
     burst_bone: Option<usize>,
     /// Siren: ScreamDamage, ScreamRadius, ScreamForce.
     scream: Option<(f32, f32, f32)>,
+    /// Patriarch: his own attacks (`boss.rs`).
+    boss: Option<crate::boss::BossClass>,
 }
 
 #[derive(Resource)]
@@ -241,6 +243,8 @@ enum ZedState {
     Landing,
     /// Fleshpound: playing PoundRage (state BeginRaging), not moving.
     Enraging,
+    /// Patriarch: a full-body action run by `boss.rs` (the chaingun).
+    BossBusy,
     Dead,
 }
 
@@ -407,6 +411,12 @@ pub struct Zed {
     fp_rage_threshold: f32,
     /// Share of non-explosive damage taken.
     pub small_arms_scale: f32,
+    /// Patriarch: the head never comes off (ZombieBoss.RemoveHead is empty)
+    /// and hits never flinch or stun him (PlayDirectionalHit is empty).
+    pub keeps_head: bool,
+    no_hit_reactions: bool,
+    /// Patriarch: his own state (charge, ...).
+    boss: Option<crate::boss::BossState>,
     /// Bloat: hits do not interrupt his attacks (HitCanInterruptAction);
     /// died by bleeding out (no burst); the death burst is done; notify
     /// effects to start (animate_zeds has the effect library).
@@ -874,6 +884,197 @@ fn scream_pulse(
 }
 
 /// A clear line between two points (Bevy space) through the level.
+/// The Patriarch in state FireChaingun, one frame: turn to the player, run
+/// the bursts (`boss::Chaingun`), play its animations and fire its shots.
+/// Shot from closer than 100: charge instead (FireChaingun.TakeDamage).
+#[allow(clippy::too_many_arguments)]
+fn boss_busy(
+    z: &mut Zed,
+    c: &ZedClass,
+    t: &Transform,
+    target: Vec3,
+    player_velocity: Vec3,
+    dt: f32,
+    spatial: &SpatialQuery,
+    player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
+    push: &mut MessageWriter<crate::walk::PlayerPush>,
+    fireball: &mut MessageWriter<crate::fireball::SpawnFireball>,
+) {
+    let (Some(bc), Some(mut b)) = (c.boss.as_ref(), z.boss) else {
+        z.state = ZedState::Chase;
+        return;
+    };
+    // State FireMissile: turn to the player, fire when PreFireMissile ends.
+    if let (Some(mut m), Some(anims)) = (b.missile, bc.missile_anims) {
+        b.tick(dt);
+        turn_toward(z, c, target, dt);
+        match m.step(dt, anims[1].1) {
+            Some(crate::boss::MissileEvent::Fire) => {
+                shoot_fireball(z, c, t, crate::fireball::Projectile::BossRocket, bc.tip_bone, target, player_velocity, spatial, fireball);
+                z.sequence = None;
+                start_anim(z, Some(anims[1].0), false);
+                b.missile = Some(m);
+            }
+            Some(crate::boss::MissileEvent::Done) => {
+                b.missile = None;
+                z.state = ZedState::Chase;
+                z.sequence = None;
+                runlog::kv("boss_missile", &format!("id={} done next_in={:.1}", z.id, b.missile_wait));
+            }
+            None => b.missile = Some(m),
+        }
+        b.hit_from_close = false;
+        z.boss = Some(b);
+        return;
+    }
+    let Some((mut mg, anims)) = b.chaingun.zip(bc.mg_anims) else {
+        z.state = ZedState::Chase;
+        return;
+    };
+    b.tick(dt);
+    if std::mem::take(&mut b.hit_from_close) {
+        let roll = (z.random() % 1000) as f32 / 1000.0;
+        b.end_chaingun(roll);
+        let attacks = if z.random().is_multiple_of(2) { 1 } else { 2 };
+        b.charge = Some(crate::boss::Charge { seconds: 0.0, attacks_left: attacks });
+        z.state = ZedState::Chase;
+        z.sequence = None;
+        if let (Some(seq), Some(root)) = (bc.transition, c.fire_root_bone) {
+            z.overlay = Some((seq, 0.0, root));
+        }
+        runlog::kv("boss_chaingun", &format!("id={} end reason=shot_from_close shots_left={}", z.id, mg.shots_left));
+        runlog::kv("boss_charge", &format!("id={} start attacks={attacks} reason=shot_from_close", z.id));
+        z.boss = Some(b);
+        return;
+    }
+    // The controller turns him toward Focus (the player) or FocalPoint.
+    let aim_at = if mg.has_focus() { target } else { b.mg_focal };
+    let want_yaw = turn_toward(z, c, aim_at, dt);
+    let tip = bc
+        .tip_bone
+        .and_then(|bone| c.model.bone_frame(&z.last_pose, bone))
+        .map_or(ue_pos(z.centre), |f| world_axes(c, t, f).0);
+    let tip_bevy = coords::pos(tip.to_array());
+    // AnimEnd: LineOfSightTo and FastTrace from the tip to the enemy.
+    let in_sight = sees(spatial, z.centre, target) && sees(spatial, tip_bevy, target);
+    let seconds = anims.map(|a| a.1);
+    let events = {
+        let mut roll = || (z.random() % 10000) as f32 / 10000.0;
+        mg.step(dt, in_sight, seconds, &mut roll)
+    };
+    if mg.has_focus() {
+        b.mg_focal = target;
+    }
+    let mut done = false;
+    for e in events {
+        match e {
+            crate::boss::MgEvent::Play(a) => {
+                let i = match a {
+                    crate::boss::MgAnim::Fire => 1,
+                    crate::boss::MgAnim::End => 2,
+                };
+                z.sequence = None; // restart even if the same (FireMG again)
+                start_anim(z, Some(anims[i].0), false);
+                if a == crate::boss::MgAnim::End {
+                    // FireChaingun.EndState: LastChainGunTime = now + 5 + FRand() x 10.
+                    b.chaingun_wait = 5.0 + 10.0 * (z.random() % 1000) as f32 / 1000.0;
+                    runlog::kv(
+                        "boss_chaingun",
+                        &format!("id={} end shots_left={} seconds={:.2} next_in={:.1}", z.id, mg.shots_left, mg.clock, b.chaingun_wait),
+                    );
+                }
+            }
+            crate::boss::MgEvent::Shoot => {
+                boss_mg_shot(z, tip, aim_at, want_yaw, target, spatial, player_damage, push, mg.shots_left);
+            }
+            crate::boss::MgEvent::Done => done = true,
+        }
+    }
+    if done {
+        b.chaingun = None;
+        z.state = ZedState::Chase;
+        z.sequence = None;
+        runlog::kv("boss_chaingun", &format!("id={} done", z.id));
+    } else {
+        b.chaingun = Some(mg);
+    }
+    z.boss = Some(b);
+}
+
+/// Turns a zed toward `at` (Bevy) at its RotationRate; returns the wanted yaw.
+fn turn_toward(z: &mut Zed, c: &ZedClass, at: Vec3, dt: f32) -> f32 {
+    let to = (at - z.centre).with_y(0.0);
+    let want_yaw = yaw_of(to);
+    if to.length() / SCALE > 1.0 {
+        let mut delta = (want_yaw - z.yaw).rem_euclid(65536.0);
+        if delta > 32768.0 {
+            delta -= 65536.0;
+        }
+        let step = c.turn_rate * dt;
+        z.yaw = (z.yaw + delta.clamp(-step, step)).rem_euclid(65536.0);
+    }
+    want_yaw
+}
+
+/// FireChaingun.FireMGShot: from the tip at the aim point (or straight
+/// ahead if he still has to turn more than 2000), VRand() x 0.06 spread, a
+/// 10000-unit trace; the player takes MGDamage + Rand(3) in whole points
+/// and momentum 500 along the shot. `tip` in Unreal units, the rest Bevy.
+#[allow(clippy::too_many_arguments)]
+fn boss_mg_shot(
+    z: &mut Zed,
+    tip: Vec3,
+    aim_at: Vec3,
+    want_yaw: f32,
+    player: Vec3,
+    spatial: &SpatialQuery,
+    player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
+    push: &mut MessageWriter<crate::walk::PlayerPush>,
+    shots_left: i32,
+) {
+    let yaw_err = (want_yaw - z.yaw).rem_euclid(65536.0);
+    let turning = !(yaw_err < 2000.0 || yaw_err > 63535.0);
+    let aim = if turning {
+        let a = z.yaw * std::f32::consts::TAU / 65536.0;
+        Vec3::new(a.cos(), a.sin(), 0.0)
+    } else {
+        (ue_pos(aim_at) - tip).normalize_or_zero()
+    };
+    // VRand(): a random unit vector.
+    let spread = loop {
+        let mut r = || (z.random() % 20001) as f32 / 10000.0 - 1.0;
+        let v = Vec3::new(r(), r(), r());
+        if v.length_squared() > 1e-4 && v.length_squared() <= 1.0 {
+            break v.normalize();
+        }
+    };
+    let dir = (aim + spread * crate::boss::MG_SPREAD).normalize_or_zero();
+    let origin = coords::pos(tip.to_array());
+    let dir_bevy = coords::dir(dir.to_array());
+    let max = crate::boss::MG_RANGE * SCALE;
+    let world = Dir3::new(dir_bevy)
+        .ok()
+        .and_then(|d| spatial.cast_ray(origin, d, max, true, &crate::collision::world_filter()))
+        .map(|h| h.distance);
+    let on_player = crate::combat::ray_cylinder(origin, dir_bevy, player, PLAYER_RADIUS * SCALE, PLAYER_HALF_HEIGHT * SCALE)
+        .filter(|d| *d <= world.unwrap_or(max));
+    let what = if on_player.is_some() {
+        let amount = (crate::boss::MG_DAMAGE + (z.random() % 3) as f32).floor();
+        player_damage.write(crate::combat::PlayerDamaged {
+            amount,
+            zed_id: z.id,
+            kind: crate::combat::HurtKind::Plain,
+        });
+        push.write(crate::walk::PlayerPush { momentum: dir * crate::boss::MG_MOMENTUM });
+        format!("player damage={amount}")
+    } else if world.is_some() {
+        "world".to_string()
+    } else {
+        "nothing".to_string()
+    };
+    runlog::kv("boss_mg_shot", &format!("id={} left={shots_left} hit={what} turning={turning}", z.id));
+}
+
 fn sees(spatial: &SpatialQuery, a: Vec3, b: Vec3) -> bool {
     let Ok(d) = Dir3::new(b - a) else {
         return true;
@@ -885,7 +1086,8 @@ fn sees(spatial: &SpatialQuery, a: Vec3, b: Vec3) -> bool {
 /// aimed by HuskZombieController.AdjustAim: lead the target by its velocity
 /// x distance / speed x min(1, 0.7 + 0.6 FRand()) (no higher than the target),
 /// and, with bTrySplash at Skill 2 (assumed for Normal) half the time when
-/// the target is not more than 19 above him, at the floor under the target;
+/// the target is not more than 19 above him (the Husk only: the Patriarch's
+/// rocket has bTrySplash off), at the floor under the target;
 /// otherwise its middle, else its head, whichever is in sight. Aim error and
 /// the wall checks are not done.
 #[allow(clippy::too_many_arguments)]
@@ -893,22 +1095,26 @@ fn shoot_fireball(
     z: &mut Zed,
     c: &ZedClass,
     t: &Transform,
+    kind: crate::fireball::Projectile,
+    bone: Option<usize>,
     target: Vec3,
     target_velocity: Vec3,
     spatial: &SpatialQuery,
     out: &mut MessageWriter<crate::fireball::SpawnFireball>,
 ) {
-    let start = c
-        .barrel_bone
+    // bTrySplash (aim at the feet): the Husk's fireball; the Patriarch's
+    // rocket has it off.
+    let try_splash = kind == crate::fireball::Projectile::HuskFire;
+    let start = bone
         .and_then(|b| c.model.bone_frame(&z.last_pose, b))
         .map_or(ue_pos(z.centre), |f| world_axes(c, t, f).0);
     let tgt = ue_pos(target);
     let dist = (tgt - ue_pos(z.centre)).length();
     let lead = (0.7 + 0.6 * (z.random() % 1000) as f32 / 1000.0).min(1.0);
-    let mut spot = tgt + target_velocity * (lead * dist / crate::fireball::SPEED);
+    let mut spot = tgt + target_velocity * (lead * dist / kind.speed());
     spot.z = spot.z.min(tgt.z);
     let visible = |p: Vec3| sees(spatial, coords::pos(start.to_array()), coords::pos(p.to_array()));
-    let feet = (z.random() % 1000) as f32 / 1000.0 > 0.5 && ue_pos(z.centre).z + 19.0 >= tgt.z;
+    let feet = try_splash && (z.random() % 1000) as f32 / 1000.0 > 0.5 && ue_pos(z.centre).z + 19.0 >= tgt.z;
     let mut aim = "middle";
     let mut clean = false;
     if feet {
@@ -930,12 +1136,24 @@ fn shoot_fireball(
         }
     }
     let dir = (spot - start).normalize_or_zero();
-    out.write(crate::fireball::SpawnFireball { at: start, dir, zed_id: z.id });
+    out.write(crate::fireball::SpawnFireball {
+        at: start,
+        dir,
+        zed_id: z.id,
+        kind,
+    });
     runlog::kv(
-        "husk_shot",
+        if try_splash { "husk_shot" } else { "boss_rocket_shot" },
         &format!(
-            "id={} aim={aim} start_unreal=({:.0}, {:.0}, {:.0}) spot_unreal=({:.0}, {:.0}, {:.0}) next_in={:.1}",
-            z.id, start.x, start.y, start.z, spot.x, spot.y, spot.z, z.ranged_wait
+            "id={} aim={aim} start_unreal=({:.0}, {:.0}, {:.0}) spot_unreal=({:.0}, {:.0}, {:.0}){}",
+            z.id,
+            start.x,
+            start.y,
+            start.z,
+            spot.x,
+            spot.y,
+            spot.z,
+            if try_splash { format!(" next_in={:.1}", z.ranged_wait) } else { String::new() }
         ),
     );
 }
@@ -953,6 +1171,8 @@ fn follow_tags(c: &ZedClass, z: &Zed, t: &Transform, effects: &mut Query<&mut Pa
 const PLAYER_RADIUS: f32 = 20.0;
 const PLAYER_EYE: f32 = 44.0;
 const PLAYER_HALF_HEIGHT: f32 = 50.0;
+/// ZombieBossBase damageForce: momentum of the Patriarch's melee hits.
+const BOSS_DAMAGE_FORCE: f32 = 170000.0;
 /// Seconds a corpse stays (KF's RagdollLifeSpan is 30).
 const CORPSE_SECONDS: f32 = 30.0;
 /// KFMonster ragdoll launch values (Clot defaults; same for all KF zeds).
@@ -1208,8 +1428,9 @@ fn load_class(
     let turn_right = name_of("TurnRightAnim").and_then(|n| model.sequence(&n));
     let fire_root_bone = name_of("FireRootBone").and_then(|n| model.find_bone(&n));
     let spine_bone = name_of("SpineBone1").and_then(|n| model.find_bone(&n));
-    // The upper-body layer's root (FireRootBone; the Siren layers from SpineBone1).
-    let fire_root_bone = if kind == ZedKind::Siren { spine_bone.or(fire_root_bone) } else { fire_root_bone };
+    // The upper-body layer's root (FireRootBone; the Siren and the Patriarch
+    // layer from SpineBone1).
+    let fire_root_bone = if matches!(kind, ZedKind::Siren | ZedKind::Patriarch) { spine_bone.or(fire_root_bone) } else { fire_root_bone };
     let headless_walk = defaults
         .get_array_names(&class, "HeadlessWalkAnims")
         .first()
@@ -1247,7 +1468,7 @@ fn load_class(
         left_arm_gibbed: matches!(get("bLeftArmGibbed"), Some((Value::Bool(true), _))),
         jump_z: float("JumpZ", 320.0),
         pounce_speed: if kind == ZedKind::Crawler { float("PounceSpeed", 0.0) } else { 0.0 },
-        no_flip: matches!(kind, ZedKind::Crawler | ZedKind::Fleshpound | ZedKind::Bloat | ZedKind::Siren),
+        no_flip: matches!(kind, ZedKind::Crawler | ZedKind::Fleshpound | ZedKind::Bloat | ZedKind::Siren | ZedKind::Patriarch),
         flinch_root: if kind == ZedKind::Crawler { name_of("NeckBone").and_then(|n| model.find_bone(&n)) } else { None },
         saw_impale: if kind == ZedKind::Scrake { model.sequence("SawImpaleLoop") } else { None },
         charge_anim: if kind == ZedKind::Scrake { model.sequence("ChargeF") } else { None },
@@ -1283,6 +1504,23 @@ fn load_class(
             _ => 0.0,
         },
         scream: (kind == ZedKind::Siren).then(|| (float("ScreamDamage", 8.0), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
+        boss: if kind == ZedKind::Patriarch {
+            match crate::boss::BossClass::load(&model, name_of("ChargingAnim").as_deref()) {
+                Ok(b) => {
+                    runlog::kv(
+                        "boss_loaded",
+                        &format!("claw_hits={:?} claw_range={} impale_hits={:?} impale_range={}", b.claw.hits, b.claw.range, b.impale.hits, b.impale.range),
+                    );
+                    Some(b)
+                }
+                Err(e) => {
+                    runlog::kv("boss_error", &format!("error=\"{e}\""));
+                    None
+                }
+            }
+        } else {
+            None
+        },
         burst_bone: if kind == ZedKind::Bloat { name_of("SpineBone2").and_then(|n| model.find_bone(&n)) } else { None },
         cloak_material: (kind == ZedKind::Stalker).then(|| {
             let texture = model.parts.first().and_then(|p| materials.get(&p.material)).and_then(|m| m.base_color_texture.clone());
@@ -1473,6 +1711,16 @@ impl Zed {
         self.raging = false;
     }
 
+    /// ZombieBoss FireChaingun.TakeDamage: who shot him, `distance` from
+    /// him in Unreal units.
+    pub fn note_attacker_distance(&mut self, distance: f32) {
+        if let Some(b) = self.boss.as_mut()
+            && distance < crate::boss::MG_CLOSE_DAMAGE_DISTANCE
+        {
+            b.hit_from_close = true;
+        }
+    }
+
     /// ZombieFleshPound.TakeDamage: health lost within 2 s of the previous
     /// hit adds up (TwoSecondDamageTotal); over the threshold, with the head
     /// on and not raging already, the Fleshpound starts to rage.
@@ -1546,6 +1794,9 @@ impl Zed {
             return None;
         }
         // ZombieBloat.HitCanInterruptAction: no hit reaction mid-attack.
+        if self.no_hit_reactions {
+            return None;
+        }
         if self.uninterruptible && self.attack.is_some() {
             return None;
         }
@@ -1592,6 +1843,20 @@ impl Zed {
         };
         self.pending_reaction = Some(reaction);
         Some(reaction)
+    }
+
+    /// A Patriarch for the hit rules (health 4000, head 25 x 1.3 x ...;
+    /// only the fields the hit code reads), for tests.
+    #[cfg(test)]
+    pub fn test_patriarch() -> Zed {
+        Zed {
+            health: 4000.0,
+            health_max: 4000.0,
+            default_health: 4000.0,
+            keeps_head: true,
+            no_hit_reactions: true,
+            ..Zed::test_clot()
+        }
     }
 
     /// A Clot with KF's values, for tests.
@@ -1663,6 +1928,9 @@ impl Zed {
             fp_frustrated: false,
             fp_rage_threshold: 0.0,
             small_arms_scale: 1.0,
+            keeps_head: false,
+            no_hit_reactions: false,
+            boss: None,
             cloaked: false,
             since_uncloak: f32::MAX,
             cloak_check: 0.0,
@@ -1859,6 +2127,9 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 fp_frustrated: false,
                 fp_rage_threshold: c.fp_rage_threshold,
                 small_arms_scale: c.small_arms_scale,
+                keeps_head: c.boss.is_some(),
+                no_hit_reactions: c.boss.is_some(),
+                boss: c.boss.is_some().then(crate::boss::BossState::default),
                 // ZombieStalker.PostBeginPlay: CloakStalker.
                 cloaked: c.cloak_material.is_some(),
                 since_uncloak: f32::MAX,
@@ -2184,6 +2455,16 @@ fn think_and_move(
             }
             z.state = ZedState::Chase;
         }
+        // Patriarch, state FireChaingun: stands, turns to the player, and
+        // `boss.rs` runs the bursts.
+        if z.state == ZedState::BossBusy {
+            if active.0 {
+                let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
+                boss_busy(&mut z, c, &t, target, player_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball);
+            }
+            t.translation = z.centre;
+            continue;
+        }
         let old_yaw = z.yaw;
         let old_sequence = z.sequence;
         let old_centre = z.centre;
@@ -2285,9 +2566,75 @@ fn think_and_move(
                         scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
                     } else if c.kind == ZedKind::Husk {
                         let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
-                        shoot_fireball(&mut z, c, &t, target, player_velocity, &spatial, &mut fireball);
+                        shoot_fireball(&mut z, c, &t, crate::fireball::Projectile::HuskFire, c.barrel_bone, target, player_velocity, &spatial, &mut fireball);
                     } else {
                         spawn_two_shots(&z, c, target, &mut vomit);
+                    }
+                }
+            }
+            // ZombieBoss.ClawDamageTarget: his hits land at the animation's
+            // notifies, with the attack's own reach, and push the player.
+            if let (Some(p), Some(a), Some(boss)) = (progress, z.attack, c.boss.as_ref())
+                && !a.ranged
+                && let Some(m) = boss.melee_for(a.seq)
+            {
+                let mut shots = a.shots_fired;
+                let mut due = 0;
+                for (i, at) in m.hits.iter().enumerate().take(8) {
+                    if p >= *at && shots & (1 << i) == 0 {
+                        shots |= 1 << i;
+                        due += 1;
+                    }
+                }
+                z.attack = Some(Attack {
+                    shots_fired: shots,
+                    hit_done: shots.count_ones() as usize >= m.hits.len(),
+                    ..a
+                });
+                for _ in 0..due {
+                    let in_range = dist <= m.range * 1.4 + c.collision_radius + PLAYER_RADIUS;
+                    let dz = ((target.y - z.centre.y) / SCALE).abs();
+                    let level = dz <= c.collision_height.max(PLAYER_HALF_HEIGHT) + 0.5 * c.collision_height.min(PLAYER_HALF_HEIGHT);
+                    // Charging.MeleeDamageTarget: push x 1.5; each check uses
+                    // one of the charge's attacks, a landed hit ends it.
+                    let charging = z.boss.is_some_and(|b| b.charge.is_some());
+                    let push_scale = if charging { crate::boss::CHARGE_PUSH } else { 1.0 };
+                    let id = z.id;
+                    if let Some(b) = z.boss.as_mut()
+                        && charging
+                    {
+                        let ended = b.charge_hit(in_range && level);
+                        runlog::kv(
+                            "boss_charge_attack",
+                            &format!("id={id} landed={} attacks_left={} ended={ended}", in_range && level, b.charge.map_or(0, |c| c.attacks_left)),
+                        );
+                        if ended {
+                            runlog::kv("boss_charge", &format!("id={id} end reason=hit"));
+                        }
+                    }
+                    if in_range && level {
+                        let roll = (z.random() % 1000) as f32 / 1000.0;
+                        let amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
+                        player_damage.write(crate::combat::PlayerDamaged {
+                            amount,
+                            zed_id: z.id,
+                            kind: crate::combat::HurtKind::Plain,
+                        });
+                        let (from, to) = (ue_pos(z.centre), ue_pos(target));
+                        let momentum = (to - from).normalize_or_zero() * BOSS_DAMAGE_FORCE * push_scale;
+                        push.write(crate::walk::PlayerPush { momentum });
+                        runlog::kv(
+                            "boss_melee_hit",
+                            &format!(
+                                "id={} sequence={} hit={} damage={amount:.1} distance_unreal={dist:.0} reach_unreal={:.0}",
+                                z.id,
+                                c.model.sequence_name(a.seq).unwrap_or("?"),
+                                shots.count_ones(),
+                                m.range * 1.4 + c.collision_radius + PLAYER_RADIUS
+                            ),
+                        );
+                    } else {
+                        runlog::kv("zed_attack_missed", &format!("id={} in_range={in_range} level={level} distance_unreal={dist:.0}", z.id));
                     }
                 }
             }
@@ -2295,6 +2642,7 @@ fn think_and_move(
                 && p >= 0.5
                 && !a.hit_done
                 && !a.ranged
+                && c.boss.is_none()
             {
                 z.attack = Some(Attack { hit_done: true, ..a });
                 let in_range = dist <= z.melee_range * 1.4 + c.collision_radius + PLAYER_RADIUS;
@@ -2459,6 +2807,108 @@ fn think_and_move(
                     ),
                 );
             }
+            // ZombieBoss.RangedAttack: close enough (IsCloseEnuf), MeleeImpale
+            // or MeleeClaw on the upper body from SpineBone1.
+            if let Some(boss) = c.boss.as_ref()
+                && z.attack.is_none()
+                && z.state == ZedState::Chase
+                && let Some(root) = c.fire_root_bone
+                && crate::boss::is_close_enough(dist, (target.y - z.centre.y) / SCALE, c.collision_radius, c.collision_height, PLAYER_RADIUS, PLAYER_HALF_HEIGHT)
+            {
+                let roll = (z.random() % 1000) as f32 / 1000.0;
+                let seq = boss.choose_melee(z.health, roll).seq;
+                z.overlay = Some((seq, 0.0, root));
+                z.attack = Some(Attack {
+                    seq,
+                    layered: true,
+                    hit_done: false,
+                    ranged: false,
+                    fx_fired: 0,
+                    shots_fired: 0,
+                });
+                runlog::kv(
+                    "zed_attack",
+                    &format!(
+                        "id={} sequence={} layered=true charge=false length_frames={} rate={} health={:.0} distance_unreal={dist:.0}",
+                        z.id,
+                        c.model.sequence_name(seq).unwrap_or("?"),
+                        c.model.length(seq),
+                        c.model.rate(seq),
+                        z.health
+                    ),
+                );
+            }
+            // ZombieBoss.RangedAttack beyond melee, about every frame while he
+            // sees the player (`boss.rs`), and the Charging state's ends.
+            if c.boss.is_some()
+                && let Some(mut b) = z.boss
+            {
+                if let Some(why) = b.tick(dt) {
+                    runlog::kv("boss_charge", &format!("id={} end reason={why} distance_unreal={dist3:.0}", z.id));
+                }
+                // (Only FireChaingun reacts to being shot from close.)
+                b.hit_from_close = false;
+                if z.state == ZedState::Chase && sees(&spatial, z.centre, target) {
+                    let attacking = z.attack.is_some();
+                    let decision = {
+                        let mut roll = || (z.random() % 10000) as f32 / 10000.0;
+                        b.decide(dist3, attacking, &mut roll)
+                    };
+                    match decision {
+                        crate::boss::Decision::StartCharge { attacks } => {
+                            // SetAnimAction('transition'): upper body.
+                            if z.attack.is_none()
+                                && let (Some(seq), Some(root)) = (c.boss.as_ref().and_then(|bc| bc.transition), c.fire_root_bone)
+                            {
+                                z.overlay = Some((seq, 0.0, root));
+                            }
+                            runlog::kv("boss_charge", &format!("id={} start attacks={attacks} distance_unreal={dist3:.0}", z.id));
+                        }
+                        crate::boss::Decision::EndCharge(why) => {
+                            runlog::kv("boss_charge", &format!("id={} end reason={why} distance_unreal={dist3:.0}", z.id));
+                        }
+                        crate::boss::Decision::StartChaingun { shots } => {
+                            if let Some(anims) = c.boss.as_ref().and_then(|bc| bc.mg_anims) {
+                                // PreFireMG (full body, waits), state FireChaingun.
+                                b.chaingun = Some(crate::boss::Chaingun::start(shots, anims[0].1));
+                                b.mg_focal = target;
+                                z.attack = None;
+                                z.overlay = None;
+                                z.state = ZedState::BossBusy;
+                                z.sequence = None;
+                                start_anim(&mut z, Some(anims[0].0), false);
+                                runlog::kv(
+                                    "boss_chaingun",
+                                    &format!("id={} start shots={shots} next_in={:.1} distance_unreal={dist3:.0}", z.id, b.chaingun_wait),
+                                );
+                            }
+                        }
+                        crate::boss::Decision::StartMissile => {
+                            if let Some(anims) = c.boss.as_ref().and_then(|bc| bc.missile_anims) {
+                                // PreFireMissile (full body, waits), state FireMissile.
+                                b.missile = Some(crate::boss::Missile::start(anims[0].1));
+                                z.attack = None;
+                                z.overlay = None;
+                                z.state = ZedState::BossBusy;
+                                z.sequence = None;
+                                start_anim(&mut z, Some(anims[0].0), false);
+                                runlog::kv(
+                                    "boss_missile",
+                                    &format!("id={} start next_in={:.1} distance_unreal={dist3:.0}", z.id, b.missile_wait),
+                                );
+                            }
+                        }
+                        crate::boss::Decision::DelayMissile(wait) => {
+                            runlog::kv("boss_missile", &format!("id={} put_off seconds={wait:.1}", z.id));
+                        }
+                        crate::boss::Decision::DelayChaingun(wait) => {
+                            runlog::kv("boss_chaingun", &format!("id={} put_off seconds={wait:.1}", z.id));
+                        }
+                        crate::boss::Decision::Nothing => {}
+                    }
+                }
+                z.boss = Some(b);
+            }
             let melee = if z.decapitated && !c.headless_melee.is_empty() { &c.headless_melee } else { &c.melee };
             // ZombieSiren.RemoveHead: MeleeRange -500, no more bites.
             let no_melee = c.scream.is_some() && z.decapitated;
@@ -2557,6 +3007,8 @@ fn think_and_move(
                 // Just left the ground (a pounce): no walking this frame.
             } else if z.attack.is_some_and(|a| !a.layered) {
                 // Full-body attack: stand and finish it.
+            } else if z.state == ZedState::BossBusy {
+                // The Patriarch just started a full-body action (PreFireMG).
             } else {
                 // Walking, also during a grab (ZombieClot.Tick keeps
                 // accelerating toward the target while attacking).
@@ -2576,6 +3028,10 @@ fn think_and_move(
                 } else if c.scream.is_some() && z.attack.is_some() {
                     // ZombieSiren.Tick: GroundSpeed x 0.65 while attacking.
                     c.ground_speed * 0.65
+                } else if z.boss.is_some_and(|b| b.charge.is_some()) {
+                    // ZombieBoss Charging.Tick: x 2.5, x 1.25 while attacking.
+                    let scale = if z.attack.is_some() { crate::boss::CHARGE_ATTACK_SPEED } else { crate::boss::CHARGE_SPEED };
+                    c.ground_speed * scale
                 } else {
                     c.ground_speed
                 };
@@ -2701,6 +3157,9 @@ fn think_and_move(
                         c.fp_charge_walk.or(c.walk)
                     } else if z.raging || z.saw_charging {
                         c.charge_anim.or(c.walk)
+                    } else if z.boss.is_some_and(|b| b.charge.is_some()) && z.attack.is_none() {
+                        // ZombieBoss.PostNetReceive: charging, MovementAnims = ChargingAnim.
+                        c.boss.as_ref().and_then(|b| b.charge_walk).or(c.walk)
                     } else {
                         c.walk
                     }
@@ -2715,7 +3174,7 @@ fn think_and_move(
             }
             ZedState::Falling => start_anim(&mut z, c.air_anim.or(c.idle), true),
             ZedState::Idle => start_anim(&mut z, c.idle, true),
-            ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::Dead => {}
+            ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::BossBusy | ZedState::Dead => {}
         }
         if z.sequence != old_sequence {
             runlog::kv(

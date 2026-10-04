@@ -28,6 +28,7 @@ cargo run --release -- --input 120:fire,200:1 --screenshot 126,330   # scripted 
 cargo run --release -- --walk --zed        # a Clot spawns in front of you and comes at you
 cargo run --release -- --walk --gorefast   # the same with a Gorefast
 cargo run --release -- --walk --spawn fleshpound   # any specimen: clot, gorefast, crawler, stalker, bloat, siren, husk, scrake, fleshpound, patriarch
+cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
@@ -52,6 +53,7 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | N | change what Z spawns (all ten specimens) |
 | G | spawn a Gorefast in front of you |
 | X | pause / resume zeds |
+| F1 | god mode on / off (HUD shows "(GOD)") |
 | Space (walking) | jump |
 
 Each run writes `logs/latest.log`: what was loaded (counts, load time), camera
@@ -183,7 +185,16 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   Husk fireball (shoots from any range he can see you, every 5.5-7.5 s,
   often at your feet: 25 fire damage in a 150-unit blast, knock-back, then
   burning for 12, 6, 3, 1; scorch marks).
-  Patriarch special not done.
+  Patriarch, steps 1-2 of 6: claw (75, long reach) and impale (two hits of
+  75) while walking, each hit knocks you back; he never loses his head and
+  never flinches. Within 700 units he charges (running at 2.5x speed, up to
+  6 s, ends on his first landed hit, which knocks you back 1.5x harder),
+  about every 5 s. Chaingun: winds up, then 35-94 shots in bursts of about
+  1 s (a shot every 0.05 s, 4-6 damage each), standing and turning to
+  you; no tracer or muzzle flash drawn yet. Rocket: over 500 units away,
+  a 2.4 s wind-up, then a rocket (2600 units/s, smoke trail) that explodes
+  for up to 75 in a 500-unit radius with a scorch mark; every 10-25 s.
+  His cloaking and healing are not done yet.
   Checked by logs and screenshots. Not play-tested by you.
 - Install discovery: finds the KF install and reads its build label.
 - Package table reader: all 548 Unreal packages in the install parse
