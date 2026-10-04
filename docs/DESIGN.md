@@ -1049,6 +1049,167 @@ get no decals), the end of life is a 1 s fade (assumed).
 Steps: D1 decal library and projection, with hit splats on walls (1);
 D2 drips and floor splats (2, 3); D3 ragdoll streaks (4).
 
+## Pathfinding (P1-P4 implemented 2026-10-04)
+
+**What the map has.** UE2 maps carry a precomputed navigation network.
+KF-WestLondon: 210 PathNodes, 21 JumpSpots, 20 ZombiePathNodes, 6
+PlayerStarts (all NavigationPoints, each with a `PathList` of outgoing
+ReachSpecs) and 1506 ReachSpecs. A ReachSpec (Engine/ReachSpec.uc) has
+Start, End, Distance, CollisionRadius / CollisionHeight (the largest pawn
+that fits) and reachFlags: R_WALK 1, R_FLY 2, R_SWIM 4, R_JUMP 8, R_DOOR
+16, R_SPECIAL 32, R_LADDER 64, R_PROSCRIBED 128, R_FORCED 256,
+R_PLAYERONLY 512.
+
+**What KF's zeds do** (KFMonsterController, state ZombieHunt; MonsterController
+state Hunting): loop { PickDestination; MoveToward(MoveTarget) or
+MoveTo(Destination) }, so they re-plan each time they reach a target.
+- While hunting, a zed's collision is shrunk to 24 x 44 (bigger zeds fit
+  the same paths).
+- PickDestination: if the enemy is directly reachable (native
+  ActorReachable), walk straight to it. Otherwise FindBestPathToward(Enemy).
+- FindBestPathToward: MoveTarget = FindPathToward(Enemy) (native shortest
+  path over the ReachSpecs; RouteCache holds the route). If RouteCache[1] is
+  directly reachable, go to it instead (shortcut). If another zed stands
+  between the zed and MoveTarget, that node gets +200 cost and the route is
+  re-planned. If the same MoveTarget comes up more than 3 times running, 60%
+  of the time it is marked blocked (+10000) and the route re-planned.
+- Not copied: the initial FindRandomDest wander, doors (welding, bashing;
+  our doors do not move or block), LastSeenPos hunting when no path exists.
+
+**Plan.**
+- P1. `ue-assets`: read the navigation network (every actor with a
+  PathList; its ReachSpecs). `kfpkg nav MAP` reports node classes, edge
+  flags, connected groups. Check on several maps.
+- P2. Load it with the map (Bevy space); check each walk edge against our
+  collision (a cylinder sweep) and log how many are blocked, to see how
+  well our collision matches Unreal's.
+- P3. Zed routing: "directly reachable" = an unobstructed sweep of the
+  zed's cylinder (24 x 44) to the target at step height, with floor under
+  it the whole way (our stand-in for native ActorReachable). Route search
+  = Dijkstra from the nav points the zed can reach directly to those that
+  can reach the player directly, over edges with flags walk / forced (no
+  jump, fly, swim, ladder, special, proscribed, player-only) and sizes
+  fitting 24 x 44. Then KF's shortcut, zed-avoidance and stuck rules.
+  Re-plan on reaching the target and at least every 0.5 s (assumed; KF
+  re-plans when a move ends or times out).
+- P4. Test: a scripted spawn behind an obstacle (`zed_at` test action with
+  a position), logs of route, target nodes and progress; screenshots.
+
+**Findings.** All 40 maps' networks read. On KF-WestLondon our walk test
+agrees with 1183 of 1248 usable links; the rest are jump pads, holes in our
+collision, or places our collision blocks. The upper level reaches the street
+only through JumpSpots (jumping down over a wall), so zeds need KFMonster's
+JumpZ (320) to use it. KF's "same target 3 times" rule cannot catch a zed
+alternating between two points; our addition gives up a link after two
+failed moves along it (until zeds can jump). Some sizes: KF shrinks zeds over
+27 x 46 to 24 x 44 when hunting; the Clot and Gorefast keep 26 x 44, so the
+walk test uses the zed's own hunting size.
+
+## Collision layers (2026-10-04)
+
+Unreal blocking volumes are not walls for everything. BlockingVolume
+defaults: bBlockActors (movement), bBlockKarma (ragdolls), but not
+bBlockZeroExtentTraces (so bullets pass). With bClassBlocker only the
+classes in BlockedClasses are blocked; KF's KFZombieZoneVolume ("blocks
+ONLY humans") lists KFHumanPawn, so zeds walk through. Our layers: World
+(BSP, meshes, terrain: everything), Blocking (plain volumes),
+PlayerBlocking / ZedBlocking (class blockers, by the class chains
+KFHumanPawn-KFPawn-xPawn-... and KFMonster-Skaarj-Monster-xPawn-...),
+TraceBlocking (volumes that do block traces), Ragdoll. Filters: player
+movement, zed movement, bodies (ragdolls, gore pieces), traces.
+
+## All specimens (planned 2026-10-04)
+
+KF's ten specimens are `KFChar.Zombie*_STANDARD` classes (KFChar script,
+KFMod `Zombie*Base` defaults, KFMonster below). Meshes: KF_Freaks_Trip
+(Clot, Gorefast, Crawler, Stalker, Bloat, Siren, Scrake, FleshPound,
+Patriarch) and KF_Freaks2_Trip (Husk: Burns_Freak).
+
+**Order.**
+- S1. Load all ten with the shared rules we already have (stats, walk,
+  melee from MeleeAnims, flinches, stun, decapitation and bleed-out,
+  ragdolls, severed parts, gore effects, routes). N cycles through them.
+  Check: load log per class (sequences, ragdoll, pieces), a scripted spawn
+  of each with a screenshot.
+- Then each one's own script, smallest first, one step each:
+  Crawler (pounce: a leap attack), Stalker (cloak until close), Scrake
+  (chainsaw, rages and runs when hurt), Fleshpound (rage: charges when
+  damaged), Bloat (bile vomit, bursts on death), Siren (scream that hurts
+  in a radius), Husk (fireball projectile), Patriarch (boss: cloak,
+  chaingun, rockets, heals; the largest script).
+
+**Fleshpound (done 2026-10-04).** ZombieFleshPound + FleshpoundZombieController:
+non-explosive damage x 0.5. Health lost within 2 s of the previous hit adds
+up (TwoSecondDamageTotal); over RageDamageThreshold 360, with the head on,
+he plays PoundRage standing still (state `Enraging`), then charges for
+5-11 s (Normal): GroundSpeed x 2.3, PoundRun, every attack FPRageAttack at
+x 1.75, the chest device swapped to FPRedBloomShader. A landed hit ends the
+rage. Chasing 10-15 s without attacking (RageFrustrationThreshhold) starts
+a frustrated rage that only a hit ends. PoundAttack1/2 are repeated-hit
+animations in KF (x 0.5 / x 0.25 per hit); we land one hit, so they do
+less than KF in total (a known difference). No flipping over.
+
+**Bloat (done 2026-10-04).** ZombieBloat, KFBloatVomit (Old2k4.BioGlob),
+KFPawn bile. Out of melee reach, within 250 units and with his head he
+plays ZombieBarf (standing, or with ChargeChance 0.4 on the upper body
+while walking). Timing comes from the animation's own notifies, which the
+mesh reader now reads (`Sequence::notifies`; `kfpkg notifies`):
+AnimNotify_Effect at 0.424 starts ROEffects.KFVomitJet on CHR_Head (offset
+and rotation from the notify), AnimNotify_Script SpawnTwoShots at 0.444
+fires three globs (`src/vomit.rs`): speed 400 with gravity, from 30 ahead
+and 64 up, aimed at the player, side ones at +-1200 yaw. A glob touching
+the player does HurtRadius(4, 120) and flies on; reaching the level it
+leaves a VomitDecal and blows up for 3 + 4 = 7 within 120. HurtRadius
+scales by 1 - (distance - 20) / 120, whole points. Any vomit damage sets
+the player's BileCount to 7: every 0.5 s, 2-4 damage. On death (not a
+headless bleed-out) BileExplosion(Headless) plays, SpineBone2
+(CHR_Spine3) and everything above it is hidden, and BileJet throws 4 globs
+up (11 degrees from vertical, random direction). Hits never interrupt his
+attacks; no flipping over.
+Particle change made for the vomit jet: world-space emitters now turn their
+start velocity with the effect (before, velocities stayed in world axes);
+PTDU_Up sprites (stretched along their velocity) are drawn.
+Known gaps: the glob's own look (plain lit material), VomGroundSplash (an
+xEmitter, old particle system), leading a moving target, vomit hurting
+other zeds.
+
+**Siren (done 2026-10-04).** ZombieSiren. The Bloat's vomit and the
+Siren's scream share one "ranged attack" path (animation, distance, the
+SpawnTwoShots notify times, effect notifies, chance to play on the upper
+body). RangedAttack is tried every 0.1 s in KF (MonsterController
+FireWeaponAt returns false -> SetTimer(0.1)), so she screams back to back
+while within ScreamRadius 700, out of bite reach and with her head.
+Siren_Scream plays on the upper body from SpineBone1 (so do her bites); her
+Tick keeps her walking at GroundSpeed x 0.65 during any attack. Six
+SpawnTwoShots notifies (0.42 .. 0.83) are six HurtRadius pulses:
+ScreamDamage 8 x (1 - (distance - 20) / 700), whole points, if in sight,
+and momentum scale x ScreamForce -150000 along her-to-player (a pull).
+Pawn.TakeDamage on the player: on the ground the upward part becomes at
+least 0.4 x the size, divided by Mass 400, AddVelocity (`walk::PlayerPush`).
+Headless: 50% dies at once, else within 10 x FRand() s, no bites. No flip.
+The SirenScream effect (an additive mesh) is an AnimNotify_Effect; mesh
+emitters now use their material's blending. Not done: DoShakeEffect (view
+shake and blur), zapped (zed time), glass shattering.
+
+**Husk (done 2026-10-04).** ZombieHusk, HuskZombieController,
+HuskFireProjectile (LAWProj), KFPawn fire. The shared ranged attack with
+ShootBurns (full body, standing): at any range within 65535 in sight
+(FireWeaponAt needs Focus; now checked for every ranged attack), not before
+NextFireProjectileTime (ProjectileFireInterval 5.5 + FRand() x 2 after each
+shot). Notifies: HuskChargeUp at 0.26 (attached to Barrel), SpawnTwoShots at
+0.475, HuskMuzzle at 0.49. The fireball (`src/fireball.rs`) starts at the
+Barrel bone, aimed by AdjustAim: lead by the player's velocity, then with
+bTrySplash half the time (Skill 2 assumed) at the floor under the player,
+else the middle, else the head, whichever is in sight. Straight flight at
+1800, FlameThrowerFlameB trail, explodes on the level, the player or
+another zed: FlameImpact, FlameThrowerBurnMark decal, HurtRadius(25, 150,
+DamTypeBurned, 125000) scaled by distance and by exposure (head and root in
+sight, half each). Fire damage over 2 sets the player burning: every 1.5 s
+LastBurnDamage halves and is taken, 5 times at most (25 -> 12, 6, 3, 1).
+Hits do not interrupt his attacks. Not done: aim error, other zeds getting
+out of the way or taking fire damage, view shake, HuskChargeUp's beam
+emitter (beam emitters are not drawn), FlameThrowerFlame (an xEmitter).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

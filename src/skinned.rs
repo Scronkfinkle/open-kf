@@ -214,6 +214,16 @@ impl SkinnedModel {
                 ),
             };
             let simple = resolve(set, &ObjectHandle { package: from, export: 0 }, rf);
+            crate::runlog::kv(
+                "skinned_material",
+                &format!(
+                    "mesh={} part={mat_index} chain={:?} texture={:?} blend={:?}",
+                    mesh_h.path(),
+                    simple.chain,
+                    simple.texture.as_ref().map(|t| t.path()),
+                    simple.blend
+                ),
+            );
             let image = simple.texture.as_ref().and_then(|t| decode_image(t, images));
             let material = materials.add(StandardMaterial {
                 base_color_texture: image,
@@ -222,6 +232,7 @@ impl SkinnedModel {
                 reflectance: 0.1,
                 alpha_mode: match simple.blend {
                     Blend::Masked => AlphaMode::Mask(0.5),
+                Blend::Additive => AlphaMode::Add,
                     _ => AlphaMode::Opaque,
                 },
                 cull_mode: None,
@@ -260,6 +271,17 @@ impl SkinnedModel {
     /// Length of a sequence in frames.
     pub fn length(&self, seq: usize) -> f32 {
         self.anim.as_ref().map_or(1.0, |a| a.sequences[seq].track_time)
+    }
+
+    /// A sequence's animation notifies (timed events).
+    pub fn notifies(&self, seq: usize) -> &[ue_assets::skeletal::Notify] {
+        self.anim.as_ref().and_then(|a| a.sequences.get(seq)).map_or(&[], |s| s.notifies.as_slice())
+    }
+
+    /// A bone's frame for a pose: origin and X, Y, Z axes in mesh space.
+    pub fn bone_frame(&self, pose: &[(Quat, Vec3)], bone: usize) -> Option<(Vec3, [Vec3; 3])> {
+        let (q, p) = *pose.get(bone)?;
+        Some((p, [q * Vec3::X, q * Vec3::Y, q * Vec3::Z]))
     }
 
     /// Frames per second of a sequence.

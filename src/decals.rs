@@ -98,9 +98,15 @@ pub enum DecalKind {
     FloorSplat,
     /// KFBloodStreakDecal (ragdoll impacts).
     Streak,
+    /// VomitDecal (where Bloat vomit lands).
+    Vomit,
+    /// FlameThrowerBurnMark (where a Husk fireball explodes).
+    Scorch,
 }
 
-const DECAL_CLASSES: [(DecalKind, &str); 4] = [
+const DECAL_CLASSES: [(DecalKind, &str); 6] = [
+    (DecalKind::Scorch, "KFMod.FlameThrowerBurnMark"),
+    (DecalKind::Vomit, "KFMod.VomitDecal"),
     (DecalKind::WallSplat, "ROEffects.ROBloodSplatter"),
     (DecalKind::Drip, "ROEffects.ROSmallBloodDrops"),
     (DecalKind::FloorSplat, "KFMod.KFBloodSplatterDecal"),
@@ -175,7 +181,15 @@ fn load_decals(
             _ => d,
         };
         let mut textures = Vec::new();
-        for h in defaults.get_array_objects(&class, "Splats") {
+        // Splats (KF's blood decals), else the one ProjTexture (VomitDecal).
+        let mut sources = defaults.get_array_objects(&class, "Splats");
+        if sources.is_empty()
+            && let Some((Value::Object(rf), pkg)) = defaults.get(&class, "ProjTexture")
+            && let Some(h) = set.resolve(&pkg, rf)
+        {
+            sources.push(h);
+        }
+        for h in sources {
             let size = read_texture(&h.package.pkg, h.export)
                 .ok()
                 .and_then(|t| t.mips.first().map(|m| Vec2::new(m.width as f32, m.height as f32)));

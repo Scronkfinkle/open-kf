@@ -23,6 +23,7 @@
 //! kfpkg anims                      read every animation set (checks only)
 //! kfpkg meshtags <file> <mesh>     a skeletal mesh's bones and attach tags
 //! kfpkg emitter <Package.Class>    a particle effect's sub-emitters, values resolved
+//! kfpkg nav <map>                  a map's navigation network: nodes, ReachSpec flags, groups
 //! ```
 //! `<file>` may be absolute or relative to the install, e.g. `Maps/KF-Farm.rom`.
 
@@ -68,7 +69,8 @@ const USAGE: &str = "usage:
   kfpkg anims
   kfpkg karma
   kfpkg meshtags <file> <mesh>
-  kfpkg emitter <Package.Class>";
+  kfpkg emitter <Package.Class>
+  kfpkg nav <map>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -103,7 +105,9 @@ fn main() -> ExitCode {
         ["anims"] => scan_anims(&install),
         ["karma"] => scan_karma(&install),
         ["emitter", class] => emitter(&install, class),
+        ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
+        ["notifies", file, anim] => notifies(&install, file, anim),
         ["zones", map, zone] => zone_polygons(&install, map, zone.parse().map_err(|_| "bad zone").unwrap_or(0)),
         _ => {
             eprintln!("{USAGE}");
@@ -1383,6 +1387,68 @@ fn scan_karma(install: &Install) -> Result<bool, String> {
     Ok(ok)
 }
 
+/// Prints a map's navigation network: nodes by class, edges by flags,
+/// connected groups. `map` is a name like KF-WestLondon, or `all`.
+fn nav(install: &Install, map: &str) -> Result<bool, String> {
+    use ue_assets::nav::*;
+    let maps: Vec<PathBuf> = if map == "all" {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(install.root.join("Maps"))
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rom")))
+            .collect();
+        v.sort();
+        v
+    } else {
+        vec![install.root.join("Maps").join(format!("{map}.rom"))]
+    };
+    for path in maps {
+        let p = Package::open(&path).map_err(|e| e.to_string())?;
+        let g = read_nav(&p);
+        let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
+        for n in &g.nodes {
+            *classes.entry(n.class.as_str()).or_default() += 1;
+        }
+        let names = [
+            (R_WALK, "walk"),
+            (R_FLY, "fly"),
+            (R_SWIM, "swim"),
+            (R_JUMP, "jump"),
+            (R_DOOR, "door"),
+            (R_SPECIAL, "special"),
+            (R_LADDER, "ladder"),
+            (R_PROSCRIBED, "proscribed"),
+            (R_FORCED, "forced"),
+            (R_PLAYERONLY, "playeronly"),
+        ];
+        let mut flags: BTreeMap<&str, usize> = BTreeMap::new();
+        for e in &g.edges {
+            for (bit, name) in names {
+                if e.flags & bit != 0 {
+                    *flags.entry(name).or_default() += 1;
+                }
+            }
+        }
+        // Edges a 24 x 44 zed may walk (see DESIGN.md, Pathfinding).
+        let usable = g
+            .edges
+            .iter()
+            .filter(|e| e.flags & !(R_WALK | R_FORCED | R_DOOR) == 0 && e.radius >= 24.0 && e.height >= 44.0)
+            .count();
+        let (sizes, _) = g.groups();
+        println!(
+            "{} nodes={} edges={} broken={} usable_by_zeds={usable} groups={} largest={:?} classes={classes:?} flags={flags:?}",
+            path.file_stem().map_or(String::new(), |s| s.to_string_lossy().to_string()),
+            g.nodes.len(),
+            g.edges.len(),
+            g.broken_specs,
+            sizes.len(),
+            &sizes[..sizes.len().min(5)]
+        );
+    }
+    Ok(true)
+}
+
 /// Prints a particle effect (Emitter class) with every sub-emitter's values.
 fn emitter(install: &Install, class: &str) -> Result<bool, String> {
     let set = ue_assets::package_set::PackageSet::new(&install.root);
@@ -1396,6 +1462,23 @@ fn emitter(install: &Install, class: &str) -> Result<bool, String> {
 }
 
 /// Prints a skeletal mesh's bones and candidate attachment tag tables.
+/// Prints each sequence's animation notifies (time 0..1, function, notify
+/// object class and its NotifyName).
+fn notifies(install: &Install, file: &str, anim: &str) -> Result<bool, String> {
+    use ue_assets::skeletal::read_mesh_animation;
+    let p = Package::open(&install.root.join(file)).map_err(|e| e.to_string())?;
+    let i = (0..p.exports.len())
+        .find(|&i| p.export_class_name(i) == "MeshAnimation" && p.object_name(ObjectRef::Export(i)).eq_ignore_ascii_case(anim))
+        .ok_or(format!("no MeshAnimation {anim} in {file}"))?;
+    let a = read_mesh_animation(&p, i).map_err(|e| e.to_string())?;
+    for s in &a.sequences {
+        for n in &s.notifies {
+            println!("{} frames={} time={:.3} function={} object={} name={} effect={:?}", s.name, s.num_frames, n.time, n.function, n.object_class, n.name, n.effect);
+        }
+    }
+    Ok(true)
+}
+
 fn mesh_tags(install: &Install, file: &str, mesh: &str) -> Result<bool, String> {
     use ue_assets::skeletal::{find_attach_tags, read_skeletal_mesh};
     let p = Package::open(&install.root.join(file)).map_err(|e| e.to_string())?;
@@ -1416,9 +1499,11 @@ fn mesh_tags(install: &Install, file: &str, mesh: &str) -> Result<bool, String> 
             let after = &data[end..(end + 16 * 52).min(data.len())];
             println!("  next bytes: {:02x?}", &after[..after.len().min(16)]);
             let floats: Vec<String> = after[1..]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .take(12 * 3)
-                .map(|c| format!("{:.3}", f32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+                .map(|c| format!("{:.3}", f32::from_le_bytes(*c)))
                 .collect();
             println!("  floats from byte {}: {}", end + 1, floats.join(" "));
         }

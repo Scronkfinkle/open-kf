@@ -15,6 +15,9 @@ pub enum Blend {
     Masked,
     /// Semi-transparent.
     Translucent,
+    /// Added to what is behind (Shader OB_Translucent, FinalBlend
+    /// FB_Translucent / FB_Brighten: Unreal's "translucent" is additive).
+    Additive,
     /// Never drawn (e.g. FinalBlend FB_Invisible, Shader OB_Invisible).
     Invisible,
 }
@@ -89,12 +92,17 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             // EOutputBlending: OB_Normal, OB_Masked, OB_Modulate, OB_Translucent, OB_Invisible, ...
             let blend = match get_byte("OutputBlending") {
                 Some(1) => Some(Blend::Masked),
-                Some(2) | Some(3) | Some(5) | Some(6) => Some(Blend::Translucent),
+                // OB_Translucent and OB_Brighten add; OB_Modulate and OB_Darken
+                // stay plain translucent.
+                Some(3) | Some(5) => Some(Blend::Additive),
+                Some(2) | Some(6) => Some(Blend::Translucent),
                 Some(4) => Some(Blend::Invisible),
                 _ => None,
             };
             let has_opacity = matches!(props.get(pkg, "Opacity"), Some(Value::Object(rf)) if *rf != ObjectRef::Null);
-            if !follow("Diffuse", out) {
+            // Diffuse, else SelfIllumination; also when the Diffuse chain
+            // ends without a texture (e.g. an environment-map cubemap).
+            if !follow("Diffuse", out) || out.texture.is_none() {
                 follow("SelfIllumination", out);
             }
             if let Some(b) = blend {
@@ -112,11 +120,14 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
                 Some(0) | None if get_bool("AlphaTest") => Blend::Masked,
                 Some(0) | None => out.blend,
                 _ if get_bool("AlphaTest") => Blend::Masked,
+                Some(4) | Some(6) => Blend::Additive,
                 _ => Blend::Translucent,
             };
         }
         "Combiner" => {
-            if !follow("Material1", out) {
+            // Material1, else Material2; also when Material1 ends without a
+            // texture (the Stalker's cloak: a rotating environment map).
+            if !follow("Material1", out) || out.texture.is_none() {
                 follow("Material2", out);
             }
         }

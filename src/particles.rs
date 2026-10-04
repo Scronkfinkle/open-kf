@@ -31,7 +31,7 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 11] = [
+const EFFECT_CLASSES: [&str; 19] = [
     "KFMod.DismembermentJetHead",
     "KFMod.DismembermentJetDecapitate",
     "KFMod.DismembermentJetLimb",
@@ -43,6 +43,14 @@ const EFFECT_CLASSES: [&str; 11] = [
     "ROEffects.ROBloodPuffSmall",
     "ROEffects.ROBloodPuffMedium",
     "ROEffects.ROBloodPuffLarge",
+    "ROEffects.KFVomitJet",
+    "KFMod.BileExplosion",
+    "KFMod.BileExplosionHeadless",
+    "ROEffects.SirenScream",
+    "ROEffects.HuskChargeUp",
+    "ROEffects.HuskMuzzle",
+    "KFMod.FlameImpact",
+    "KFMod.FlameThrowerFlameB",
 ];
 
 pub struct ParticlePlugin;
@@ -360,6 +368,24 @@ fn load_mesh(
         let rf = sm.materials.get(si).copied().unwrap_or(ObjectRef::Null);
         let simple = ue_assets::material::resolve(set, h, rf);
         let image = simple.texture.as_ref().and_then(|t| crate::skinned::decode_image(t, images));
+        // The section material's blending (e.g. the Siren's scream ball is
+        // additive); see-through sections are unlit, as KF's effects are.
+        use ue_assets::material::Blend;
+        let alpha_mode = match simple.blend {
+            Blend::Additive => AlphaMode::Add,
+            Blend::Translucent => AlphaMode::Blend,
+            Blend::Masked => AlphaMode::Mask(0.5),
+            _ => AlphaMode::Opaque,
+        };
+        runlog::kv(
+            "effect_mesh_material",
+            &format!(
+                "mesh={} section={si} texture={:?} blend={:?}",
+                h.package.pkg.object_name(ObjectRef::Export(h.export)),
+                simple.texture.as_ref().map(|t| t.package.pkg.object_name(ObjectRef::Export(t.export)).to_string()),
+                simple.blend
+            ),
+        );
         out.push(MeshSection {
             positions: sm.positions.iter().map(|p| Vec3::from_array(*p)).collect(),
             normals: sm.normals.iter().map(|n| Vec3::from_array(*n)).collect(),
@@ -368,6 +394,8 @@ fn load_mesh(
             material: materials.add(StandardMaterial {
                 base_color_texture: image,
                 perceptual_roughness: 0.6,
+                unlit: !matches!(alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)),
+                alpha_mode,
                 cull_mode: None,
                 double_sided: true,
                 ..default()
@@ -559,11 +587,13 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, rng:
         };
         offset += dir * in_range(rng, d.sphere_radius_range);
     }
-    let vel = in_ranges(rng, &d.start_velocity_range);
     let relative = d.coordinate_system == 1;
-    // Relative: kept in the effect's frame. Otherwise world: the offset is
-    // turned with the effect, velocities stay in world axes (assumed; the
-    // head jet's meat chunks fly up world Z).
+    // Relative: kept in the effect's frame. Otherwise world: the offset and
+    // the start velocity are turned with the effect, then the particle
+    // moves in world space (assumed from KF's data: KFVomitJet's notify
+    // turns the effect with OffsetRotation and its spray flies along X).
+    let vel = in_ranges(rng, &d.start_velocity_range);
+    let vel = if relative { vel } else { frame.1 * vel };
     let pos = match (relative, base) {
         (_, Some(b)) => b + offset,
         (true, None) => offset,
@@ -778,7 +808,13 @@ fn build_sprites(
             rgb = c.truncate();
         }
         let centre = world_pos(d, frame, p);
-        let (right, up) = if d.use_direction_as == 5 && p.vel.length_squared() > 1e-6 {
+        let (right, up) = if d.use_direction_as == 1 && p.vel.length_squared() > 1e-6 {
+            // PTDU_Up: the sprite's up along the velocity, facing the camera.
+            let vel = if d.coordinate_system == 1 { frame.1 * p.vel } else { p.vel };
+            let up = vel.normalize();
+            let right = up.cross(cam_forward).normalize_or(cam_right);
+            (right, up)
+        } else if d.use_direction_as == 5 && p.vel.length_squared() > 1e-6 {
             let vel = if d.coordinate_system == 1 { frame.1 * p.vel } else { p.vel };
             let normal = if d.coordinate_system == 1 { frame.1 * Vec3::from_array(d.projection_normal) } else { Vec3::from_array(d.projection_normal) };
             let up = vel.normalize();

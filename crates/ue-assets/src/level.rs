@@ -45,6 +45,11 @@ pub struct BlockingBrush {
     pub location: [f32; 3],
     pub rotation: Rotator,
     pub pre_pivot: [f32; 3],
+    /// BlockingVolume.bClassBlocker: only these classes are blocked (by
+    /// name, e.g. KFHumanPawn for KFZombieZoneVolume). None = blocks all.
+    pub blocked_classes: Option<Vec<String>>,
+    /// bBlockZeroExtentTraces (BlockingVolume default false: bullets pass).
+    pub blocks_traces: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +151,21 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                         _ => Rotator::default(),
                     },
                     pre_pivot: vector(&props, pkg, "PrePivot", [0.0; 3]),
+                    blocks_traces: d.actor_bool(lp, i, &props, "bBlockZeroExtentTraces"),
+                    blocked_classes: d.actor_bool(lp, i, &props, "bClassBlocker").then(|| {
+                        // The map's own list, else the class default (whose
+                        // references belong to the class's package).
+                        match props.get(pkg, "BlockedClasses") {
+                            Some(v) => object_array(Some(v)).into_iter().map(|r| pkg.object_name(r).to_string()).collect(),
+                            None => d
+                                .class_of(lp, i)
+                                .and_then(|c| d.get(&c, "BlockedClasses"))
+                                .map(|(v, from)| {
+                                    object_array(Some(&v)).into_iter().map(|r| from.pkg.object_name(r).to_string()).collect()
+                                })
+                                .unwrap_or_default(),
+                        }
+                    }),
                 });
             }
         }

@@ -79,6 +79,19 @@ pub struct PieceModel {
     draw_scale: f32,
 }
 
+impl PieceModel {
+    pub fn draw_scale(&self) -> f32 {
+        self.draw_scale
+    }
+
+    /// Spawns the model's parts as children of `parent`.
+    pub fn spawn_parts(&self, commands: &mut Commands, parent: Entity) {
+        for (mesh, material) in &self.parts {
+            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::IDENTITY, ChildOf(parent)));
+        }
+    }
+}
+
 /// Stumps: where a head, arm or leg came off.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StumpKind {
@@ -188,7 +201,7 @@ pub fn hit_normal_rotator(hit: Vec3, attacker: Vec3, rng: &mut Rng) -> Vec3 {
     rotator_of_dir(n)
 }
 
-fn find_class(set: &PackageSet, path: &str) -> Option<ObjectHandle> {
+pub fn find_class(set: &PackageSet, path: &str) -> Option<ObjectHandle> {
     let (pkg_name, class_name) = path.split_once('.')?;
     let lp = set.load(pkg_name)?;
     let export = (0..lp.pkg.exports.len()).find(|&i| {
@@ -612,7 +625,7 @@ fn move_pieces(
                 ignore_origin_penetration: true,
             };
             let shape = Collider::sphere(g.motion.radius * SCALE);
-            match spatial.cast_shape(&shape, t.translation, Quat::IDENTITY, dir, &config, &crate::collision::world_filter()) {
+            match spatial.cast_shape(&shape, t.translation, Quat::IDENTITY, dir, &config, &crate::collision::body_filter()) {
                 Some(hit) => {
                     t.translation += *dir * hit.distance;
                     let n = if hit.normal1.dot(*dir) > 0.0 { -hit.normal1 } else { hit.normal1 }.normalize_or_zero();

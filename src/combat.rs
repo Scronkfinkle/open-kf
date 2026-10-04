@@ -38,7 +38,44 @@ pub struct MeleeSwing {
 pub struct PlayerDamaged {
     pub amount: f32,
     pub zed_id: usize,
+    pub kind: HurtKind,
 }
+
+/// Damage types with after-effects on the player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HurtKind {
+    Plain,
+    /// DamTypeVomit (Bloat bile): starts the bile burn.
+    Vomit,
+    /// DamTypeBurned (Husk fireball): sets the player on fire.
+    Fire,
+}
+
+/// KFPawn fire: a burn hit of more than 2 sets BurnDown to 5 (or renews it
+/// when bigger than the last) and starts a 1.5 s timer; each tick
+/// (KFHumanPawn.Timer) halves LastBurnDamage and takes it as fire damage,
+/// until BurnDown runs out or the damage reaches 0.
+#[derive(Resource, Default)]
+struct Burning {
+    burn_down: u32,
+    last_damage: f32,
+    next: f32,
+    zed_id: usize,
+}
+
+const BURN_INTERVAL: f32 = 1.5;
+
+/// KFPawn bile: any vomit damage sets BileCount to 7; every BileFrequency
+/// (0.5 s) one is used up for TakeBileDamage, 2 + Rand(3) damage.
+#[derive(Resource, Default)]
+struct BileBurn {
+    count: u32,
+    next: f32,
+    zed_id: usize,
+    rng: u32,
+}
+
+const BILE_FREQUENCY: f32 = 0.5;
 
 #[derive(Resource)]
 pub struct PlayerHealth {
@@ -108,8 +145,10 @@ impl Plugin for CombatPlugin {
             .init_resource::<AmmoDisplay>()
             .init_resource::<KillCount>()
             .init_resource::<PlayerPinned>()
+            .init_resource::<BileBurn>()
+            .init_resource::<Burning>()
             .add_systems(Startup, spawn_hud)
-            .add_systems(Update, (resolve_shots, resolve_swings, apply_player_damage, update_hud).chain());
+            .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage, update_hud).chain());
     }
 }
 
@@ -244,7 +283,8 @@ fn damage_zed(
     // KFMonster.TakeDamage: headshots, and every hit on a headless zed, are
     // multiplied by the damage type's HeadShotDamageMult.
     let mult = if headshot || z.decapitated { headshot_mult } else { 1.0 };
-    let dealt = damage * mult;
+    // ZombieFleshPound.TakeDamage: non-explosive damage x 0.5 (all our weapons).
+    let dealt = damage * mult * z.small_arms_scale;
     let mut total = dealt;
     let mut head_off = false;
     let mut explosion = 0.0;
@@ -264,6 +304,7 @@ fn damage_zed(
         }
     }
     z.health -= total;
+    z.note_damage(total);
     if head_off {
         z.remove_head();
         if z.health > 0.0 {
@@ -404,20 +445,90 @@ fn resolve_swings(mut swings: MessageReader<MeleeSwing>, mut zeds: Query<&mut Ze
     }
 }
 
+/// KFPawn.Tick: the bile burn's next tick.
+fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter<PlayerDamaged>) {
+    if bile.count == 0 {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if bile.next < now {
+        bile.count -= 1;
+        bile.next += BILE_FREQUENCY;
+        bile.rng = bile.rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        let amount = 2.0 + ((bile.rng >> 16) % 3) as f32;
+        runlog::kv("player_bile", &format!("damage={amount} left={}", bile.count));
+        out.write(PlayerDamaged {
+            amount,
+            zed_id: bile.zed_id,
+            kind: crate::combat::HurtKind::Plain,
+        });
+    }
+}
+
+/// KFHumanPawn.Timer while burning.
+fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<PlayerDamaged>) {
+    if burn.burn_down == 0 || time.elapsed_secs() < burn.next {
+        return;
+    }
+    burn.next += BURN_INTERVAL;
+    // LastBurnDamage *= 0.5 (an int); TakeFireDamage: 0 puts the fire out.
+    burn.last_damage = (burn.last_damage * 0.5).floor();
+    if burn.last_damage <= 0.0 {
+        burn.burn_down = 0;
+        runlog::kv("player_burn", "out=true");
+        return;
+    }
+    burn.burn_down -= 1;
+    runlog::kv("player_burn", &format!("damage={} left={}", burn.last_damage, burn.burn_down));
+    out.write(PlayerDamaged {
+        amount: burn.last_damage,
+        zed_id: burn.zed_id,
+        kind: HurtKind::Plain,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_player_damage(
     mut hits: MessageReader<PlayerDamaged>,
     mut health: ResMut<PlayerHealth>,
     mut player: Query<(&mut Transform, Option<&mut crate::walk::Walker>), With<FlyCamera>>,
     spawn: Res<crate::map::SpawnPoint>,
     mut pinned: ResMut<PlayerPinned>,
+    mut bile: ResMut<BileBurn>,
+    mut burn: ResMut<Burning>,
+    time: Res<Time>,
 ) {
     for hit in hits.read() {
         health.health -= hit.amount;
         runlog::kv(
             "player_hit",
-            &format!("zed={} damage={} health_left={:.0}", hit.zed_id, hit.amount, health.health.max(0.0)),
+            &format!("zed={} damage={} kind={:?} health_left={:.0}", hit.zed_id, hit.amount, hit.kind, health.health.max(0.0)),
         );
+        // KFPawn.TakeDamage: DamTypeVomit -> BileCount 7.
+        // KFPawn.TakeDamage: DamTypeBurned over 2 sets the player on fire.
+        if hit.kind == HurtKind::Fire && hit.amount > 2.0 {
+            if burn.burn_down > 0 && hit.amount > burn.last_damage {
+                burn.burn_down = 5;
+            }
+            burn.last_damage = hit.amount;
+            if burn.burn_down == 0 {
+                burn.burn_down = 5;
+                burn.next = time.elapsed_secs() + BURN_INTERVAL;
+            }
+            burn.zed_id = hit.zed_id;
+        }
+        if hit.kind == HurtKind::Vomit {
+            let now = time.elapsed_secs();
+            bile.count = 7;
+            bile.zed_id = hit.zed_id;
+            bile.rng ^= (now * 1000.0) as u32 | 1;
+            if bile.next < now {
+                bile.next = now + BILE_FREQUENCY;
+            }
+        }
         if health.health <= 0.0 {
+            bile.count = 0;
+            burn.burn_down = 0;
             // Death: respawn at the player start with full health.
             health.deaths += 1;
             health.health = 100.0;

@@ -9,6 +9,7 @@ pub mod install;
 pub mod karma;
 pub mod level;
 pub mod material;
+pub mod nav;
 pub mod package;
 pub mod package_set;
 pub mod properties;

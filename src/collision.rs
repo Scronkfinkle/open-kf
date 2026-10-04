@@ -43,27 +43,81 @@ pub struct CollisionGeometry {
     pub bsp: TriSoup,
     pub meshes: TriSoup,
     pub terrain: TriSoup,
-    /// Blocking brush volumes (with a label for logs), as their actual
-    /// polygons. Not convex hulls: some volumes are hollow shapes, e.g. the
-    /// arch around the KF-WestLondon car tunnels, which a hull would fill in.
-    pub volumes: Vec<(String, TriSoup)>,
+    /// Blocking brush volumes (with a label for logs and what they block),
+    /// as their actual polygons. Not convex hulls: some volumes are hollow
+    /// shapes, e.g. the arch around the KF-WestLondon car tunnels, which a
+    /// hull would fill in.
+    pub volumes: Vec<(String, VolumeBlocks, TriSoup)>,
     /// PathNode positions, used to check the colliders.
     pub nav_points: Vec<Vec3>,
 }
 
-/// Collision layers. Level geometry is on `World` (the default layer).
-/// Ragdoll bodies collide with the world only; movement and shot queries use
-/// `world_filter` so corpses never block them.
+/// What a blocking volume blocks (BlockingVolume: movement and Karma
+/// bodies; bBlockZeroExtentTraces off by default, so not bullets;
+/// bClassBlocker limits it to BlockedClasses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VolumeBlocks {
+    pub players: bool,
+    pub zeds: bool,
+    pub traces: bool,
+}
+
+/// Collision layers. Level geometry (BSP, static meshes, terrain) is on
+/// `World` (the default layer) and blocks everything. Blocking volumes go
+/// on `Blocking` (players, zeds, ragdolls, flying gore), or for class
+/// blockers `PlayerBlocking` / `ZedBlocking`; `TraceBlocking` marks volumes
+/// that also stop bullets. Ragdoll bodies are on `Ragdoll`; movement and
+/// shot queries never see corpses.
 #[derive(PhysicsLayer, Clone, Copy, Debug, Default)]
 pub enum GameLayer {
     #[default]
     World,
     Ragdoll,
+    Blocking,
+    PlayerBlocking,
+    ZedBlocking,
+    TraceBlocking,
 }
 
-/// Spatial query filter for the level only (ignores ragdolls).
+/// Zero-extent traces (bullets, blood traces, particle collision, floor
+/// probes): the level and volumes that block traces.
 pub fn world_filter() -> SpatialQueryFilter {
-    SpatialQueryFilter::from_mask(GameLayer::World)
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::TraceBlocking])
+}
+
+/// The player's movement.
+pub fn player_filter() -> SpatialQueryFilter {
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::PlayerBlocking])
+}
+
+/// Zed movement and the zeds' walk tests.
+pub fn zed_filter() -> SpatialQueryFilter {
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::ZedBlocking])
+}
+
+/// Flying gore and other bodies (BlockingVolume bBlockKarma).
+pub fn body_filter() -> SpatialQueryFilter {
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking])
+}
+
+/// Which classes count as the player and as zeds when a volume lists
+/// BlockedClasses (their class chains, from the class defaults).
+const PLAYER_CLASSES: [&str; 6] = ["KFHumanPawn", "KFPawn", "xPawn", "UnrealPawn", "Pawn", "Actor"];
+const ZED_CLASSES: [&str; 7] = ["KFMonster", "Skaarj", "Monster", "xPawn", "UnrealPawn", "Pawn", "Actor"];
+
+/// What a volume with these BlockedClasses (None = not a class blocker)
+/// blocks. A specific zed class (e.g. ZombieBloat) counts as blocking zeds.
+pub fn volume_blocks(blocked: Option<&[String]>, traces: bool) -> VolumeBlocks {
+    match blocked {
+        None => VolumeBlocks { players: true, zeds: true, traces },
+        Some(list) => VolumeBlocks {
+            players: list.iter().any(|c| PLAYER_CLASSES.iter().any(|p| p.eq_ignore_ascii_case(c))),
+            zeds: list
+                .iter()
+                .any(|c| ZED_CLASSES.iter().any(|p| p.eq_ignore_ascii_case(c)) || c.to_ascii_lowercase().starts_with("zombie")),
+            traces,
+        },
+    }
 }
 
 /// PhysicsVolume gravity (950 Unreal units/s^2), for ragdolls. Karma's own
@@ -105,14 +159,30 @@ fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
         ));
     }
     let (mut volumes, mut volume_triangles) = (0usize, 0usize);
-    for (label, soup) in std::mem::take(&mut geo.volumes) {
+    let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (label, blocks, soup) in std::mem::take(&mut geo.volumes) {
         if soup.triangles.is_empty() {
+            continue;
+        }
+        let mut layers: Vec<GameLayer> = Vec::new();
+        match (blocks.players, blocks.zeds) {
+            (true, true) => layers.push(GameLayer::Blocking),
+            (true, false) => layers.push(GameLayer::PlayerBlocking),
+            (false, true) => layers.push(GameLayer::ZedBlocking),
+            (false, false) => {}
+        }
+        if blocks.traces {
+            layers.push(GameLayer::TraceBlocking);
+        }
+        *kinds.entry(format!("{layers:?}")).or_default() += 1;
+        if layers.is_empty() {
             continue;
         }
         volume_triangles += soup.triangles.len();
         commands.spawn((
             RigidBody::Static,
             Collider::trimesh(soup.vertices, soup.triangles),
+            CollisionLayers::new(layers.iter().fold(LayerMask::NONE, |m, l| m | *l), LayerMask::ALL),
             Transform::IDENTITY,
             Name::new(label),
         ));
@@ -120,7 +190,7 @@ fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
     }
     runlog::kv(
         "collision_spawned",
-        &format!("{} volumes={volumes} volume_triangles={volume_triangles}", spawned.join(" ")),
+        &format!("{} volumes={volumes} volume_triangles={volume_triangles} volume_layers={kinds:?}", spawned.join(" ")),
     );
 }
 

@@ -43,7 +43,8 @@ impl Plugin for WeaponPlugin {
 /// Scripted input for tests: at frame N do an action ("fire", "1", "2",
 /// "reload", "aim" = toggle iron sights, "zed" = spawn a Clot, "zed_drop" =
 /// spawn one 200 units up, "gorefast" = spawn a Gorefast,
-/// "gorefast_far" = one 900 units away, "cycle_zed" = press N).
+/// "gorefast_far" = one 900 units away, "cycle_zed" = press N,
+/// "spawn_<kind>" = spawn that zed, "hurt_zeds" = 100 damage to every zed).
 #[derive(Resource, Default, Clone)]
 pub struct ScriptedInput(pub Vec<(u32, String)>);
 

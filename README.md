@@ -27,7 +27,9 @@ cargo run --release -- --autowalk 4        # walk test: hold forward for 4 s (se
 cargo run --release -- --input 120:fire,200:1 --screenshot 126,330   # scripted input + screenshots (tests)
 cargo run --release -- --walk --zed        # a Clot spawns in front of you and comes at you
 cargo run --release -- --walk --gorefast   # the same with a Gorefast
+cargo run --release -- --walk --spawn fleshpound   # any specimen: clot, gorefast, crawler, stalker, bloat, siren, husk, scrake, fleshpound, patriarch
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
+cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
 
 Saved views for checking the viewer are listed in `docs/test-views.md`.
@@ -47,7 +49,7 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | R | reload (9mm) |
 | Right click (mouse captured) | iron sights on / off (9mm) |
 | Z | spawn a zed in front of you (more spawn side by side); the HUD shows which |
-| N | change what Z spawns (Clot, Gorefast) |
+| N | change what Z spawns (all ten specimens) |
 | G | spawn a Gorefast in front of you |
 | X | pause / resume zeds |
 | Space (walking) | jump |
@@ -157,6 +159,32 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   behind hits, drips under severed limbs, splats under brain chunks,
   streaks where corpses hit the ground. Checked by logs and screenshots. Not
   play-tested by you.
+- Pathfinding (2026-10-04): zeds use the map's own navigation network
+  (KF's ReachSpecs) and KF's hunting rules to walk around obstacles when
+  they cannot walk straight at you, jump obstacles up to ~54 units, keep
+  momentum when falling, and re-route when stuck. Zombie-only areas
+  (KFZombieZoneVolume) block you but not zeds, as in KF; invisible blocking
+  volumes no longer stop bullets. Jump pads and KF's JumpSpot jumps are not
+  done. Checked by logged runs on KF-WestLondon; first part play-tested by
+  you, the rest not yet.
+- All ten specimens (2026-10-04, in progress): every KF specimen loads from
+  the game data with its own stats, animations, ragdoll and severed parts
+  (N picks which one Z spawns). Specials done so far: Crawler pounce,
+  Stalker cloak (an approximate see-through look), Scrake chainsaw loop,
+  charge and rage, Fleshpound rage (360 damage within 2 s, or 10-15 s
+  chasing you without landing a hit, makes him charge at 2.3x speed with
+  a red chest light; his first hit ends it, at 1.75x damage; he takes half
+  damage from guns), Bloat vomit (within 250 units: KF's vomit stream and
+  three globs that splat, leave vomit decals and start a 7-tick bile burn;
+  on death he bursts, leaving his legs, unless he bled out headless).
+  Siren scream (within 700 units: six pulses of up to 8 damage that pull
+  you toward her, KF's red scream effect; she keeps walking at 65% speed
+  while attacking; headless she dies at once or within 10 s).
+  Husk fireball (shoots from any range he can see you, every 5.5-7.5 s,
+  often at your feet: 25 fire damage in a 150-unit blast, knock-back, then
+  burning for 12, 6, 3, 1; scorch marks).
+  Patriarch special not done.
+  Checked by logs and screenshots. Not play-tested by you.
 - Install discovery: finds the KF install and reads its build label.
 - Package table reader: all 548 Unreal packages in the install parse
   (`cargo run --release -p ue-assets --bin kfpkg -- scan`). It reads names,
@@ -190,8 +218,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   movement yet, because they don't move yet.
 - No crouching. Ladders, water and swimming are not handled.
 - No muzzle flash, impact effects on walls, or sound;  only the two starting
-  weapons are available. Only the Clot and the Gorefast exist, and they
-  chase in a straight line (no pathfinding), so they can get stuck on walls.
+  weapons are available. All ten specimens exist, but only the Clot's and Gorefast's special behaviour is done.
   Emitters and sound: not started.
 - Frame rate not measured with the monitor on (during testing the monitor was
   off, which throttles to 1 fps).

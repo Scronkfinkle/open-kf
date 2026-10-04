@@ -1335,3 +1335,318 @@ blocking geometry gets decals; the 1 s end fade is assumed; ragdoll impacts
 use avian's collision-start events, not Karma's. The old-style KFBloodPuff
 particle (xEmitter) on chunk landing is not drawn. Not play-tested by you.
 **Next:** Your play test; then pathfinding.
+
+## 2026-10-04 Pathfinding, first part: KF's navigation network and hunting routes
+
+**Changed:** New `ue-assets/src/nav.rs`: reads a map's navigation network
+(every ReachSpec and the NavigationPoints it joins: PathNode, JumpSpot,
+ZombiePathNode, PlayerStart, ...); `kfpkg nav MAP|all`. New `src/nav.rs`:
+the network in Bevy space (links a walking zed may use: walk / forced /
+door flags, at least 24 x 44), a walk test standing in for native
+ActorReachable (our movement code walks the zed's cylinder there in 32-unit
+steps: slide, step up, fall up to KFMonster MaxFallSpeed's height), a
+startup check that walks every link and drops the ones our zeds cannot
+walk, Dijkstra route search, and KF's hunting rules
+(KFMonsterController.ZombieHunt / FindBestPathToward): walk straight at the
+player when walkable, else head for the next point on the shortest route,
+RouteCache[1] shortcut, +200 on a point another zed blocks, BlockedWay
+(+10000) after more than 3 identical results (60%). Our additions: a zed
+right above or below its target ends the move after 1 s (it would circle),
+and gives up on a link it failed twice (no jumping yet). `zed.rs`: zeds
+steer along the route (still face you when in reach or attacking); facing
+wraps at one turn. `map.rs` loads the network. `--zed-at X,Y,Z` test
+switch. Logs: `nav_loaded`, `nav_link_check`, `nav_link_unwalkable`,
+`zed_path`, `zed_path_none`, `zed_route`, `zed_route_blocked`,
+`zed_route_failed`, `zed_link_given_up`.
+**Why:** Zeds walked in a straight line and got stuck on walls.
+**Tested how:** `kfpkg nav all` (all 40 maps); KF-WestLondon runs with Clots
+spawned at six navigation points, console captured; regression runs of the
+earlier Clot and Gorefast scenarios. clippy clean, tests pass.
+**Result:** Every map's network reads (KF-WestLondon: 315 points, 1506
+ReachSpecs, 1248 usable). Our walk test agrees with 1183 of them; the 65
+others: 20 jump pads (correctly unusable), 10 where our collision has a
+hole, 35 where something in our collision blocks a path Unreal had clear.
+Clots spawned on the street 1000-1300 units away arrived in 12-20 s, some
+using routes. Three spawns on other levels did not arrive: the upper level
+connects to the street only by jumping down over a wall (JumpSpots), and two
+spots sit where our collision differs from Unreal's.
+**Still broken / not tested:** Zeds cannot jump (KFMonster JumpZ 320), so
+jump links are unusable and some areas are cut off. Collision differences
+(holes, extra blockers) still to investigate; they would affect the player
+too. The first plan right after spawning fails while you are still landing
+(harmless). Zeds sometimes switch between "straight at you" and "follow the
+route" as the walk test flickers. Doors, the FindRandomDest wander and
+LastSeenPos hunting are not done. Not play-tested by you.
+**Next:** Your play test; then zed jumping (and horizontal motion while
+falling), then the collision differences.
+
+## 2026-10-04 Zed jumping and falling momentum
+
+**Changed:** `zed.rs`: a zed blocked by the level (not by a pawn) jumps the
+obstacle when a jump clears it: JumpZ from the class (KFMonster 320, so
+about 54 units of lift), carried forward at its ground speed, at most one
+try a second (native PickWallAdjust; rule from memory). Falling now keeps
+horizontal momentum (walking off a ledge, jumps; KFMonster AirControl 0.05
+not applied) and stops rising at ceilings. Landing plays only after a real
+fall (impact faster than half JumpZ, assumed); small drops go straight back
+to walking. `walk.rs`: `Mover::jump_over`. `nav.rs`: the walk test allows
+such jumps; drops are allowed down to KFMonster MaxFallSpeed's height
+(2500 -> about 3289 units). Log `zed_jump`, `nav_probe_jumped`.
+**Why:** You asked for zed jumping before the collision work.
+**Tested how:** Runs on KF-WestLondon: the link check, a zed spawned on the
+upper level, a zed behind a 37-unit rise, the street spawns and the
+Gorefast scenario, console captured. Tests pass.
+**Result:** 3 more links walkable with jumps (1186 of 1248). Tiny falls no
+longer play the landing animation (0 landing animations in 3 street runs,
+arrival 14.5 s instead of 19.6 s for one). The upper level still does not
+connect: its JumpSpots stand on a wall (BlockingVolume35) about 99 units
+above the floor, more than a 54-unit jump; in KF too CanMakeJump would
+likely refuse it, and zeds do not normally spawn up there.
+**Still broken / not tested:** No zed was seen jumping in a run: the 37-unit
+rise was climbed by normal stepping. KF's JumpSpot-specific jumps
+(SuggestMovePreparation / EAdjustJump aimed jumps, KF's JumpTime) are not
+done. Not play-tested by you.
+**Next:** Collision differences (the ambulance snag; 32 blocked links, 10
+holes).
+
+## 2026-10-04 Collision: class-blocking volumes, layers, stuck zeds
+
+**Changed:** `ue-assets/level.rs`: blocking volumes keep bClassBlocker /
+BlockedClasses (resolved in the right package) and bBlockZeroExtentTraces.
+`collision.rs`: collision layers. Level geometry blocks everything; plain
+blocking volumes block movement, ragdolls and flying gore but not bullets
+(BlockingVolume bBlockZeroExtentTraces false, bBlockKarma true); class
+blockers block only the listed classes (KFZombieZoneVolume: "blocks ONLY
+humans", so zeds pass); new filters `player_filter`, `zed_filter`,
+`body_filter`; `world_filter` is now for zero-width traces (bullets, blood
+traces, particles). `walk.rs`: `Mover` takes its filter. `ragdoll.rs`,
+`gore.rs`: bodies collide with blocking volumes. `nav.rs`: walk test in
+16-unit steps (closer to real movement) with a bigger step budget, slides
+off edges when landing; zeds that make under a quarter of their expected
+progress in a second count as stuck (a straight walk at the player is then
+off for 3 s; a route move ends, feeding the stuck rule). Logs
+`class_blocker`, `zed_stuck`; `collision_spawned` lists volume layers.
+**Why:** You saw a zed catch on the ambulance; the link check showed most
+blocked paths ran into KFZombieZoneVolumes.
+**Tested how:** Link check on KF-WestLondon and KF-Farm; KF-Offices and
+KF-BioticsLab loads; three runs with a zed routing around the ambulance;
+dropping the player at suspected holes; regression runs. Console captured,
+clippy clean, tests pass.
+**Result:** KF-WestLondon: 15 KFZombieZoneVolumes now block only the player;
+5 list PlayerController and block nothing that walks (they stop spectators).
+Walkable links: 1229 of 1248 (was 1183); the rest are jump pads and
+JumpSpot jumps. KF-Farm: 5382 of 5400. Zeds placed behind the ambulance
+arrived in 13.5-14.6 s, routing round its end. The "holes" were the walk
+test landing on kerb edges, not holes: the player stands there fine.
+**Still broken / not tested:** I could not reproduce your ambulance catch
+exactly; the stuck check is untested in a real snag. A zed spawned inside a
+prop stays stuck (KF would refuse such a spawn). Jump pads and JumpSpot
+jumps are not done. Bullets passing through volumes is not checked in a run.
+The link check takes 1.7 s at load on KF-Farm. Not play-tested by you.
+**Next:** Your play test.
+
+## 2026-10-04 All ten specimens loaded (step S1)
+
+**Changed:** `zed.rs`: all of KF's specimens load (Clot, Gorefast, Crawler,
+Stalker, Bloat, Siren, Husk, Scrake, Fleshpound, Patriarch; the
+`KFChar.Zombie*_STANDARD` classes) with the shared rules (stats, walk,
+melee, flinches, decapitation, ragdolls, severed parts, gore effects,
+routes). Spawning is class-driven: N cycles all ten for Z; `--spawn NAME`
+at start (works with `--zed-at`); test action `spawn_<name>`. Attack log
+lines show the animation length and rate. `ue-assets/material.rs`: a
+Combiner whose Material1 (or a Shader whose Diffuse) leads to no texture
+falls back to Material2 / SelfIllumination; new `Blend::Additive` for
+Shader OB_Translucent / OB_Brighten and FinalBlend FB_Translucent /
+FB_Brighten, drawn additively on skinned models only (the map keeps its
+old handling). `skinned.rs`: log `skinned_material` (material chain per
+part).
+**Why:** You asked for all the monsters.
+**Tested how:** Load log; each new specimen spawned in a scripted run with
+the console captured; screenshots. clippy clean, tests pass.
+**Result:** All ten load in about 1 s, each with its ragdoll from
+KF_Characters_Trip.ka. Each of the eight new ones walks up and attacks;
+hits with their KF MeleeDamage (+-5%): Crawler 6, Stalker 9, Bloat 14,
+Siren 13, Husk 15, Scrake 20, Fleshpound 35. Screenshots: all textured. Two
+fixes on the way: the Stalker was plain white (her skin is a cloak shader
+whose first branch is an environment map) and the Fleshpound's chest
+device was a black square (an additive "Brighten" shader drawn solid).
+(An early survey seemed to show no hits: my runs quit at the screenshot
+frame, 2 s in. Not a bug.)
+**Still broken / not tested:** No specimen has its special behaviour yet
+(pounce, cloak, rage, bile, scream, fireball, boss attacks); the Patriarch
+has no usable melee yet (his attacks are all special). The Husk's ragdoll
+is 5.6 units off its mesh at the left calf (all others 0.00). Health is
+KF's base value (no difficulty or player-count scaling). The Combiner /
+Shader fallback can also change some map textures (from grey to a
+texture); not checked. Not play-tested by you.
+**Next:** Specials, smallest first: Crawler pounce.
+
+## 2026-10-04 Crawler: pounce
+
+**Changed:** `zed.rs`: CrawlerController.FireWeaponAt / ZombieCrawler.DoPounce:
+when out of reach, roughly facing the target (KF compares facing with the
+un-normalised vector to it, so almost any forward angle passes; copied as
+written), 4.5 - FRand() x 3 s after the last pounce, and IsInPounceDist
+(within MeleeRange x 5 = 250 units, landing at the target's height), the
+Crawler leaps at PounceSpeed (330) with JumpZ (350) upward, playing
+ZombieSpring; touching the player mid-leap hurts once (ZombieCrawler.Bump,
+MeleeDamage +-5%). FlipOver returns false (no knock-down); flinches play
+from NeckBone. Falling zeds are now blocked by pawns too (sideways).
+`bStunImmune` is declared in KFMonster but used nowhere, so stuns stay.
+Logs `crawler_pounce`, `crawler_pounce_hit`.
+**Why:** Specials, step 1 (Crawler).
+**Tested how:** Scripted runs on KF-WestLondon, console captured.
+**Result:** Pounce from 245 units after 2.3 s; airborne 0.6 s; bump hit
+5.8; lands against the player (47 units, was 7 before pawns blocked falls);
+then claws as before.
+**Still broken / not tested:** Mid-air claw attacks (MeleeAirAnims
+InAir_Attack1/2 on the upper body) not done. Not play-tested by you.
+**Next:** Stalker.
+
+## 2026-10-04 Stalker: cloak
+
+**Changed:** `zed.rs`: ZombieStalker's cloak. She starts cloaked
+(PostBeginPlay); a melee attack uncloaks her (SetAnimAction); every 0.5 s
+she cloaks again once 1.2 s have passed since the last uncloak (Tick);
+losing her head or dying shows her normal skin for good (RemoveHead,
+PlayDying). New `ZedParts` component (each zed's mesh-part entities) and
+`apply_cloaks` system swap the materials. Logs `stalker_cloak`,
+`stalker_uncloak`.
+**Why:** Specials, step 2 (Stalker).
+**Tested how:** Scripted runs, console captured, screenshots.
+**Result:** Uncloaks at each attack, recloaks 1.2 s after; cloaked she is a
+faint shimmer, barely visible; uncloaked her textured skin.
+**Still broken / not tested:** The cloak look is an approximation (KF's
+`stalker_invisible` is a refraction shader: a rotating glass-reflection
+environment map masked by her skin, with oscillating opacity); here a 15%
+see-through skin. The 0.25 s decloak flash overlay (KFX.FBDecloakShader) and
+the Commando's glow outline (needs perks) are not done. Not play-tested by
+you.
+**Next:** Scrake.
+
+## 2026-10-04 Scrake: chainsaw loop, charging, rage
+
+**Changed:** `zed.rs`: ZombieScrake. The first swing (SawZombieAttack1/2,
+upper body so he keeps walking) enters SawingLoop; in it, while in reach,
+he repeats SawImpaleLoop (full body) at MeleeDamage x 0.6; out of reach the
+loop ends and damage returns. Entering the loop he charges (GroundSpeed x
+AttackChargeRate 2.5, ChargeF walk) with ChargeChance 0.5, or 0.7 under
+half health (Normal difficulty). Not attacking, with his head and under half
+health he rages (RunningState: GroundSpeed x 3.5, ChargeF); losing his head
+ends it. He flinches only at 150+ damage (PlayTakeHit); flinch threshold is
+now per class. Test action `hurt_zeds` (100 damage to every zed). Logs
+`scrake_sawing`, `scrake_rage`, `zed_hurt_test`.
+**Why:** Specials, step 3 (Scrake).
+**Tested how:** Scripted runs, console captured.
+**Result:** First swing 20.7, then the loop every 0.53 s for 11.4-12.5
+(20 x 0.6 +-5%). Hurt to 400 health he raged at 297 units/s (85 x 3.5)
+from 1100 units, sawed on arrival, raged again after you respawned.
+**Still broken / not tested:** The saw loop sound, exhaust emitter and
+difficulty-dependent rage point (0.75 on Suicidal+) not done; Normal only.
+Not play-tested by you.
+**Next:** Fleshpound.
+
+## 2026-10-04 Fleshpound: rage, half damage, red device
+
+**Changed:** `zed.rs`: ZombieFleshPound. Damage taken within 2 s of the
+previous hit adds up; over 360 (RageDamageThreshold), head on, he plays
+PoundRage in place (new state `Enraging`), then charges 5-11 s at
+GroundSpeed x 2.3 with PoundRun, attacks only with FPRageAttack at x 1.75,
+and a landed hit ends the rage. Frustration: 10-15 s chasing without an
+attack starts a rage that does not time out. PoundAttack1 x 0.5,
+PoundAttack2 x 0.25 per hit. His chest device (material part 1) switches to
+KFCharacters.FPRedBloomShader while raging (cloak system generalised).
+No flip-over. `combat.rs`: per-zed damage scale (FP 0.5) and every hit feeds
+the 2 s damage counter. Logs `fleshpound_rage`.
+**Why:** Specials, step 4 (Fleshpound).
+**Tested how:** Scripted runs on KF-WestLondon (`hurt_zeds` x4 in 0.5 s;
+9mm shots), console captured, screenshot.
+**Result:** 400 damage in 0.5 s -> rage start, PoundRage 2.35 s, charge
+6.4 s planned, FPRageAttack hit 63 (35 x 1.75), rage ended by the hit;
+afterwards PoundAttack3 35.7, PoundAttack1 18.1. 9mm hits 12.8-15.1 (half),
+five shots did not trigger a rage (as in KF). Screenshot: red device while
+raging. One console ERROR "Failed to send screenshot: sending on a closed
+channel" from the final screenshot at shutdown (test harness, not game).
+**Still broken / not tested:** Frustration rage not tested (needs you out
+of reach for 10+ s). Rage time-out path not seen (the hit came first).
+Rage bumping other zeds aside (450 damage) not done. Repeated-hit attacks
+land one hit. Not play-tested by you.
+**Next:** Bloat.
+
+## 2026-10-04 Bloat: vomit, bile burn, death burst; animation notifies
+
+**Changed:** `ue-assets/skeletal.rs`: animation sequences keep their
+notifies (time, AnimNotify_Script name, AnimNotify_Effect class, bone,
+offset, rotation); `kfpkg notifies <file> <MeshAnimation>` prints them.
+`zed.rs`: ZombieBloat RangedAttack (ZombieBarf within 250, moving with
+chance 0.4), notify-timed KFVomitJet on the head and SpawnTwoShots (three
+globs), death burst (BileExplosion, SpineBone2 hidden, BileJet's 4 globs;
+not after a headless bleed-out), no flinch mid-attack, no flip. Attached
+effects can now follow a bone with an offset. New `vomit.rs`: KFBloatVomit
+globs (flight with gravity, touch damage, landing blow-up, VomitDecal).
+`combat.rs`: KFPawn bile burn (7 ticks of 2-4 every 0.5 s); PlayerDamaged
+has a `bile` flag. `decals.rs`: VomitDecal (ProjTexture). `particles.rs`:
+KFVomitJet, BileExplosion(Headless) loaded; world-space emitters turn their
+start velocity with the effect; PTDU_Up sprites.
+**Why:** Specials, step 5 (Bloat).
+**Tested how:** Scripted runs on KF-WestLondon with console capture and
+screenshots; you play-tested the vomit.
+**Result:** Barf at 249 units; jet at 0.42, globs at 0.44 of the animation;
+globs landed 0.35 s later in front of the player for 2-5 each; bile ticks
+2-4 x 7; a glob touching the player did 3. Kill by body shots: BileExplosion
+spawned, 4 globs up, landed 0.92 s later; screenshot shows legs only, meat
+and bile. No console errors. You confirmed the stream and the ground spot
+are visible.
+**Still broken / not tested:** Headless bleed-out (no burst) not run. The
+particle velocity change may alter existing blood effects; not rechecked.
+Glob look approximate; VomGroundSplash not done; no target leading; vomit
+does not hurt other zeds.
+**Next:** Siren.
+
+## 2026-10-04 Siren: scream pulses and pull; shared ranged attack
+
+**Changed:** `zed.rs`: the Bloat's vomit became a shared ranged attack
+(animation, range, all SpawnTwoShots notify times, effect notifies, moving
+chance). ZombieSiren: Siren_Scream within ScreamRadius 700 on the upper body
+from SpineBone1 (bites too), 0.65 speed while attacking, six scream pulses
+(HurtRadius 8 / 700 with ScreamForce -150000 pull, line of sight), headless
+death (50% at once, else within 10 s; no bites), no flip. `walk.rs`:
+`PlayerPush` message (Pawn.TakeDamage momentum: upward at least 0.4 x size
+on the ground, / Mass 400, AddVelocity). `particles.rs`: ROEffects.SirenScream
+loaded; mesh emitters use their material's blend (additive, translucent,
+masked; see-through ones unlit) and log `effect_mesh_material`.
+**Why:** Specials, step 6 (Siren).
+**Tested how:** Scripted run on KF-WestLondon, console captured, screenshots.
+**Result:** Scream started at 298 units; pulses at 171, 59, 47 units did 6,
+7, 7 (scale 0.78-0.96); each pull added ~294-358 units/s toward her and
+118-144 up; the player was dragged ~96 units. 41 damage over a full close
+scream. First screenshot showed the scream ball as an opaque dark sphere
+filling the view (mesh emitters ignored blending); after the fix it is
+additive red swirls. No console errors.
+**Still broken / not tested:** View shake and blur not done. Headless death
+not run. The blend change affects other mesh emitters (gibs are opaque or
+masked, unchanged by the log). Not play-tested by you.
+**Next:** Husk.
+
+## 2026-10-04 Husk: fireball, burning
+
+**Changed:** `zed.rs`: the Husk joins the shared ranged attack (ShootBurns,
+range 65535, ProjectileFireInterval wait, Barrel bone); every ranged attack
+now needs the player in sight; `shoot_fireball` (HuskZombieController
+AdjustAim: lead, feet/middle/head); hits do not interrupt his attacks.
+The three message writers in think_and_move are one tuple parameter (Bevy's
+16-parameter limit). New `fireball.rs`: HuskFireProjectile flight, trail,
+explosion (FlameImpact, scorch decal, HurtRadius with exposure, knock-back).
+`combat.rs`: `PlayerDamaged.kind` (Plain, Vomit, Fire) replaces `bile`;
+KFPawn burning. `decals.rs`: FlameThrowerBurnMark. `particles.rs`:
+HuskChargeUp, HuskMuzzle, FlameImpact, FlameThrowerFlameB loaded.
+**Why:** Specials, step 7 (Husk).
+**Tested how:** Scripted runs on KF-WestLondon, console captured, screenshot.
+**Result:** First shot 1.0 s after seeing the player (notify 0.475), aimed at
+the feet or middle; fireball hit the player 0.12 s later for 20-25, pushed
+126 back and 228 up; burn 12, 6, 3, 1 at 1.5 s, then out. Next shot 5.3-5.8
+s later; a shot from 1007 units hit after 0.5 s. Screenshot: impact flames
+and smoke, scorch mark, muzzle glow. No console errors.
+**Still broken / not tested:** Aim error, zeds dodging or being hurt by the
+fireball, view shake, the charge-up beam not drawn. Not play-tested by you.
+**Next:** Patriarch.

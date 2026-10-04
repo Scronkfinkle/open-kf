@@ -3,8 +3,10 @@ mod combat;
 mod collision;
 mod coords;
 mod decals;
+mod fireball;
 mod gore;
 mod map;
+mod nav;
 mod particles;
 mod pawn_collision;
 mod ragdoll;
@@ -12,6 +14,7 @@ mod runlog;
 mod screenshot;
 mod skinned;
 mod walk;
+mod vomit;
 mod weapon;
 mod zed;
 
@@ -44,6 +47,10 @@ struct Args {
     gorefast: bool,
     /// Test: killing hits on limbs always sever them.
     always_sever: bool,
+    /// Test: where the start zed appears (Unreal X,Y,Z).
+    zed_at: Option<[f32; 3]>,
+    /// Spawn this kind of zed at the start (e.g. crawler).
+    spawn: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -78,6 +85,15 @@ fn parse_args() -> Result<Args, String> {
             "--zed" => args.zed = true,
             "--gorefast" => args.gorefast = true,
             "--always-sever" => args.always_sever = true,
+            "--spawn" => args.spawn = Some(it.next().ok_or("--spawn needs a zed name")?),
+            "--zed-at" => {
+                let n = it.next().ok_or("--zed-at needs X,Y,Z")?;
+                let v: Vec<f32> = n.split(',').map(|x| x.trim().parse().map_err(|_| format!("bad --zed-at value: {n}"))).collect::<Result<_, _>>()?;
+                let [x, y, z] = v[..] else {
+                    return Err(format!("--zed-at needs three numbers: {n}"));
+                };
+                args.zed_at = Some([x, y, z]);
+            }
             "--autowalk" => {
                 let n = it.next().ok_or("--autowalk needs seconds")?;
                 args.autowalk = Some(n.parse().map_err(|_| format!("bad --autowalk value: {n}"))?);
@@ -97,7 +113,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -142,6 +158,8 @@ fn main() -> AppExit {
         spawn_at_start: args.zed,
         gorefast_at_start: args.gorefast,
         always_sever: args.always_sever,
+        spawn_at: args.zed_at,
+        spawn_kind: args.spawn.clone(),
     };
     let walk_settings = walk::WalkSettings {
         start_walking: args.walk,
@@ -175,6 +193,9 @@ fn main() -> AppExit {
             gore::GorePlugin,
             particles::ParticlePlugin,
             decals::DecalPlugin,
+            nav::NavPlugin,
+            vomit::VomitPlugin,
+            fireball::FireballPlugin,
         ))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)

@@ -270,7 +270,8 @@ impl Loader<'_> {
                 base_color_texture: tex.map(|t| t.0),
                 alpha_mode: match simple.blend {
                     Blend::Masked => AlphaMode::Mask(0.5),
-                    Blend::Translucent => AlphaMode::Blend,
+                    // Additive kept as before for the map (alpha blend).
+                Blend::Translucent | Blend::Additive => AlphaMode::Blend,
                     _ => AlphaMode::Opaque,
                 },
                 perceptual_roughness: 1.0,
@@ -350,6 +351,7 @@ fn load_map(
     let defaults_started = Instant::now();
     let class_defaults = ClassDefaults::new(&set);
     let contents = read_level_with(&lp, &class_defaults);
+    commands.insert_resource(crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg)));
     runlog::kv(
         "class_defaults",
         &format!(
@@ -709,9 +711,22 @@ fn load_map(
         if soup.triangles.is_empty() {
             volumes_failed += 1;
         } else {
+            let blocks = crate::collision::volume_blocks(b.blocked_classes.as_deref(), b.blocks_traces);
+            if b.blocked_classes.is_some() {
+                runlog::kv(
+                    "class_blocker",
+                    &format!(
+                        "volume={} blocked_classes={:?} blocks_players={} blocks_zeds={}",
+                        lp.pkg.object_name(ObjectRef::Export(b.export)),
+                        b.blocked_classes,
+                        blocks.players,
+                        blocks.zeds
+                    ),
+                );
+            }
             collision
                 .volumes
-                .push((format!("{}:{}", b.class, lp.pkg.object_name(ObjectRef::Export(b.export))), soup));
+                .push((format!("{}:{}", b.class, lp.pkg.object_name(ObjectRef::Export(b.export))), blocks, soup));
             volumes_ok += 1;
         }
     }

@@ -5,7 +5,7 @@
 //! the mesh's RotOrigin, scaled by DrawScale, plus PrePivot; then the actor's
 //! rotation and location (the centre of its collision cylinder).
 //!
-//! Keys: Z spawns a zed in front of you (N picks the type: Clot, Gorefast),
+//! Keys: Z spawns a zed in front of you (N picks the type),
 //! G a Gorefast, X pauses/resumes all zeds.
 
 use avian3d::prelude::*;
@@ -29,13 +29,18 @@ use crate::skinned::{SkinnedModel, Skins};
 use crate::walk::{Mover, Walker};
 
 /// Spawn a Clot (`--zed`) or a Gorefast (`--gorefast`) at startup.
-#[derive(Resource, Default, Clone, Copy)]
+#[derive(Resource, Default, Clone)]
 pub struct ZedSettings {
     pub spawn_at_start: bool,
     pub gorefast_at_start: bool,
     /// Test switch (`--always-sever`): a killing hit on a limb always takes
     /// it off, instead of KF's chance.
     pub always_sever: bool,
+    /// Test switch (`--zed-at X,Y,Z`): the start zed appears there (Unreal
+    /// units, the cylinder centre) instead of in front of you.
+    pub spawn_at: Option<[f32; 3]>,
+    /// `--spawn NAME`: a zed of that kind at the start (e.g. "crawler").
+    pub spawn_kind: Option<String>,
 }
 
 /// What Z spawns (an index into the loaded classes) and its name for the
@@ -60,13 +65,34 @@ impl Default for ZSpawn {
 enum ZedKind {
     Clot,
     Gorefast,
+    Crawler,
+    Stalker,
+    Bloat,
+    Siren,
+    Husk,
+    Scrake,
+    Fleshpound,
+    Patriarch,
 }
 
-/// The classes we load: kind and class path.
-const ZED_CLASSES: [(ZedKind, &str); 2] = [
+/// The classes we load: kind and class path (KF's ten specimens).
+const ZED_CLASSES: [(ZedKind, &str); 10] = [
     (ZedKind::Clot, "KFChar.ZombieClot_STANDARD"),
     (ZedKind::Gorefast, "KFChar.ZombieGorefast_STANDARD"),
+    (ZedKind::Crawler, "KFChar.ZombieCrawler_STANDARD"),
+    (ZedKind::Stalker, "KFChar.ZombieStalker_STANDARD"),
+    (ZedKind::Bloat, "KFChar.ZombieBloat_STANDARD"),
+    (ZedKind::Siren, "KFChar.ZombieSiren_STANDARD"),
+    (ZedKind::Husk, "KFChar.ZombieHusk_STANDARD"),
+    (ZedKind::Scrake, "KFChar.ZombieScrake_STANDARD"),
+    (ZedKind::Fleshpound, "KFChar.ZombieFleshPound_STANDARD"),
+    (ZedKind::Patriarch, "KFChar.ZombieBoss_STANDARD"),
 ];
+
+/// A kind by its name, ignoring case ("crawler", "Patriarch", ...).
+fn kind_named(name: &str) -> Option<ZedKind> {
+    ZED_CLASSES.iter().map(|(k, _)| *k).find(|k| format!("{k:?}").eq_ignore_ascii_case(name))
+}
 
 /// Static data for one zed class.
 struct ZedClass {
@@ -142,10 +168,62 @@ struct ZedClass {
     attach_scale: [f32; 3],
     /// bLeftArmGibbed (the Gorefast has no left forearm).
     left_arm_gibbed: bool,
+    /// JumpZ (KFMonster 320).
+    jump_z: f32,
+    /// Crawler: PounceSpeed (0 = cannot pounce).
+    pounce_speed: f32,
+    /// FlipOver returns false (ZombieCrawler): no knock-down.
+    no_flip: bool,
+    /// Bone the hit flinches play from, if not SpineBone1 (ZombieCrawler
+    /// plays HitF from NeckBone).
+    flinch_root: Option<usize>,
+    /// Stalker: the cloaked look (KF: Shader stalker_invisible, a refraction
+    /// effect; here a faint see-through skin, an approximation).
+    cloak_material: Option<Handle<StandardMaterial>>,
+    /// Scrake: SawImpaleLoop (the attack repeated in state SawingLoop) and
+    /// ChargeF (the walk while charging or raging).
+    saw_impale: Option<usize>,
+    charge_anim: Option<usize>,
+    /// Smallest hit that plays a flinch (KFMonster 5; ZombieScrake 150;
+    /// ZombieFleshPound 10).
+    flinch_min_damage: f32,
+    /// Fleshpound: PoundRage, the charge walk (ChargingAnim PoundRun), the
+    /// rage attack (FPRageAttack), RageDamageThreshold and the red device
+    /// material (DeviceGoRed: KFCharacters.FPRedBloomShader on Skins[1]).
+    fp_rage_anim: Option<usize>,
+    fp_charge_walk: Option<usize>,
+    fp_rage_attack: Option<usize>,
+    fp_rage_threshold: f32,
+    fp_red_device: Option<Handle<StandardMaterial>>,
+    /// Share of non-explosive damage taken (ZombieFleshPound 0.5).
+    small_arms_scale: f32,
+    /// The ranged attack (RangedAttack beyond melee reach, head on): the
+    /// Bloat's ZombieBarf within 250, the Siren's Siren_Scream within
+    /// ScreamRadius. Its SpawnTwoShots notify times (0..1: the vomit, or
+    /// each scream damage pulse), its AnimNotify_Effects (KFVomitJet,
+    /// SirenScream), and the chance it plays on the upper body while
+    /// walking (Bloat 0.4; the Siren always).
+    ranged_anim: Option<usize>,
+    ranged_distance: f32,
+    ranged_shots: Vec<f32>,
+    ranged_effects: Vec<(f32, ue_assets::skeletal::NotifyEffect)>,
+    ranged_moving_chance: f32,
+    /// Husk: ProjectileFireInterval (5.5, Normal), the wait after a shot
+    /// before the next (plus FRand() x 2), and the bone shots start at.
+    ranged_interval: f32,
+    barrel_bone: Option<usize>,
+    /// Bloat: the bone hidden when he bursts on death (SpineBone2).
+    burst_bone: Option<usize>,
+    /// Siren: ScreamDamage, ScreamRadius, ScreamForce.
+    scream: Option<(f32, f32, f32)>,
 }
 
 #[derive(Resource)]
 struct ZedClasses(Vec<ZedClass>);
+
+/// A zed's mesh-part entities (one per material), for material swaps.
+#[derive(Component)]
+struct ZedParts(Vec<Entity>);
 
 /// X toggles zed thinking/moving (animation keeps playing).
 #[derive(Resource)]
@@ -161,6 +239,8 @@ enum ZedState {
     KnockedDown,
     /// Just landed from a fall: playing Landed once.
     Landing,
+    /// Fleshpound: playing PoundRage (state BeginRaging), not moving.
+    Enraging,
     Dead,
 }
 
@@ -170,7 +250,13 @@ struct Attack {
     seq: usize,
     /// On the upper-body layer (the zed keeps walking) or the whole body.
     layered: bool,
+    /// The damage check (or, for a barf, the shots) is done.
     hit_done: bool,
+    /// The ranged attack (vomit, scream) instead of a melee hit.
+    ranged: bool,
+    /// Which of the animation's effect and shot notifies have fired (bits).
+    fx_fired: u8,
+    shots_fired: u8,
 }
 
 /// A zed's reaction to being hit.
@@ -197,6 +283,15 @@ const TURNING_RATE: f32 = 2000.0;
 const GOREFAST_RUN_DISTANCE: f32 = 700.0;
 const GOREFAST_RUN_SPEED: f32 = 1.875;
 const GOREFAST_CHARGE_CHANCE: f32 = 0.2;
+/// ZombieScrake: RunningState GroundSpeed x 3.5; AttackChargeRate 2.5.
+const SCRAKE_RAGE_SPEED: f32 = 3.5;
+const SCRAKE_ATTACK_CHARGE_RATE: f32 = 2.5;
+/// ZombieBloat.RangedAttack: vomit within 250 units; a moving vomit with
+/// ChargeChance 0.4 (Normal difficulty).
+const BLOAT_BARF_DISTANCE: f32 = 250.0;
+const BLOAT_CHARGE_CHANCE: f32 = 0.4;
+/// ZombieFleshPound RageCharging: GroundSpeed x 2.3.
+const FLESHPOUND_RAGE_SPEED: f32 = 2.3;
 
 /// KFMonster MinTimeBetweenPainAnims and StunTime (seconds).
 const MIN_TIME_BETWEEN_PAIN_ANIMS: f32 = 0.5;
@@ -274,10 +369,61 @@ pub struct Zed {
     last_pose: Vec<(Quat, Vec3)>,
     /// Pieces and chunks spawned so far (their ids are id x 100 + this).
     next_piece: usize,
-    /// Particle effects attached to a mesh tag (AttachEmitterEffect).
-    effects: Vec<(Entity, &'static str)>,
+    /// Particle effects attached to the zed (AttachEmitterEffect on a mesh
+    /// tag, or an AnimNotify_Effect on a bone).
+    effects: Vec<(Entity, EffectAnchor)>,
     /// Seconds since the last hit (TakeDamage's bRecentHit: under 0.2 s).
     since_hit: f32,
+    /// Hunting route (KFMonsterController ZombieHunt).
+    router: crate::nav::Router,
+    /// Horizontal velocity kept while falling or jumping (Bevy, m/s).
+    air_velocity: Vec3,
+    /// Seconds before the zed may try another jump.
+    jump_cooldown: f32,
+    /// Crawler: in a pounce (bPouncing), and seconds since the last one.
+    pouncing: bool,
+    since_pounce: f32,
+    /// FlipOver allowed (false for the Crawler).
+    can_flip: bool,
+    /// Scrake: in state SawingLoop, charging while sawing (speed x
+    /// AttackChargeRate), raging (RunningState, speed x 3.5); the smallest
+    /// flinching hit.
+    sawing: bool,
+    saw_charging: bool,
+    raging: bool,
+    flinch_min_damage: f32,
+    /// Fleshpound: damage in the current 2 s window (TwoSecondDamageTotal),
+    /// seconds since the last damage, a rage to start, rage seconds left
+    /// (RageCharging), chasing without reaching (RageFrustrationTimer) and
+    /// its threshold, frustrated rage (no time-out).
+    fp_two_sec_damage: f32,
+    fp_since_damaged: f32,
+    fp_start_rage: bool,
+    fp_rage: Option<f32>,
+    fp_frustration: f32,
+    fp_frustration_limit: f32,
+    fp_frustrated: bool,
+    /// RageDamageThreshold (0 = never rages).
+    fp_rage_threshold: f32,
+    /// Share of non-explosive damage taken.
+    pub small_arms_scale: f32,
+    /// Bloat: hits do not interrupt his attacks (HitCanInterruptAction);
+    /// died by bleeding out (no burst); the death burst is done; notify
+    /// effects to start (animate_zeds has the effect library).
+    uninterruptible: bool,
+    /// Siren: headless she dies at once or within 10 s (ZombieSiren.RemoveHead).
+    quick_headless_death: bool,
+    /// Husk: seconds until he may shoot again (NextFireProjectileTime).
+    ranged_wait: f32,
+    bled_out: bool,
+    burst_done: bool,
+    pending_fx: Vec<ue_assets::skeletal::NotifyEffect>,
+    /// Stalker cloak: cloaked now, seconds since it last uncloaked, seconds
+    /// to the next 0.5 s check, and whether the look must be updated.
+    cloaked: bool,
+    since_uncloak: f32,
+    cloak_check: f32,
+    cloak_dirty: bool,
 
     /// Facing, Unreal rotation units.
     yaw: f32,
@@ -385,7 +531,7 @@ fn attach_effect(
     };
     let (pos, axes) = world_axes(c, t, frame);
     if let Some(e) = particles::spawn_effect(commands, library, meshes, class, pos, axes, seed) {
-        z.effects.push((e, tag));
+        z.effects.push((e, EffectAnchor::Tag(tag)));
     }
 }
 
@@ -580,11 +726,225 @@ fn apply_gore(
     }
 }
 
-/// Moves a zed's attached effects to their tags' current frames.
+/// Where an attached effect sits: a mesh tag, or a bone with an offset and
+/// rotation relative to it (AnimNotify_Effect's OffsetLocation and
+/// OffsetRotation, Unreal units and axes).
+#[derive(Clone, Copy, Debug)]
+pub enum EffectAnchor {
+    Tag(&'static str),
+    Bone { bone: usize, offset: Vec3, rotation: Mat3 },
+}
+
+fn anchor_frame(c: &ZedClass, z: &Zed, t: &Transform, anchor: &EffectAnchor) -> Option<(Vec3, Mat3)> {
+    match anchor {
+        EffectAnchor::Tag(tag) => c.model.tag_frame(&z.last_pose, tag).map(|f| world_axes(c, t, f)),
+        EffectAnchor::Bone { bone, offset, rotation } => {
+            let (pos, axes) = world_axes(c, t, c.model.bone_frame(&z.last_pose, *bone)?);
+            // The bone frame from world_axes is in actor scale; the offset is
+            // in the bone's axes (Unreal units, DrawScale applied).
+            Some((pos + axes * (*offset * c.draw_scale), axes * *rotation))
+        }
+    }
+}
+
+/// AnimNotify_Effect: starts the notify's effect at its bone; attached
+/// effects follow the bone from then on.
+#[allow(clippy::too_many_arguments)]
+fn notify_effect(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    library: Option<&EffectLibrary>,
+    c: &ZedClass,
+    z: &mut Zed,
+    t: &Transform,
+    effect: &ue_assets::skeletal::NotifyEffect,
+    seed: u32,
+) {
+    let Some(library) = library else {
+        return;
+    };
+    let Some(bone) = c.model.find_bone(&effect.bone) else {
+        runlog::kv("notify_effect_error", &format!("id={} class={} bone={} error=\"no bone\"", z.id, effect.class, effect.bone));
+        return;
+    };
+    let [pitch, yaw, roll] = effect.rotation;
+    let anchor = EffectAnchor::Bone {
+        bone,
+        offset: Vec3::from_array(effect.offset),
+        rotation: coords::ue_rotation_matrix(Rotator { pitch, yaw, roll }),
+    };
+    let Some((pos, axes)) = anchor_frame(c, z, t, &anchor) else {
+        return;
+    };
+    let spawned = particles::spawn_effect(commands, library, meshes, &effect.class, pos, axes, seed);
+    runlog::kv(
+        "notify_effect",
+        &format!(
+            "id={} class={} bone={} at_unreal=({:.0}, {:.0}, {:.0}) spawned={}",
+            z.id,
+            effect.class,
+            effect.bone,
+            pos.x,
+            pos.y,
+            pos.z,
+            spawned.is_some()
+        ),
+    );
+    if let Some(e) = spawned
+        && effect.attach
+    {
+        z.effects.push((e, anchor));
+    }
+}
+
+/// ZombieBloat.SpawnTwoShots: three KFBloatVomit globs from 30 ahead and 64
+/// up (x DrawScale), aimed at the target (AdjustAim; KF also leads a moving
+/// target: not done), the side ones half a CollisionRadius out and turned
+/// 1200 yaw units (6.6 degrees).
+fn spawn_two_shots(z: &Zed, c: &ZedClass, target: Vec3, out: &mut MessageWriter<crate::vomit::SpawnVomit>) {
+    let k = std::f32::consts::TAU / 65536.0;
+    let a = z.yaw * k;
+    let (x, y) = (Vec3::new(a.cos(), a.sin(), 0.0), Vec3::new(-a.sin(), a.cos(), 0.0));
+    let start = ue_pos(z.centre) + (x * 30.0 + Vec3::Z * 64.0) * c.draw_scale;
+    let to = ue_pos(target) - start;
+    let (yaw, pitch) = (to.y.atan2(to.x), to.z.atan2(to.truncate().length()));
+    for (side, turn) in [(0.0, 0.0), (-0.5, -1200.0), (0.5, 1200.0)] {
+        let yw = yaw + turn * k;
+        let dir = Vec3::new(pitch.cos() * yw.cos(), pitch.cos() * yw.sin(), pitch.sin());
+        out.write(crate::vomit::SpawnVomit {
+            at: start + y * side * c.collision_radius,
+            velocity: dir * crate::vomit::SPEED,
+            zed_id: z.id,
+        });
+    }
+    runlog::kv(
+        "bloat_shots",
+        &format!("id={} start_unreal=({:.0}, {:.0}, {:.0}) pitch_deg={:.1}", z.id, start.x, start.y, start.z, pitch.to_degrees()),
+    );
+}
+
+/// One ZombieSiren.SpawnTwoShots: HurtRadius(ScreamDamage, ScreamRadius,
+/// ScreamForce) on the player, if within the radius and in sight:
+/// damageScale = 1 - (distance - 20) / ScreamRadius, damage x scale (whole
+/// points), momentum damageScale x ScreamForce along the line from her to
+/// the player (negative: a pull toward her). Screen shake and blur
+/// (DoShakeEffect) not done.
+#[allow(clippy::too_many_arguments)]
+fn scream_pulse(
+    z: &Zed,
+    damage: f32,
+    radius: f32,
+    force: f32,
+    target: Vec3,
+    spatial: &SpatialQuery,
+    out: &mut MessageWriter<crate::combat::PlayerDamaged>,
+    push: &mut MessageWriter<crate::walk::PlayerPush>,
+) {
+    let (from, to) = (ue_pos(z.centre), ue_pos(target));
+    let dist = (to - from).length().max(1.0);
+    if dist - PLAYER_RADIUS > radius {
+        return;
+    }
+    if let Ok(d) = Dir3::new(target - z.centre)
+        && spatial
+            .cast_ray(z.centre, d, (target - z.centre).length(), true, &crate::collision::world_filter())
+            .is_some()
+    {
+        runlog::kv("siren_scream", &format!("id={} distance_unreal={dist:.0} blocked=true", z.id));
+        return;
+    }
+    let scale = 1.0 - ((dist - PLAYER_RADIUS) / radius).max(0.0);
+    let amount = (scale * damage).floor();
+    if amount > 0.0 {
+        out.write(crate::combat::PlayerDamaged {
+            amount,
+            zed_id: z.id,
+            kind: crate::combat::HurtKind::Plain,
+        });
+    }
+    let momentum = (to - from) / dist * (scale * force);
+    push.write(crate::walk::PlayerPush { momentum });
+    runlog::kv(
+        "siren_scream",
+        &format!(
+            "id={} distance_unreal={dist:.0} scale={scale:.2} damage={amount} momentum_unreal=({:.0}, {:.0}, {:.0})",
+            z.id, momentum.x, momentum.y, momentum.z
+        ),
+    );
+}
+
+/// A clear line between two points (Bevy space) through the level.
+fn sees(spatial: &SpatialQuery, a: Vec3, b: Vec3) -> bool {
+    let Ok(d) = Dir3::new(b - a) else {
+        return true;
+    };
+    spatial.cast_ray(a, d, (b - a).length(), true, &crate::collision::world_filter()).is_none()
+}
+
+/// ZombieHusk.SpawnTwoShots: a HuskFireProjectile from the Barrel bone,
+/// aimed by HuskZombieController.AdjustAim: lead the target by its velocity
+/// x distance / speed x min(1, 0.7 + 0.6 FRand()) (no higher than the target),
+/// and, with bTrySplash at Skill 2 (assumed for Normal) half the time when
+/// the target is not more than 19 above him, at the floor under the target;
+/// otherwise its middle, else its head, whichever is in sight. Aim error and
+/// the wall checks are not done.
+#[allow(clippy::too_many_arguments)]
+fn shoot_fireball(
+    z: &mut Zed,
+    c: &ZedClass,
+    t: &Transform,
+    target: Vec3,
+    target_velocity: Vec3,
+    spatial: &SpatialQuery,
+    out: &mut MessageWriter<crate::fireball::SpawnFireball>,
+) {
+    let start = c
+        .barrel_bone
+        .and_then(|b| c.model.bone_frame(&z.last_pose, b))
+        .map_or(ue_pos(z.centre), |f| world_axes(c, t, f).0);
+    let tgt = ue_pos(target);
+    let dist = (tgt - ue_pos(z.centre)).length();
+    let lead = (0.7 + 0.6 * (z.random() % 1000) as f32 / 1000.0).min(1.0);
+    let mut spot = tgt + target_velocity * (lead * dist / crate::fireball::SPEED);
+    spot.z = spot.z.min(tgt.z);
+    let visible = |p: Vec3| sees(spatial, coords::pos(start.to_array()), coords::pos(p.to_array()));
+    let feet = (z.random() % 1000) as f32 / 1000.0 > 0.5 && ue_pos(z.centre).z + 19.0 >= tgt.z;
+    let mut aim = "middle";
+    let mut clean = false;
+    if feet {
+        let from = coords::pos(spot.to_array());
+        if let Some(h) = spatial.cast_ray(from, Dir3::NEG_Y, (PLAYER_HALF_HEIGHT + 10.0) * SCALE, true, &crate::collision::world_filter()) {
+            let floor = spot - Vec3::Z * (h.distance / SCALE) + Vec3::Z * 3.0;
+            if visible(floor) {
+                spot = floor;
+                clean = true;
+                aim = "feet";
+            }
+        }
+    }
+    if !clean {
+        spot.z = tgt.z;
+        if !visible(spot) {
+            spot.z = tgt.z + 0.9 * PLAYER_HALF_HEIGHT;
+            aim = "head";
+        }
+    }
+    let dir = (spot - start).normalize_or_zero();
+    out.write(crate::fireball::SpawnFireball { at: start, dir, zed_id: z.id });
+    runlog::kv(
+        "husk_shot",
+        &format!(
+            "id={} aim={aim} start_unreal=({:.0}, {:.0}, {:.0}) spot_unreal=({:.0}, {:.0}, {:.0}) next_in={:.1}",
+            z.id, start.x, start.y, start.z, spot.x, spot.y, spot.z, z.ranged_wait
+        ),
+    );
+}
+
+/// Moves a zed's attached effects to their anchors' current frames.
 fn follow_tags(c: &ZedClass, z: &Zed, t: &Transform, effects: &mut Query<&mut ParticleEffect>) {
-    for (e, tag) in &z.effects {
-        if let (Ok(mut fx), Some(frame)) = (effects.get_mut(*e), c.model.tag_frame(&z.last_pose, tag)) {
-            fx.frame = world_axes(c, t, frame);
+    for (e, anchor) in &z.effects {
+        if let (Ok(mut fx), Some(frame)) = (effects.get_mut(*e), anchor_frame(c, z, t, anchor)) {
+            fx.frame = frame;
         }
     }
 }
@@ -610,7 +970,7 @@ impl Plugin for ZedPlugin {
             .init_resource::<ZSpawn>()
             .insert_resource(ZedsActive(true))
             .add_systems(PostStartup, load_zed_classes)
-            .add_systems(Update, (spawn_zeds, think_and_move, animate_zeds).chain());
+            .add_systems(Update, (spawn_zeds, think_and_move, animate_zeds, apply_cloaks).chain());
     }
 }
 
@@ -799,10 +1159,15 @@ fn load_class(
         .filter_map(|n| model.sequence(n))
         .collect();
     let knock_down = model.sequence("KnockDown");
-    let layered_attacks: Vec<usize> = if kind == ZedKind::Clot {
-        ["ClotGrapple", "ClotGrappleTwo", "ClotGrappleThree"].iter().filter_map(|n| model.sequence(n)).collect()
-    } else {
-        Vec::new()
+    // Attacks played on the upper body while walking (DoAnimAction
+    // overrides): the Clot's grapples, the Scrake's saw swings.
+    let layered_attacks: Vec<usize> = match kind {
+        ZedKind::Clot => ["ClotGrapple", "ClotGrappleTwo", "ClotGrappleThree"].iter().filter_map(|n| model.sequence(n)).collect(),
+        ZedKind::Scrake => ["SawZombieAttack1", "SawZombieAttack2"].iter().filter_map(|n| model.sequence(n)).collect(),
+        ZedKind::Fleshpound => ["PoundAttack1", "PoundAttack2", "PoundAttack3", "FPRageAttack"].iter().filter_map(|n| model.sequence(n)).collect(),
+        // ZombieSiren.DoAnimAction: bites and the scream from SpineBone1.
+        ZedKind::Siren => ["Siren_Bite", "Siren_Bite2"].iter().filter_map(|n| model.sequence(n)).collect(),
+        _ => Vec::new(),
     };
     let headless_melee: Vec<usize> = if kind == ZedKind::Clot {
         ["Claw", "Claw", "Claw2"].iter().filter_map(|n| model.sequence(n)).collect()
@@ -829,6 +1194,12 @@ fn load_class(
     });
     // ZombieGoreFast: PostNetReceive swaps MovementAnims[0] for ZombieRun.
     let run_anim = if kind == ZedKind::Gorefast { model.sequence("ZombieRun") } else { None };
+    let ranged_anim = match kind {
+        ZedKind::Bloat => model.sequence("ZombieBarf"),
+        ZedKind::Siren => model.sequence("Siren_Scream"),
+        ZedKind::Husk => model.sequence("ShootBurns"),
+        _ => None,
+    };
     let run_attack_seconds = model.sequence("GoreAttack1").map_or(0.0, |s| model.length(s) / model.rate(s).max(1e-3));
     let first_name = |p: &str| defaults.get_array_names(&class, p).first().and_then(|n| model.sequence(n));
     let air_anim = first_name("AirAnims");
@@ -837,6 +1208,8 @@ fn load_class(
     let turn_right = name_of("TurnRightAnim").and_then(|n| model.sequence(&n));
     let fire_root_bone = name_of("FireRootBone").and_then(|n| model.find_bone(&n));
     let spine_bone = name_of("SpineBone1").and_then(|n| model.find_bone(&n));
+    // The upper-body layer's root (FireRootBone; the Siren layers from SpineBone1).
+    let fire_root_bone = if kind == ZedKind::Siren { spine_bone.or(fire_root_bone) } else { fire_root_bone };
     let headless_walk = defaults
         .get_array_names(&class, "HeadlessWalkAnims")
         .first()
@@ -872,6 +1245,58 @@ fn load_class(
             float("SeveredLegAttachScale", 1.0),
         ],
         left_arm_gibbed: matches!(get("bLeftArmGibbed"), Some((Value::Bool(true), _))),
+        jump_z: float("JumpZ", 320.0),
+        pounce_speed: if kind == ZedKind::Crawler { float("PounceSpeed", 0.0) } else { 0.0 },
+        no_flip: matches!(kind, ZedKind::Crawler | ZedKind::Fleshpound | ZedKind::Bloat | ZedKind::Siren),
+        flinch_root: if kind == ZedKind::Crawler { name_of("NeckBone").and_then(|n| model.find_bone(&n)) } else { None },
+        saw_impale: if kind == ZedKind::Scrake { model.sequence("SawImpaleLoop") } else { None },
+        charge_anim: if kind == ZedKind::Scrake { model.sequence("ChargeF") } else { None },
+        flinch_min_damage: match kind {
+            ZedKind::Scrake => 150.0,
+            ZedKind::Fleshpound => 10.0,
+            _ => 5.0,
+        },
+        fp_rage_anim: if kind == ZedKind::Fleshpound { model.sequence("PoundRage") } else { None },
+        fp_charge_walk: if kind == ZedKind::Fleshpound { name_of("ChargingAnim").and_then(|n| model.sequence(&n)) } else { None },
+        fp_rage_attack: if kind == ZedKind::Fleshpound { model.sequence("FPRageAttack") } else { None },
+        fp_rage_threshold: float("RageDamageThreshold", 0.0),
+        fp_red_device: if kind == ZedKind::Fleshpound { load_named_material(set, "KFCharacters", "FPRedBloomShader", images, materials) } else { None },
+        small_arms_scale: if kind == ZedKind::Fleshpound { 0.5 } else { 1.0 },
+        ranged_anim,
+        ranged_distance: match kind {
+            ZedKind::Siren => float("ScreamRadius", 700.0),
+            // ZombieHusk.RangedAttack: anywhere within 65535 (no distance fog).
+            ZedKind::Husk => 65535.0,
+            _ => BLOAT_BARF_DISTANCE,
+        },
+        ranged_interval: float("ProjectileFireInterval", 0.0),
+        barrel_bone: if kind == ZedKind::Husk { model.find_bone("Barrel") } else { None },
+        ranged_shots: ranged_anim.map_or(Vec::new(), |s| {
+            model.notifies(s).iter().filter(|n| n.name.eq_ignore_ascii_case("SpawnTwoShots")).map(|n| n.time).collect()
+        }),
+        ranged_effects: ranged_anim.map_or(Vec::new(), |s| {
+            model.notifies(s).iter().filter_map(|n| n.effect.clone().map(|e| (n.time, e))).collect()
+        }),
+        ranged_moving_chance: match kind {
+            ZedKind::Siren => 1.0,
+            ZedKind::Bloat => BLOAT_CHARGE_CHANCE,
+            _ => 0.0,
+        },
+        scream: (kind == ZedKind::Siren).then(|| (float("ScreamDamage", 8.0), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
+        burst_bone: if kind == ZedKind::Bloat { name_of("SpineBone2").and_then(|n| model.find_bone(&n)) } else { None },
+        cloak_material: (kind == ZedKind::Stalker).then(|| {
+            let texture = model.parts.first().and_then(|p| materials.get(&p.material)).and_then(|m| m.base_color_texture.clone());
+            materials.add(StandardMaterial {
+                base_color: Color::srgba(0.85, 0.9, 1.0, 0.15),
+                base_color_texture: texture,
+                alpha_mode: AlphaMode::Blend,
+                perceptual_roughness: 0.2,
+                reflectance: 0.5,
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
         ext_collision,
         death,
         death_hold_frame,
@@ -894,6 +1319,33 @@ fn load_class(
         melee,
         model,
     })
+}
+
+/// A material by package and object name, drawn the way skinned models
+/// draw it (e.g. the Fleshpound's red device shader).
+fn load_named_material(
+    set: &PackageSet,
+    package: &str,
+    name: &str,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Option<Handle<StandardMaterial>> {
+    let lp = set.load(package)?;
+    let export = (0..lp.pkg.exports.len()).find(|&i| lp.pkg.object_name(ObjectRef::Export(i)).eq_ignore_ascii_case(name))?;
+    let h = ObjectHandle { package: lp, export };
+    let simple = ue_assets::material::resolve(set, &h, ObjectRef::Export(export));
+    let image = simple.texture.as_ref().and_then(|t| crate::skinned::decode_image(t, images))?;
+    Some(materials.add(StandardMaterial {
+        base_color_texture: Some(image),
+        alpha_mode: match simple.blend {
+            ue_assets::material::Blend::Additive => AlphaMode::Add,
+            ue_assets::material::Blend::Masked => AlphaMode::Mask(0.5),
+            _ => AlphaMode::Opaque,
+        },
+        cull_mode: None,
+        double_sided: true,
+        ..default()
+    }))
 }
 
 /// Logs each hinge's angle range over the walk cycle next to its file limits,
@@ -976,6 +1428,11 @@ fn dir_of(yaw: f32) -> Vec3 {
 impl Zed {
     /// Marks the zed dead (death animation is started by the think system).
     pub fn kill(&mut self) {
+        // ZombieStalker.PlayDying: the corpse shows the normal skin.
+        if self.cloaked {
+            self.cloaked = false;
+            self.cloak_dirty = true;
+        }
         self.health = 0.0;
         self.bleed_out = None;
         self.state = ZedState::Dead;
@@ -985,6 +1442,12 @@ impl Zed {
     /// KFMonster.RemoveHead (the damage part is in combat.rs): the head is
     /// gone; if the zed is still alive it bleeds out after BleedOutDuration.
     pub fn remove_head(&mut self) {
+        // ZombieStalker.RemoveHead: back to the normal skin ("No head, no
+        // cloak").
+        if self.cloaked {
+            self.cloaked = false;
+            self.cloak_dirty = true;
+        }
         self.decapitated = true;
         self.head_health = 0.0;
         self.since_decap = Some(0.0);
@@ -998,6 +1461,33 @@ impl Zed {
         self.run_attack_timeout = 0.0;
         if self.health > 0.0 {
             self.bleed_out = Some(self.bleed_out_duration);
+            // ZombieSiren.RemoveHead: half the time she dies at once
+            // (KilledBy), else within 10 x FRand() s.
+            if self.quick_headless_death {
+                let roll = (self.random() % 1000) as f32 / 1000.0;
+                let when = if roll < 0.5 { 0.0 } else { 10.0 * (self.random() % 1000) as f32 / 1000.0 };
+                self.bleed_out = Some(when);
+            }
+        }
+        // ZombieScrake RunningState.RemoveHead: the rage ends.
+        self.raging = false;
+    }
+
+    /// ZombieFleshPound.TakeDamage: health lost within 2 s of the previous
+    /// hit adds up (TwoSecondDamageTotal); over the threshold, with the head
+    /// on and not raging already, the Fleshpound starts to rage.
+    pub fn note_damage(&mut self, lost: f32) {
+        let threshold = self.fp_rage_threshold;
+        if threshold <= 0.0 {
+            return;
+        }
+        if self.fp_since_damaged > 2.0 {
+            self.fp_two_sec_damage = 0.0;
+        }
+        self.fp_since_damaged = 0.0;
+        self.fp_two_sec_damage += lost;
+        if self.fp_two_sec_damage > threshold && !self.decapitated && self.fp_rage.is_none() {
+            self.fp_start_rage = true;
         }
     }
 
@@ -1055,8 +1545,12 @@ impl Zed {
         if self.health <= 0.0 || damage <= 0.0 {
             return None;
         }
+        // ZombieBloat.HitCanInterruptAction: no hit reaction mid-attack.
+        if self.uninterruptible && self.attack.is_some() {
+            return None;
+        }
         // PlayHit: a hit of more than Health / 1.5 knocks the zed down.
-        if damage > self.default_health / 1.5 {
+        if damage > self.default_health / 1.5 && self.can_flip {
             self.pending_reaction = Some(HitReaction::KnockDown);
             return self.pending_reaction;
         }
@@ -1066,7 +1560,7 @@ impl Zed {
             return None;
         }
         self.since_pain_anim = 0.0;
-        if damage < 5.0 {
+        if damage < self.flinch_min_damage {
             return None;
         }
         // PlayDirectionalHit, in Unreal axes: X = facing, Y = right.
@@ -1144,6 +1638,35 @@ impl Zed {
             next_piece: 0,
             effects: Vec::new(),
             since_hit: f32::MAX,
+            router: Default::default(),
+            air_velocity: Vec3::ZERO,
+            jump_cooldown: 0.0,
+            pouncing: false,
+            since_pounce: f32::MAX,
+            can_flip: true,
+            sawing: false,
+            saw_charging: false,
+            raging: false,
+            flinch_min_damage: 5.0,
+            uninterruptible: false,
+            quick_headless_death: false,
+            ranged_wait: 0.0,
+            bled_out: false,
+            burst_done: false,
+            pending_fx: Vec::new(),
+            fp_two_sec_damage: 0.0,
+            fp_since_damaged: f32::MAX,
+            fp_start_rage: false,
+            fp_rage: None,
+            fp_frustration: 0.0,
+            fp_frustration_limit: 10.0,
+            fp_frustrated: false,
+            fp_rage_threshold: 0.0,
+            small_arms_scale: 1.0,
+            cloaked: false,
+            since_uncloak: f32::MAX,
+            cloak_check: 0.0,
+            cloak_dirty: false,
             yaw: 0.0,
             state: ZedState::Idle,
             vertical_speed: 0.0,
@@ -1254,7 +1777,13 @@ fn spawn_in_front(
         return;
     };
     let centre = probe - Vec3::Y * hit.distance + Vec3::Y * (c.collision_height + 1.0 + lift) * SCALE;
-    let yaw = yaw_of(-forward);
+    spawn_zed(commands, meshes, classes, class, id, centre, yaw_of(-forward));
+}
+
+/// Spawns a zed of class `class` with its cylinder centre at `centre`
+/// (Bevy space), facing `yaw` (Unreal units).
+fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedClasses, class: usize, id: usize, centre: Vec3, yaw: f32) {
+    let c = &classes.0[class];
     let handles = c.model.new_instance(meshes);
     let parent = commands
         .spawn((
@@ -1305,6 +1834,36 @@ fn spawn_in_front(
                 next_piece: 0,
                 effects: Vec::new(),
                 since_hit: f32::MAX,
+                router: Default::default(),
+                air_velocity: Vec3::ZERO,
+                jump_cooldown: 0.0,
+                pouncing: false,
+                since_pounce: f32::MAX,
+                can_flip: !c.no_flip,
+                sawing: false,
+                saw_charging: false,
+                raging: false,
+                flinch_min_damage: c.flinch_min_damage,
+                uninterruptible: matches!(c.kind, ZedKind::Bloat | ZedKind::Husk),
+                quick_headless_death: c.kind == ZedKind::Siren,
+                ranged_wait: 0.0,
+                bled_out: false,
+                burst_done: false,
+                pending_fx: Vec::new(),
+                fp_two_sec_damage: 0.0,
+                fp_since_damaged: f32::MAX,
+                fp_start_rage: false,
+                fp_rage: None,
+                fp_frustration: 0.0,
+                fp_frustration_limit: 10.0 + 5.0 * ((id as u32).wrapping_mul(2_654_435_761) % 1000) as f32 / 1000.0,
+                fp_frustrated: false,
+                fp_rage_threshold: c.fp_rage_threshold,
+                small_arms_scale: c.small_arms_scale,
+                // ZombieStalker.PostBeginPlay: CloakStalker.
+                cloaked: c.cloak_material.is_some(),
+                since_uncloak: f32::MAX,
+                cloak_check: 0.0,
+                cloak_dirty: c.cloak_material.is_some(),
                 yaw,
                 state: ZedState::Idle,
                 vertical_speed: 0.0,
@@ -1315,9 +1874,14 @@ fn spawn_in_front(
             },
         ))
         .id();
-    for (part, handle) in c.model.parts.iter().zip(handles) {
-        commands.spawn((Mesh3d(handle), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(parent)));
-    }
+    let parts: Vec<Entity> = c
+        .model
+        .parts
+        .iter()
+        .zip(handles)
+        .map(|(part, handle)| commands.spawn((Mesh3d(handle), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(parent))).id())
+        .collect();
+    commands.entity(parent).insert(ZedParts(parts));
     let u = centre / SCALE;
     runlog::kv(
         "zed_spawned",
@@ -1357,33 +1921,63 @@ fn spawn_zeds(
         z_spawn.label = format!("{:?}", classes.0[z_spawn.class].kind);
         runlog::kv("z_spawn_selected", &format!("kind={}", z_spawn.label));
     }
+    // What to spawn this frame: (kind, distance in front, lift).
+    let mut wanted: Vec<(ZedKind, f32, f32)> = Vec::new();
     // Z spawns the type picked with N.
-    let z = keys.just_pressed(KeyCode::KeyZ);
-    let z_kind = classes.0[z_spawn.class.min(classes.0.len() - 1)].kind;
-    // Test action: a Clot dropped from 200 units up (falling and landing).
-    let dropped = scripted("zed_drop");
-    let clot = (settings.spawn_at_start && start) || scripted("zed") || dropped || (z && z_kind == ZedKind::Clot);
-    // Test action: a Gorefast 900 units away (outside its 700 running range).
-    let far = scripted("gorefast_far");
-    let gorefast = (settings.gorefast_at_start && start)
-        || scripted("gorefast")
-        || far
-        || keys.just_pressed(KeyCode::KeyG)
-        || (z && z_kind == ZedKind::Gorefast);
+    if keys.just_pressed(KeyCode::KeyZ) {
+        wanted.push((classes.0[z_spawn.class.min(classes.0.len() - 1)].kind, 300.0, 0.0));
+    }
+    if keys.just_pressed(KeyCode::KeyG) {
+        wanted.push((ZedKind::Gorefast, 300.0, 0.0));
+    }
+    if start {
+        if settings.spawn_at_start {
+            wanted.push((ZedKind::Clot, 300.0, 0.0));
+        }
+        if settings.gorefast_at_start {
+            wanted.push((ZedKind::Gorefast, 300.0, 0.0));
+        }
+        if let Some(name) = &settings.spawn_kind {
+            match kind_named(name) {
+                Some(k) => wanted.push((k, 300.0, 0.0)),
+                None => runlog::kv("zed_spawn_failed", &format!("reason=unknown_kind name={name}")),
+            }
+        }
+    }
+    // Test actions: "zed" (Clot), "zed_drop" (a Clot 200 units up),
+    // "gorefast", "gorefast_far" (900 away), "spawn_<kind>".
+    for (f, a) in &script.0 {
+        if *f != frames.0 {
+            continue;
+        }
+        match a.as_str() {
+            "zed" => wanted.push((ZedKind::Clot, 300.0, 0.0)),
+            "zed_drop" => wanted.push((ZedKind::Clot, 300.0, 200.0)),
+            "gorefast" => wanted.push((ZedKind::Gorefast, 300.0, 0.0)),
+            "gorefast_far" => wanted.push((ZedKind::Gorefast, 900.0, 0.0)),
+            other => {
+                if let Some(k) = other.strip_prefix("spawn_").and_then(kind_named) {
+                    wanted.push((k, 300.0, 0.0));
+                }
+            }
+        }
+    }
     let Ok((t, cam)) = cams.single() else {
         return;
     };
-    for (wanted, kind) in [(clot, ZedKind::Clot), (gorefast, ZedKind::Gorefast)] {
-        if !wanted {
-            continue;
-        }
+    for (kind, distance, lift) in wanted {
         let Some(class) = classes.0.iter().position(|c| c.kind == kind) else {
             runlog::kv("zed_spawn_failed", &format!("reason=class_not_loaded kind={kind:?}"));
             continue;
         };
-        let lift = if dropped && kind == ZedKind::Clot { 200.0 } else { 0.0 };
-        let distance = if far && kind == ZedKind::Gorefast { 900.0 } else { 300.0 };
-        spawn_in_front(&mut commands, &mut meshes, &classes, &spatial, t, cam, class, *next_id, distance, lift);
+        match settings.spawn_at {
+            // --zed-at: the start zed at a given place, facing you.
+            Some(at) if start => {
+                let centre = coords::pos(at);
+                spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, yaw_of(t.translation - centre));
+            }
+            _ => spawn_in_front(&mut commands, &mut meshes, &classes, &spatial, t, cam, class, *next_id, distance, lift),
+        }
         *next_id += 1;
     }
 }
@@ -1398,13 +1992,24 @@ fn think_and_move(
     player: Query<(&Transform, Option<&Walker>), With<FlyCamera>>,
     mut zeds: Query<(Entity, &mut Zed, &mut Transform, Option<&RagdollState>), Without<FlyCamera>>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
+    (mut vomit, mut push, mut fireball): (
+        MessageWriter<crate::vomit::SpawnVomit>,
+        MessageWriter<crate::walk::PlayerPush>,
+        MessageWriter<crate::fireball::SpawnFireball>,
+    ),
     mut kills: ResMut<crate::combat::KillCount>,
     mut pinned: ResMut<crate::combat::PlayerPinned>,
+    nav: Res<crate::nav::NavNetwork>,
+    script: Res<crate::weapon::ScriptedInput>,
+    frames: Res<bevy::diagnostic::FrameCount>,
     mut log_timer: Local<f32>,
 ) {
     let Some(classes) = classes else {
         return;
     };
+    // Test action "hurt_zeds": 100 damage to every living zed (no hit
+    // reaction), to test rules that depend on health.
+    let hurt = script.0.iter().any(|(f, a)| *f == frames.0 && a == "hurt_zeds");
     let Ok((pt, walker)) = player.single() else {
         return;
     };
@@ -1488,6 +2093,7 @@ fn think_and_move(
             let left = left - dt;
             if left <= 0.0 {
                 z.last_hit = None;
+                z.bled_out = true;
                 z.kill();
                 kills.0 += 1; // credited to the player, as KF credits LastDamagedBy
                 runlog::kv("zed_bled_out", &format!("id={} health_left={:.1}", z.id, z.health));
@@ -1497,6 +2103,56 @@ fn think_and_move(
         }
         z.since_pain_anim = (z.since_pain_anim + dt).min(1e6);
         z.since_hit = (z.since_hit + dt).min(1e6);
+        if hurt && z.health > 100.0 {
+            z.health -= 100.0;
+            z.note_damage(100.0);
+            runlog::kv("zed_hurt_test", &format!("id={} health={:.0}", z.id, z.health));
+        }
+        if c.fp_rage_anim.is_some() {
+            z.fp_since_damaged = (z.fp_since_damaged + dt).min(1e6);
+            // StartCharging: PoundRage (full body, waits), then RageCharging.
+            if std::mem::take(&mut z.fp_start_rage)
+                && z.fp_rage.is_none()
+                && !matches!(z.state, ZedState::Enraging | ZedState::Falling | ZedState::Dead)
+            {
+                z.attack = None;
+                z.overlay = None;
+                z.state = ZedState::Enraging;
+                z.sequence = None;
+                start_anim(&mut z, c.fp_rage_anim, false);
+                z.cloak_dirty = true; // device colour (DeviceGoRed)
+                runlog::kv(
+                    "fleshpound_rage",
+                    &format!("id={} start two_sec_damage={:.0} frustrated={}", z.id, z.fp_two_sec_damage, z.fp_frustrated),
+                );
+            }
+            // RageCharging.Tick: the rage ends when its time is up (not while
+            // attacking, never when frustrated).
+            if let Some(left) = z.fp_rage {
+                let left = left - dt;
+                if left <= 0.0 && z.attack.is_none() && !z.fp_frustrated {
+                    z.fp_rage = None;
+                    z.cloak_dirty = true;
+                    runlog::kv("fleshpound_rage", &format!("id={} end reason=time", z.id));
+                } else {
+                    z.fp_rage = Some(left);
+                }
+            }
+        }
+        // ZombieStalker.Tick: every 0.5 s, cloak again 1.2 s after the last
+        // uncloak (never once headless).
+        if c.cloak_material.is_some() {
+            z.since_uncloak = (z.since_uncloak + dt).min(1e6);
+            z.cloak_check -= dt;
+            if z.cloak_check <= 0.0 {
+                z.cloak_check = 0.5;
+                if !z.cloaked && !z.decapitated && z.since_uncloak > 1.2 {
+                    z.cloaked = true;
+                    z.cloak_dirty = true;
+                    runlog::kv("stalker_cloak", &format!("id={}", z.id));
+                }
+            }
+        }
         if let Some(s) = z.since_decap.as_mut() {
             *s += dt;
         }
@@ -1515,18 +2171,23 @@ fn think_and_move(
             start_anim(&mut z, c.knock_down, false);
             runlog::kv("zed_hit_reaction", &format!("id={} reaction=KnockDown", z.id));
         }
-        if matches!(z.state, ZedState::KnockedDown | ZedState::Landing) {
+        if matches!(z.state, ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging) {
             if z.sequence.is_some_and(|s| z.frame < c.model.length(s) - 0.5) {
                 t.translation = z.centre;
                 continue;
             }
             runlog::kv("zed_state", &format!("id={} from={:?} to=Chase reason=animation_done", z.id, z.state));
+            if z.state == ZedState::Enraging {
+                // BeginRaging -> RageCharging: 5 + FRand() x 6 s (Normal).
+                z.fp_rage = Some(5.0 + 6.0 * (z.random() % 1000) as f32 / 1000.0);
+                runlog::kv("fleshpound_rage", &format!("id={} charging=true seconds={:.1}", z.id, z.fp_rage.unwrap_or(0.0)));
+            }
             z.state = ZedState::Chase;
         }
         let old_yaw = z.yaw;
         let old_sequence = z.sequence;
         let old_centre = z.centre;
-        let mover = Mover::new(&spatial, c.collision_radius, c.collision_height);
+        let mover = Mover::new(&spatial, c.collision_radius, c.collision_height, crate::collision::zed_filter());
         let to = (target - z.centre).with_y(0.0);
         let dist = to.length() / SCALE;
         // Attack once within MeleeRange of touching (KF's melee start); the
@@ -1535,15 +2196,48 @@ fn think_and_move(
         let old_state = z.state;
 
         if active.0 && z.state != ZedState::Falling {
-            // Turn toward the player at RotationRate.
-            if dist > 1.0 {
-                let want = yaw_of(to);
+            // Where to head: the player when in reach or attacking, else the
+            // hunting route's target (a navigation point, or the player when
+            // it can be walked to directly).
+            let steer = if z.attack.is_some() || dist <= reach || nav.points.is_empty() {
+                target
+            } else {
+                let others: Vec<(Vec3, f32)> = blockers
+                    .iter()
+                    .filter(|(e, _)| *e != Some(entity) && e.is_some())
+                    .map(|(_, cyl)| (cyl.centre, cyl.radius))
+                    .collect();
+                let mut seed = z.random() | 1;
+                let mut frand = move || {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    (seed % 10000) as f32 / 10000.0
+                };
+                let speed = if z.running { c.ground_speed * GOREFAST_RUN_SPEED } else { c.ground_speed };
+                let hunt = crate::nav::hunt_size(c.collision_radius, c.collision_height);
+                let input = crate::nav::RouteInput {
+                    id: z.id,
+                    pos: z.centre,
+                    player: target,
+                    touch_player: crate::nav::HUNT_RADIUS + PLAYER_RADIUS,
+                    speed,
+                    radius: hunt.0,
+                    half_height: hunt.1,
+                    others: &others,
+                };
+                z.router.update(&nav, &spatial, &input, dt, &mut frand)
+            };
+            let to_steer = (steer - z.centre).with_y(0.0);
+            // Turn toward it at RotationRate.
+            if to_steer.length() / SCALE > 1.0 {
+                let want = yaw_of(to_steer);
                 let mut delta = (want - z.yaw).rem_euclid(65536.0);
                 if delta > 32768.0 {
                     delta -= 65536.0;
                 }
                 let step = c.turn_rate * dt;
-                z.yaw += delta.clamp(-step, step);
+                z.yaw = (z.yaw + delta.clamp(-step, step)).rem_euclid(65536.0);
             }
             // The attack in progress: on the upper-body layer (the grab; ends
             // when its layer ends or is replaced by a flinch) or full body.
@@ -1560,9 +2254,47 @@ fn think_and_move(
             // Damage lands halfway through the attack (KFMonster.MeleeDamageTarget):
             // the target still within MeleeRange x 1.4 + both radii, roughly
             // level, the zed not stunned and not in its 2 s after losing its head.
+            // The ranged attack's notifies: its AnimNotify_Effects
+            // (KFVomitJet on the head, SirenScream) and each SpawnTwoShots
+            // (the Bloat's vomit, the Siren's scream pulses).
+            if let (Some(p), Some(a)) = (progress, z.attack)
+                && a.ranged
+            {
+                let mut fired = a.fx_fired;
+                for (i, (at, effect)) in c.ranged_effects.iter().enumerate().take(8) {
+                    if p >= *at && fired & (1 << i) == 0 {
+                        fired |= 1 << i;
+                        z.pending_fx.push(effect.clone());
+                    }
+                }
+                let mut shots = a.shots_fired;
+                let mut due = 0;
+                for (i, at) in c.ranged_shots.iter().enumerate().take(8) {
+                    if p >= *at && shots & (1 << i) == 0 {
+                        shots |= 1 << i;
+                        due += 1;
+                    }
+                }
+                z.attack = Some(Attack {
+                    fx_fired: fired,
+                    shots_fired: shots,
+                    ..a
+                });
+                for _ in 0..due {
+                    if let Some((damage, radius, force)) = c.scream {
+                        scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
+                    } else if c.kind == ZedKind::Husk {
+                        let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
+                        shoot_fireball(&mut z, c, &t, target, player_velocity, &spatial, &mut fireball);
+                    } else {
+                        spawn_two_shots(&z, c, target, &mut vomit);
+                    }
+                }
+            }
             if let (Some(p), Some(a)) = (progress, z.attack)
                 && p >= 0.5
                 && !a.hit_done
+                && !a.ranged
             {
                 z.attack = Some(Attack { hit_done: true, ..a });
                 let in_range = dist <= z.melee_range * 1.4 + c.collision_radius + PLAYER_RADIUS;
@@ -1572,8 +2304,30 @@ fn think_and_move(
                 if in_range && level && z.stunned <= 0.0 && !dazed {
                     // ClawDamageTarget: MeleeDamage -5% .. +5%.
                     let roll = (z.random() % 1000) as f32 / 1000.0;
-                    let amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
-                    player_damage.write(crate::combat::PlayerDamaged { amount, zed_id: z.id });
+                    let mut amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
+                    // ZombieFleshPound.ClawDamageTarget: repeated-hit attacks do
+                    // less per hit (PoundAttack1 x 0.5, PoundAttack2 x 0.25; we
+                    // land one hit per attack); raging, MeleeDamageTarget x 1.75
+                    // and a landed hit ends the rage.
+                    if c.fp_rage_anim.is_some() {
+                        match c.model.sequence_name(a.seq) {
+                            Some("PoundAttack1") => amount *= 0.5,
+                            Some("PoundAttack2") => amount *= 0.25,
+                            _ => {}
+                        }
+                        if z.fp_rage.is_some() {
+                            amount *= 1.75;
+                            z.fp_rage = None;
+                            z.fp_frustrated = false;
+                            z.cloak_dirty = true;
+                            runlog::kv("fleshpound_rage", &format!("id={} end reason=hit", z.id));
+                        }
+                    }
+                    player_damage.write(crate::combat::PlayerDamaged {
+                        amount,
+                        zed_id: z.id,
+                        kind: crate::combat::HurtKind::Plain,
+                    });
                     // ZombieClot: a landed grab pins the player (not when headless).
                     if c.grapple_duration > 0.0 && !z.decapitated && walker.is_some() {
                         pinned.pin(c.grapple_duration, z.id);
@@ -1597,8 +2351,118 @@ fn think_and_move(
             if z.attack.is_some_and(|a| !a.layered) && !full_body_busy {
                 z.attack = None;
             }
+            // CrawlerController.FireWeaponAt / ZombieCrawler.DoPounce: out of
+            // reach, roughly facing the target (KF compares the facing with
+            // the un-normalised vector to it, so nearly any forward angle
+            // passes), after 4.5 - FRand() x 3 s since the last pounce, and
+            // IsInPounceDist (within MeleeRange x 5, landing at its height):
+            // leap at PounceSpeed with JumpZ upward.
+            z.since_pounce = (z.since_pounce + dt).min(1e6);
+            if c.pounce_speed > 0.0 && z.attack.is_none() && dist > reach && z.state == ZedState::Chase && !z.decapitated {
+                let wait = 4.5 - (z.random() % 1000) as f32 / 1000.0 * 3.0;
+                let to_ue = (target - z.centre) / SCALE;
+                let ahead = dir_of(z.yaw).dot(to_ue) > 0.85;
+                let t_air = dist / c.pounce_speed;
+                let end_z = z.centre.y / SCALE + c.jump_z * t_air - 0.5 * GRAVITY * t_air * t_air;
+                let lands_level = (end_z - target.y / SCALE).abs() < c.collision_height + PLAYER_HALF_HEIGHT;
+                if z.since_pounce > wait && ahead && lands_level && to_ue.length() < z.melee_range * 5.0 {
+                    let dir3 = to_ue.normalize_or_zero();
+                    z.state = ZedState::Falling;
+                    z.air_velocity = dir3.with_y(0.0) * c.pounce_speed * SCALE;
+                    z.vertical_speed = c.jump_z * SCALE;
+                    z.pouncing = true;
+                    z.since_pounce = 0.0;
+                    z.sequence = None;
+                    start_anim(&mut z, c.air_anim, false);
+                    runlog::kv("crawler_pounce", &format!("id={} distance_unreal={dist:.0} wait={wait:.1}", z.id));
+                }
+            }
+            // ZombieScrake: SawingLoop ends when the target is out of reach
+            // (RangedAttack -> GoToState('')): damage and speed back to normal.
+            if c.saw_impale.is_some() && z.sawing && z.attack.is_none() && dist > reach {
+                z.sawing = false;
+                z.saw_charging = false;
+                z.melee_damage = c.melee_damage;
+                runlog::kv("scrake_sawing", &format!("id={} sawing=false distance_unreal={dist:.0}", z.id));
+            }
+            // ZombieScrake.RangedAttack: not attacking, has a head, under
+            // half health: RunningState (rage), GroundSpeed x 3.5.
+            if c.saw_impale.is_some()
+                && !z.raging
+                && !z.sawing
+                && z.attack.is_none()
+                && !z.decapitated
+                && z.health / z.health_max < 0.5
+            {
+                z.raging = true;
+                runlog::kv("scrake_rage", &format!("id={} health={:.0}", z.id, z.health));
+            }
+            // FleshpoundZombieController ZombieCharge: chasing without an
+            // attack for RageFrustrationThreshhold (10) + FRand() x 5 s
+            // makes him rage (frustrated: the rage only ends on a hit).
+            if c.fp_rage_anim.is_some() && z.fp_rage.is_none() && z.state == ZedState::Chase {
+                if z.attack.is_some() {
+                    z.fp_frustration = 0.0;
+                } else {
+                    z.fp_frustration += dt;
+                    if z.fp_frustration >= z.fp_frustration_limit && !z.decapitated {
+                        z.fp_frustration = 0.0;
+                        z.fp_frustrated = true;
+                        z.fp_start_rage = true;
+                    }
+                }
+            }
+            // RangedAttack (ZombieBloat, ZombieSiren): out of melee reach,
+            // in range and with the head on. The Bloat vomits within 250,
+            // with ChargeChance 0.4 (Normal) on the upper body while walking,
+            // else standing; the Siren screams within ScreamRadius, always on
+            // the upper body (her Tick keeps her walking at 0.65 speed).
+            // MonsterController.FireWeaponAt: only at an enemy in view
+            // (Focus); HuskZombieController: not before NextFireProjectileTime.
+            let dist3 = (target - z.centre).length() / SCALE;
+            z.ranged_wait = (z.ranged_wait - dt).max(0.0);
+            if let Some(ranged) = c.ranged_anim
+                && z.attack.is_none()
+                && z.stunned <= 0.0
+                && !z.decapitated
+                && z.state == ZedState::Chase
+                && dist > reach
+                && dist3 <= c.ranged_distance
+                && z.ranged_wait <= 0.0
+                && sees(&spatial, z.centre, target)
+            {
+                if c.ranged_interval > 0.0 {
+                    z.ranged_wait = c.ranged_interval + 2.0 * (z.random() % 1000) as f32 / 1000.0;
+                }
+                let moving = c.fire_root_bone.is_some() && (z.random() % 1000) as f32 / 1000.0 < c.ranged_moving_chance;
+                if moving {
+                    z.overlay = Some((ranged, 0.0, c.fire_root_bone.expect("checked")));
+                } else {
+                    z.state = ZedState::Melee;
+                    z.sequence = None;
+                    start_anim(&mut z, Some(ranged), false);
+                }
+                z.attack = Some(Attack {
+                    seq: ranged,
+                    layered: moving,
+                    hit_done: false,
+                    ranged: true,
+                    fx_fired: 0,
+                    shots_fired: 0,
+                });
+                runlog::kv(
+                    "zed_ranged_attack",
+                    &format!(
+                        "id={} sequence={} moving={moving} distance_unreal={dist3:.0}",
+                        z.id,
+                        c.model.sequence_name(ranged).unwrap_or("?")
+                    ),
+                );
+            }
             let melee = if z.decapitated && !c.headless_melee.is_empty() { &c.headless_melee } else { &c.melee };
-            if z.attack.is_none() && dist <= reach && !melee.is_empty() && z.stunned <= 0.0 {
+            // ZombieSiren.RemoveHead: MeleeRange -500, no more bites.
+            let no_melee = c.scream.is_some() && z.decapitated;
+            if z.attack.is_none() && dist <= reach && !melee.is_empty() && z.stunned <= 0.0 && !no_melee {
                 // (CanAttack is false while stunned.) A random attack (Rand(3)).
                 let slot = z.random() as usize % melee.len();
                 let mut seq = melee[slot];
@@ -1622,6 +2486,30 @@ fn think_and_move(
                         runlog::kv("gorefast_run", &format!("id={} running=false reason=full_body_attack distance_unreal={dist:.0}", z.id));
                     }
                 }
+                // ZombieFleshPound.PostNetReceive: raging, every attack is
+                // FPRageAttack.
+                if z.fp_rage.is_some()
+                    && let Some(rage_attack) = c.fp_rage_attack
+                {
+                    seq = rage_attack;
+                }
+                // ZombieScrake: the first swing enters SawingLoop (charging
+                // with ChargeChance 0.5, or 0.7 under half health: Normal
+                // difficulty); while sawing the attack is SawImpaleLoop (full
+                // body) at MeleeDamage x 0.6, repeated while in reach.
+                if let Some(impale) = c.saw_impale {
+                    if z.sawing {
+                        seq = impale;
+                        z.melee_damage = c.melee_damage * 0.6;
+                    } else {
+                        z.sawing = true;
+                        z.raging = false;
+                        let roll1 = (z.random() % 1000) as f32 / 1000.0;
+                        let roll2 = (z.random() % 1000) as f32 / 1000.0;
+                        z.saw_charging = (z.health / z.health_max < 0.5 && roll1 <= 0.7) || roll2 <= 0.5;
+                        runlog::kv("scrake_sawing", &format!("id={} sawing=true charging={}", z.id, z.saw_charging));
+                    }
+                }
                 let layered = (charge || c.layered_attacks.contains(&seq)) && c.fire_root_bone.is_some();
                 if layered {
                     z.overlay = Some((seq, 0.0, c.fire_root_bone.expect("checked")));
@@ -1634,10 +2522,28 @@ fn think_and_move(
                     seq,
                     layered,
                     hit_done: false,
+                    ranged: false,
+                    fx_fired: 0,
+                    shots_fired: 0,
                 });
+                // ZombieStalker.SetAnimAction: a melee attack uncloaks her.
+                if c.cloak_material.is_some() {
+                    z.since_uncloak = 0.0;
+                    if z.cloaked {
+                        z.cloaked = false;
+                        z.cloak_dirty = true;
+                        runlog::kv("stalker_uncloak", &format!("id={} reason=attack", z.id));
+                    }
+                }
                 runlog::kv(
                     "zed_attack",
-                    &format!("id={} sequence={} layered={layered} charge={charge}", z.id, c.model.sequence_name(seq).unwrap_or("?")),
+                    &format!(
+                        "id={} sequence={} layered={layered} charge={charge} length_frames={} rate={}",
+                        z.id,
+                        c.model.sequence_name(seq).unwrap_or("?"),
+                        c.model.length(seq),
+                        c.model.rate(seq)
+                    ),
                 );
             }
             let attacking = z.attack.is_some();
@@ -1647,7 +2553,9 @@ fn think_and_move(
                     &format!("id={} running={} reason={what} distance_unreal={dist:.0}", z.id, z.running),
                 );
             }
-            if z.attack.is_some_and(|a| !a.layered) {
+            if z.state == ZedState::Falling {
+                // Just left the ground (a pounce): no walking this frame.
+            } else if z.attack.is_some_and(|a| !a.layered) {
                 // Full-body attack: stand and finish it.
             } else {
                 // Walking, also during a grab (ZombieClot.Tick keeps
@@ -1659,6 +2567,15 @@ fn think_and_move(
                     c.ground_speed * 0.8
                 } else if z.running {
                     c.ground_speed * GOREFAST_RUN_SPEED
+                } else if z.fp_rage.is_some() {
+                    c.ground_speed * FLESHPOUND_RAGE_SPEED
+                } else if z.raging {
+                    c.ground_speed * SCRAKE_RAGE_SPEED
+                } else if z.saw_charging {
+                    c.ground_speed * SCRAKE_ATTACK_CHARGE_RATE
+                } else if c.scream.is_some() && z.attack.is_some() {
+                    // ZombieSiren.Tick: GroundSpeed x 0.65 while attacking.
+                    c.ground_speed * 0.65
                 } else {
                     c.ground_speed
                 };
@@ -1674,26 +2591,91 @@ fn think_and_move(
                     let by = others[i].0.and_then(|e| zeds_ids.get(&e).copied()).map_or("player".into(), |id| format!("zed {id}"));
                     runlog::kv("pawn_blocked", &format!("mover=zed {} by={by}", z.id));
                 }
-                let (moved, _) = mover.ground_move(z.centre, delta);
-                match mover.snap_to_floor(moved) {
-                    Some(on_floor) => z.centre = on_floor,
-                    None => {
-                        z.centre = moved;
-                        z.state = ZedState::Falling;
-                        z.vertical_speed = 0.0;
+                let (moved, wall) = mover.ground_move(z.centre, delta);
+                let progress = (moved - z.centre).with_y(0.0).length();
+                // Blocked by the level (not a pawn) while heading somewhere:
+                // jump it if a jump clears it (native PickWallAdjust jumps
+                // obstacles; rule from memory, not the scripts). The jump
+                // carries the zed forward at its ground speed.
+                let jump = wall.is_some()
+                    && blocked.is_none()
+                    && progress < 0.3 * delta.length()
+                    && z.jump_cooldown <= 0.0
+                    && mover
+                        .jump_over(z.centre, dir_of(z.yaw) * 2.0 * c.collision_radius * SCALE, crate::nav::JUMP_APEX * SCALE)
+                        .is_some();
+                if jump {
+                    z.state = ZedState::Falling;
+                    z.vertical_speed = c.jump_z * SCALE;
+                    z.air_velocity = dir_of(z.yaw) * speed * SCALE;
+                    z.jump_cooldown = 1.0;
+                    let u = z.centre / SCALE;
+                    runlog::kv("zed_jump", &format!("id={} at_unreal=({:.0}, {:.0}, {:.0}) jump_z={}", z.id, -u.z, u.x, u.y, c.jump_z));
+                } else {
+                    match mover.snap_to_floor(moved) {
+                        Some(on_floor) => z.centre = on_floor,
+                        None => {
+                            // Walked off a ledge: fall, keeping the walking speed.
+                            z.centre = moved;
+                            z.state = ZedState::Falling;
+                            z.vertical_speed = 0.0;
+                            z.air_velocity = if dt > 0.0 { (moved - old_centre).with_y(0.0) / dt } else { Vec3::ZERO };
+                        }
                     }
                 }
             }
         } else if !active.0 && z.state != ZedState::Falling {
             z.state = ZedState::Idle;
         }
+        z.jump_cooldown = (z.jump_cooldown - dt).max(0.0);
+        // ZombieCrawler.Bump: a pouncing Crawler that touches the player
+        // hurts it once (MeleeDamage -5% .. +5%).
+        if z.pouncing && z.state == ZedState::Falling && walker.is_some() {
+            let d = target - z.centre;
+            let touching = d.with_y(0.0).length() / SCALE <= c.collision_radius + PLAYER_RADIUS + 2.0
+                && (d.y / SCALE).abs() <= c.collision_height + PLAYER_HALF_HEIGHT;
+            if touching {
+                let roll = (z.random() % 1000) as f32 / 1000.0;
+                let amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
+                player_damage.write(crate::combat::PlayerDamaged {
+                        amount,
+                        zed_id: z.id,
+                        kind: crate::combat::HurtKind::Plain,
+                    });
+                z.pouncing = false;
+                runlog::kv("crawler_pounce_hit", &format!("id={} damage={amount:.1}", z.id));
+            }
+        }
         if z.state == ZedState::Falling {
+            // PHYS_Falling: gravity, the horizontal velocity kept (AirControl
+            // 0.05 is not applied), sliding along whatever is hit.
             z.vertical_speed -= GRAVITY * SCALE * dt;
-            let (moved, hit) = mover.slide(z.centre, Vec3::Y * z.vertical_speed * dt);
+            // Pawns block falling zeds too (sideways part), as walking ones.
+            let mut air = z.air_velocity * dt;
+            if let Some(me) = z.blocking_cylinder() {
+                let shapes: Vec<Cylinder> = blockers.iter().filter(|(e, _)| *e != Some(entity)).map(|(_, c)| *c).collect();
+                let (clipped, by) = clip_move(&me, air, &shapes);
+                if by.is_some() {
+                    z.air_velocity = Vec3::ZERO;
+                }
+                air = clipped;
+            }
+            let (moved, hit) = mover.slide(z.centre, air + Vec3::Y * z.vertical_speed * dt);
             z.centre = moved;
+            if hit.as_ref().is_some_and(|h| h.normal.y < -0.7) && z.vertical_speed > 0.0 {
+                z.vertical_speed = 0.0; // head hit a ceiling
+            }
             if hit.is_some_and(|h| h.normal.y > 0.7) {
+                let impact = -z.vertical_speed / SCALE;
+                z.pouncing = false; // Landed
                 z.vertical_speed = 0.0;
-                if c.land_anim.is_some() {
+                z.air_velocity = Vec3::ZERO;
+                // Landed (LandAnims) only after a real fall: faster than half
+                // the jump speed (assumed; the engine decides natively). A
+                // drop of a few units goes straight back to walking.
+                if impact < 0.5 * c.jump_z {
+                    z.state = ZedState::Chase;
+                } else if c.land_anim.is_some() {
                     z.state = ZedState::Landing;
                     z.sequence = None;
                     start_anim(&mut z, c.land_anim, false);
@@ -1715,6 +2697,10 @@ fn think_and_move(
                         c.headless_walk.or(c.walk)
                     } else if z.running {
                         c.run_anim.or(c.walk)
+                    } else if z.fp_rage.is_some() {
+                        c.fp_charge_walk.or(c.walk)
+                    } else if z.raging || z.saw_charging {
+                        c.charge_anim.or(c.walk)
                     } else {
                         c.walk
                     }
@@ -1729,7 +2715,7 @@ fn think_and_move(
             }
             ZedState::Falling => start_anim(&mut z, c.air_anim.or(c.idle), true),
             ZedState::Idle => start_anim(&mut z, c.idle, true),
-            ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Dead => {}
+            ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::Dead => {}
         }
         if z.sequence != old_sequence {
             runlog::kv(
@@ -1783,6 +2769,7 @@ fn animate_zeds(
     mut effects: Query<&mut ParticleEffect>,
     settings: Res<ZedSettings>,
     mut decals: MessageWriter<SpawnDecal>,
+    mut vomit: MessageWriter<crate::vomit::SpawnVomit>,
     mut zeds: Query<(Entity, &mut Zed, &Transform, Option<&mut RagdollState>)>,
     bodies: Query<(&Transform, &LinearVelocity, Has<Sleeping>, &AngularVelocity), With<RagdollBody>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1802,6 +2789,44 @@ fn animate_zeds(
         if let Some(gore) = gore.as_deref() {
             let clock = (time.elapsed_secs_f64() * 1000.0) as u32 ^ std::process::id();
             apply_gore(&mut commands, &mut meshes, gore, library.as_deref(), c, &mut z, entity, t, clock, settings.always_sever, &mut decals);
+        }
+        let seed = z.random();
+        for effect in std::mem::take(&mut z.pending_fx) {
+            notify_effect(&mut commands, &mut meshes, library.as_deref(), c, &mut z, t, &effect, seed);
+        }
+        // ZombieBloat.PlayDyingAnimation and Tick: unless he bled out
+        // headless he bursts: BileExplosion (BileExplosionHeadless without a
+        // head) half his height up, SpineBone2 hidden, and BileBomb's BileJet
+        // throws 4 globs up (Rotator(-Gravity) turned by Pitch 2000 and a
+        // random yaw).
+        if z.state == ZedState::Dead && c.burst_bone.is_some() && !z.burst_done {
+            z.burst_done = true;
+            if !z.bled_out {
+                if let Some(b) = c.burst_bone {
+                    z.hidden_bones.push(b);
+                }
+                let at = ue_pos(z.centre) + Vec3::Z * (0.5 * c.collision_height);
+                let class = if z.decapitated { "KFMod.BileExplosionHeadless" } else { "KFMod.BileExplosion" };
+                let k = std::f32::consts::TAU / 65536.0;
+                let axes = coords::ue_rotation_matrix(Rotator { pitch: 0, yaw: z.yaw as i32, roll: 0 });
+                let spawned = library
+                    .as_deref()
+                    .and_then(|lib| particles::spawn_effect(&mut commands, lib, &mut meshes, class, at, axes, seed));
+                let tilt = 2000.0 * k;
+                for _ in 0..4 {
+                    let yaw = (z.random() % 65536) as f32 * k;
+                    let dir = Vec3::new(tilt.sin() * yaw.cos(), tilt.sin() * yaw.sin(), tilt.cos());
+                    vomit.write(crate::vomit::SpawnVomit {
+                        at: ue_pos(z.centre),
+                        velocity: dir * crate::vomit::SPEED,
+                        zed_id: z.id,
+                    });
+                }
+                runlog::kv(
+                    "bloat_burst",
+                    &format!("id={} effect={class} spawned={} at_unreal=({:.0}, {:.0}, {:.0})", z.id, spawned.is_some(), at.x, at.y, at.z),
+                );
+            }
         }
         // Hidden bones: the head once decapitated, and severed limbs.
         let mut collapse = z.hidden_bones.clone();
@@ -1921,7 +2946,7 @@ fn animate_zeds(
                 }
                 _ => None,
             };
-            if let (Some(seq), Some(root)) = (seq, c.spine_bone) {
+            if let (Some(seq), Some(root)) = (seq, c.flinch_root.or(c.spine_bone)) {
                 z.overlay = Some((seq, 0.0, root));
                 runlog::kv(
                     "zed_hit_reaction",
@@ -1965,6 +2990,29 @@ fn animate_zeds(
     }
 }
 
+/// Swaps a Stalker's materials when her cloak changes.
+fn apply_cloaks(mut commands: Commands, classes: Option<Res<ZedClasses>>, mut zeds: Query<(&mut Zed, &ZedParts)>) {
+    let Some(classes) = classes else {
+        return;
+    };
+    for (mut z, parts) in &mut zeds {
+        if !z.cloak_dirty {
+            continue;
+        }
+        z.cloak_dirty = false;
+        let c = &classes.0[z.class];
+        for (i, &e) in parts.0.iter().enumerate() {
+            let material = match (&c.cloak_material, z.cloaked, &c.fp_red_device) {
+                (Some(cloak), true, _) => cloak.clone(),
+                // DeviceGoRed while raging (Skins[1]).
+                (_, _, Some(red)) if i == 1 && (z.fp_rage.is_some() || z.state == ZedState::Enraging) => red.clone(),
+                _ => c.model.parts[i].material.clone(),
+            };
+            commands.entity(e).insert(MeshMaterial3d(material));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2005,3 +3053,4 @@ mod tests {
         assert_eq!(z.update_running(300.0, false, 0.1), None, "headless: no running");
     }
 }
+

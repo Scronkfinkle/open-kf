@@ -294,6 +294,35 @@ pub struct Sequence {
     pub tracks: Vec<Track>,
     /// Length of the motion chunk in frames.
     pub track_time: f32,
+    /// Timed events in the animation (MeshAnimation notifies).
+    pub notifies: Vec<Notify>,
+}
+
+/// An animation notify: at `time` (0..1 of the sequence) the engine calls
+/// `function` on the actor, or fires the notify object. For
+/// AnimNotify_Script objects `name` is their NotifyName, the script function
+/// called (e.g. ZombieBloat's SpawnTwoShots).
+#[derive(Debug, Clone)]
+pub struct Notify {
+    pub time: f32,
+    pub function: String,
+    pub object_class: String,
+    pub name: String,
+    /// AnimNotify_Effect: the effect class path, the bone it starts at,
+    /// its offset and rotation relative to that bone, whether it stays
+    /// attached, and its DrawScale.
+    pub effect: Option<NotifyEffect>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotifyEffect {
+    pub class: String,
+    pub bone: String,
+    pub offset: [f32; 3],
+    /// Pitch, yaw, roll.
+    pub rotation: [i32; 3],
+    pub attach: bool,
+    pub draw_scale: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -368,10 +397,48 @@ pub fn read_mesh_animation(pkg: &Package, export: usize) -> Result<MeshAnimation
         let _start_frame = r.i32()?;
         let num_frames = r.i32()?;
         let nn = count(&mut r, 6, "notify")?;
+        let mut notifies = Vec::with_capacity(nn);
         for _ in 0..nn {
-            let _time = r.f32()?;
-            let _function = r.compact_index()?;
-            let _object = r.compact_index()?;
+            let time = r.f32()?;
+            let function = r.compact_index()?;
+            let object = ObjectRef::from_raw(r.compact_index()?);
+            let function = match usize::try_from(function) {
+                Ok(i) if i < pkg.names.len() => pkg.name(i).to_string(),
+                _ => String::new(),
+            };
+            let (mut object_class, mut name, mut effect) = (String::new(), String::new(), None);
+            if let ObjectRef::Export(e) = object {
+                use crate::properties::Value;
+                object_class = pkg.export_class_name(e).to_string();
+                if let Ok(props) = read_export_properties(pkg, e) {
+                    if let Some(Value::Name(n)) = props.get(pkg, "NotifyName") {
+                        name = pkg.name(*n).to_string();
+                    }
+                    if let Some(Value::Object(class)) = props.get(pkg, "EffectClass") {
+                        effect = Some(NotifyEffect {
+                            class: pkg.object_path(*class),
+                            bone: match props.get(pkg, "Bone") {
+                                Some(Value::Name(n)) => pkg.name(*n).to_string(),
+                                _ => String::new(),
+                            },
+                            offset: match props.get(pkg, "OffsetLocation") {
+                                Some(Value::Vector(v)) => *v,
+                                _ => [0.0; 3],
+                            },
+                            rotation: match props.get(pkg, "OffsetRotation") {
+                                Some(Value::Rotator(r)) => [r.pitch, r.yaw, r.roll],
+                                _ => [0; 3],
+                            },
+                            attach: matches!(props.get(pkg, "Attach"), Some(Value::Bool(true))),
+                            draw_scale: match props.get(pkg, "DrawScale") {
+                                Some(Value::Float(f)) => *f,
+                                _ => 1.0,
+                            },
+                        });
+                    }
+                }
+            }
+            notifies.push(Notify { time, function, object_class, name, effect });
         }
         let rate = r.f32()?;
         sequences.push(Sequence {
@@ -380,6 +447,7 @@ pub fn read_mesh_animation(pkg: &Package, export: usize) -> Result<MeshAnimation
             rate,
             tracks,
             track_time,
+            notifies,
         });
     }
     if r.remaining() != 0 {

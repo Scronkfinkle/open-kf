@@ -71,11 +71,24 @@ pub struct Walker {
     pub applied_bob: f32,
 }
 
+/// Momentum on the player from damage (Unreal units: mass x velocity),
+/// e.g. the Siren's scream pull. Pawn.TakeDamage: on the ground the upward
+/// part is at least 0.4 x its size; divided by Mass (KFPawn 400) and added
+/// by AddVelocity (leaves the ground; upward halved above 380 up).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PlayerPush {
+    pub momentum: Vec3,
+}
+
+/// KFPawn Mass.
+const PLAYER_MASS: f32 = 400.0;
+
 pub struct WalkPlugin;
 
 impl Plugin for WalkPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WalkSettings>()
+        app.add_message::<PlayerPush>()
+            .init_resource::<WalkSettings>()
             .init_resource::<ViewBob>()
             .insert_resource(MoveMode::Fly)
             .add_systems(PostStartup, apply_start_mode.after(crate::camera::spawn_camera))
@@ -141,6 +154,8 @@ fn toggle_mode(
 pub struct Mover<'a, 'w, 's> {
     spatial: &'a SpatialQuery<'w, 's>,
     shape: Collider,
+    /// What blocks this cylinder (`player_filter` or `zed_filter`).
+    filter: SpatialQueryFilter,
 }
 
 pub struct Hit {
@@ -150,11 +165,13 @@ pub struct Hit {
 }
 
 impl<'a, 'w, 's> Mover<'a, 'w, 's> {
-    /// A cylinder of the given radius and half-height, in Unreal units.
-    pub fn new(spatial: &'a SpatialQuery<'w, 's>, radius: f32, half_height: f32) -> Self {
+    /// A cylinder of the given radius and half-height, in Unreal units,
+    /// blocked by what `filter` lets through.
+    pub fn new(spatial: &'a SpatialQuery<'w, 's>, radius: f32, half_height: f32, filter: SpatialQueryFilter) -> Self {
         Mover {
             spatial,
             shape: Collider::cylinder(radius * SCALE, 2.0 * half_height * SCALE),
+            filter,
         }
     }
 
@@ -180,7 +197,7 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
             ignore_origin_penetration: true,
         };
         self.spatial
-            .cast_shape(&self.shape, from, Quat::IDENTITY, dir3, &config, &crate::collision::world_filter())
+            .cast_shape(&self.shape, from, Quat::IDENTITY, dir3, &config, &self.filter)
             .map(|h| {
                 // Make the normal face against the motion (trimesh triangles are two-sided).
                 let n = if h.normal1.dot(dir) > 0.0 { -h.normal1 } else { h.normal1 };
@@ -246,6 +263,24 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
     }
 }
 
+impl Mover<'_, '_, '_> {
+    /// Would a jump clear what blocks `delta`? Rises up to `apex` metres
+    /// (less under a ceiling), moves `delta` at that height, and comes down
+    /// onto a walkable floor. Returns the landing point if that gets
+    /// further than half of `delta` (used by zeds, which jump obstacles
+    /// they are blocked by).
+    pub fn jump_over(&self, pos: Vec3, delta: Vec3, apex: f32) -> Option<Vec3> {
+        let rise = self.cast(pos, Vec3::Y, apex).map_or(apex, |h| h.distance);
+        let up = pos + Vec3::Y * rise;
+        let (forward, _) = self.slide(up, delta);
+        if (forward - up).with_y(0.0).length() < 0.5 * delta.with_y(0.0).length() {
+            return None;
+        }
+        let down = self.cast(forward, Vec3::NEG_Y, rise + kf::MAX_STEP * SCALE)?;
+        (down.normal.y >= kf::MIN_FLOOR_NORMAL_Y).then(|| forward - Vec3::Y * down.distance)
+    }
+}
+
 /// Unreal's CalcVelocity: friction turns velocity toward the input
 /// direction; with no input it brakes; then accelerate and clamp.
 fn calc_velocity(v: Vec3, accel: Vec3, friction: f32, max_speed: f32, dt: f32) -> Vec3 {
@@ -281,6 +316,7 @@ fn walk(
     mut bob: ResMut<ViewBob>,
     zeds: Query<&crate::zed::Zed>,
     mut pinned: Option<ResMut<crate::combat::PlayerPinned>>,
+    mut pushes: MessageReader<PlayerPush>,
     mut last_log: Local<f32>,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
@@ -289,7 +325,7 @@ fn walk(
     if *mode != MoveMode::Walk || frames.0 < 5 {
         return;
     }
-    let mover = Mover::new(&spatial, kf::RADIUS, kf::HALF_HEIGHT);
+    let mover = Mover::new(&spatial, kf::RADIUS, kf::HALF_HEIGHT, crate::collision::player_filter());
     // Living zeds block the player (pawn cylinders, see pawn_collision).
     let (zed_ids, zed_cylinders): (Vec<usize>, Vec<Cylinder>) =
         zeds.iter().filter_map(|z| z.blocking_cylinder().map(|c| (z.id, c))).unzip();
@@ -362,6 +398,22 @@ fn walk(
             }
         }
 
+        for push in pushes.read() {
+            let mut m = push.momentum;
+            if w.on_ground {
+                m.z = m.z.max(0.4 * m.length());
+            }
+            let mut v = m / PLAYER_MASS;
+            if v == Vec3::ZERO {
+                continue;
+            }
+            w.on_ground = false;
+            if w.velocity.y > 380.0 * SCALE && v.z > 0.0 {
+                v.z *= 0.5;
+            }
+            w.velocity += Vec3::new(v.y, v.z, -v.x) * SCALE;
+            runlog::kv("player_push", &format!("velocity_add_unreal=({:.0}, {:.0}, {:.0})", v.x, v.y, v.z));
+        }
         for _ in 0..steps {
             w.time += h;
             let accel = wish * kf::ACCEL_RATE * SCALE;
