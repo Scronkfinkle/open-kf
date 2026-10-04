@@ -18,6 +18,7 @@ use ue_assets::properties::{Rotator, Value};
 
 use crate::camera::FlyCamera;
 use crate::gore::{self, GoreAssets, PieceModel, StumpKind};
+use crate::decals::{DecalKind, SpawnDecal};
 use crate::particles::{self, EffectLibrary, ParticleEffect};
 use crate::coords::{self, SCALE};
 use crate::map::MapRequest;
@@ -275,6 +276,8 @@ pub struct Zed {
     next_piece: usize,
     /// Particle effects attached to a mesh tag (AttachEmitterEffect).
     effects: Vec<(Entity, &'static str)>,
+    /// Seconds since the last hit (TakeDamage's bRecentHit: under 0.2 s).
+    since_hit: f32,
 
     /// Facing, Unreal rotation units.
     yaw: f32,
@@ -419,6 +422,7 @@ fn apply_gore(
     t: &Transform,
     clock: u32,
     always_sever: bool,
+    decals: &mut MessageWriter<SpawnDecal>,
 ) {
     let hits = std::mem::take(&mut z.gore_hits);
     let velocity = ue_dir(z.velocity) / SCALE;
@@ -441,6 +445,19 @@ fn apply_gore(
                 roll: 0,
             });
             particles::spawn_effect(commands, library, meshes, "ROEffects.ROBloodPuff", at, axes, rng.0);
+        }
+        // KFMonster.TakeDamage: a ProjectileBloodSplat for blood-causing
+        // damage, only 20% of the time for a hit within 0.2 s of the last;
+        // it traces 350 units along the shot and splats the wall it reaches.
+        let recent = z.since_hit < 0.2;
+        z.since_hit = 0.0;
+        if !recent || rng.frand() > 0.8 {
+            decals.write(SpawnDecal {
+                kind: DecalKind::WallSplat,
+                at: ue_pos(hit.point),
+                dir: ue_dir(hit.dir),
+                trace: true,
+            });
         }
         if z.last_pose.is_empty() {
             continue;
@@ -1126,6 +1143,7 @@ impl Zed {
             last_pose: Vec::new(),
             next_piece: 0,
             effects: Vec::new(),
+            since_hit: f32::MAX,
             yaw: 0.0,
             state: ZedState::Idle,
             vertical_speed: 0.0,
@@ -1286,6 +1304,7 @@ fn spawn_in_front(
                 last_pose: Vec::new(),
                 next_piece: 0,
                 effects: Vec::new(),
+                since_hit: f32::MAX,
                 yaw,
                 state: ZedState::Idle,
                 vertical_speed: 0.0,
@@ -1477,6 +1496,7 @@ fn think_and_move(
             z.bleed_out = Some(left);
         }
         z.since_pain_anim = (z.since_pain_anim + dt).min(1e6);
+        z.since_hit = (z.since_hit + dt).min(1e6);
         if let Some(s) = z.since_decap.as_mut() {
             *s += dt;
         }
@@ -1762,6 +1782,7 @@ fn animate_zeds(
     library: Option<Res<EffectLibrary>>,
     mut effects: Query<&mut ParticleEffect>,
     settings: Res<ZedSettings>,
+    mut decals: MessageWriter<SpawnDecal>,
     mut zeds: Query<(Entity, &mut Zed, &Transform, Option<&mut RagdollState>)>,
     bodies: Query<(&Transform, &LinearVelocity, Has<Sleeping>, &AngularVelocity), With<RagdollBody>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1780,7 +1801,7 @@ fn animate_zeds(
         let c = &classes.0[z.class];
         if let Some(gore) = gore.as_deref() {
             let clock = (time.elapsed_secs_f64() * 1000.0) as u32 ^ std::process::id();
-            apply_gore(&mut commands, &mut meshes, gore, library.as_deref(), c, &mut z, entity, t, clock, settings.always_sever);
+            apply_gore(&mut commands, &mut meshes, gore, library.as_deref(), c, &mut z, entity, t, clock, settings.always_sever, &mut decals);
         }
         // Hidden bones: the head once decapitated, and severed limbs.
         let mut collapse = z.hidden_bones.clone();

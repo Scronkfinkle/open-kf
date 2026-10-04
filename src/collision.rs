@@ -84,6 +84,9 @@ impl Plugin for CollisionPlugin {
 }
 
 fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
+    // Level surfaces for blood decals (Projectors draw on BSP, static meshes
+    // and terrain; we only have the blocking ones).
+    commands.insert_resource(crate::decals::DecalSurfaces::new(&[&geo.bsp, &geo.meshes, &geo.terrain]));
     let mut spawned = Vec::new();
     for (name, soup) in [
         ("bsp", std::mem::take(&mut geo.bsp)),

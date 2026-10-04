@@ -16,6 +16,7 @@ use ue_assets::properties::{Rotator, Value};
 use ue_assets::static_mesh::read_static_mesh;
 
 use crate::coords::{self, SCALE};
+use crate::decals::{DecalKind, SpawnDecal};
 use crate::map::MapRequest;
 use crate::particles::{self, EffectLibrary, ParticleEffect};
 use crate::runlog;
@@ -568,6 +569,7 @@ fn move_pieces(
     mut commands: Commands,
     mut pieces: Query<(Entity, &mut Piece, &mut Transform)>,
     mut effects: Query<&mut ParticleEffect>,
+    mut decals: MessageWriter<SpawnDecal>,
 ) {
     let dt = time.delta_secs().min(0.1);
     for (entity, mut g, mut t) in &mut pieces {
@@ -621,6 +623,31 @@ fn move_pieces(
                     g.rng = rng.0;
                     g.bounces += 1;
                     let speed = g.velocity.length() / SCALE;
+                    let pos_ue = Vec3::new(-t.translation.z, t.translation.x, t.translation.y) / SCALE;
+                    let into_surface = -Vec3::new(-n.z, n.x, n.y);
+                    // SeveredAppendage.HitWall: a drip where it bounces fast
+                    // (over MaxSpeed / 3) and where it stops.
+                    if g.motion.lie_flat && (speed > PIECE_MAX_SPEED / 3.0 || speed < REST_SPEED) {
+                        decals.write(SpawnDecal {
+                            kind: DecalKind::Drip,
+                            at: pos_ue,
+                            dir: into_surface,
+                            trace: false,
+                        });
+                    }
+                    // KFGib.HitWall: on stopping, a KFBloodPuff, which 20% of the
+                    // time (BloodSpurt.WallSplat) splats the floor 350 below.
+                    if !g.motion.lie_flat && speed < REST_SPEED {
+                        let mut rng = Rng(g.rng ^ 0x2545_f491);
+                        if rng.frand() <= 0.2 {
+                            decals.write(SpawnDecal {
+                                kind: DecalKind::FloorSplat,
+                                at: pos_ue,
+                                dir: Vec3::NEG_Z,
+                                trace: true,
+                            });
+                        }
+                    }
                     if speed < REST_SPEED {
                         g.resting = true;
                         if g.motion.lie_flat {

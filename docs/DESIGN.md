@@ -1008,6 +1008,47 @@ head jet's chunks fly up world Z); Relative ones move and turn with the
 effect, whose frame is the bone tag's (AttachEmitterEffect sets a zero
 relative rotation).
 
+## Gore step D: blood decals (implemented 2026-10-04)
+
+**What KF does.** Blood on walls and floors is UE2 Projectors (a texture
+projected onto level geometry inside a box), all ProjectedDecal subclasses:
+- Projector: FrameBufferBlendingOp PB_Modulate (multiply the framebuffer;
+  the textures have a ~120 grey background, so 2x as for particles),
+  projects onto BSP, static meshes and terrain, not actors.
+- ProjectedDecal: PushBack 24 (the box starts 24 units in front of the
+  spawn point), MaxTraceDistance 60 (box depth), RandomOrient (random roll),
+  FadeInTime 0.125, LifeSpan = class LifeSpan - 1 (Rand(1) is always 0),
+  then AbandonProjector(LifeSpan).
+- ROBloodSplatter: Splatter_001..006 (256 px), DrawScale 0.25, LifeSpan 20.
+  ROSmallBloodDrops: Drip_001..003 (128 px), DrawScale 0.15, LifeSpan 20.
+  KFBloodSplatterDecal: KFX.BloodSplat1..3 (512 px), DrawScale
+  Rand(2) - 0.65 (so 0.35 or -0.65), LifeSpan 10. KFBloodStreakDecal:
+  KFX.BloodStreak, DrawScale Rand(2) - 0.6, PushBack 5, no random roll.
+
+When:
+1. Every hit (KFMonster.TakeDamage, bCausesBlood; a hit within 0.2 s of the
+   last one only 20% of the time): ProjectileBloodSplat traces 350 units
+   along the shot from the hit point; on a wall, an ROBloodSplatter at
+   WallHit + 20 x (WallNormal + VRand()), facing into the wall.
+2. Severed pieces (SeveredAppendage.HitWall): ROSmallBloodDrops where they
+   bounce fast (over MaxSpeed / 3) and where they stop.
+3. Brain chunks (KFGib.HitWall): when one stops, KFBloodPuff; 20% of the
+   time it traces 350 down and puts a KFBloodSplatterDecal on the floor.
+4. Ragdolls (KFMonster.KImpact): a KFBloodStreakDecal where a body part hits
+   a surface, at most every BloodStreakInterval (0.25 s) and only after
+   moving 0.75 m since the last one.
+
+**Plan.** Decal meshes are built on the CPU: level triangles inside the
+box (a grid over the collision geometry), clipped to the box, facing the
+projector, textured by projecting onto the box's Y/Z plane, drawn with the
+particles' 2x modulate material, faded in, removed at the end of their
+life. Approximations, labelled: an orthographic box (FOV ignored; FOV is
+0-6 degrees), the size from texture size x |DrawScale| (a negative scale
+read as mirrored), only collision geometry (non-blocking decorative meshes
+get no decals), the end of life is a 1 s fade (assumed).
+Steps: D1 decal library and projection, with hit splats on walls (1);
+D2 drips and floor splats (2, 3); D3 ragdoll streaks (4).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

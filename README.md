@@ -153,6 +153,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   decapitation, BrainSplash, the pulsing limb jets, blood puffs on every
   hit, blood trails behind flying pieces and chunks. Checked by logs and
   screenshots; the decapitation and limb effects play-tested by you.
+- Gore, step D (2026-10-04): KF's blood decals: splats on walls and floors
+  behind hits, drips under severed limbs, splats under brain chunks,
+  streaks where corpses hit the ground. Checked by logs and screenshots. Not
+  play-tested by you.
 - Install discovery: finds the KF install and reads its build label.
 - Package table reader: all 548 Unreal packages in the install parse
   (`cargo run --release -p ue-assets --bin kfpkg -- scan`). It reads names,
@@ -185,7 +189,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Doors, breakable windows and scripted barriers (movers) do not block
   movement yet, because they don't move yet.
 - No crouching. Ladders, water and swimming are not handled.
-- No muzzle flash, blood decals (splats on walls and floors), impact effects or sound;  only the two starting
+- No muzzle flash, impact effects on walls, or sound;  only the two starting
   weapons are available. Only the Clot and the Gorefast exist, and they
   chase in a straight line (no pathfinding), so they can get stuck on walls.
   Emitters and sound: not started.

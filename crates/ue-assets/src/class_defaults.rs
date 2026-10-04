@@ -111,6 +111,34 @@ impl<'a> ClassDefaults<'a> {
         Vec::new()
     }
 
+    /// All elements of a fixed-size array default holding object references
+    /// (e.g. `Splats`, `Splats[1]`, ...), resolved, ordered by index, from
+    /// the nearest class in the chain that sets any of them.
+    pub fn get_array_objects(&self, class: &ObjectHandle, prop: &str) -> Vec<ObjectHandle> {
+        let mut current = Some(self.class_info(class));
+        for _ in 0..32 {
+            let Some(info) = current else { break };
+            if let Some(list) = &info.defaults {
+                let pkg = &info.handle.package.pkg;
+                let mut items: Vec<(u32, ObjectHandle)> = list
+                    .props
+                    .iter()
+                    .filter(|p| pkg.name(p.name).eq_ignore_ascii_case(prop))
+                    .filter_map(|p| match &p.value {
+                        Value::Object(r) => self.set.resolve(&info.handle.package, *r).map(|h| (p.array_index, h)),
+                        _ => None,
+                    })
+                    .collect();
+                if !items.is_empty() {
+                    items.sort_by_key(|(i, _)| *i);
+                    return items.into_iter().map(|(_, h)| h).collect();
+                }
+            }
+            current = info.super_class.as_ref().map(|s| self.class_info(s));
+        }
+        Vec::new()
+    }
+
     /// Effective value for an actor: its own saved property, else the class default.
     pub fn actor_value(
         &self,

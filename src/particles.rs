@@ -65,10 +65,10 @@ impl Plugin for ParticlePlugin {
 /// material tone-maps its output (the camera is not HDR), which turns
 /// white into grey and darkened everything behind the particles.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
-struct ModulateMaterial {
+pub struct ModulateMaterial {
     #[texture(0)]
     #[sampler(1)]
-    texture: Handle<Image>,
+    pub texture: Handle<Image>,
 }
 
 const MODULATE_SHADER: Handle<bevy::shader::Shader> = bevy::asset::uuid_handle!("6f1d2a8e-3b4c-4d5e-9f60-718293a4b5c6");
@@ -227,7 +227,7 @@ fn to_ue_dir(v: Vec3) -> Vec3 {
 /// UE2's Modulated particles multiply by 2 x texture (mid-grey = no change;
 /// KF's blood textures have a grey background). Multiply blending cannot
 /// brighten, so anything above mid-grey is clamped to "no change".
-fn decode(h: &ObjectHandle, opaque: bool, modulate2x: bool, images: &mut Assets<Image>) -> Option<Handle<Image>> {
+pub fn decode(h: &ObjectHandle, opaque: bool, modulate2x: bool, images: &mut Assets<Image>) -> Option<Handle<Image>> {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let tex = read_texture(&h.package.pkg, h.export).ok()?;
     let mip = tex.mips.first()?;

@@ -2,6 +2,7 @@ mod camera;
 mod combat;
 mod collision;
 mod coords;
+mod decals;
 mod gore;
 mod map;
 mod particles;
@@ -173,6 +174,7 @@ fn main() -> AppExit {
             combat::CombatPlugin,
             gore::GorePlugin,
             particles::ParticlePlugin,
+            decals::DecalPlugin,
         ))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)

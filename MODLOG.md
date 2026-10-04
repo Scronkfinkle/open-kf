@@ -1299,3 +1299,39 @@ with the game. Not done: chunk bounce effects (KFHumanGibGroup BloodHitClass
 (ProjectileBloodSplat on walls, drips, streaks): decals are a separate
 engine feature. Not play-tested by you.
 **Next:** Your play test; then blood decals, or something else.
+
+## 2026-10-04 Gore step D: blood decals
+
+**Changed:** New `src/decals.rs`: KF's ProjectedDecal Projectors rebuilt as
+CPU decal meshes: level triangles inside the projector box (a grid over the
+collision geometry, kept when colliders are built) are clipped to the box,
+textured by their position in it, lifted 0.4 units, drawn with the 2x
+modulate material, faded in over FadeInTime and out over the last second,
+removed after LifeSpan - 1 (as ProjectedDecal.PostBeginPlay). Classes read
+from the game: ROBloodSplatter, ROSmallBloodDrops, KFBloodSplatterDecal,
+KFBloodStreakDecal (textures, DrawScale, PushBack, MaxTraceDistance,
+RandomOrient, FadeInTime, LifeSpan). Wired up: (1) hits splat the surface
+within 350 units along the shot (ProjectileBloodSplat; a hit within 0.2 s of
+the last only 20% of the time); (2) severed pieces drip where they bounce
+fast and where they stop; (3) a stopped brain chunk splats the floor 20% of
+the time (KFBloodPuff); (4) ragdoll parts hitting surfaces leave streaks
+(KFMonster.KImpact rules, via avian collision events). `ue-assets`:
+`ClassDefaults::get_array_objects`. `particles.rs`: the modulate material
+and texture decoder are shared. Logs: `decal_surfaces`,
+`decal_class_loaded`, `decal_spawned`, `decal_no_surface`, `decal_removed`.
+**Why:** Gore step D (finish the gore before pathfinding, as you asked).
+**Tested how:** Scripted kills on KF-WestLondon (body shots, a forced limb
+sever, headshots), console captured, logs and screenshots. clippy clean,
+tests pass.
+**Result:** 219,744 level triangles indexed. All four classes load with
+their textures. Seen in runs: wall/floor splats behind shots (64 units),
+drips under a severed leg, a 179-unit floor splat under a stopped chunk, 2-3
+streaks per corpse; 0 console errors. Screenshots: dark-red splats on the
+road, no square edges.
+**Still broken / not tested:** Approximations (labelled in the code): the
+projector is an orthographic box (KF's FOV of 0-6 degrees ignored); size =
+texture size x |DrawScale| (KF's negative scales read as mirrored); only
+blocking geometry gets decals; the 1 s end fade is assumed; ragdoll impacts
+use avian's collision-start events, not Karma's. The old-style KFBloodPuff
+particle (xEmitter) on chunk landing is not drawn. Not play-tested by you.
+**Next:** Your play test; then pathfinding.

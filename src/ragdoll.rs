@@ -400,6 +400,8 @@ pub fn spawn(
             LinearVelocity(velocity),
             AngularVelocity(launch.angular_velocity),
             RagdollBody,
+            // For KFMonster.KImpact (blood streaks where parts hit surfaces).
+            CollisionEventsEnabled,
             SleepThreshold {
                 linear: SLEEP_LINEAR,
                 angular: SLEEP_ANGULAR,
