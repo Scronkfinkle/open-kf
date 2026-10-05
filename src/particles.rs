@@ -523,15 +523,20 @@ fn load_effect(
         match d.kind {
             EmitterKind::Sprite => {
                 let opaque = matches!(d.draw_style, 2 | 3 | 5 | 6);
+                let mut chain = String::new();
                 let image = assets.texture.as_ref().and_then(|t| {
                     let m = ue_assets::material::resolve(set, t, ObjectRef::Export(t.export));
+                    chain = format!("{}:{}", t.package.pkg.object_name(ObjectRef::Export(t.export)), m.chain.join(">"));
                     m.texture.as_ref().and_then(|tex| decode(tex, opaque, d.draw_style == 2, images))
                 });
-                notes.push(format!("{}:sprite:texture={}", d.name, image.is_some()));
-                loaded.material = Some(match (d.draw_style, image) {
-                    (2, Some(texture)) => SpriteMaterial::Modulate(modulate.add(ModulateMaterial { texture })),
-                    (_, image) => SpriteMaterial::Standard(materials.add(StandardMaterial {
-                        base_color_texture: image,
+                notes.push(format!("{}:sprite:texture={}:style={}:{chain}", d.name, image.is_some(), d.draw_style));
+                // No texture (Texture = None, e.g. KF-WestLondon Emitter23,
+                // WelderHitEmitter's SpriteEmitter42): not drawn. Assumed
+                // from KF: drawn untextured they are grey squares.
+                loaded.material = image.map(|image| match d.draw_style {
+                    2 => SpriteMaterial::Modulate(modulate.add(ModulateMaterial { texture: image })),
+                    _ => SpriteMaterial::Standard(materials.add(StandardMaterial {
+                        base_color_texture: Some(image),
                         unlit: true,
                         alpha_mode: alpha_mode(d.draw_style),
                         cull_mode: None,

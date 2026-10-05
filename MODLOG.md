@@ -2990,3 +2990,20 @@ patterns are added as-is (KF multiplies them by the surface texture).
 TexRotator projections (fans) do not turn. Not looked at by you.
 **Next:** your call: baked lighting, or back to the game loop (G3, D5,
 T1-T3).
+
+## 2026-10-05 Fix: smoke drawn as grey squares (sprites with no texture)
+
+**Changed:** `particles.rs`: a sprite emitter whose Texture is None is not
+drawn (it still runs); `effect_loaded` notes now list each sprite's draw
+style and material chain.
+**Why:** your screenshot: big grey squares in the KF-WestLondon tunnel.
+KF-WestLondon's Emitter23 (at -7053, 3295, -3762) has a smoke emitter
+(SpriteEmitter23, alpha blend) with Texture = None; we drew it untextured.
+**Tested how:** log (only 2 textureless sprites loaded: Emitter23 and
+KFMod.WelderHitEmitter's SpriteEmitter42); screenshot down the tunnel
+toward Emitter23; tests, clippy.
+**Result:** no squares at Emitter23. Tests 96 pass; clippy only the old
+`boss.rs` warning.
+**Still broken / not tested:** assumed KF draws nothing for a textureless
+sprite (not in the scripts; the welder's has no visible squares in KF).
+My screenshot may not be your exact view; not checked by you.
