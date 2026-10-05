@@ -1785,6 +1785,12 @@ W6b (`projectile.rs` PlayerThrown, `weapon.rs` Action::Grenade):
   Gorefast 0.5, Stalker 0.25, Bloat / Husk 1, Siren 2, Scrake 3,
   Fleshpound 5, Patriarch 10) of zeds in sight within 150; at 1 or more,
   5 beeps 0.15 s apart, then KFNadeLExplosion and HurtRadius 1500 in 350.
+- PipeBombFire.ModeDoFire: the click plays Toss; the bomb (and the ammo
+  use) comes ProjectileSpawnDelay 1.1 s later (Timer). After Toss the
+  next bomb comes out (PipeBombExplosive.AnimEnd: SelectAnim); the
+  magazine holds 1, so the next click reloads (bModeZeroCanDryFire). The
+  last one removes the weapon and switches away (KF picks the best rated
+  weapon; here the previous one in slot order).
 - Frag and pipe bomb damage counts double on the Fleshpound.
 - One `blast` function serves all explosives.
 - Not done: shooting a pipe bomb to set it off (PipeBombProjectile.

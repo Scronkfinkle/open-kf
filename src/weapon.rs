@@ -203,6 +203,9 @@ struct WeaponDef {
     toggles_on_alt: Option<AltToggle>,
     /// KSGShotgun.bWideSpread (KSGFire: Spread x 2.05).
     wide_spread: bool,
+    /// Thrown away (the last pipe bomb placed: PipeBombFire.Timer destroys
+    /// the weapon); no longer selectable.
+    gone: bool,
     /// Frag: TossAnim, TossTime and TossSpawnTime (Frag.StartThrow).
     toss: Option<(String, f32, f32)>,
     /// KFWeapon QuickPutDownTime / QuickBringUpTime (around a frag throw).
@@ -370,6 +373,9 @@ struct FireMode {
     total_ammo_only: bool,
     /// LAWFire.AllowFire: only when aimed and fully zoomed in.
     requires_aim: bool,
+    /// PipeBombFire.ModeDoFire: the projectile (and the ammo use) comes
+    /// ProjectileSpawnDelay after the click, as the Toss animation lets go.
+    spawn_delay: Option<f32>,
     /// When the last animation plays: BoomStickAltFire when the shot empties
     /// the gun (and more ammo is left), BoomStickFire when it is the very
     /// last ammo.
@@ -436,6 +442,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         last_rule: LastShot::Never,
         total_ammo_only: false,
         requires_aim: false,
+        spawn_delay: None,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -660,6 +667,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             .iter()
             .any(|c| defaults.is_a(fm_class, c));
         mode.requires_aim = defaults.is_a(fm_class, "LAWFire");
+        mode.spawn_delay = defaults.is_a(fm_class, "PipeBombFire").then(|| ffloat("ProjectileSpawnDelay", 1.1));
         mode.pellets = Some(PelletFire {
             thrown,
             explosive,
@@ -794,6 +802,9 @@ struct Weapons {
     reload_timer: f32,
     /// BoomStick: seconds until both barrels reload by themselves.
     boomstick_pending: Option<f32>,
+    /// PipeBombFire: (seconds left, weapon index, mode) of a placement
+    /// waiting for its ProjectileSpawnDelay.
+    pending_spawn: Option<(f32, usize, usize)>,
     /// Seconds left of the bring-up or put-down (Weapon's Timer), and
     /// whether the put-down is still waiting out DownDelay.
     switch_timer: f32,
@@ -1006,6 +1017,7 @@ fn load_weapons(
         spread_state: Default::default(),
         reload_timer: 0.0,
         boomstick_pending: None,
+        pending_spawn: None,
         switch_timer: 0.0,
         down_delayed: false,
         pending_swings: Vec::new(),
@@ -1303,6 +1315,7 @@ fn load_weapon(
             TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)).then_some(AltToggle::FireMode)
         },
         wide_spread: false,
+        gone: false,
         toss: name("TossAnim").map(|a| (a.to_ascii_lowercase(), float("TossTime", 0.366), float("TossSpawnTime", 0.2))),
         quick_put_down_time: float("QuickPutDownTime", 0.15),
         quick_bring_up_time: float("QuickBringUpTime", 0.15),
@@ -1355,7 +1368,7 @@ impl WeaponDef {
             group: self.group,
             group_offset: self.group_offset,
             priority: self.priority,
-            selectable: !self.class.eq_ignore_ascii_case("KFMod.Frag"),
+            selectable: !self.class.eq_ignore_ascii_case("KFMod.Frag") && !self.gone,
         }
     }
 }
@@ -1884,6 +1897,8 @@ fn weapon_input(
         // BoomStick: bVeryLastShotAnim = AmmoAmount <= AmmoPerFire (before
         // the shot); the gun is emptied when the magazine reaches 0.
         let total_before = w.defs[cur].ammo.map_or(0, |a| a.mag + a.spare);
+        // PipeBombFire: the ammo goes when the projectile spawns.
+        let needs = if fm.spawn_delay.is_some() { 0 } else { needs };
         if needs > 0 {
             if alt_pool.is_some() {
                 if let Some(a) = w.defs[cur].alt_ammo.as_mut() {
@@ -1958,6 +1973,11 @@ fn weapon_input(
                     ),
                 );
                 w.pending_swings.push((stats.damage_delay, stats, item_name));
+            }
+            FireKind::Pellets if fm.spawn_delay.is_some() => {
+                let delay = fm.spawn_delay.unwrap_or(0.0);
+                w.pending_spawn = Some((delay, cur, mode));
+                runlog::kv("projectile_spawn_delayed", &format!("weapon={item_name} delay={delay}"));
             }
             FireKind::Pellets => {
                 let pf = fm.pellets.expect("pellet fire has pellet values");
@@ -2114,6 +2134,61 @@ fn weapon_input(
     // the weapon idles (ClientFinishReloading), even if the reload
     // animation is still playing. One-round reloads add a round every
     // ReloadRate until full.
+    // PipeBombFire.Timer: ConsumeAmmo, DoFireEffect; out of ammo: the
+    // weapon is gone and the best other one comes up.
+    if let Some((t, wi, mode)) = w.pending_spawn {
+        let t = t - dt;
+        if t > 0.0 {
+            w.pending_spawn = Some((t, wi, mode));
+        } else {
+            w.pending_spawn = None;
+            let pf = w.defs[wi].modes[mode].pellets;
+            if let Some(a) = w.defs[wi].ammo.as_mut() {
+                if a.mag > 0 {
+                    a.mag -= 1;
+                } else {
+                    a.spare = a.spare.saturating_sub(1);
+                }
+            }
+            if let (Some(pf), Ok((cam, _))) = (pf, main_cam.single()) {
+                let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+                let eye = to_ue(cam.translation) / coords::SCALE;
+                let (x, y, z) = (to_ue(*cam.forward()), to_ue(*cam.right()), to_ue(*cam.up()));
+                let mut start = eye + x * pf.spawn_offset.x;
+                if !w.aiming {
+                    start += y * pf.spawn_offset.y + z * pf.spawn_offset.z;
+                }
+                let r = ue_assets::properties::Rotator {
+                    yaw: (pf.spread * (w.random() - 0.5)) as i32,
+                    pitch: (pf.spread * (w.random() - 0.5)) as i32,
+                    roll: (pf.spread * (w.random() - 0.5)) as i32,
+                };
+                pellets.write(crate::projectile::SpawnPlayerProjectile {
+                    origin: start,
+                    trace_from: eye,
+                    dir: coords::ue_rotation_matrix(r) * x,
+                    stats: pf.stats,
+                    weapon: w.defs[wi].item_name,
+                    tracer_start: None,
+                    explosive: pf.explosive,
+                    thrown: pf.thrown,
+                    extra_speed: 0.0,
+                });
+            }
+            let left = w.defs[wi].ammo.map_or(0, |a| a.mag + a.spare);
+            if left == 0 {
+                w.defs[wi].gone = true;
+                runlog::kv("weapon_gone", &format!("weapon={}", w.defs[wi].item_name));
+                if w.current == wi
+                    && !matches!(w.action, Action::Grenade { .. } | Action::PutDown { .. })
+                    && let Some(next) = step_weapon(&slots(&w.defs), wi, false)
+                {
+                    w.firing = [false; 2];
+                    set_action(&mut w, Action::PutDown { next });
+                }
+            }
+        }
+    }
     // BoomStick.WeaponTick: ReloadCountDown after the last barrel, both
     // load (MagAmmoRemaining = Min(AmmoAmount, 2)); only while in hand.
     if let Some(t) = w.boomstick_pending
@@ -2345,7 +2420,17 @@ fn animate_weapon(
                         (w.anim == fm.anims[0].to_ascii_lowercase() && has_anim(&w, &fm.end_anim))
                             .then(|| (fm.end_anim.clone(), fm.end_anim_rate))
                     });
-                    if let Some((end, rate)) = next_end {
+                    // PipeBombExplosive.AnimEnd: after the toss, the next bomb
+                    // comes out (SelectAnim) if there is one.
+                    let def = &w.defs[w.current];
+                    let pipe_next = def.modes[0].spawn_delay.is_some()
+                        && w.anim == def.modes[0].anims[0].to_ascii_lowercase()
+                        && def.ammo.is_some_and(|a| a.mag + a.spare > 0)
+                        && !def.gone;
+                    if pipe_next {
+                        let (anim, rate) = (def.select_anim.clone(), def.select_anim_rate);
+                        play(&mut w, &anim, rate, false);
+                    } else if let Some((end, rate)) = next_end {
                         play(&mut w, &end, rate, false);
                     } else if !w.firing.iter().any(|&f| f) {
                         play_idle(&mut w);

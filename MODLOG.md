@@ -2335,3 +2335,21 @@ bomb lies on the floor where it stopped. Tests 51/51.
 flight not looked at by eye. The Crossbow bolt (skeletal mesh), pellets
 and the M99 bullet are not drawn.
 **Next:** W7, fire.
+
+## 2026-10-04 Fix: pipe bomb placed when the toss lets go
+
+**Changed:** `weapon.rs`: `FireMode.spawn_delay` (PipeBombFire
+ProjectileSpawnDelay 1.1 s), `Weapons.pending_spawn` (ammo used and bomb
+spawned when it runs out), the next bomb's SelectAnim after Toss
+(PipeBombExplosive.AnimEnd), `WeaponDef.gone` (the last bomb removes the
+weapon and switches away). DESIGN.
+**Why:** You saw the pipe bomb fall before the throw animation finished.
+**Tested how:** `--give PipeBombExplosive`, clicking four times;
+`cargo test --release`.
+**Result:** Toss at 6.20, bomb at 7.30 (1.1 s), next bomb's select;
+click: reload (dry fire), click: toss, bomb 1.1 s later; the weapon gone
+and the 9mm brought up. Tests 51/51.
+**Still broken / not tested:** The switch after the last bomb goes to
+the previous weapon in slot order, not KF's best-rated one. Not looked
+at by eye.
+**Next:** W7, fire.
