@@ -34,6 +34,11 @@ pub struct DoorSpawn {
 #[derive(Component)]
 pub struct DoorCollider(pub usize);
 
+/// Marks a trader door's collider. Not a
+/// `DoorCollider`: zeds, the welder and damage treat it as a wall.
+#[derive(Component)]
+pub struct TraderDoorCollider;
+
 /// What a door is doing, standing in for the latent code of Mover's
 /// TriggerToggle state (labels Open / Close, OpenToKey / CloseToFirst).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +108,8 @@ pub struct Trigger {
 #[derive(Resource, Default)]
 pub struct Doors {
     pub doors: Vec<Door>,
+    /// KFTraderDoors: moved only by their shop (trader.rs).
+    pub trader: Vec<Door>,
     pub triggers: Vec<Trigger>,
     /// Which triggers each pawn touched last frame (pawn key: 0 = player,
     /// zed id + 1), to fire Touch only on entering.
@@ -266,6 +273,11 @@ impl Door {
         }
     }
 
+    /// Trigger from a shop (ShopVolume.OpenShop / CloseShop).
+    pub fn shop_trigger(&mut self, shop: &str) {
+        self.trigger(shop);
+    }
+
     /// KFDoorMover TriggerToggle.OpenDoorToKey (bDirectionalOpen triggers).
     fn open_door_to_key(&mut self, key: u8, by: &str) {
         if !self.toggles {
@@ -344,7 +356,9 @@ impl Door {
 fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: ResMut<Doors>) {
     let spawns = std::mem::take(&mut setup.doors);
     let mut colliders = 0usize;
-    for (i, s) in spawns.into_iter().enumerate() {
+    for s in spawns.into_iter() {
+        let trader = s.info.trader;
+        let i = if trader { doors.trader.len() } else { doors.doors.len() };
         let collider = (!s.collision.triangles.is_empty()).then(|| {
             colliders += 1;
             let mut layers = LayerMask::from(GameLayer::Door);
@@ -352,18 +366,26 @@ fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: 
                 layers |= GameLayer::DoorTraces;
             }
             let (pos, rot) = key_pose(&s.info, s.info.key_num as usize);
-            commands
-                .spawn((
-                    RigidBody::Kinematic,
-                    Collider::trimesh(s.collision.vertices, s.collision.triangles),
-                    CollisionLayers::new(layers, LayerMask::ALL),
-                    Transform::from_translation(coords::pos(pos)).with_rotation(rotation_of(rot)),
-                    DoorCollider(i),
-                    Name::new(s.info.name.clone()),
-                ))
-                .id()
+            let mut e = commands.spawn((
+                RigidBody::Kinematic,
+                Collider::trimesh(s.collision.vertices, s.collision.triangles),
+                CollisionLayers::new(layers, LayerMask::ALL),
+                Transform::from_translation(coords::pos(pos)).with_rotation(rotation_of(rot)),
+                Name::new(s.info.name.clone()),
+            ));
+            if trader {
+                e.insert(TraderDoorCollider);
+            } else {
+                e.insert(DoorCollider(i));
+            }
+            e.id()
         });
-        doors.doors.push(Door::new(s.info, s.root, collider));
+        let door = Door::new(s.info, s.root, collider);
+        if trader {
+            doors.trader.push(door);
+        } else {
+            doors.doors.push(door);
+        }
     }
     // KFDoorMover.PostBeginPlay: the KFUseTrigger whose Event is our Tag.
     for info in std::mem::take(&mut setup.triggers) {
@@ -427,9 +449,10 @@ fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: 
     runlog::kv(
         "doors_loaded",
         &format!(
-            "doors={} colliders={colliders} triggers={} triggers_without_doors={empty_triggers} states={states:?} \
+            "doors={} trader_doors={} colliders={colliders} triggers={} triggers_without_doors={empty_triggers} states={states:?} \
              without_trigger={} start_sealed=[{}] not_simulated=[{}] without_trigger_names=[{}]",
             doors.doors.len(),
+            doors.trader.len(),
             doors.triggers.len(),
             no_trigger.len(),
             start_sealed.join(" "),
@@ -601,7 +624,8 @@ fn use_and_touch(
 
 fn move_doors(time: Res<Time>, mut doors: ResMut<Doors>, mut transforms: Query<&mut Transform>) {
     let dt = time.delta_secs();
-    for d in doors.doors.iter_mut() {
+    let doors = &mut *doors;
+    for d in doors.doors.iter_mut().chain(doors.trader.iter_mut()) {
         if d.phase == Phase::Idle && !d.interpolating {
             continue;
         }
@@ -1112,6 +1136,7 @@ mod tests {
         key_rot[1].yaw = 16384;
         key_rot[2].yaw = -16384;
         let info = DoorInfo {
+            trader: false,
             name: "TestDoor".into(),
             tag: "T".into(),
             base_pos: [0.0; 3],

@@ -464,8 +464,9 @@ pub fn wave_timer(
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
-    (player, doors, mut kill_stuck, player_zone): (PlayerQuery, Res<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
+    (player, mut doors, mut kill_stuck, player_zone): (PlayerQuery, ResMut<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
     mut boss_died: MessageWriter<BossDied>,
+    mut shops: ResMut<crate::trader::Shops>,
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
         return;
@@ -553,15 +554,21 @@ pub fn wave_timer(
         Phase::Won => "YOU WON - ENTER TO PLAY AGAIN".into(),
         Phase::Lost => "YOU DIED - ENTER TO PLAY AGAIN".into(),
     };
+    if let Some(t) = crate::trader::distance_text(&shops, ctx.player.location) {
+        hud.0 += &format!("  {t}");
+    }
     if now < g.next_tick {
         return;
     }
     // MatchInProgress.Timer, once a second.
     g.next_tick += 1.0;
     let num_monsters = g.living as i32;
+    // Shop calls are made after the match (`ctx` borrows the doors).
+    let mut shop_action = ShopAction::None;
     match g.phase {
         Phase::Won | Phase::Lost => {}
         Phase::BossWave => {
+            shop_action = ShopAction::CloseAndBoot;
             if g.total_max_monsters <= 0 || now > g.wave_end_time {
                 // Everyone spawned and all dead (or he never found a
                 // volume in 60 s: the wave ends without him).
@@ -573,6 +580,7 @@ pub fn wave_timer(
             }
         }
         Phase::Wave => {
+            shop_action = ShopAction::CloseAndBoot;
             g.wave_time_elapsed += 1.0;
             if g.total_max_monsters <= 0 {
                 // All spawned, 5 or fewer left: one zed a tick that
@@ -603,6 +611,9 @@ pub fn wave_timer(
                 return;
             }
             g.countdown -= 1;
+            // Open the trader (not before the first wave); pick a shop if
+            // none is picked yet.
+            shop_action = if g.wave_num != 0 && !shops.doors_open { ShopAction::Open } else { ShopAction::Select };
             if g.countdown % 10 == 0 && g.countdown > 0 {
                 runlog::kv("wave_countdown", &format!("wave={} seconds={}", g.wave_num + 1, g.countdown));
             }
@@ -621,6 +632,33 @@ pub fn wave_timer(
             }
         }
     }
+    match shop_action {
+        ShopAction::None => {}
+        ShopAction::Select => {
+            if shops.current.is_none() {
+                shops.select_shop();
+            }
+        }
+        ShopAction::Open => shops.open_shops(&mut doors),
+        ShopAction::CloseAndBoot => {
+            if shops.doors_open {
+                shops.close_shops(&mut doors);
+            }
+            // BootShopPlayers (trader.rs moves the player).
+            shops.boot_requested = true;
+        }
+    }
+}
+
+/// What the wave timer asks of the shops this tick.
+enum ShopAction {
+    None,
+    /// Between waves before the trader opens: pick a shop if none.
+    Select,
+    /// OpenShops (then, as KF, a shop is picked if none).
+    Open,
+    /// During a wave: CloseShops if open, then BootShopPlayers.
+    CloseAndBoot,
 }
 
 /// What spawning needs to know about the world this tick.

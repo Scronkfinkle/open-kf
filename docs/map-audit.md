@@ -32,6 +32,7 @@ inside static meshes.
 
 | Emitter (placed) | 34 / 988 | fires, smoke, ambient effects | M5: loaded from the map and running |
 | Projector, KFBloodSplatter | 22 / 322, 29 / 1176 | placed decals: blood, scorch marks, light patterns | M6: built at load; only on solid surfaces |
+| ShopVolume, KFTraderDoor, Teleporter, KFTraderTeleporter | 34 maps | trader rooms open between waves; players left inside are teleported out | T2a (2026-10-05): chosen, opened and closed as KF; doors move and block; boot to the shop's teleporters. Not yet: the trail, the arrow, the trader (WeaponLocker) animation, buying (T3). KF-Transit has 2 shops without teleporters (KF cannot boot there either); KF-Suburbia's shops also trigger event counters (event system not simulated) |
 
 ## Not simulated, by how much it matters
 
@@ -39,7 +40,6 @@ inside static meshes.
 
 | Class | Maps / count | In KF | Ours | Effect |
 | --- | --- | --- | --- | --- |
-| KFTraderDoor, ShopVolume, WeaponLocker | 34 maps | trader rooms open between waves | not simulated | trader milestone (T2) |
 
 **Medium**
 

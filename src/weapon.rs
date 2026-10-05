@@ -126,7 +126,7 @@ impl Plugin for WeaponPlugin {
 /// "gorefast_far" = one 900 units away, "zed_line" = three Clots in a
 /// line ahead ("zed_line_far": 700-900 away), "cycle_zed" = press N,
 /// "spawn_<kind>" = spawn that zed, "hurt_zeds" = 100 damage to every zed,
-/// "kill_boss" = the Patriarch dies).
+/// "kill_boss" = the Patriarch dies, "warp_shop" = stand in the current shop).
 #[derive(Resource, Default, Clone)]
 pub struct ScriptedInput(pub Vec<(u32, String)>);
 

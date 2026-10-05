@@ -3203,3 +3203,37 @@ clean. The HUD font has no £ sign (it drew a box), so it says DOSH.
 not); burn and bleed-out kills only follow the same code paths, not run.
 Not played by you.
 **Next:** T2, shops (ShopVolumes, trader doors, the trail).
+
+## 2026-10-05 T2a: shops and trader doors
+
+**Changed:** new `trader.rs`: the map's ShopVolumes and Teleporters;
+SelectShop, OpenShops, CloseShops, BootShopPlayers and ShopVolume.Touch
+as in KFGameType / ShopVolume / Teleporter.Accept. The wave timer
+(`game.rs`) opens the trader 1 s into the between-wave time (not before
+wave 1), closes it and picks the next shop at the wave start, and asks
+for a boot every wave tick. KFTraderDoors are read like KFDoorMovers
+(`level.rs`, `trader` flag) and moved by the same mover code, but kept
+in their own list (`door.rs`, `Doors::trader`, collider marked
+`TraderDoorCollider`) so welding, damage and zed bashing ignore them.
+HUD: "TRADER: Nm" and KF's two shop messages for 3 s. Test action
+`warp_shop`.
+**Why:** T2a in DESIGN.md.
+**Tested how:** KF-WestLondon waves runs with `kill_zeds`, `warp_shop`,
+`next_wave` (logs `shops_loaded`, `shop_doors`, `shop_selected`, `shop`,
+`door`, `shop_touch`, `shop_boot`) and screenshots; every map loaded in
+waves mode (shops, teleporters, trader doors); unit tests for the shop
+pick and open / close.
+**Result:** WestLondon: 4 shops, 24 teleporters, 4 trader doors. After
+wave 1 the church shop opens 1 s later, its door swings open in 1 s;
+standing in it shows "Press 'E' to TRADE"; at wave 2 the door closes,
+Corner Shop is picked for next time, and you are teleported to a church
+exit with "You can't stay in this shop after closing". Walking into a
+closed shop between waves boots you too. All 34 game maps have shops;
+KF-Transit has 2 shops without teleporters (KF cannot boot there
+either); KF-Suburbia's shops also trigger event counters (not
+simulated). Tests 101 pass; clippy clean.
+**Still broken / not tested:** "inside a shop" is the player's centre in
+the brush, not KF's cylinder touch; the trail and HUD arrow (T2b), the
+trader's animation and voice lines, buying (T3). Door sounds not played.
+Not played by you.
+**Next:** T2b (the trail) or T3 (buying).

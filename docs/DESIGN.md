@@ -2364,6 +2364,44 @@ KFGameLength=0) is Short.
     nothing). Logged so it is clear.
 - **T2, shops.** ShopVolumes, trader doors, which shop, booting players
   out with the teleporters, the trail (and an arrow / distance on the HUD).
+  Split in two:
+  - **T2a, shops and trader doors (done 2026-10-05).** From KFGameType (SelectShop,
+    OpenShops, CloseShops, BootShopPlayers, the MatchInProgress Timer),
+    ShopVolume, KFTraderDoor, Teleporter.Accept, HUDKillingFloor:
+    - Load every ShopVolume (brush, URL, Event, bAlwaysClosed,
+      bAlwaysEnabled) and every Teleporter (Tag, Location, Rotation).
+      KF-WestLondon: 4 shops, 24 teleporters.
+    - KFTraderDoor (a Mover, InitialState TriggerToggle, MoveTime 1) is
+      read like a KFDoorMover and moved by the same mover code, but kept
+      apart from the doors you weld (no trigger, no welding, no damage,
+      zeds do not bash it; to them it is a wall).
+    - OpenShop / CloseShop trigger every actor whose Tag is the shop's
+      Event: the trader doors toggle. Other actors with that tag are
+      logged as not simulated.
+    - SelectShop: random among the not-always-closed shops; if it is the
+      current one, the next in the list (wrapping).
+    - Timer, between waves: once WaveNum != InitialWave (0) and the
+      doors are not open, OpenShops (bAlwaysEnabled shops, then the
+      current shop, picked if none). Any between-wave tick with no
+      current shop picks one (so it is known before wave 1).
+    - Timer, during a wave (boss wave too): if the doors are open,
+      CloseShops (every open shop, then SelectShop for next time), then
+      boot whoever is in any shop.
+    - Touch while no wave is running: entering a shop that is not open
+      boots you; entering the open one shows "Press USE to TRADE".
+      Touching is approximated as the player's centre inside the brush.
+    - BootPlayers: to a random Teleporter whose Tag is the shop's URL;
+      yaw = teleporter yaw + 32768 + your yaw - the shop's yaw
+      (bChangesYaw); message "You can't stay in this shop after
+      closing". A shop with no such teleporters cannot boot.
+    - HUD: "TRADER: N m" whenever a shop is current, N = int(distance /
+      50) (DrawTraderDistance; KF draws it always, waves included);
+      messages for 3 s.
+    - Not done here: the trail, the HUD arrow (T2b), pawn collision off
+      during trader time (no other players), the trader's voice lines and
+      animation (WeaponLocker), USE in the shop (T3).
+  - **T2b, the way there.** The red whisp trail along the path every
+    TraderPathInterval, and the HUD's 3D arrow.
 - **T3, buying.** A simple keyboard buy menu (text list on screen):
   weapons, sell, ammo (clip / fill), grenades, armour; all the
   server-side rules above. Armour itself (absorbing damage) needs reading

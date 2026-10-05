@@ -112,6 +112,9 @@ pub struct DoorInfo {
     pub return_group: String,
     /// bBlockZeroExtentTraces: bullets stop on it.
     pub blocks_traces: bool,
+    /// A KFTraderDoor (moved only by the shop it belongs to), not a
+    /// KFDoorMover.
+    pub trader: bool,
 }
 
 /// A KFUseTrigger: the cylinder players press USE in, and zeds walk into,
@@ -442,9 +445,11 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             _ => None,
         };
         let door = match defaults {
-            Some((lp, d)) if d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "KFDoorMover")) => {
+            Some((lp, d)) if d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "KFDoorMover") || d.is_a(&c, "KFTraderDoor")) => {
                 let v = Effective { lp, d, export: i, props: &props };
+                let trader = d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "KFTraderDoor"));
                 Some(DoorInfo {
+                    trader,
                     name: pkg.object_name(ObjectRef::Export(i)).to_string(),
                     tag: v.name("Tag"),
                     base_pos: vector(&props, pkg, "BasePos", [0.0; 3]),

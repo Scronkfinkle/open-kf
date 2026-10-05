@@ -121,7 +121,7 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("Mover", false),
     ("ClientMover", false),
     ("KFElevator", false),
-    ("KFTraderDoor", false),
+    ("KFTraderDoor", true),
     ("ShopVolume", false),
     ("KFTraderTeleporter", false),
     ("Teleporter", false),
@@ -571,6 +571,7 @@ fn load_map(
     commands.insert_resource(crate::pain::load(&lp, &class_defaults));
     if game_options.mode == crate::game::GameMode::Waves {
         commands.insert_resource(crate::game::load_game_data(&set, &class_defaults, &lp, game_options.length));
+        commands.insert_resource(crate::trader::load_shops(&class_defaults, &lp));
     }
     let mut nav = crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg));
     nav.add_jump_pads(&lp.pkg);

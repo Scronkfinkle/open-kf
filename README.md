@@ -199,7 +199,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   Crawler, then a Stalker join); when he dies the other zeds stop dead
   and you win. Dosh (T1): you start with 250; kills pay KF's amounts
   (Clot 12 on Short) and the same again at the wave end; shown on the
-  HUD. Nothing to spend it on yet (the trader is next). Checked by
+  HUD. The trader (T2a): after each wave one of the map's shops opens
+  (its door swings open), the HUD shows "TRADER: Nm" to it, and at the
+  next wave it closes and anyone inside is put outside, as in KF. No
+  buying yet, and no trail to follow yet. Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.

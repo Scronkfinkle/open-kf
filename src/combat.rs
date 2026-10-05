@@ -238,6 +238,7 @@ fn toggle_god(keys: Res<ButtonInput<KeyCode>>, mut health: ResMut<PlayerHealth>)
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn update_hud(
     health: Res<PlayerHealth>,
     ammo: Res<AmmoDisplay>,
@@ -245,6 +246,8 @@ fn update_hud(
     z_spawn: Res<crate::zed::ZSpawn>,
     wave: Res<crate::game::WaveHud>,
     dosh: Res<crate::dosh::Dosh>,
+    note: Res<crate::trader::HudNote>,
+    time: Res<Time>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = text.single_mut() else {
@@ -266,6 +269,9 @@ fn update_hud(
         z_spawn.label.to_uppercase(),
         if wave.0.is_empty() { String::new() } else { format!("    {}", wave.0) }
     );
+    if time.elapsed_secs() < note.until {
+        **t = format!("{}\n{}", note.text, **t);
+    }
 }
 
 /// Ray vs a vertical cylinder (centre, radius, half-height), Bevy space.
