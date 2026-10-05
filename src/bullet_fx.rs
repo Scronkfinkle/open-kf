@@ -31,6 +31,9 @@ const SURFACE_TRACE: f32 = 16.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shooter {
     Player,
+    /// One of a pool of tracers for the player's pellets and nails (KF gives
+    /// each ShotgunBullet its own KFTracer; a shot has up to 20).
+    PlayerPellet(u8),
     Zed(usize),
 }
 

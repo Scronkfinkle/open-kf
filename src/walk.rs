@@ -80,6 +80,15 @@ pub struct PlayerPush {
     pub momentum: Vec3,
 }
 
+/// Pawn.AddVelocity: added to the velocity as is (not divided by mass);
+/// the player starts falling, and upward speed is halved when already
+/// rising faster than 380. Used for the shotguns' KickMomentum.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PlayerAddVelocity {
+    /// Unreal units/s, Unreal axes.
+    pub velocity: Vec3,
+}
+
 /// KFPawn Mass.
 const PLAYER_MASS: f32 = 400.0;
 
@@ -88,6 +97,7 @@ pub struct WalkPlugin;
 impl Plugin for WalkPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PlayerPush>()
+            .add_message::<PlayerAddVelocity>()
             .init_resource::<WalkSettings>()
             .init_resource::<ViewBob>()
             .insert_resource(MoveMode::Fly)
@@ -317,6 +327,7 @@ fn walk(
     zeds: Query<&crate::zed::Zed>,
     mut pinned: Option<ResMut<crate::combat::PlayerPinned>>,
     mut pushes: MessageReader<PlayerPush>,
+    mut kicks: MessageReader<PlayerAddVelocity>,
     mut last_log: Local<f32>,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
@@ -409,6 +420,19 @@ fn walk(
             }
         }
 
+        // KFShotgunFire.DoFireEffect: AddVelocity(KickMomentum >> view).
+        for kick in kicks.read() {
+            let mut v = kick.velocity;
+            if v == Vec3::ZERO {
+                continue;
+            }
+            w.on_ground = false;
+            if w.velocity.y > 380.0 * SCALE && v.z > 0.0 {
+                v.z *= 0.5;
+            }
+            w.velocity += Vec3::new(v.y, v.z, -v.x) * SCALE;
+            runlog::kv("player_kick", &format!("velocity_add_unreal=({:.0}, {:.0}, {:.0})", v.x, v.y, v.z));
+        }
         for push in pushes.read() {
             let mut m = push.momentum;
             if w.on_ground {

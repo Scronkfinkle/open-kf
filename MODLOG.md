@@ -2177,3 +2177,32 @@ catching up. Logged as `frame_limit`. README.
 **Still broken / not tested:** Values above the refresh rate cannot be
 reached while vsync is on (there is no option to turn vsync off yet).
 **Next:** W4, shotguns.
+
+## 2026-10-04 Weapons step W4: shotguns
+
+**Changed:** New `src/projectile.rs` (player projectiles: pellets and
+nails; penetration rule; walls; bounces; per-pellet tracers;
+`penetration_limit` + test). `weapon.rs`: `FireKind::Pellets`,
+`PelletFire` (projectile values, ProjPerFire, AmmoPerFire, Spread,
+KickMomentum, ProjSpawnOffset), shotgun recoil, BoomStick rules
+(`LastShot`, FireLastRate, auto reload, one-barrel redirect, no reload
+with one barrel), `AltToggle` (fire mode / KSG wide spread), HUD
+[WIDE]/[NARROW]; weapon_input's message writers grouped (Bevy's 16
+parameter limit). `walk.rs`: `PlayerAddVelocity` (Pawn.AddVelocity).
+`bullet_fx.rs`: `Shooter::PlayerPellet`. `combat.rs`: helpers
+pub(crate). DESIGN, README.
+**Why:** Step W4 (and your note that the shotgun had no tracers).
+**Tested how:** `cargo test --release`; Shotgun at `zed_line`; Hunting
+Shotgun (one, one, wait, both, both); KSG toggle; AA12 held; Nailgun.
+**Result:** Tests 51/51. Shotgun: 7 pellets, 35 / 17.5 per zed, 52.5 /
+26.2 on headshots; two Clots killed; kick (85 back, 15 up). Hunting
+Shotgun: 10 pellets per barrel, fire_last when emptied, reloaded 2.5 s
+later, both barrels 20 pellets with fire_both; clicks in the 2.75 s
+cooldown ignored. KSG spread 1000 -> 2050. AA12 every 0.20 s. Nails
+bounce twice.
+**Still broken / not tested:** Not play-tested by you; tracers not looked
+at by eye (each pellet's tracer is drawn at fire time to where it will
+stop). Pellet meshes not drawn; stuck nails and pinned heads not drawn;
+Trenchgun fire damage is W7; flashlights not done.
+**Next:** W5, melee: the cone hitting every zed, backstabs, the
+Chainsaw's held fire.

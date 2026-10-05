@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W3 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W4 implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1680,6 +1680,38 @@ is dropped. `kfpkg materials` lists where the rule applies: 39 of 1023
 Shaders in all packages, many of them level materials whose Opacity is a
 plain mask (puddles, oil, water), hence skinned meshes only. Skinned
 meshes now draw Translucent as alpha blend (was opaque).
+
+**W4 shotguns (done).** `src/projectile.rs`.
+- Pellets are projectiles (ShotgunBullet): Speed 3500, LifeSpan 3,
+  straight; each zed on the path takes the damage (x HeadShotDamageMult
+  1.5 on a headshot, and KFMonster.TakeDamage multiplies again by the
+  damage type's 1.1: a KF quirk, kept), then damage x PenDamageReduction;
+  gone once damage / start <= PenDamageReduction / MaxPenetrations
+  (Shotgun 2 zeds, Hunting Shotgun 3, AA12 / KSG / nails 4). Walls:
+  ROBulletHitEffect and gone.
+- KFShotgunFire.DoFireEffect: StartProj = eye + X x ProjSpawnOffset.X (+ Y,
+  Z offsets from the hip), pulled back to a wall in between;
+  ProjPerFire x AmmoPerFire pellets, each X >> (Spread x (FRand() - 0.5)
+  on yaw, pitch, roll) (SS_Random); AddVelocity(KickMomentum >> view) on
+  the ground; ModeDoFire's x 0.1 / 0.5 slow-down. Spread is always the
+  default (no aiming bonus). Recoil: KFShotgunFire.HandleRecoil (either
+  side; speed x 3).
+- Hunting Shotgun (BoomStick): left = one barrel (BoomStickAltFire,
+  0.25 s, Fire_Last and 2.75 s when it empties the gun), middle = both
+  (BoomStickFire, 20 pellets, AmmoPerFire 2, 2.75 s); middle with one
+  barrel fires the single barrel (ClientStartFire); both barrels reload
+  by themselves ReloadCountDown 2.5 s after the last (WeaponTick); no
+  manual reload with one barrel loaded.
+- HSG-1 (KSG): middle click toggles wide spread (x 2.05, KSGFire), HUD
+  [WIDE] / [NARROW]. AA12: middle click full / semi auto.
+- Nails (NailGunProjectile): bounce twice (velocity reflected x 0.65,
+  falling with gravity after the first), then stop. A head pinned to the
+  wall and nails stuck for 5 s are not drawn.
+- Tracers: each pellet gets a tracer (a pool of 32 emitters; KF spawns a
+  KFTracer per pellet) drawn at fire time along its first straight path
+  to the wall or to the zed it will stop in (zeds as they are then).
+- Not done: the pellet meshes, Trenchgun fire damage (W7), the Shotgun /
+  Combat Shotgun / Nailgun flashlight alt fire.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

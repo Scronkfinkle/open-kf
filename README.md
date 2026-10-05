@@ -157,6 +157,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Shotguns (W4, 2026-10-04): pellets fly as projectiles with tracers,
+  pass through zeds losing damage as in KF, kick you back; the Hunting
+  Shotgun fires one or both barrels and reloads itself; the HSG-1
+  switches wide / narrow spread; the AA12 is full auto; the Nailgun's
+  nails bounce. Checked by unit tests and logged runs. Not play-tested by
+  you.
 - Pistols (W3, 2026-10-04): Handcannon, 44 Magnum and MK23 bullets go
   through up to 5 zeds at half damage each time; dual pistols fire left
   and right in turn with their own flashes, shells and tracers, and
@@ -296,14 +302,15 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - No crouching. Ladders, water and swimming are not handled.
 - No sound.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
-  carried (`--give`), switched to and fired, but only melee weapons and
-  bullet guns deal damage. No crouching, so no crouch accuracy bonus. Melee hits
-  one zed per swing, with no backstab bonus (KF hits every zed in the
-  cone and doubles damage from behind; step W5). Alt fires other than
-  melee (medic darts, M203 grenade, ...) do nothing yet. Shotguns,
-  launchers, the crossbow, M99, flamethrower, husk gun, syringe, welder and
-  ZED guns play their fire animation and use ammo but do nothing. No DLC
-  weapons. No trader.
+  carried (`--give`), switched to and fired, but only melee weapons,
+  bullet guns and shotguns deal damage. No crouching, so no crouch
+  accuracy bonus. Melee hits one zed per swing, with no backstab bonus
+  (KF hits every zed in the cone and doubles damage from behind; step
+  W5). Alt fires other than melee, the rifle toggles and the shotguns
+  (medic darts, M203 grenade, flashlights) do nothing yet. Launchers, the
+  crossbow, M99, flamethrower, husk gun, syringe, welder and ZED guns play
+  their fire animation and use ammo but do nothing. The Trenchgun's fire
+  damage is not done (W7). No DLC weapons. No trader.
 - Frame rate not measured with the monitor on (during testing the monitor was
   off, which throttles to 1 fps).
 - Exit crash: about half of all runs end in a segmentation fault or abort

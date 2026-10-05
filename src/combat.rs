@@ -136,7 +136,7 @@ impl PlayerPinned {
 }
 
 /// KFPawn BaseEyeHeight: the eye is this far above the player's centre.
-const PLAYER_EYE_HEIGHT: f32 = 44.0;
+pub(crate) const PLAYER_EYE_HEIGHT: f32 = 44.0;
 
 /// Zeds killed this session, for the HUD.
 #[derive(Resource, Default)]
@@ -256,7 +256,7 @@ pub(crate) fn ray_cylinder(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, h
 }
 
 /// Nearest entry into a zed's main or extended collision cylinder.
-fn zed_hit(z: &Zed, origin: Vec3, dir: Vec3) -> Option<f32> {
+pub(crate) fn zed_hit(z: &Zed, origin: Vec3, dir: Vec3) -> Option<f32> {
     let main = ray_cylinder(origin, dir, z.centre, z.radius * SCALE, z.half_height * SCALE);
     let ext = z
         .ext
@@ -269,7 +269,7 @@ fn zed_hit(z: &Zed, origin: Vec3, dir: Vec3) -> Option<f32> {
 
 /// KFMonster.IsHeadShot: distance from the head sphere centre to the segment
 /// from the hit point along the shot, length 2 x (height + radius).
-fn is_headshot(z: &Zed, hit: Vec3, dir: Vec3, scale: f32) -> bool {
+pub(crate) fn is_headshot(z: &Zed, hit: Vec3, dir: Vec3, scale: f32) -> bool {
     let Some((head, _)) = z.head else {
         return false;
     };
@@ -289,14 +289,14 @@ fn is_headshot(z: &Zed, hit: Vec3, dir: Vec3, scale: f32) -> bool {
 /// The attacker for a hit: where it was hit, the attacker's centre, and
 /// whether it was a melee attack (for the stun rule).
 #[derive(Clone, Copy)]
-struct HitSource {
-    point: Vec3,
-    attacker: Vec3,
-    melee: bool,
+pub(crate) struct HitSource {
+    pub point: Vec3,
+    pub attacker: Vec3,
+    pub melee: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn damage_zed(
+pub(crate) fn damage_zed(
     z: &mut Zed,
     damage: f32,
     headshot: bool,

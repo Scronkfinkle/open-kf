@@ -12,6 +12,7 @@ mod map;
 mod nav;
 mod particles;
 mod pawn_collision;
+mod projectile;
 mod ragdoll;
 mod record;
 mod runlog;
@@ -227,7 +228,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(scripted)

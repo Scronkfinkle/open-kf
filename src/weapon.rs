@@ -46,14 +46,23 @@ pub const BASE_WEAPONS: [&str; 48] = [
     "FlameThrower", "Syringe", "Welder", "ZEDGun", "ZEDMKIIWeapon",
 ];
 
-/// Weapons whose AltFire calls DoToggle (full / semi auto), from their
-/// scripts. Exact classes: the M4 203 extends the M4 but overrides AltFire.
-const TOGGLE_ON_ALT_FIRE: [&str; 9] = [
+/// What a weapon's alt fire toggles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AltToggle {
+    /// KFWeapon.DoToggle: FireMode[0].bWaitForRelease (full / semi auto).
+    FireMode,
+    /// KSGShotgun.DoToggle: bWideSpread.
+    WideSpread,
+}
+
+/// Weapons whose AltFire calls KFWeapon.DoToggle (full / semi auto), from
+/// their scripts (the KSG's DoToggle switches the spread instead). Exact
+/// classes: the M4 203 extends the M4 but overrides AltFire.
+const TOGGLE_ON_ALT_FIRE: [&str; 8] = [
     "AA12AutoShotgun",
     "AK47AssaultRifle",
     "Bullpup",
     "FNFAL_ACOG_AssaultRifle",
-    "KSGShotgun",
     "M4AssaultRifle",
     "MAC10MP",
     "MKb42AssaultRifle",
@@ -187,8 +196,13 @@ struct WeaponDef {
     idle_anim: String,
     /// bModeZeroCanDryFire: clicking with an empty magazine starts a reload.
     can_dry_fire: bool,
-    /// Alt fire switches full / semi auto (the class's AltFire calls DoToggle).
-    toggles_on_alt: bool,
+    /// What alt fire toggles (the class's AltFire calls DoToggle), if anything.
+    toggles_on_alt: Option<AltToggle>,
+    /// KSGShotgun.bWideSpread (KSGFire: Spread x 2.05).
+    wide_spread: bool,
+    /// BoomStick: ReloadCountDown (both barrels reload by themselves this
+    /// long after the last one is fired).
+    boomstick_reload: Option<f32>,
     /// First-person firing effects (KFFire.InitEffects).
     fx: FireFx,
     /// The 3D scope (bHasScope), if any.
@@ -329,7 +343,40 @@ struct FireMode {
     slows_movement: bool,
     spread: crate::firing::SpreadParams,
     recoil: crate::firing::RecoilParams,
+    /// Pellet / nail fire (KFShotgunFire), when kind is Pellets.
+    pellets: Option<PelletFire>,
+    /// BoomStick fire modes: FireLastAnim / FireLastAimedAnim and
+    /// FireLastRate (BoomStickAltFire: the shot that empties the gun).
+    last_anim: String,
+    last_aimed_anim: String,
+    last_rate: Option<f32>,
+    /// When the last animation plays: BoomStickAltFire when the shot empties
+    /// the gun (and more ammo is left), BoomStickFire when it is the very
+    /// last ammo.
+    last_rule: LastShot,
     combat: CombatStats,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LastShot {
+    Never,
+    WhenEmptied,
+    WhenVeryLast,
+}
+
+/// KFShotgunFire values and its projectile's.
+#[derive(Clone, Copy, Debug)]
+struct PelletFire {
+    stats: crate::projectile::ProjectileStats,
+    /// ProjPerFire, times Load (= AmmoPerFire) per shot.
+    per_fire: u32,
+    ammo_per_fire: u32,
+    /// Spread (rotator units; SS_Random: each of yaw, pitch, roll
+    /// Spread x (FRand() - 0.5)).
+    spread: f32,
+    /// KickMomentum (Unreal, view axes) and ProjSpawnOffset.
+    kick: Vec3,
+    spawn_offset: Vec3,
 }
 
 /// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
@@ -356,6 +403,11 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         slows_movement: false,
         spread: Default::default(),
         recoil: Default::default(),
+        pellets: None,
+        last_anim: "none".into(),
+        last_aimed_anim: "none".into(),
+        last_rate: None,
+        last_rule: LastShot::Never,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -380,10 +432,19 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     // WeldFire / UnWeldFire are melee classes that only work on doors
     // (WeldFire.Timer looks for a KFDoorMover); doors are not done.
     let welds = mode.class.contains("WeldFire");
+    let projectile_class = match fget("ProjectileClass") {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
+        _ => None,
+    };
+    let pellet_class = projectile_class.as_ref().filter(|p| {
+        defaults.is_a(fm_class, "KFShotgunFire") && (defaults.is_a(p, "ShotgunBullet") || defaults.is_a(p, "TrenchgunBullet"))
+    });
     mode.kind = if welds {
         FireKind::None
     } else if combat.melee {
         FireKind::Melee
+    } else if pellet_class.is_some() {
+        FireKind::Pellets
     } else if has_projectile {
         FireKind::Projectile
     } else if ffloat("DamageMax", 0.0) > 0.0 {
@@ -444,8 +505,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     mode.aimed_anim2 = fname("FireAimedAnim2");
     mode.penetrations = if PENETRATING_FIRE.iter().any(|c| defaults.is_a(fm_class, c)) { 5 } else { 1 };
     mode.fire_while_reloading = defaults.is_a(fm_class, "WinchesterFire") || defaults.is_a(fm_class, "KFShotgunFire");
-    // Only KFFire.ModeDoFire slows the player (shotguns: W4).
-    mode.slows_movement = defaults.is_a(fm_class, "KFFire") && !fbool("bFiringDoesntAffectMovement");
+    // KFFire.ModeDoFire and KFShotgunFire.ModeDoFire slow the player.
+    mode.slows_movement = (defaults.is_a(fm_class, "KFFire") || defaults.is_a(fm_class, "KFShotgunFire"))
+        && !fbool("bFiringDoesntAffectMovement");
     mode.spread = crate::firing::SpreadParams {
         spread: mode.combat.spread,
         max_spread: ffloat("MaxSpread", 0.0),
@@ -458,6 +520,68 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         right_only: fbool("bRecoilRightOnly"),
         velocity_scale: ffloat("RecoilVelocityScale", 0.0),
     };
+    if let Some(pc) = pellet_class {
+        let pget = |p: &str| defaults.get(pc, p);
+        let pfloat = |p: &str, d: f32| match pget(p) {
+            Some((Value::Float(f), _)) => f,
+            Some((Value::Int(i), _)) => i as f32,
+            Some((Value::Byte(b), _)) => b as f32,
+            _ => d,
+        };
+        let dt_mult = match pget("MyDamageType") {
+            Some((Value::Object(r), rp)) => set
+                .resolve(&rp, r)
+                .and_then(|dt| match defaults.get(&dt, "HeadShotDamageMult") {
+                    Some((Value::Float(m), _)) => Some(m),
+                    _ => None,
+                })
+                .unwrap_or(1.0),
+            _ => 1.0,
+        };
+        let vector = |p: &str| match fget(p) {
+            Some((Value::Vector(v), _)) => Vec3::from_array(v),
+            _ => Vec3::ZERO,
+        };
+        let int = |p: &str, d: u32| match fget(p) {
+            Some((Value::Int(i), _)) => i.max(0) as u32,
+            Some((Value::Byte(b), _)) => b as u32,
+            _ => d,
+        };
+        mode.pellets = Some(PelletFire {
+            stats: crate::projectile::ProjectileStats {
+                speed: pfloat("Speed", 3500.0),
+                damage: pfloat("Damage", 0.0),
+                max_penetrations: pfloat("MaxPenetrations", 1.0),
+                pen_damage_reduction: pfloat("PenDamageReduction", 0.5),
+                headshot_mult: pfloat("HeadShotDamageMult", 1.5),
+                damage_type_headshot_mult: dt_mult,
+                life_span: pfloat("LifeSpan", 3.0),
+                bounces: pfloat("Bounces", 0.0) as u32,
+            },
+            per_fire: int("ProjPerFire", 1),
+            ammo_per_fire: int("AmmoPerFire", 1),
+            spread: mode.combat.spread,
+            kick: vector("KickMomentum"),
+            spawn_offset: vector("ProjSpawnOffset"),
+        });
+        // KFShotgunFire.HandleRecoil: the sideways kick may go either way,
+        // and moving adds speed x 3 (RecoilVelocityScale is not used).
+        mode.recoil.right_only = false;
+        mode.recoil.velocity_scale = 3.0;
+    }
+    mode.last_anim = fname("FireLastAnim");
+    mode.last_aimed_anim = fname("FireLastAimedAnim");
+    mode.last_rule = if defaults.is_a(fm_class, "BoomStickAltFire") {
+        LastShot::WhenEmptied
+    } else if defaults.is_a(fm_class, "BoomStickFire") {
+        LastShot::WhenVeryLast
+    } else {
+        LastShot::Never
+    };
+    mode.last_rate = match fget("FireLastRate") {
+        Some((Value::Float(f), _)) => Some(f),
+        _ => None,
+    };
     mode
 }
 
@@ -468,7 +592,10 @@ enum FireKind {
     Melee,
     /// InstantFire / KFFire: a hit trace (KFFire.DoTrace).
     Instant,
-    /// BaseProjectileFire: spawns ProjectileClass (not done yet: W4, W6).
+    /// KFShotgunFire with pellets or nails (ShotgunBullet family,
+    /// TrenchgunBullet): ProjPerFire projectiles in a spread (projectile.rs).
+    Pellets,
+    /// Other BaseProjectileFire: spawns ProjectileClass (not done yet: W6).
     Projectile,
     /// No damage (NoFire, or a fire class not understood).
     None,
@@ -533,6 +660,8 @@ struct Weapons {
     spread_state: [crate::firing::SpreadState; 2],
     /// Seconds since the reload started or the last round went in.
     reload_timer: f32,
+    /// BoomStick: seconds until both barrels reload by themselves.
+    boomstick_pending: Option<f32>,
     /// Seconds left of the bring-up or put-down (Weapon's Timer), and
     /// whether the put-down is still waiting out DownDelay.
     switch_timer: f32,
@@ -744,6 +873,7 @@ fn load_weapons(
         shots_this_press: [0; 2],
         spread_state: Default::default(),
         reload_timer: 0.0,
+        boomstick_pending: None,
         switch_timer: 0.0,
         down_delayed: false,
         pending_swings: Vec::new(),
@@ -1035,7 +1165,13 @@ fn load_weapon(
         can_dry_fire: matches!(get("bModeZeroCanDryFire"), Some((Value::Bool(true), _))),
         scope,
         dual,
-        toggles_on_alt: TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)),
+        toggles_on_alt: if class_name.eq_ignore_ascii_case("KSGShotgun") {
+            Some(AltToggle::WideSpread)
+        } else {
+            TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)).then_some(AltToggle::FireMode)
+        },
+        wide_spread: false,
+        boomstick_reload: defaults.is_a(&class, "BoomStick").then(|| float("ReloadCountDown", 2.5)),
         fx,
     })
 }
@@ -1175,8 +1311,19 @@ fn play_idle(w: &mut Weapons) {
 /// FireAimedAnim); later shots of the same press FireLoopAnim (aimed:
 /// FireLoopAimedAnim, else FireAimedAnim), when the weapon has them.
 /// Melee modes cycle through FireAnims.
-fn play_firing(w: &mut Weapons, mode: usize) {
+fn play_firing(w: &mut Weapons, mode: usize, last: bool) {
     let mut m = w.defs[w.current].modes[mode].clone();
+    // BoomStick: FireLastAnim / FireLastAimedAnim (fire and reload).
+    if last {
+        let (name, rate) = if w.aiming && has_anim(w, &m.last_aimed_anim) {
+            (m.last_aimed_anim.clone(), m.anim_rate)
+        } else {
+            (m.last_anim.clone(), m.anim_rate)
+        };
+        if has_anim(w, &name) {
+            return play(w, &name, rate, false);
+        }
+    }
     // DualiesFire: the left gun's turn plays FireAnim2 / FireAimedAnim2.
     if w.defs[w.current].dual && mode == 0 {
         if w.dual_left[0] {
@@ -1229,7 +1376,12 @@ fn interrupt_reload(w: &mut Weapons, reason: &str) -> bool {
 /// KFWeapon.AllowReload: not while firing, reloading or bringing the weapon
 /// up; the magazine not full; spare ammo; the next shot due within 0.1 s.
 fn allow_reload(w: &Weapons) -> bool {
-    w.defs[w.current].ammo.is_some_and(|a| a.mag < a.capacity && a.spare > 0)
+    let def = &w.defs[w.current];
+    // BoomStick.AllowReload: not with one barrel loaded.
+    if def.boomstick_reload.is_some() && def.ammo.is_some_and(|a| a.mag == 1) {
+        return false;
+    }
+    def.ammo.is_some_and(|a| a.mag < a.capacity && a.spare > 0)
         && !w.firing.iter().any(|&f| f)
         && w.action == Action::Idle
         && w.fire_cooldown[0] <= 0.1
@@ -1294,8 +1446,12 @@ fn weapon_input(
     scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>,
     frames: Res<bevy::diagnostic::FrameCount>,
     main_cam: Query<(&Transform, Option<&crate::walk::Walker>), With<FlyCamera>>,
-    mut shots: MessageWriter<ShotFired>,
-    mut swings: MessageWriter<MeleeSwing>,
+    (mut shots, mut swings, mut pellets, mut kicks): (
+        MessageWriter<ShotFired>,
+        MessageWriter<MeleeSwing>,
+        MessageWriter<crate::projectile::SpawnPlayerProjectile>,
+        MessageWriter<crate::walk::PlayerAddVelocity>,
+    ),
     mut ammo_display: ResMut<crate::combat::AmmoDisplay>,
     mut recoil: ResMut<crate::firing::Recoil>,
     health: Res<crate::combat::PlayerHealth>,
@@ -1406,9 +1562,18 @@ fn weapon_input(
     }
     let held: [bool; 2] =
         std::array::from_fn(|i| (grabbed && mouse.pressed(buttons[i].0)) || scripted(buttons[i].1) || scripted_held[i]);
-    let pressed: [bool; 2] = std::array::from_fn(|i| {
+    let mut pressed: [bool; 2] = std::array::from_fn(|i| {
         (grabbed && mouse.just_pressed(buttons[i].0)) || scripted(buttons[i].1) || pressed_by_script[i]
     });
+    let mut held = held;
+    // BoomStick.ClientStartFire: both barrels asked for with one loaded
+    // fires the single barrel.
+    if w.defs[w.current].boomstick_reload.is_some() && w.defs[w.current].ammo.is_some_and(|a| a.mag == 1) && held[1] {
+        held[0] = true;
+        pressed[0] |= pressed[1];
+        held[1] = false;
+        pressed[1] = false;
+    }
     for mode in 0..2 {
         let alt = 1 - mode;
         let cur = w.current;
@@ -1429,14 +1594,23 @@ fn weapon_input(
         let ready_state = matches!(w.action, Action::Idle | Action::Reload);
         // Rifles: alt fire switches full / semi auto (KFWeapon.DoToggle),
         // if ReadyToFire(0).
-        if mode == 1 && w.defs[cur].toggles_on_alt {
+        if mode == 1 && let Some(toggle) = w.defs[cur].toggles_on_alt {
             if pressed[mode] {
                 let mag_ok = w.defs[cur].ammo.is_none_or(|a| a.mag >= 1);
                 if ready_state && w.action != Action::Reload && mag_ok && w.fire_cooldown[0] <= 0.0 && !w.firing[0] {
-                    let m = &mut w.defs[cur].modes[0];
-                    m.wait_for_release = !m.wait_for_release;
-                    let semi = m.wait_for_release;
-                    runlog::kv("fire_mode_toggle", &format!("weapon={} semi_auto={semi}", w.defs[cur].item_name));
+                    match toggle {
+                        AltToggle::FireMode => {
+                            let m = &mut w.defs[cur].modes[0];
+                            m.wait_for_release = !m.wait_for_release;
+                            let semi = m.wait_for_release;
+                            runlog::kv("fire_mode_toggle", &format!("weapon={} semi_auto={semi}", w.defs[cur].item_name));
+                        }
+                        AltToggle::WideSpread => {
+                            w.defs[cur].wide_spread = !w.defs[cur].wide_spread;
+                            let wide = w.defs[cur].wide_spread;
+                            runlog::kv("fire_mode_toggle", &format!("weapon={} wide_spread={wide}", w.defs[cur].item_name));
+                        }
+                    }
                 } else {
                     runlog::kv("fire_mode_toggle_refused", &format!("weapon={} action={:?}", w.defs[cur].item_name, w.action));
                 }
@@ -1444,7 +1618,7 @@ fn weapon_input(
             continue;
         }
         let fm = w.defs[cur].modes[mode].clone();
-        if mode == 1 && fm.kind != FireKind::Melee {
+        if mode == 1 && !matches!(fm.kind, FireKind::Melee | FireKind::Pellets) {
             // Only melee alt attacks are done; other alt fires come with
             // their weapon family (DESIGN "Weapons").
             if pressed[mode] {
@@ -1459,8 +1633,14 @@ fn weapon_input(
         // KFShotgunFire: unless 2+ rounds are in), not with an empty magazine.
         let mag = w.defs[cur].ammo.map(|a| a.mag);
         let reloading = w.action == Action::Reload;
+        // Rounds a shot needs: AmmoPerFire for pellet fire (BoomStickFire:
+        // both barrels, 2); 1 for other primary fire; none for melee alt.
+        let needs = match fm.pellets {
+            Some(pf) => pf.ammo_per_fire.max(1),
+            None => u32::from(mode == 0),
+        };
         let allow_fire = (!reloading || (fm.fire_while_reloading && mag.is_some_and(|m| m >= 2)))
-            && (mode == 1 || mag.is_none_or(|m| m >= 1));
+            && mag.is_none_or(|m| m >= needs);
         if !w.firing[mode] {
             // StartFire. bWaitForRelease modes need a fresh click (a click
             // made while not ready is kept while the button stays down; not
@@ -1506,22 +1686,40 @@ fn weapon_input(
             }
             continue;
         }
-        // ModeDoFire: NextFireTime = max(NextFireTime + FireRate, now).
-        w.fire_cooldown[mode] = (w.fire_cooldown[mode] + fm.rate).max(0.0);
-        if mode == 0
+        // BoomStick: bVeryLastShotAnim = AmmoAmount <= AmmoPerFire (before
+        // the shot); the gun is emptied when the magazine reaches 0.
+        let total_before = w.defs[cur].ammo.map_or(0, |a| a.mag + a.spare);
+        if needs > 0
             && let Some(a) = w.defs[cur].ammo.as_mut()
         {
-            a.mag -= 1;
+            a.mag -= needs.min(a.mag);
+        }
+        let emptied = w.defs[cur].ammo.is_some_and(|a| a.mag == 0);
+        let very_last = total_before <= needs;
+        let last_anim = match fm.last_rule {
+            LastShot::WhenEmptied => emptied && !very_last,
+            LastShot::WhenVeryLast => very_last,
+            LastShot::Never => false,
+        };
+        // ModeDoFire: NextFireTime = max(NextFireTime + FireRate, now); the
+        // BoomStick waits FireLastRate after emptying the gun.
+        let rate = match fm.last_rate {
+            Some(r) if emptied => r,
+            _ => fm.rate,
+        };
+        w.fire_cooldown[mode] = (w.fire_cooldown[mode] + rate).max(0.0);
+        if emptied && let Some(t) = w.defs[cur].boomstick_reload {
+            w.boomstick_pending = Some(t);
         }
         w.fire_count += 1;
         // Dual pistols: the hand whose turn it is (DualiesFire.ModeDoFire).
         let dual_side = if w.aiming { 1 } else { 0 };
         let hand = usize::from(w.defs[cur].dual && mode == 0 && w.dual_left[dual_side]);
-        if mode == 0 {
+        if mode == 0 || fm.kind == FireKind::Pellets {
             w.fx_shots.push(hand);
         }
         if !(fm.high_rof && !fm.wait_for_release) {
-            play_firing(&mut w, mode);
+            play_firing(&mut w, mode, last_anim);
         }
         if w.defs[cur].dual && mode == 0 {
             w.dual_left[dual_side] = !w.dual_left[dual_side];
@@ -1539,6 +1737,72 @@ fn weapon_input(
                     ),
                 );
                 w.pending_swings.push((stats.damage_delay, stats, item_name));
+            }
+            FireKind::Pellets => {
+                let pf = fm.pellets.expect("pellet fire has pellet values");
+                if let Ok((cam, walker)) = main_cam.single() {
+                    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+                    let eye = to_ue(cam.translation) / coords::SCALE;
+                    let (x, y, z) = (to_ue(*cam.forward()), to_ue(*cam.right()), to_ue(*cam.up()));
+                    // KFShotgunFire.DoFireEffect: StartProj = eye + X x
+                    // ProjSpawnOffset.X, plus Y and Z offsets from the hip.
+                    let mut start = eye + x * pf.spawn_offset.x;
+                    if !w.aiming {
+                        start += y * pf.spawn_offset.y + z * pf.spawn_offset.z;
+                    }
+                    // KSGFire: wide spread x 2.05.
+                    let spread = if w.defs[cur].wide_spread { pf.spread * 2.05 } else { pf.spread };
+                    let count = (pf.per_fire * pf.ammo_per_fire.max(1)).max(1);
+                    let tip = w.hand_frames.get(hand).and_then(|h| h.0).map(|t| t.0);
+                    for _ in 0..count {
+                        // SS_Random: X >> R, R = Spread x (FRand() - 0.5) each.
+                        let r = ue_assets::properties::Rotator {
+                            yaw: (spread * (w.random() - 0.5)) as i32,
+                            pitch: (spread * (w.random() - 0.5)) as i32,
+                            roll: (spread * (w.random() - 0.5)) as i32,
+                        };
+                        let dir = coords::ue_rotation_matrix(r) * x;
+                        pellets.write(crate::projectile::SpawnPlayerProjectile {
+                            origin: start,
+                            trace_from: eye,
+                            dir,
+                            stats: pf.stats,
+                            weapon: item_name,
+                            tracer_start: tip,
+                        });
+                    }
+                    // AddVelocity(KickMomentum >> view rotation), not when falling.
+                    let on_ground = walker.is_some_and(|wk| wk.on_ground);
+                    if on_ground && pf.kick != Vec3::ZERO {
+                        kicks.write(crate::walk::PlayerAddVelocity {
+                            velocity: x * pf.kick.x + y * pf.kick.y + z * pf.kick.z,
+                        });
+                    }
+                    if fm.slows_movement && on_ground {
+                        let scale = if fm.rate > 0.25 { 0.1 } else { 0.5 };
+                        if let Some(e) = effects.as_mut() {
+                            e.fire_velocity_scale = Some(scale);
+                        }
+                    }
+                    let speed = walker.map_or(0.0, |wk| wk.velocity.length() / coords::SCALE);
+                    let r = [w.random(), w.random(), w.random()];
+                    let kick = crate::firing::recoil_kick(fm.recoil, speed, health.health, 100.0, r);
+                    recoil.add(kick, fm.recoil.rate, now);
+                    runlog::kv(
+                        "pellet_shot",
+                        &format!(
+                            "weapon={item_name} mode={mode} anim={} pellets={count} damage={} spread={spread:.0} wide={} kick_unreal=({:.0}, {:.0}, {:.0}) recoil_pitch={:.0} mag_left={} emptied={emptied} last_anim={last_anim}",
+                            w.anim,
+                            pf.stats.damage,
+                            w.defs[cur].wide_spread,
+                            pf.kick.x,
+                            pf.kick.y,
+                            pf.kick.z,
+                            kick.0,
+                            w.defs[cur].ammo.map_or(0, |a| a.mag)
+                        ),
+                    );
+                }
             }
             FireKind::Projectile | FireKind::None => runlog::kv(
                 "fire_not_implemented",
@@ -1626,6 +1890,25 @@ fn weapon_input(
     // the weapon idles (ClientFinishReloading), even if the reload
     // animation is still playing. One-round reloads add a round every
     // ReloadRate until full.
+    // BoomStick.WeaponTick: ReloadCountDown after the last barrel, both
+    // load (MagAmmoRemaining = Min(AmmoAmount, 2)); only while in hand.
+    if let Some(t) = w.boomstick_pending
+        && w.defs[w.current].boomstick_reload.is_some()
+    {
+        let t = t - dt;
+        if t <= 0.0 {
+            w.boomstick_pending = None;
+            let cur = w.current;
+            if let Some(a) = w.defs[cur].ammo.as_mut() {
+                let n = (a.capacity - a.mag).min(a.spare);
+                a.mag += n;
+                a.spare -= n;
+                runlog::kv("boomstick_loaded", &format!("mag={} spare={}", a.mag, a.spare));
+            }
+        } else {
+            w.boomstick_pending = Some(t);
+        }
+    }
     // Weapon.Timer: the bring-up ends in idle; the put-down plays its
     // animation after any DownDelay, then the next weapon comes up.
     if matches!(w.action, Action::Select | Action::PutDown { .. }) {
@@ -1682,9 +1965,11 @@ fn weapon_input(
     }
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
-    ammo_display.fire_mode = w.defs[w.current]
-        .toggles_on_alt
-        .then(|| if w.defs[w.current].modes[0].wait_for_release { "SEMI" } else { "AUTO" });
+    ammo_display.fire_mode = match w.defs[w.current].toggles_on_alt {
+        Some(AltToggle::FireMode) => Some(if w.defs[w.current].modes[0].wait_for_release { "SEMI" } else { "AUTO" }),
+        Some(AltToggle::WideSpread) => Some(if w.defs[w.current].wide_spread { "WIDE" } else { "NARROW" }),
+        None => None,
+    };
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)] // Bevy system parameters
