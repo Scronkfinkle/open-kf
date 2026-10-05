@@ -475,10 +475,19 @@ pub fn find_class_defaults(
     // with the fewest non-delegate Raw values wins, then the one with the
     // most properties, then the earliest.
     let data = pkg.export_data(export);
+    // Also bogus: a Vector, Rotator or Color struct that did not decode
+    // (wrong size; e.g. "HitAnims[64] = Color, 11 bytes" in front of
+    // DamTypeBurned's real list).
     let raw_count = |l: &PropertyList| {
         l.props
             .iter()
-            .filter(|p| matches!(p.value, Value::Raw { type_id, .. } if type_id != 7))
+            .filter(|p| match &p.value {
+                Value::Raw { type_id, .. } => *type_id != 7,
+                Value::Struct { name, .. } => {
+                    matches!(pkg.name(*name).to_ascii_lowercase().as_str(), "vector" | "rotator" | "color")
+                }
+                _ => false,
+            })
             .count()
     };
     let mut best: Option<(PropertyList, usize)> = None;

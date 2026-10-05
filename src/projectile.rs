@@ -41,6 +41,8 @@ pub struct ProjectileStats {
     pub rule: PenRule,
     /// CrossbowArrow: stuck in a wall it can be picked up (+1 bolt).
     pub pickup: bool,
+    /// The damage type burns (TrenchgunBullet; W7).
+    pub fire: Option<crate::combat::FireType>,
 }
 
 /// How a projectile passes through zeds.
@@ -497,7 +499,7 @@ fn move_projectiles(
                     p.age * p.stats.speed
                 ),
             );
-            let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None };
+            let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None, fire: p.stats.fire };
             crate::combat::damage_zed(&mut z, damage, head, p.stats.damage_type_headshot_mult, p.weapon, t, source, &mut kills);
             if p.stats.rule == PenRule::Bolt {
                 p.damage /= 1.25;
@@ -690,7 +692,7 @@ fn move_explosives(
                 let head = crate::combat::is_headshot(&z, point, dir, 1.0);
                 z.last_hit = Some((point, dir));
                 let attacker = coords::pos(player_ue.unwrap_or(at).to_array());
-                let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None };
+                let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None, fire: None };
                 crate::combat::damage_zed(&mut z, p.stats.impact_damage, head, p.stats.impact_headshot_mult, p.weapon, t, source, &mut kills);
             }
             runlog::kv(
@@ -811,7 +813,7 @@ fn blast(
         let point = coords::pos(hit_ue.to_array());
         let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
         z.last_hit = Some((point, dir_b));
-        let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: Some(b.fleshpound_mult) };
+        let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: Some(b.fleshpound_mult), fire: None };
         let before = z.health;
         crate::combat::damage_zed(&mut z, scale * b.damage, false, 1.0, b.weapon, dist * SCALE, source, kills);
         zeds_hit += 1;

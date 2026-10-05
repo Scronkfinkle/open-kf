@@ -322,6 +322,8 @@ struct IronSights {
 #[derive(Clone, Debug)]
 struct FireMode {
     kind: FireKind,
+    /// The bullets' damage type burns (instant fire; W7).
+    fire: Option<crate::combat::FireType>,
     /// The class path, for logs ("None" if the weapon has no such mode).
     class: String,
     /// FireAnims (one per shot, in turn) or FireAnim.
@@ -410,6 +412,24 @@ struct PelletFire {
 }
 
 /// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
+/// Which burn rules a damage type follows, if it has bDealBurningDamage
+/// (KFMonster.TakeDamage / ZombieBloat / ZombieHusk tell them apart by class).
+fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<crate::combat::FireType> {
+    use crate::combat::FireType;
+    if !matches!(defaults.get(dt, "bDealBurningDamage"), Some((Value::Bool(true), _))) {
+        return None;
+    }
+    let path = dt.path();
+    let name = path.rsplit('.').next().unwrap_or("");
+    Some(match name.to_ascii_lowercase().as_str() {
+        "damtypetrenchgun" => FireType::Trenchgun,
+        "damtypemac10mpinc" => FireType::Mac10,
+        "damtypehuskgun" => FireType::HuskGun,
+        "damtypeburned" => FireType::Burned,
+        _ => FireType::Flamethrower,
+    })
+}
+
 fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&ObjectHandle>) -> FireMode {
     let mut mode = FireMode {
         kind: FireKind::None,
@@ -443,6 +463,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         total_ammo_only: false,
         requires_aim: false,
         spawn_delay: None,
+        fire: None,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -514,6 +535,11 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         && let Some((Value::Float(m), _)) = defaults.get(&dt_class, "HeadShotDamageMult")
     {
         combat.headshot_mult = m;
+    }
+    if let Some((Value::Object(dt), dt_pkg)) = fget(dt_name)
+        && let Some(dt_class) = set.resolve(&dt_pkg, dt)
+    {
+        mode.fire = fire_type(defaults, &dt_class);
     }
     if let Some((Value::Name(n), np)) = fget("FireAnim") {
         mode.anims = vec![np.pkg.name(n).to_string()];
@@ -683,6 +709,10 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
                 bounces: pfloat("Bounces", 0.0) as u32,
                 rule: if is_bolt { crate::projectile::PenRule::Bolt } else { crate::projectile::PenRule::Pellet },
                 pickup: defaults.is_a(pc, "CrossbowArrow"),
+                fire: match pget("MyDamageType") {
+                    Some((Value::Object(r), rp)) => set.resolve(&rp, r).and_then(|dt| fire_type(defaults, &dt)),
+                    _ => None,
+                },
             },
             per_fire: int("ProjPerFire", 1),
             ammo_per_fire: int("AmmoPerFire", 1),
@@ -2075,6 +2105,7 @@ fn weapon_input(
                         weapon: item_name,
                         effect_start: w.hand_frames.get(hand).and_then(|h| h.0).map(|t| t.0),
                         max_penetrations: fm.penetrations,
+                        fire: fm.fire,
                     });
                     // HandleRecoil; speed in Unreal units/s.
                     let speed = walker.map_or(0.0, |wk| wk.velocity.length() / coords::SCALE);

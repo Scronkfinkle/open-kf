@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W6 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W6 and W7a implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1815,6 +1815,41 @@ W6c (`projectile.rs` PenRule::Bolt):
   40 mm grenade's StaticMeshRef omit the group, and KF loads them).
 - Not done: the arrow / bullet meshes, bodies pinned to walls
   (BodyAttacher), the M99's 3D scope is from the scope step.
+
+**W7 fire**, in three parts: W7a zeds burning and the Trenchgun (done),
+W7b the Flamethrower, W7c the Husk Gun.
+
+W7a (`combat.rs` FireType / damage_zed, `zed.rs` burn_zeds):
+- A damage type burns if its class has `bDealBurningDamage`
+  (DamTypeFlamethrower, DamTypeBurned and its subclass DamTypeHuskGun,
+  DamTypeTrenchgun, DamTypeMAC10MPInc). `FireType` keeps the classes the
+  rules tell apart.
+- Order in damage_zed, as the zed subclasses call KFMonster.TakeDamage
+  last: the zed's own scale (Fleshpound; Bloat x 1.5 for exactly
+  DamTypeBurned; Husk x BurnDamageScale 0.25 at Normal for DamTypeBurned
+  and DamTypeFlamethrower), then KFMonster's fire rule: if not burning or
+  the hit is bigger than LastBurnDamage, remember it, and FireDamageClass
+  becomes the Trenchgun / MAC10 type or else DamTypeFlamethrower; damage x
+  1.5 (not the MAC10); a zed not burning catches fire at 15 or more, or
+  after more than 4 lighter hits (HeatAmount): BurnDown 10, GroundSpeed x
+  0.8, flames (KFMonsterFlame). DamTypeBurned / DamTypeFlamethrower (and
+  the Husk Gun's) never get the headshot or headless multiplier.
+- Every second (KFMonster.Timer): TakeFireDamage(LastBurnDamage + 3 or 4)
+  with FireDamageClass, back through TakeDamage, so each tick raises
+  LastBurnDamage and the burn grows (Scrake run: 30, 34, 37 ... 57 before
+  x 1.5). BurnDown 0: speed back, flames killed (also on death).
+- Below CrispUpThreshhold (5 ticks left), ZombieCrispUp: the forward walk
+  becomes BurningWalkFAnims (WalkF_Fire). The Husk's mesh has no
+  WalkF_Fire; it keeps its walk.
+- The MAC10 does **not** burn: MAC10Fire takes its damage type from the
+  perk (GetMAC10DamageType), and with no perk that is DamTypeMAC10MP. Only
+  the Firebug perk makes it DamTypeMAC10MPInc.
+- Approximations: flames come from the zed's centre (KF spawns them on
+  the skeleton, UseSkeletalLocationAs); the crisped skin
+  (BurnSkinEmbers_cmb), the burning zeds' worse aim, "no pain animation
+  while crisped and burning", the burn sound (AmbientSound) are not done.
+  Restoring speed after a burn uses the zed's normal speed; KF sets
+  default.GroundSpeed, which also undoes the headless slow-down.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

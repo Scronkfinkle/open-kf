@@ -24,6 +24,8 @@ pub struct ShotFired {
     /// Zeds one bullet can pass through: 1 for KFFire.DoTrace; 5 for the
     /// DeagleFire family, whose DoTrace halves the damage after each.
     pub max_penetrations: u32,
+    /// A burning damage type (W7), if the shot's is one.
+    pub fire: Option<FireType>,
 }
 
 /// A knife swing reaching its damage moment (KFMeleeFire).
@@ -294,6 +296,22 @@ pub(crate) fn is_headshot(z: &Zed, hit: Vec3, dir: Vec3, scale: f32) -> bool {
     closest.length() < z.head_radius * scale * SCALE
 }
 
+/// Damage types that burn (KFWeaponDamageType.bDealBurningDamage), by the
+/// rules that tell them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireType {
+    /// DamTypeFlamethrower (also every burn tick not from the two below).
+    Flamethrower,
+    /// DamTypeTrenchgun (its burn ticks keep this type).
+    Trenchgun,
+    /// DamTypeMAC10MPInc (no x 1.5; its ticks keep this type). Firebug perk only.
+    Mac10,
+    /// DamTypeBurned exactly (the Bloat takes x 1.5).
+    Burned,
+    /// DamTypeHuskGun (a DamTypeBurned subclass).
+    HuskGun,
+}
+
 /// The attacker for a hit: where it was hit, the attacker's centre, and
 /// whether it was a melee attack (for the stun rule).
 #[derive(Clone, Copy)]
@@ -306,6 +324,8 @@ pub(crate) struct HitSource {
     /// bomb); None for everything else (x 0.5, or x 0.75 for a headshot by a
     /// damage type with HeadShotDamageMult >= 1.5).
     pub explosive: Option<f32>,
+    /// A burning damage type, if this is one.
+    pub fire: Option<FireType>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -322,9 +342,15 @@ pub(crate) fn damage_zed(
     if z.health <= 0.0 {
         return;
     }
+    // Burned and flamethrower damage never gets the headshot or headless
+    // multiplier (KFMonster.TakeDamage). KF still looks for a headshot with
+    // DamTypeBurned, but its only hits are blasts and burn ticks, which have
+    // no hit location; here they never count as headshots.
+    let burned_type = matches!(source.fire, Some(FireType::Flamethrower | FireType::Burned | FireType::HuskGun));
+    let headshot = headshot && !burned_type;
     // KFMonster.TakeDamage: headshots, and every hit on a headless zed, are
     // multiplied by the damage type's HeadShotDamageMult.
-    let mult = if headshot || z.decapitated { headshot_mult } else { 1.0 };
+    let mult = if (headshot || z.decapitated) && !burned_type { headshot_mult } else { 1.0 };
     // ZombieFleshPound.TakeDamage: explosives as listed (x 1, frag and pipe
     // bomb x 2); anything else x 0.5, or x 0.75 for a headshot by a damage
     // type with HeadShotDamageMult >= 1.5.
@@ -334,7 +360,37 @@ pub(crate) fn damage_zed(
         None if headshot && headshot_mult >= 1.5 => 0.75,
         None => z.small_arms_scale,
     };
-    let dealt = damage * mult * fleshpound;
+    // Zed overrides before KFMonster.TakeDamage: ZombieBloat x 1.5 for
+    // DamTypeBurned; ZombieHusk x BurnDamageScale for DamTypeBurned and
+    // DamTypeFlamethrower.
+    let zed_fire = match source.fire {
+        Some(FireType::Burned) => z.burned_scale * z.fire_resist,
+        Some(FireType::Flamethrower) => z.fire_resist,
+        _ => 1.0,
+    };
+    let mut damage = damage * fleshpound * zed_fire;
+    // KFMonster.TakeDamage, bDealBurningDamage: remember the hit for the
+    // burn ticks, x 1.5 (not the MAC10), and set the zed on fire at 15 or
+    // after more than 4 lighter hits (HeatAmount).
+    if let Some(f) = source.fire {
+        if z.burn_down == 0 || damage > z.last_burn_damage {
+            z.last_burn_damage = damage;
+            z.fire_class = if matches!(f, FireType::Trenchgun | FireType::Mac10) { f } else { FireType::Flamethrower };
+        }
+        if f != FireType::Mac10 {
+            damage *= 1.5;
+        }
+        if z.burn_down == 0 {
+            if z.heat > 4 || damage >= 15.0 {
+                z.burn_down = 10;
+                z.burn_timer = 1.0;
+                runlog::kv("zed_ignited", &format!("zed={} weapon={weapon} fire={f:?} damage={damage:.1} heat={}", z.id, z.heat));
+            } else {
+                z.heat += 1;
+            }
+        }
+    }
+    let dealt = damage * mult;
     let mut total = dealt;
     let mut head_off = false;
     let mut explosion = 0.0;
@@ -459,6 +515,7 @@ fn resolve_shots(
                     attacker: shot.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE,
                     melee: false,
                     explosive: None,
+                    fire: shot.fire,
                 };
                 let damage = if penetrating { hit_damage.trunc() } else { hit_damage };
                 if penetrating {
@@ -554,7 +611,7 @@ fn resolve_swings(
                 "melee_hit",
                 &format!("weapon={} zed={} kind=traced backstab={backstab} damage={my_damage:.1} headshot={head}", swing.weapon, z.id),
             );
-            let source = HitSource { point: hit, attacker: player, melee: true, explosive: None };
+            let source = HitSource { point: hit, attacker: player, melee: true, explosive: None, fire: None };
             damage_zed(&mut z, my_damage, head, swing.headshot_mult, swing.weapon, t, source, &mut kills);
         } else if let Some(t) = world_t {
             runlog::kv("melee_hit_world", &format!("weapon={} distance_unreal={:.0}", swing.weapon, t / SCALE));
@@ -592,7 +649,7 @@ fn resolve_swings(
                     "melee_hit",
                     &format!("weapon={} zed={} kind=wide angle_cos={diff:.2} damage={damage:.1} headshot={head}", swing.weapon, z.id),
                 );
-                let source = HitSource { point, attacker: player, melee: true, explosive: None };
+                let source = HitSource { point, attacker: player, melee: true, explosive: None, fire: None };
                 damage_zed(&mut z, damage, head, swing.headshot_mult, swing.weapon, d.length(), source, &mut kills);
             }
         }
@@ -723,6 +780,7 @@ mod tests {
         attacker: Vec3::new(0.0, 0.0, -4.0),
         melee: false,
         explosive: None,
+        fire: None,
     };
 
     // The test Clot stands at the origin facing Unreal +X (Bevy -Z); Unreal
@@ -806,6 +864,61 @@ mod tests {
         assert!(z.is_dead() && z.decapitated);
         assert_eq!(z.bleed_out, None);
         assert_eq!(kills.0, 1);
+    }
+
+    fn fire_src(f: FireType) -> HitSource {
+        HitSource { fire: Some(f), ..SRC }
+    }
+
+    #[test]
+    fn fire_ignites_at_15_or_after_five_light_hits() {
+        // KFMonster.TakeDamage: x 1.5; 10 x 1.5 = 15 lights at once.
+        let mut z = Zed::test_patriarch();
+        let mut kills = KillCount::default();
+        damage_zed(&mut z, 10.0, false, 1.0, "t", 1.0, fire_src(FireType::Trenchgun), &mut kills);
+        assert_eq!(z.burn_down, 10);
+        assert_eq!(z.last_burn_damage, 10.0);
+        assert_eq!(z.fire_class, FireType::Trenchgun);
+        // 5 x 1.5 = 7.5: HeatAmount goes up; the 6th light hit lights it.
+        let mut z = Zed::test_patriarch();
+        for i in 0..5 {
+            damage_zed(&mut z, 5.0, false, 1.0, "t", 1.0, fire_src(FireType::Flamethrower), &mut kills);
+            assert_eq!(z.burn_down, 0, "hit {i}");
+        }
+        assert_eq!(z.heat, 5);
+        damage_zed(&mut z, 5.0, false, 1.0, "t", 1.0, fire_src(FireType::Flamethrower), &mut kills);
+        assert_eq!(z.burn_down, 10);
+        // A weaker hit while burning keeps the stronger LastBurnDamage.
+        damage_zed(&mut z, 2.0, false, 1.0, "t", 1.0, fire_src(FireType::Flamethrower), &mut kills);
+        assert_eq!(z.last_burn_damage, 5.0);
+    }
+
+    #[test]
+    fn fire_types_skip_the_headshot_multiplier_and_husk_resists() {
+        let mut kills = KillCount::default();
+        // DamTypeBurned headshot: 10 x 1.5, no x 2.
+        let mut z = Zed::test_patriarch();
+        let h = z.health;
+        damage_zed(&mut z, 10.0, true, 2.0, "t", 1.0, fire_src(FireType::Burned), &mut kills);
+        assert!((h - z.health - 15.0).abs() < 0.01, "{}", h - z.health);
+        // The Trenchgun's type does get it: 10 x 1.5 x 2.
+        let mut z = Zed::test_patriarch();
+        damage_zed(&mut z, 10.0, true, 2.0, "t", 1.0, fire_src(FireType::Trenchgun), &mut kills);
+        assert!((h - z.health - 30.0).abs() < 0.01, "{}", h - z.health);
+        // A Husk (BurnDamageScale 0.25): flamethrower 20 x 0.25 x 1.5.
+        let mut z = Zed::test_patriarch();
+        z.fire_resist = 0.25;
+        damage_zed(&mut z, 20.0, false, 1.0, "t", 1.0, fire_src(FireType::Flamethrower), &mut kills);
+        assert!((h - z.health - 7.5).abs() < 0.01, "{}", h - z.health);
+        // A Bloat takes x 1.5 for exactly DamTypeBurned, not the Husk Gun's.
+        let mut z = Zed::test_patriarch();
+        z.burned_scale = 1.5;
+        damage_zed(&mut z, 10.0, false, 1.0, "t", 1.0, fire_src(FireType::Burned), &mut kills);
+        assert!((h - z.health - 22.5).abs() < 0.01, "{}", h - z.health);
+        let mut z = Zed::test_patriarch();
+        z.burned_scale = 1.5;
+        damage_zed(&mut z, 10.0, false, 1.0, "t", 1.0, fire_src(FireType::HuskGun), &mut kills);
+        assert!((h - z.health - 15.0).abs() < 0.01, "{}", h - z.health);
     }
 
     #[test]

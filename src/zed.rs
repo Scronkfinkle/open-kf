@@ -201,6 +201,10 @@ struct ZedClass {
     fp_red_device: Option<Handle<StandardMaterial>>,
     /// Share of non-explosive damage taken (ZombieFleshPound 0.5).
     small_arms_scale: f32,
+    /// ZombieHusk BurnDamageScale (Normal difficulty), else 1.
+    fire_resist: f32,
+    /// BurningWalkFAnims[0] (all three are the same).
+    burning_walk: Option<usize>,
     /// MotionDetectorThreat: how much this zed counts toward setting off a pipe bomb.
     motion_threat: f32,
     /// The ranged attack (RangedAttack beyond melee reach, head on): the
@@ -417,6 +421,18 @@ pub struct Zed {
     fp_rage_threshold: f32,
     /// Share of non-explosive damage taken.
     pub small_arms_scale: f32,
+    /// Burning (KFMonster): BurnDown ticks left, LastBurnDamage, HeatAmount,
+    /// FireDamageClass, seconds to the next tick, the flames effect.
+    pub(crate) burn_down: u32,
+    pub(crate) last_burn_damage: f32,
+    pub(crate) heat: u32,
+    pub(crate) fire_class: crate::combat::FireType,
+    pub(crate) burn_timer: f32,
+    burn_fx: Option<Entity>,
+    /// ZombieBloat: DamTypeBurned x 1.5; ZombieHusk: BurnDamageScale for
+    /// DamTypeBurned / DamTypeFlamethrower (1 for others).
+    pub(crate) burned_scale: f32,
+    pub(crate) fire_resist: f32,
     /// MotionDetectorThreat (pipe bombs).
     pub(crate) motion_threat: f32,
     /// Patriarch: the head never comes off (ZombieBoss.RemoveHead is empty)
@@ -1381,6 +1397,12 @@ const RAG_MAX_SPIN_AMOUNT: f32 = 100.0;
 const RAG_INV_INERTIA: f32 = 4.0;
 const GRAVITY: f32 = 950.0;
 
+/// KFMonster.CrispUpThreshhold (no zed changes it).
+const CRISP_UP_THRESHOLD: u32 = 5;
+
+/// KFMonster.BurnEffect.
+const BURN_EFFECT: &str = "KFMod.KFMonsterFlame";
+
 pub struct ZedPlugin;
 
 impl Plugin for ZedPlugin {
@@ -1389,7 +1411,71 @@ impl Plugin for ZedPlugin {
             .init_resource::<ZSpawn>()
             .insert_resource(ZedsActive(true))
             .add_systems(PostStartup, load_zed_classes)
-            .add_systems(Update, (spawn_zeds, think_and_move, animate_zeds, apply_cloaks).chain());
+            .add_systems(Update, (spawn_zeds, think_and_move, burn_zeds, animate_zeds, apply_cloaks).chain());
+    }
+}
+
+/// KFMonster.Timer while burning: every second, TakeFireDamage with
+/// LastBurnDamage plus 3 or 4 and FireDamageClass (back through TakeDamage,
+/// so the burn grows), and BurnDown goes down by 1; the fire goes out at 0. The flames
+/// (StartBurnFX / StopBurnFX) follow the zed while it burns.
+/// KF spawns the flames on the skeleton (UseSkeletalLocationAs); here they
+/// come from the zed's centre: an approximation.
+fn burn_zeds(
+    mut commands: Commands,
+    time: Res<Time>,
+    library: Option<Res<crate::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut effects: Query<&mut crate::particles::ParticleEffect>,
+    mut zeds: Query<(&mut Zed, &Transform)>,
+    mut kills: ResMut<crate::combat::KillCount>,
+) {
+    let dt = time.delta_secs();
+    for (mut z, t) in &mut zeds {
+        let b = t.translation;
+        let ue = Vec3::new(-b.z, b.x, b.y) / SCALE;
+        let alive = z.health > 0.0;
+        if z.burn_down > 0 && alive {
+            z.burn_timer -= dt;
+            if z.burn_timer <= 0.0 {
+                z.burn_timer += 1.0;
+                let damage = (z.last_burn_damage + (z.random() % 2) as f32 + 3.0).floor();
+                let fire = z.fire_class;
+                let source = crate::combat::HitSource { point: b, attacker: b, melee: false, explosive: None, fire: Some(fire) };
+                crate::combat::damage_zed(&mut z, damage, false, 1.0, "fire", 0.0, source, &mut kills);
+                z.burn_down -= 1;
+                runlog::kv(
+                    "zed_burn_tick",
+                    &format!("zed={} damage={damage} fire={fire:?} left={} health={:.1}", z.id, z.burn_down, z.health),
+                );
+                if z.burn_down == 0 {
+                    runlog::kv("zed_burn_out", &format!("zed={}", z.id));
+                }
+            }
+        }
+        let burning = z.burn_down > 0 && z.health > 0.0;
+        match (burning, z.burn_fx) {
+            (true, None) => {
+                if let Some(lib) = library.as_deref() {
+                    let id = z.id as u32;
+                    let opts = crate::particles::SpawnOptions { persistent: true, ..default() };
+                    z.burn_fx = crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, BURN_EFFECT, ue, Mat3::IDENTITY, id, opts);
+                    runlog::kv("zed_burn_fx", &format!("zed={} started={}", z.id, z.burn_fx.is_some()));
+                }
+            }
+            (true, Some(e)) => {
+                if let Ok(mut fx) = effects.get_mut(e) {
+                    fx.frame.0 = ue;
+                }
+            }
+            (false, Some(e)) => {
+                if let Ok(mut fx) = effects.get_mut(e) {
+                    fx.kill();
+                }
+                z.burn_fx = None;
+            }
+            (false, None) => {}
+        }
     }
 }
 
@@ -1445,6 +1531,10 @@ fn load_zed_classes(
                         c.melee_damage,
                         c.ext_collision
                     ),
+                );
+                runlog::kv(
+                    "zed_class_fire",
+                    &format!("class={} burning_walk={:?} fire_resist={}", c.name, c.burning_walk, c.fire_resist),
                 );
                 runlog::kv(
                     "zed_class_sequences",
@@ -1685,6 +1775,8 @@ fn load_class(
         fp_red_device: if kind == ZedKind::Fleshpound { load_named_material(set, "KFCharacters", "FPRedBloomShader", images, materials) } else { None },
         small_arms_scale: if kind == ZedKind::Fleshpound { 0.5 } else { 1.0 },
         motion_threat: float("MotionDetectorThreat", 1.0),
+        fire_resist: if kind == ZedKind::Husk { float("BurnDamageScale", 1.0) } else { 1.0 },
+        burning_walk: defaults.get_array_names(&class, "BurningWalkFAnims").first().and_then(|n| model.sequence(n)),
         ranged_anim,
         ranged_distance: match kind {
             ZedKind::Siren => float("ScreamRadius", 700.0),
@@ -2165,6 +2257,14 @@ impl Zed {
             fp_rage_threshold: 0.0,
             small_arms_scale: 1.0,
             motion_threat: 1.0,
+            burn_down: 0,
+            last_burn_damage: 0.0,
+            heat: 0,
+            fire_class: crate::combat::FireType::Flamethrower,
+            burn_timer: 0.0,
+            burn_fx: None,
+            burned_scale: 1.0,
+            fire_resist: 1.0,
             keeps_head: false,
             no_hit_reactions: false,
             boss: None,
@@ -2368,6 +2468,14 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 fp_rage_threshold: c.fp_rage_threshold,
                 small_arms_scale: c.small_arms_scale,
                 motion_threat: c.motion_threat,
+                burn_down: 0,
+                last_burn_damage: 0.0,
+                heat: 0,
+                fire_class: crate::combat::FireType::Flamethrower,
+                burn_timer: 0.0,
+                burn_fx: None,
+                burned_scale: if c.kind == ZedKind::Bloat { 1.5 } else { 1.0 },
+                fire_resist: c.fire_resist,
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
                 boss: c.boss.is_some().then(|| crate::boss::BossState::new(c.health)),
@@ -3372,6 +3480,9 @@ fn think_and_move(
                 } else {
                     c.ground_speed
                 };
+                // KFMonster.TakeDamage on catching fire: GroundSpeed x 0.8
+                // (of the current speed, so headless zeds slow down more).
+                let speed = if z.burn_down > 0 { speed * 0.8 } else { speed };
                 let delta = dir_of(z.yaw) * speed * SCALE * dt;
                 let others: Vec<(Option<Entity>, Cylinder)> =
                     blockers.iter().filter(|(e, _)| *e != Some(entity)).copied().collect();
@@ -3488,6 +3599,10 @@ fn think_and_move(
                 let anim = if speed >= STANDING_SPEED {
                     if z.decapitated {
                         c.headless_walk.or(c.walk)
+                    } else if z.burn_down > 0 && z.burn_down < CRISP_UP_THRESHOLD {
+                        // ZombieCrispUp (BurnDown below CrispUpThreshhold) ->
+                        // SetBurningBehavior: MovementAnims[0] = BurningWalkFAnims.
+                        c.burning_walk.or(c.walk)
                     } else if z.running {
                         c.run_anim.or(c.walk)
                     } else if z.fp_rage.is_some() {

@@ -2353,3 +2353,35 @@ and the 9mm brought up. Tests 51/51.
 the previous weapon in slot order, not KF's best-rated one. Not looked
 at by eye.
 **Next:** W7, fire.
+
+## 2026-10-04 Weapons W7a: zeds burning, Trenchgun
+
+**Changed:** `combat.rs`: `FireType`, `HitSource.fire`, `ShotFired.fire`;
+damage_zed applies the zed fire scales (Bloat, Husk), KFMonster's burn
+rule (LastBurnDamage, FireDamageClass, x 1.5, HeatAmount, catching fire)
+and skips the headshot multiplier for burned / flamethrower types.
+`zed.rs`: burn state on `Zed`, `burn_zeds` (1 s ticks, flames effect
+following the zed), speed x 0.8 while burning, BurningWalkFAnims after
+crisp-up, `zed_class_fire` log. `weapon.rs`: `fire_type` from a damage
+type's bDealBurningDamage, for bullets and projectiles.
+`projectile.rs`: `ProjectileStats.fire`. `particles.rs`:
+KFMod.KFMonsterFlame. `ue-assets/properties.rs`: the class-defaults
+reader also counts Vector / Rotator / Color structs it could not decode
+as bogus when choosing where defaults start. DESIGN, README.
+**Why:** W7 of the weapons plan. The reader fix: DamTypeTrenchgun and
+DamTypeBurned read from a wrong start, losing `bDealBurningDamage`.
+**Tested how:** `--give Trenchgun` runs against Clots, a Scrake and a
+Gorefast; `cargo test --release --workspace` (2 new tests: ignition at
+15 / after 5 light hits, fire-type multipliers); reader compared over
+all classes before and after (15 classes changed, all DamType* losing a
+bogus value and gaining real ones).
+**Result:** One Trenchgun shot lit a Scrake: 10 ticks of 30, 34, 37, 40,
+44, 48, 51, 54, 57 (x 1.5 dealt), from 1000 to dead; flames spawned and
+killed with it. Clots die from the shot itself. Tests 53 + 21 pass.
+**Still broken / not tested:** The flames and burning walk not looked
+at by eye; the burning walk not seen in a run (the test zeds were
+attacking or dead by then). Flames start at the zed's centre, not on its
+skeleton. Crisped skins, burn sounds, pain-animation rule not done. The
+MAC10 stays non-burning (KF with no perk). Bloat / Husk fire scales only
+by unit test (no weapon in W7a uses those damage types).
+**Next:** W7b, the Flamethrower.

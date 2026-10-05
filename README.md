@@ -158,6 +158,13 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Zeds catch fire (W7a, 2026-10-04): the Dragon's Breath Trenchgun sets
+  zeds burning for 10 s with flames on them; each second's burn hurts
+  more than the last, burning zeds walk 20% slower, and after 6 s they
+  switch to the burning walk. KF's Husk resists fire and the Bloat takes
+  extra from it. The MAC10 does not burn: in KF only the Firebug perk
+  makes it incendiary. Checked by unit tests and logged runs (Scrake,
+  Gorefast, Clots). Not play-tested by you; the flames not looked at.
 - Grenades, rockets, frags, pipe bombs and nails are drawn with their own
   models (2026-10-04). Checked by screenshot (pipe bomb).
 - Crossbow and M99 (W6c, 2026-10-04): bolts / bullets go through every
