@@ -159,6 +159,16 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Doors (D1, 2026-10-05): KF's doors swing open and shut with E (USE)
+  when you stand in their trigger, away from you on two-way doors. They
+  block you, zeds and bullets when shut, and swing through pawns as in
+  KF. Zeds open a shut door by walking into its trigger. Checked by
+  logged runs on KF-Manor (open, walk through, blocked when shut, a Clot
+  opening it, a shot stopping at it) and load logs on six maps. Not
+  play-tested by you. Known gaps: no welding or bashing yet (D2, D3); a
+  zed already standing in the trigger when you shut the door stays stuck
+  behind it (the scripts say so; KF's engine side unknown); KF-Aperture's
+  button-driven doors and other scripted movers do not move.
 - ZED Gun (W9c, 2026-10-05): bolts, and a held beam that zaps the zed
   it touches and, growing over 3 s, the zeds around where it lands.
   Checked by logged runs. Known problems: its sleeves draw white and its
@@ -361,8 +371,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   maps look flatter and brighter than in the game.
 - Animated or complex materials (panners, shaders, combiners) show their base
   texture only, without animation or blending tricks.
-- Doors, breakable windows and scripted barriers (movers) do not block
-  movement yet, because they don't move yet.
+- Doors cannot be welded or broken yet. Breakable windows and scripted
+  movers (lifts, barriers, KF-Aperture's button doors) do not move and do
+  not block.
+- Pressing into a wall or door flickers between walking and falling (the
+  floor check touches the wall); found 2026-10-05, not fixed yet.
 - No crouching. Ladders, water and swimming are not handled.
 - No sound.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be

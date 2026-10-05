@@ -5,6 +5,7 @@ mod combat;
 mod collision;
 mod coords;
 mod decals;
+mod door;
 mod fireball;
 mod firing;
 mod gore;
@@ -229,7 +230,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(scripted)

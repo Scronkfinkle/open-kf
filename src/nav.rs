@@ -162,7 +162,7 @@ pub fn hunt_size(radius: f32, half_height: f32) -> (f32, f32) {
 /// step up, snap to floor, fall up to MAX_DROP). Ok if it gets within
 /// `touch`; Err says why not and where (Unreal units).
 pub fn probe(spatial: &SpatialQuery, from: Vec3, to: Vec3, touch: f32, radius: f32, half_height: f32) -> Result<(), String> {
-    let mover = Mover::new(spatial, radius, half_height, crate::collision::zed_filter());
+    let mover = Mover::new(spatial, radius, half_height, crate::collision::zed_path_filter());
     let ue = |p: Vec3| format!("({:.0}, {:.0}, {:.0})", -p.z / SCALE, p.x / SCALE, p.y / SCALE);
     let mut pos = from;
     let mut jumps = 0;
@@ -273,7 +273,7 @@ fn check_links_once(
                         if let [x, y, z] = v[..] {
                             let p = coords::pos([x, y, z]);
                             let dir = (nav.points[b].pos - p).with_y(0.0).normalize_or_zero();
-                            let mover = Mover::new(&spatial, 26.0, HUNT_HALF_HEIGHT, crate::collision::zed_filter());
+                            let mover = Mover::new(&spatial, 26.0, HUNT_HALF_HEIGHT, crate::collision::zed_path_filter());
                             if let Some(h) = mover.cast(p, dir, 64.0 * SCALE) {
                                 let name = names.get(h.entity).map_or("unnamed".to_string(), |n| n.to_string());
                                 what = format!(" hit={name} normal_up={:.2}", h.normal.y);

@@ -334,7 +334,7 @@ pub fn spawn(
     zed_id: usize,
 ) -> RagdollState {
     let length = frame.k * def.unit; // metres per file unit
-    let layers = CollisionLayers::new(crate::collision::GameLayer::Ragdoll, [crate::collision::GameLayer::World, crate::collision::GameLayer::Blocking]);
+    let layers = CollisionLayers::new(crate::collision::GameLayer::Ragdoll, [crate::collision::GameLayer::World, crate::collision::GameLayer::Blocking, crate::collision::GameLayer::Door]);
     let root_pos = frame.body_from_bone(pose[def.parts[def.root].bone]).1;
     let mut bodies = Vec::new();
     for part in &def.parts {
@@ -635,7 +635,7 @@ mod tests {
                     AngularInertia::new(Vec3::splat(0.04)),
                     CenterOfMass(Vec3::ZERO),
                     (NoAutoMass, NoAutoAngularInertia, NoAutoCenterOfMass),
-                    CollisionLayers::new(crate::collision::GameLayer::Ragdoll, [crate::collision::GameLayer::World, crate::collision::GameLayer::Blocking]),
+                    CollisionLayers::new(crate::collision::GameLayer::Ragdoll, [crate::collision::GameLayer::World, crate::collision::GameLayer::Blocking, crate::collision::GameLayer::Door]),
                 ));
             }
             e.id()

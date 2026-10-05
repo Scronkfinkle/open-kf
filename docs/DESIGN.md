@@ -2033,6 +2033,116 @@ perk chosen uses the plain values; perk bonuses come with the game loop),
 the trader and buying (W1's `--give` stands in), third-person weapon
 models, the flashlight, zed time.
 
+## Doors (milestone 8, planned 2026-10-05; D1 implemented 2026-10-05)
+
+Goal: KF's doors. They open and close with the USE key (E), zeds open the ones
+that are not welded, the Welder seals them, and zeds bash welded doors until
+they break.
+
+**What the maps hold (checked 2026-10-05, all 35 `KF-` maps).** 707
+`KFDoorMover` actors and 397 `KFUseTrigger`s. Every door is a static mesh
+(DrawType 8); none are BSP brushes. Other movers (plain `Mover`,
+`ClientMover`, `KFGlassMover` windows, the KF-WestLondon street barrier) are
+not part of this milestone and keep being drawn but not blocking.
+
+**Rules from the scripts (checked 2026-10-05).**
+- *Position.* A mover sits at `BasePos + KeyPos[KeyNum]`, turned
+  `BaseRot + KeyRot[KeyNum]` (`Mover.BeginPlay`). `InterpolateTo(k, time)`
+  moves from where it is now to key `k` in `time` seconds. Opening past key
+  1 chains key by key (`KeyFrameReached`) up to `NumKeys - 1` (default 2).
+- *Glide.* `MoverGlideType` defaults to MV_GlideByTime (smooth start and
+  stop). The curve is native code; I recall it as 3a^2 - 2a^3 from the
+  Unreal 1 public source. **Not verified against KF.**
+- *Defaults (KFDoorMover).* InitialState TriggerToggle, MoveTime 1 (maps
+  often set 0.5-2), MoverEncroachType 3 = ignore: a door swings through
+  pawns, it never pushes or stops. Blocks players, zeds, bullets and
+  ragdolls (Actor defaults; 23 doors switch blocking off). DamageThreshold
+  50, ZombieDamageReductionFactor 0.85.
+- *Trigger.* A `KFUseTrigger` is an invisible cylinder (CollisionRadius /
+  Height, typically 128 x 80) whose Event names the door Tag; every door
+  with that Tag belongs to it (double doors). Pressing USE calls UsedBy on
+  every trigger the player's cylinder touches (`PlayerController.ServerUse`).
+  UsedBy: ignored if less than ReFireDelay (KF default 2, maps mostly 1)
+  since the last use (`LastAttempt` is an int, so the time is rounded down,
+  copied). Unsealed, unlocked doors toggle. `bDirectionalOpen` (242 of 397
+  triggers): open to key 1 if the user stands on the trigger's facing side,
+  key 2 otherwise, so a door swings away from you.
+- *Toggle (TriggerToggle).* Closed or still opening (KeyNum 0 or
+  KeyNum < PrevKeyNum): open; else close. A door is `bClosed` only when it
+  has finished closing.
+- *Zeds and triggers.* `KFUseTrigger.Touch`: a zed entering the trigger
+  opens each door that is unlocked, unsealed and at key 0. The player
+  entering gets the message "Press USE Key" (or the map's Message) at most
+  every 0.6 s.
+- *Welding.* Welder WeldFire: `GetDoor` traces 90 units from the eye; a
+  door must be closed (`bClosed`) to weld. Each hit (FireRate 0.2) adds
+  MeleeDamage 10 to the trigger's WeldStrength, shared by all its doors, up
+  to MaxWeldStrength (KF 400, maps set 500 / 600). While zeds hit the door
+  (within 1 s), welding counts x CombatSealReduction 0.5. Alt fire unwelds
+  the same way. Weld > 0 means sealed: sealed doors do not open, and USE
+  says "This door is welded shut." `bStartSealed` doors start at
+  StartSealedWeldPrc percent (19 doors); `bDisallowWeld` doors refuse (13).
+- *Zeds against doors.* A zed that bumps a closed or sealed door is told to
+  `BreakUpDoor`; while the door stays sealed it plays DoorBash and each hit
+  does its melee damage x 0.85 (at least 5) to the weld; at 0 weld the door
+  breaks (`GoBang`): hidden, no collision, wood or metal break emitter. A
+  sealed door makes its path node cost 500 + weld x 6 more, so zeds prefer
+  other routes. Husk and Bloat may attack doors from range.
+- *Players against doors.* Players damage doors only with DamTypeFrag (the
+  hand grenade) of 50 or more, unless the door has bSmallArmsDamage. An
+  unsealed door has Health = MaxWeld and takes half damage.
+- Doors come back at the end of each wave (`DoWaveEnd` -> RespawnDoor);
+  there are no waves yet.
+
+**Steps.**
+- **D1, doors move and block.** Read KFDoorMover and KFUseTrigger from the
+  map. Each door becomes its own entity (mesh + its own collider on a new
+  `Door` collision layer that players, zeds, bullets and ragdolls collide
+  with) instead of map geometry. Mover interpolation with keys and glide.
+  E (USE, KF's key) in walk mode uses touching triggers, with the toggle,
+  directional and refire rules. Zeds entering a trigger open its doors.
+  Test action `use` for scripted runs. Log every state change with the
+  door's position and yaw. Doors in other states (TriggerControl,
+  TriggerOpenTimed: 73, opened by map events) and doors without a trigger
+  stay at their start key and block; logged by name so we can check none
+  of them blocks a main route.
+- **D2, welding.** The Welder finds the door, weld / unweld amounts, the
+  shared strength, sealed doors refusing to open, bStartSealed,
+  bDisallowWeld, messages and weld percent logged (no HUD text yet).
+- **D3, zeds break welded doors.** Bump -> DoorBash animation and damage,
+  the 0.85 factor, GoBang (break emitters, door gone), path cost for
+  sealed doors, ranged door attacks (read when reached).
+- **D4, grenades and unwelded door health.** DamTypeFrag damage,
+  bSmallArmsDamage doors, Health.
+
+**D1 as built (`door.rs`).** Doors are drawn by a root entity per door
+(mesh parts as children) and collide through a separate kinematic
+collider, both moved every frame from the mover state kept in Unreal
+units. New collision layers `Door` (players, zeds, bodies) and
+`DoorTraces` (bullets, bBlockZeroExtentTraces). Nav link checks and zed
+reach probes use `zed_path_filter`, which leaves doors out, so the paths
+KF built through doorways stay usable. Touch is "entered the trigger
+cylinder this frame". Log lines: `doors_loaded`, `door` (open, opened,
+close, closed with key, yaw, position), `use_pressed`, `message`.
+
+What was learned:
+- Rotation keys are relative to BaseRot: KF-Manor KFDoorMover5 goes from
+  yaw -16384 to -1024 (KeyRot[1] 15360) or -31744 (KeyRot[2] -15360).
+- KF-Hospitalhorrors has 25 doors no trigger names (nothing in the map
+  opens them); KF-Aperture's 63 TriggerControl doors are driven by
+  KFProxyTrigger and button movers. Both stay at their start key.
+- A zed already inside the trigger when the door shuts does not reopen
+  it: Touch fires only on entering, KFDoorMover.Bump -> BreakUpDoor only
+  acts on sealed doors, and Controller.NotifyHitMover is empty. Copied;
+  whether native code helps in KF is unknown.
+- Pressing into a wall makes the floor check touch the wall at distance
+  0, so walkers flicker into falling. Happens on BSP walls too (not
+  door-specific); left for its own fix.
+
+Not in this milestone: sounds (no sound yet), keys for locked doors
+(bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
+(HUD milestone), door respawn (waves milestone), other movers.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

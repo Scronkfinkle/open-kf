@@ -33,6 +33,61 @@ pub struct MeshActor {
     /// bBlockNonZeroExtentTraces all true (own value or class default).
     /// Always false when class defaults were not available.
     pub blocks_player: bool,
+    /// Set for KFDoorMover actors: what the door needs to move.
+    pub door: Option<DoorInfo>,
+}
+
+/// A KFDoorMover's mover and door settings (own value, else class default).
+#[derive(Debug, Clone)]
+pub struct DoorInfo {
+    /// Object name, e.g. `KFDoorMover6`, for logs.
+    pub name: String,
+    /// Tag: the KFUseTrigger whose Event matches owns this door.
+    pub tag: String,
+    pub base_pos: [f32; 3],
+    pub base_rot: Rotator,
+    /// KeyPos / KeyRot, all 24 (unset = zero).
+    pub key_pos: Vec<[f32; 3]>,
+    pub key_rot: Vec<Rotator>,
+    pub key_num: u8,
+    pub num_keys: u8,
+    pub move_time: f32,
+    pub delay_time: f32,
+    /// MoverGlideType: 0 MV_MoveByTime, 1 MV_GlideByTime.
+    pub glide_type: u8,
+    pub initial_state: String,
+    pub start_sealed: bool,
+    pub start_sealed_weld_prc: f32,
+    pub disallow_weld: bool,
+    pub key_locked: bool,
+    pub no_seal: bool,
+    pub small_arms_damage: bool,
+    pub zombies_ignore: bool,
+    pub block_damaging_of_weld: bool,
+    /// EST_Metal (4) or anything else (wood break effects).
+    pub surface_type: u8,
+    pub is_leader: bool,
+    pub return_group: String,
+    /// bBlockZeroExtentTraces: bullets stop on it.
+    pub blocks_traces: bool,
+}
+
+/// A KFUseTrigger: the cylinder players press USE in, and zeds walk into,
+/// to open the doors whose Tag is its Event.
+#[derive(Debug, Clone)]
+pub struct UseTriggerInfo {
+    pub name: String,
+    pub event: String,
+    pub location: [f32; 3],
+    pub rotation: Rotator,
+    pub radius: f32,
+    pub height: f32,
+    pub refire_delay: i32,
+    pub max_weld_strength: f32,
+    pub combat_seal_reduction: f32,
+    pub directional_open: bool,
+    pub message: String,
+    pub always_show_message: bool,
 }
 
 /// A brush actor that blocks movement (BlockingVolume and similar).
@@ -74,6 +129,8 @@ pub struct LevelContents {
     pub blocking_brushes: Vec<BlockingBrush>,
     /// Locations of PathNodes (navigation points placed above the floor).
     pub path_nodes: Vec<[f32; 3]>,
+    /// KFUseTriggers (only with class defaults).
+    pub use_triggers: Vec<UseTriggerInfo>,
 }
 
 fn vector(props: &PropertyList, pkg: &Package, name: &str, default: [f32; 3]) -> [f32; 3] {
@@ -93,6 +150,64 @@ fn object_array(value: Option<&Value>) -> Vec<ObjectRef> {
     (0..*count)
         .map_while(|_| r.compact_index().ok().map(ObjectRef::from_raw))
         .collect()
+}
+
+/// An actor's effective values (own saved property, else the class
+/// default), with names and strings read from the right package.
+struct Effective<'x, 'd> {
+    lp: &'x Rc<LoadedPackage>,
+    d: &'x ClassDefaults<'d>,
+    export: usize,
+    props: &'x PropertyList,
+}
+
+impl Effective<'_, '_> {
+    fn value(&self, name: &str) -> Option<(Value, Rc<LoadedPackage>)> {
+        if let Some(v) = self.props.get(&self.lp.pkg, name) {
+            return Some((v.clone(), self.lp.clone()));
+        }
+        let class = self.d.class_of(self.lp, self.export)?;
+        self.d.get(&class, name)
+    }
+    fn float(&self, name: &str, default: f32) -> f32 {
+        match self.value(name) {
+            Some((Value::Float(f), _)) => f,
+            _ => default,
+        }
+    }
+    fn int(&self, name: &str, default: i32) -> i32 {
+        match self.value(name) {
+            Some((Value::Int(n), _)) => n,
+            _ => default,
+        }
+    }
+    fn byte(&self, name: &str, default: u8) -> u8 {
+        match self.value(name) {
+            Some((Value::Byte(b), _)) => b,
+            _ => default,
+        }
+    }
+    fn bool(&self, name: &str) -> bool {
+        matches!(self.value(name), Some((Value::Bool(true), _)))
+    }
+    fn name(&self, name: &str) -> String {
+        match self.value(name) {
+            Some((Value::Name(n), from)) => from.pkg.name(n).to_string(),
+            _ => String::new(),
+        }
+    }
+    fn string(&self, name: &str) -> String {
+        match self.value(name) {
+            Some((Value::Str(s), _)) => s,
+            _ => String::new(),
+        }
+    }
+    fn rotator(&self, name: &str) -> Rotator {
+        match self.value(name) {
+            Some((Value::Rotator(r), _)) => r,
+            _ => Rotator::default(),
+        }
+    }
 }
 
 /// True if the class draws a static mesh by default. Class default values are
@@ -169,6 +284,25 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                 });
             }
         }
+        if class == "KFUseTrigger"
+            && let Some((lp, d)) = defaults
+        {
+            let v = Effective { lp, d, export: i, props: &props };
+            out.use_triggers.push(UseTriggerInfo {
+                name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                event: v.name("Event"),
+                location: vector(&props, pkg, "Location", [0.0; 3]),
+                rotation: v.rotator("Rotation"),
+                radius: v.float("CollisionRadius", 0.0),
+                height: v.float("CollisionHeight", 0.0),
+                refire_delay: v.int("ReFireDelay", 0),
+                max_weld_strength: v.float("MaxWeldStrength", 0.0),
+                combat_seal_reduction: v.float("CombatSealReduction", 1.0),
+                directional_open: v.bool("bDirectionalOpen"),
+                message: v.string("Message"),
+                always_show_message: v.bool("bAlwaysShowMessage"),
+            });
+        }
         if class == "PathNode" {
             out.path_nodes.push(vector(&props, pkg, "Location", [0.0; 3]));
         }
@@ -223,6 +357,48 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             _ => 1.0,
         };
         let s3 = vector(&props, pkg, "DrawScale3D", [1.0; 3]);
+        let door = match defaults {
+            Some((lp, d)) if d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "KFDoorMover")) => {
+                let v = Effective { lp, d, export: i, props: &props };
+                Some(DoorInfo {
+                    name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                    tag: v.name("Tag"),
+                    base_pos: vector(&props, pkg, "BasePos", [0.0; 3]),
+                    base_rot: v.rotator("BaseRot"),
+                    key_pos: (0..24)
+                        .map(|k| match props.get_at(pkg, "KeyPos", k) {
+                            Some(Value::Vector(p)) => *p,
+                            _ => [0.0; 3],
+                        })
+                        .collect(),
+                    key_rot: (0..24)
+                        .map(|k| match props.get_at(pkg, "KeyRot", k) {
+                            Some(Value::Rotator(r)) => *r,
+                            _ => Rotator::default(),
+                        })
+                        .collect(),
+                    key_num: v.byte("KeyNum", 0),
+                    num_keys: v.byte("NumKeys", 2),
+                    move_time: v.float("MoveTime", 1.0),
+                    delay_time: v.float("DelayTime", 0.0),
+                    glide_type: v.byte("MoverGlideType", 1),
+                    initial_state: v.name("InitialState"),
+                    start_sealed: v.bool("bStartSealed"),
+                    start_sealed_weld_prc: v.float("StartSealedWeldPrc", 0.0),
+                    disallow_weld: v.bool("bDisallowWeld"),
+                    key_locked: v.bool("bKeyLocked"),
+                    no_seal: v.bool("bNoSeal"),
+                    small_arms_damage: v.bool("bSmallArmsDamage"),
+                    zombies_ignore: v.bool("bZombiesIgnore"),
+                    block_damaging_of_weld: v.bool("bBlockDamagingOfWeld"),
+                    surface_type: v.byte("SurfaceType", 0),
+                    is_leader: v.bool("bIsLeader"),
+                    return_group: v.name("ReturnGroup"),
+                    blocks_traces: v.bool("bBlockZeroExtentTraces"),
+                })
+            }
+            _ => None,
+        };
         out.mesh_actors.push(MeshActor {
             export: i,
             class: class.to_string(),
@@ -236,6 +412,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             pre_pivot: vector(&props, pkg, "PrePivot", [0.0; 3]),
             skins: object_array(props.get(pkg, "Skins")),
             blocks_player,
+            door,
         });
     }
 

@@ -2581,3 +2581,34 @@ plain white (KF fills that slot from the player's species) and its
 screen as scrolling lines; left as is. The beam strip itself not seen
 (the Clot was at the barrel in the shot). No sounds.
 **Next:** your call; the weapons plan (W1-W9) is done.
+
+## 2026-10-05 Doors D1: doors move and block
+
+**Changed:** `crates/ue-assets/src/level.rs`: KFDoorMover settings
+(`DoorInfo`) and KFUseTriggers (`UseTriggerInfo`), read with class
+defaults. `map.rs`: doors spawn as their own entities, not as map
+collision. New `door.rs`: mover keys and glide, TriggerToggle (open /
+close, directional OpenToKey / CloseToFirst, DelayTime), USE on E (and
+test action `use`) with ReFireDelay, zeds entering a trigger open its
+doors, the player's trigger message (logged). `collision.rs`: `Door` and
+`DoorTraces` layers, `zed_path_filter` for nav checks; ragdolls collide
+with doors. Plan in DESIGN "Doors"; README.
+**Why:** You asked for doors; first step of the plan.
+**Tested how:** unit tests (open, glide, reverse mid-move, directional);
+KF-Manor runs at KFDoorMover5: USE then walk; walk without USE; a Clot
+behind the door; USE while the Clot approached; shots before and after
+opening. Load logs on KF-Aperture, Farm, BioticsLab, WestLondon,
+Hospitalhorrors. `cargo test --release --workspace`; clippy.
+**Result:** USE opened the door in 1.25 s (yaw -16384 -> -1024) and the
+player walked through; without USE the player stopped at x -1544
+(blocked by KFDoorMover5). The Clot opened it to key 2 (away from
+itself) and reached the player. A 9mm shot hit the closed door at 105
+units, 892 after opening. Tests 60 + 21.
+**Failures on the way:** a unit-test threshold was tighter than the
+door's real speed (206 units per 0.01 s), not a bug.
+**Still broken / not tested:** Not play-tested or looked at. A zed
+standing in the trigger when the door shuts stays stuck behind it (as
+the scripts say). Walkers pressing into a door or wall flicker into
+falling (existing bug, also on BSP walls). Event-driven doors
+(KF-Aperture) and other movers do not move. No sounds.
+**Next:** D2, welding (or the wall flicker fix first, your call).

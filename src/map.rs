@@ -335,6 +335,7 @@ fn load_map(
     mut spawn: ResMut<SpawnPoint>,
     mut sky: ResMut<SkyInfo>,
     mut collision: ResMut<CollisionGeometry>,
+    mut door_setup: ResMut<crate::door::DoorSetup>,
     compressed: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let started = Instant::now();
@@ -351,6 +352,7 @@ fn load_map(
     let defaults_started = Instant::now();
     let class_defaults = ClassDefaults::new(&set);
     let contents = read_level_with(&lp, &class_defaults);
+    door_setup.triggers = contents.use_triggers.clone();
     commands.insert_resource(crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg)));
     runlog::kv(
         "class_defaults",
@@ -604,11 +606,54 @@ fn load_map(
             actors_unresolved += 1;
             continue;
         };
-        let transform = Transform {
+        let mut transform = Transform {
             translation: coords::pos(actor.location),
             rotation: coords::rotation(actor.rotation),
             scale: coords::scale(actor.scale),
         };
+        // Doors move: their own entity (moved by door.rs) with the mesh
+        // parts as children, and their own collider, built later from
+        // these local-space triangles.
+        if let Some(info) = &actor.door {
+            let k = info.key_num as usize;
+            let (pos, rot) = crate::door::key_pose(info, k);
+            transform.translation = coords::pos(pos);
+            transform.rotation = crate::door::rotation_of(rot);
+            let mut soup = crate::collision::TriSoup::default();
+            if actor.blocks_player {
+                for part in parts.iter() {
+                    if let Some(tris) = &part.collision {
+                        for t in tris.iter() {
+                            let [a, b, c] = t.map(|p| p * transform.scale);
+                            soup.push_triangle(a, b, c);
+                        }
+                    }
+                }
+            }
+            let root = commands.spawn((transform, Visibility::default(), MapGeometry, Name::new(info.name.clone()))).id();
+            for part in parts.iter() {
+                let material = match actor.skins.get(part.section) {
+                    Some(&skin) if skin != ObjectRef::Null => {
+                        skins_applied += 1;
+                        loader.material(&ObjectHandle { package: lp.clone(), export: actor.export }, skin, false).map(|m| m.0)
+                    }
+                    _ => part.material.clone(),
+                };
+                let Some(material) = material else {
+                    invisible_parts += 1;
+                    continue;
+                };
+                commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root)));
+                entities += 1;
+            }
+            door_setup.doors.push(crate::door::DoorSpawn {
+                info: info.clone(),
+                root,
+                collision: soup,
+            });
+            actors_spawned += 1;
+            continue;
+        }
         let in_sky = in_sky_bounds(actor.location);
         if in_sky {
             sky_actors += 1;

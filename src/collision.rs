@@ -77,27 +77,37 @@ pub enum GameLayer {
     PlayerBlocking,
     ZedBlocking,
     TraceBlocking,
+    /// Doors (door.rs): block players, zeds and bodies.
+    Door,
+    /// Doors that also stop bullets (bBlockZeroExtentTraces).
+    DoorTraces,
 }
 
 /// Zero-extent traces (bullets, blood traces, particle collision, floor
 /// probes): the level and volumes that block traces.
 pub fn world_filter() -> SpatialQueryFilter {
-    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::TraceBlocking])
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::TraceBlocking, GameLayer::DoorTraces])
 }
 
 /// The player's movement.
 pub fn player_filter() -> SpatialQueryFilter {
-    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::PlayerBlocking])
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::PlayerBlocking, GameLayer::Door])
 }
 
 /// Zed movement and the zeds' walk tests.
 pub fn zed_filter() -> SpatialQueryFilter {
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::ZedBlocking, GameLayer::Door])
+}
+
+/// Path checks (nav.rs): as zed_filter, but doors do not count, since
+/// they open (KF builds paths through doorways with the doors ignored).
+pub fn zed_path_filter() -> SpatialQueryFilter {
     SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::ZedBlocking])
 }
 
 /// Flying gore and other bodies (BlockingVolume bBlockKarma).
 pub fn body_filter() -> SpatialQueryFilter {
-    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking])
+    SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::Blocking, GameLayer::Door])
 }
 
 /// Which classes count as the player and as zeds when a volume lists
