@@ -230,8 +230,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   and "Trader: Nm", also matching the screenshot. The top-right
   circle (H3): the countdown clock between waves, the zeds left and
   "Wave 1/4" during a wave, matching both screenshots. Our old text line
-  is hidden; F3 shows it (debug). Not yet: KF's messages ("NEXT WAVE
-  INBOUND", H4). Checked by
+  is hidden; F3 shows it (debug). KF's messages (H4): "NEXT WAVE
+  INBOUND" in the last seconds of the countdown, "WAVE COMPLETED! GET
+  TO THE TRADER!", "Press 'E' to TRADE", the shop boot message, "This
+  door is welded shut" and the door hints, fading out as in KF. Not
+  yet: the end-of-game text. Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.

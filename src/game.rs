@@ -463,7 +463,7 @@ pub fn wave_timer(
     frames: Res<bevy::diagnostic::FrameCount>,
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
-    (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
+    (keys, mut clear, mut hud_messages): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>, MessageWriter<crate::hud::LocalMessage>),
     (player, mut doors, mut kill_stuck, player_zone): (PlayerQuery, ResMut<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
     (mut boss_died, mut respawn_doors): (MessageWriter<BossDied>, MessageWriter<crate::door::RespawnDoors>),
     mut shops: ResMut<crate::trader::Shops>,
@@ -573,7 +573,7 @@ pub fn wave_timer(
                 // Everyone spawned and all dead (or he never found a
                 // volume in 60 s: the wave ends without him).
                 if num_monsters <= 0 {
-                    do_wave_end(g, &mut respawn_doors);
+                    do_wave_end(g, &mut respawn_doors, &mut hud_messages);
                 }
             } else {
                 add_boss(g, data, &ctx, &mut spawns);
@@ -593,7 +593,7 @@ pub fn wave_timer(
                     runlog::kv("zed_cleanup", &format!("id={} unseen_seconds={:.0} left={num_monsters}", z.id, z.unseen_for(now).min(9999.0)));
                 }
                 if num_monsters <= 0 {
-                    do_wave_end(g, &mut respawn_doors);
+                    do_wave_end(g, &mut respawn_doors, &mut hud_messages);
                 }
             } else if now > g.next_monster_time && num_monsters + g.next_squad.len() as i32 <= g.max_monsters {
                 add_squad(g, data, num_monsters, &ctx, &mut spawns);
@@ -611,6 +611,12 @@ pub fn wave_timer(
                 return;
             }
             g.countdown -= 1;
+            // WaitingMessage at 4..1 seconds left (after WaveCountDown--):
+            // FINAL WAVE INBOUND before the boss, else NEXT WAVE INBOUND!
+            if g.countdown > 0 && g.countdown < 5 {
+                let switch = if g.wave_num == g.final_wave { 3 } else { 1 };
+                hud_messages.write(crate::hud::LocalMessage::new(crate::hud::MessageClass::Waiting, switch));
+            }
             // Open the trader (not before the first wave); pick a shop if
             // none is picked yet.
             shop_action = if g.wave_num != 0 && !shops.doors_open { ShopAction::Open } else { ShopAction::Select };
@@ -964,7 +970,7 @@ fn add_boss_buddy_squad(g: &mut WaveGame, data: &mut GameData, ctx: &SpawnCtx, s
 /// DoWaveEnd: WaveTimeElapsed reset only after the first wave, the
 /// countdown to TimeBetweenWaves, WaveNum + 1, every door's RespawnDoor
 /// (door.rs). The team's dosh is paid in dosh.rs.
-fn do_wave_end(g: &mut WaveGame, respawn: &mut MessageWriter<crate::door::RespawnDoors>) {
+fn do_wave_end(g: &mut WaveGame, respawn: &mut MessageWriter<crate::door::RespawnDoors>, hud_messages: &mut MessageWriter<crate::hud::LocalMessage>) {
     if g.wave_num < 1 {
         g.wave_time_elapsed = 0.0;
     }
@@ -975,6 +981,11 @@ fn do_wave_end(g: &mut WaveGame, respawn: &mut MessageWriter<crate::door::Respaw
     // RewardSurvivingPlayers (dosh.rs).
     g.waves_ended += 1;
     respawn.write(crate::door::RespawnDoors);
+    // "WAVE COMPLETED! GET TO THE TRADER!" unless the next is the boss
+    // (WaveNum, already raised, < FinalWave).
+    if g.wave_num < g.final_wave {
+        hud_messages.write(crate::hud::LocalMessage::new(crate::hud::MessageClass::Waiting, 2));
+    }
 }
 
 #[cfg(test)]

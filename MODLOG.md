@@ -3523,3 +3523,38 @@ yours in picture, font, size and place. Tests 123 pass; clippy clean.
 Patriarch's helpers at once (KF only after a kill). The circle during
 the boss wave and at the game's end not looked at. Not played by you.
 **Next:** H4, KF's messages; or back to the gameplay list.
+
+## 2026-10-05 H4: KF's on-screen messages
+
+**Changed:** `src/hud.rs`: `LocalMessage` (class, switch, text),
+HudBase's message list (unique per class, 8 at most, faded by time
+left), LayoutMessage's font choice, DrawMessage / RenderComplexMessage;
+WaitingMessage, KFMainMessages and KFCriticalEventPlus styles from their
+scripts and defaults; KFFonts.KFBase02DS36 / DS24 loaded. Senders:
+`game.rs` (next / final wave inbound at 4-1 s left, wave completed after
+waves 1-3), `trader.rs` (press E to trade, shop boot; replaces our
+HudNote, removed, as is its line in `combat.rs`), `door.rs` (welded
+shut on USE; the door hint or the map's own text on touching a trigger,
+through a small outbox). 1 test.
+**Why:** H4 of the HUD milestone.
+**Tested how:** read WaitingMessage, KFMainMessages, KFCriticalEventPlus,
+TimerMessage, CriticalEventPlus, LocalMessage, HudBase (LocalizedMessage,
+DisplayLocalMessages, DrawMessage, GetScreenCoords), HUDKillingFloor
+(LayoutMessage, Message), KFGameType (the countdown and DoWaveEnd).
+Screenshot at `--window 1280x960` from the matched view at 00:02,
+compared with your first screenshot; logged runs through wave 1 with
+`kill_zeds` and `warp_shop`, with screenshots.
+**Result:** `hud_message ... NEXT WAVE INBOUND!` at 4, 3, 2, 1 s left;
+next to yours: same font, size and place (ours slightly fainter: a
+different moment of its 1 s fade; the "!" is missing in both, the font
+has no glyph for it). Warping into the closed shop during the wave:
+"You can't stay in this shop after closing". After wave 1: "WAVE
+COMPLETED! / GET TO THE TRADER!" on two lines; in the open shop "Press
+'E' to TRADE". Tests 124 pass; clippy clean.
+**Still broken / not tested:** the wave-completed, trade, boot, welded
+and door messages are not compared with the real game (no screenshot of
+them); the door messages not seen on screen (logs only). End-of-game
+text, zed time, pickup messages, announcer not done. You looked at it
+in the game and said it looks great.
+**Next:** your call: G3b (the Patriarch's entrance), lighting leftovers,
+or the end-of-game screen.

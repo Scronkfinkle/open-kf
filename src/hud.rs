@@ -2,8 +2,9 @@
 //! game's own layout data (the class defaults), textures and digit sets.
 //! H1: the bottom bar (health, armour, weight, grenades, ammo, syringe,
 //! welder, medic gun charge) and the cash. H2: KF's bitmap fonts and the
-//! weight, weapon name and trader distance texts. See DESIGN.md, "KF's
-//! HUD".
+//! weight, weapon name and trader distance texts. H3: the top-right
+//! circle. H4: KF's local messages (WaitingMessage, KFMainMessages)
+//! through HudBase's message list. See DESIGN.md, "KF's HUD".
 //!
 //! DrawSpriteWidget and DrawNumericWidget are native (not in the
 //! scripts). Their sizing is taken from DrawHudPassA's own weight-box
@@ -99,7 +100,111 @@ struct Hud {
     /// Hud_Bio_Clock_Circle and Hud_Bio_Circle (DrawKFHUDTextElements).
     clock_circle: Option<usize>,
     bio_circle: Option<usize>,
+    /// WaitingFontArrayNames (KFFonts.KFBase02DS36, DS24).
+    waiting_fonts: [Option<usize>; 2],
     loaded: bool,
+}
+
+/// The message classes we send (both CriticalEventPlus: bIsUnique,
+/// bFadeMessage).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageClass {
+    /// KFMod.WaitingMessage: 1 next wave inbound, 2 wave completed, 3 final
+    /// wave inbound, 4 welded shut, 5 zed time, 6 door hint, 7 pickup.
+    Waiting,
+    /// KFMod.KFMainMessages: 0 shop boot, 1 has weapon, 2 can't carry,
+    /// 3 press use to trade, 4 can't carry item.
+    Main,
+    /// KFMod.KFCriticalEventPlus: a map's text (ClientMessage with
+    /// 'CriticalEvent', HUDKillingFloor.Message), in `text`.
+    Critical,
+}
+
+/// PlayerController.ReceiveLocalizedMessage / BroadcastLocalizedMessage.
+#[derive(Message, Clone, Debug)]
+pub struct LocalMessage {
+    pub class: MessageClass,
+    pub switch: u8,
+    /// The CriticalString (KFCriticalEventPlus only).
+    pub text: Option<String>,
+}
+
+impl LocalMessage {
+    pub fn new(class: MessageClass, switch: u8) -> Self {
+        LocalMessage { class, switch, text: None }
+    }
+}
+
+/// HudBase.LocalMessages: up to 8, oldest first.
+#[derive(Resource, Default)]
+struct LocalMessages(Vec<Shown>);
+
+struct Shown {
+    msg: LocalMessage,
+    text: String,
+    end_of_life: f32,
+    lifetime: f32,
+}
+
+/// Per class and switch: text, lifetime, PosY, font size, colour, and
+/// whether it uses the WaitingFont and RenderComplexMessage.
+struct MessageStyle {
+    text: String,
+    lifetime: f32,
+    pos_y: f32,
+    font_size: i32,
+    color: [u8; 3],
+    waiting_font: bool,
+    complex: bool,
+}
+
+/// From the classes' scripts and defaults (KFMod.int has the same
+/// strings). '%Use%' is the USE key's name (KFGameType.ParseLoadingHint):
+/// E here.
+fn message_style(m: &LocalMessage) -> Option<MessageStyle> {
+    match m.class {
+        // WaitingMessage: DrawColor (255, 0, 0); PosX 0.5, DrawPivot
+        // MiddleMiddle (LocalMessage); GetFontSize / GetPos / GetLifeTime
+        // per switch; switches <= 3 and 5 use the WaitingFont
+        // (HUDKillingFloor.LayoutMessage); bComplexString.
+        MessageClass::Waiting => {
+            let (text, lifetime, pos_y, font_size) = match m.switch {
+                1 => ("NEXT WAVE INBOUND!", 1.0, 0.45, 4),
+                2 => ("WAVE COMPLETED!|GET TO THE TRADER!", 3.0, 0.4, 4),
+                3 => ("FINAL WAVE INBOUND", 1.0, 0.45, 4),
+                4 => ("This door is welded shut.|Use the Welder's alt-fire to unweld.", 4.0, 0.7, 2),
+                5 => ("ZED TIME ACTIVATED!", 1.5, 0.7, 2),
+                6 => ("Press 'E' to open/close the door.|Use the Welder to seal closed doors.", 5.0, 0.8, 0),
+                7 => ("Press 'E' to pick up Z.E.D. gun piece.", 5.0, 0.8, 0),
+                _ => return None,
+            };
+            Some(MessageStyle { text: text.into(), lifetime, pos_y, font_size, color: [255, 0, 0], waiting_font: m.switch <= 3 || m.switch == 5, complex: true })
+        }
+        // KFMainMessages: DrawColor (255, 10, 10), PosY 0.8, FontSize 2,
+        // Lifetime 3 (LocalMessage), plain text.
+        MessageClass::Main => {
+            let text = match m.switch {
+                0 => "You can't stay in this shop after closing",
+                1 => "You already have this weapon",
+                2 => "You can not carry this weapon",
+                3 => "Press 'E' to TRADE",
+                4 => "You cannot carry this item",
+                _ => return None,
+            };
+            Some(MessageStyle { text: text.into(), lifetime: 3.0, pos_y: 0.8, font_size: 2, color: [255, 10, 10], waiting_font: false, complex: false })
+        }
+        // KFCriticalEventPlus: Lifetime 5, DrawColor (244, 237, 205); the
+        // rest LocalMessage's (PosY 0.83, FontSize 0).
+        MessageClass::Critical => Some(MessageStyle {
+            text: m.text.clone()?,
+            lifetime: 5.0,
+            pos_y: 0.83,
+            font_size: 0,
+            color: [244, 237, 205],
+            waiting_font: false,
+            complex: false,
+        }),
+    }
 }
 
 /// A Font with its pages loaded (indices into `Hud::textures`).
@@ -141,7 +246,11 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Hud>().add_systems(PostStartup, load_hud).add_systems(PostUpdate, draw_hud);
+        app.init_resource::<Hud>()
+            .init_resource::<LocalMessages>()
+            .add_message::<LocalMessage>()
+            .add_systems(PostStartup, load_hud)
+            .add_systems(PostUpdate, (receive_messages, draw_hud).chain());
     }
 }
 
@@ -331,6 +440,16 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
         ),
     );
     hud.fonts = fonts;
+    for i in 0..2u32 {
+        let Some((Value::Str(name), _)) = defaults.get_at(&class, "WaitingFontArrayNames", i) else { continue };
+        let Some(h) = set.find_object(&name, Some("Font")) else { continue };
+        if let Ok(font) = ue_assets::font::read_font(&h.package.pkg, h.export) {
+            let pages = font.textures.iter().map(|&t| loader.texture(&h.package, t)).collect();
+            hud.fonts.push(HudFont { name: name.clone(), font, pages });
+            hud.waiting_fonts[i as usize] = Some(hud.fonts.len() - 1);
+        }
+    }
+    runlog::kv("hud_waiting_fonts", &format!("loaded={:?}", hud.waiting_fonts.map(|f| f.map(|i| hud.fonts[i].name.clone()))));
     hud.clock_circle = loader.texture_path("KillingFloorHUD.HUD.Hud_Bio_Clock_Circle");
     hud.bio_circle = loader.texture_path("KillingFloorHUD.HUD.Hud_Bio_Circle");
     // DrawHudPassA's weapon checks (IsA, so subclasses count).
@@ -543,6 +662,7 @@ fn draw_hud(
     (shops, menu, player, game, options): (Res<crate::trader::Shops>, Res<crate::buy_menu::BuyMenu>, PlayerQuery, Res<crate::game::WaveGame>, Res<crate::game::GameOptions>),
     mut slots: Query<(&HudSlot, &mut Node, &mut ImageNode, &mut Visibility)>,
     mut spawned: Local<bool>,
+    mut messages: ResMut<LocalMessages>,
 ) {
     if !hud.loaded {
         return;
@@ -733,6 +853,10 @@ fn draw_hud(
         }
     }
 
+    // DisplayLocalMessages (called before DrawWeaponName in DrawHUD; drawn
+    // last here, on top).
+    display_local_messages(&mut c, &hud, &mut messages, time.elapsed_secs());
+
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "hud_dump") {
         let lines: Vec<String> = c
             .quads
@@ -815,6 +939,77 @@ fn top_right_circle(c: &mut Canvas, hud: &Hud, game: &crate::game::WaveGame) {
     }
 }
 
+/// HudBase.LocalizedMessage for our (unique) classes: replaces the
+/// message of the same class, else takes a free slot, else drops the
+/// oldest.
+fn receive_messages(time: Res<Time>, mut incoming: MessageReader<LocalMessage>, mut list: ResMut<LocalMessages>) {
+    let now = time.elapsed_secs();
+    for m in incoming.read() {
+        let Some(style) = message_style(m) else { continue };
+        let shown = Shown { msg: m.clone(), text: style.text.clone(), end_of_life: now + style.lifetime, lifetime: style.lifetime };
+        if let Some(i) = list.0.iter().position(|s| s.msg.class == m.class) {
+            list.0[i] = shown;
+        } else {
+            if list.0.len() == 8 {
+                list.0.remove(0);
+            }
+            list.0.push(shown);
+        }
+        runlog::kv("hud_message", &format!("class={:?} switch={} text=\"{}\"", m.class, m.switch, style.text));
+    }
+}
+
+/// DisplayLocalMessages: dead ones culled (bFadeMessage), each drawn
+/// faded by its remaining life. Messages at the same PosY stack down
+/// (SM_Down); not met by ours in practice.
+fn display_local_messages(c: &mut Canvas, hud: &Hud, list: &mut LocalMessages, now: f32) {
+    list.0.retain(|s| s.end_of_life - now > 0.0);
+    let clip = c.clip_x();
+    let phys = c.size * c.scale_factor;
+    let mut stack: Vec<(f32, f32)> = Vec::new();
+    for s in &list.0 {
+        let Some(style) = message_style(&s.msg) else { continue };
+        // LayoutMessage: the font.
+        let font = if style.waiting_font {
+            hud.waiting_fonts[if clip <= 1024.0 { 1 } else { 0 }]
+        } else {
+            hud.font_array[font_size_index(clip, style.font_size)]
+        };
+        let Some(font) = font.map(|i| &hud.fonts[i]) else { continue };
+        let alpha = (255.0 * ((s.end_of_life - now) / s.lifetime).clamp(0.0, 1.0)) as u8;
+        let tint = [style.color[0], style.color[1], style.color[2], alpha];
+        // LayoutMessage's TextSize: the whole string at scale 1 (Canvas
+        // reset), '|' and all; GetScreenCoords centres that box on (PosX,
+        // PosY) (DP_MiddleMiddle).
+        let whole = Canvas::text_size(font, &s.text, 1.0);
+        let mut pos_y = style.pos_y;
+        for &(y, dy) in &stack {
+            if y == style.pos_y {
+                pos_y += dy;
+            }
+        }
+        let top = pos_y * phys.y - whole.y * 0.5;
+        if style.complex {
+            // WaitingMessage.RenderComplexMessage: scale ClipX / 1024, each
+            // line centred on ClipX / 2, the second YL below the first.
+            let scale = clip / 1024.0;
+            let (first, second) = match s.text.split_once('|') {
+                Some((a, b)) => (a, Some(b)),
+                None => (s.text.as_str(), None),
+            };
+            let sz = Canvas::text_size(font, first, scale);
+            c.text(font, first, Vec2::new(clip / 2.0 - sz.x / 2.0, top), scale, tint, "Message");
+            if let Some(second) = second {
+                let sz = Canvas::text_size(font, second, scale);
+                c.text(font, second, Vec2::new(clip / 2.0 - sz.x / 2.0, top + sz.y), scale, tint, "Message");
+            }
+        } else {
+            c.text(font, &s.text, Vec2::new(0.5 * phys.x - whole.x * 0.5, top), 1.0, tint, "Message");
+        }
+        stack.push((style.pos_y, whole.y / phys.y));
+    }
+}
+
 /// HUD.GetFontSizeIndex: one size step per width threshold passed, then
 /// LoadFont(Clamp(8 - FontSize, 0, 8)).
 fn font_size_index(clip_x: f32, font_size: i32) -> usize {
@@ -857,6 +1052,20 @@ mod tests {
         let r = c.quads[0].screen;
         assert!((r.min.x - 19.2).abs() < 0.01 && (r.min.y - 897.6).abs() < 0.01);
         assert!((r.width() - 89.6).abs() < 0.01 && (r.height() - 44.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn message_styles_follow_the_classes() {
+        let w = |n| message_style(&LocalMessage::new(MessageClass::Waiting, n)).unwrap();
+        // Wave messages: WaitingFont, 1 s at 0.45; wave completed 3 s at 0.4.
+        assert!(w(1).waiting_font && w(1).lifetime == 1.0 && w(1).pos_y == 0.45);
+        assert!(w(2).text.contains('|') && w(2).lifetime == 3.0 && w(2).pos_y == 0.4);
+        // Welded shut: Arial size 2, 4 s at 0.7.
+        assert!(!w(4).waiting_font && w(4).font_size == 2 && w(4).pos_y == 0.7);
+        let m = message_style(&LocalMessage::new(MessageClass::Main, 3)).unwrap();
+        assert_eq!((m.text.as_str(), m.lifetime, m.pos_y), ("Press 'E' to TRADE", 3.0, 0.8));
+        // A critical message needs its text.
+        assert!(message_style(&LocalMessage::new(MessageClass::Critical, 0)).is_none());
     }
 
     #[test]

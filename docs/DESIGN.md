@@ -2958,9 +2958,22 @@ Steps:
   at once). The boss wave reads "Wave 5/4" on Short, as KF's code gives
   (GRI.WaveNumber is WaveNum, which is FinalWave then). Compared with
   both screenshots: "00:02" and "20 / Wave 1/4" match.
-- **H4, messages (later).** "NEXT WAVE INBOUND" and the other wave and
-  trader messages (KFMainMessages / WaitingMessage, KFFonts), the end
-  of game text.
+- **H4, messages (done 2026-10-05, without the end-of-game text).**
+  HudBase's LocalMessages (8, a message of the same class replaces the
+  old one: bIsUnique; faded by the time left: bFadeMessage) and
+  DisplayLocalMessages / DrawMessage, with HUDKillingFloor.LayoutMessage
+  (WaitingMessage switches 1-3 and 5 use the WaitingFont, KFBase02DS36
+  above 1024 wide, DS24 at or below; the rest GetFontSizeIndex) and
+  WaitingMessage.RenderComplexMessage (scale ClipX / 1024, lines split at
+  '|', each centred). Classes: WaitingMessage (1 next wave inbound at 4-1
+  s left, 3 final wave inbound before the boss, 2 wave completed after
+  waves 1-3, 4 welded shut on USE, 6 the door hint on touching a door
+  trigger whose message has "USE"), KFMainMessages (0 booted from the
+  shop, 3 press E to trade), KFCriticalEventPlus (a door trigger's other
+  messages). '%Use%' is shown as E. Our HudNote is gone. Not done: the
+  end-of-game text (DrawEndGameHUD), zed time (5), weapon pickup
+  messages (KFMainMessages 1, 2, 4), the announcer voice
+  (WarningMessage).
 - Not planned: hints, chat, the voice meter, other players' names and
   bars, perk icons and stars (no perks yet), the weapon-select bar.
 

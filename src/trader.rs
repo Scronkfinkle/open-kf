@@ -59,23 +59,6 @@ pub struct Shops {
     rng: u32,
 }
 
-/// A short on-screen message (KFMainMessages), shown for a few seconds.
-#[derive(Resource, Default)]
-pub struct HudNote {
-    pub text: String,
-    pub until: f32,
-}
-
-impl HudNote {
-    pub fn show(&mut self, text: &str, now: f32) {
-        self.text = text.to_string();
-        self.until = now + 3.0;
-    }
-}
-
-/// KFMainMessages (KFMod.int).
-const SHOP_BOOT_MSG: &str = "You can't stay in this shop after closing";
-const SHOP_IT_BASE: &str = "Press 'E' to TRADE";
 
 impl Shops {
     fn rand(&mut self, n: usize) -> usize {
@@ -258,7 +241,6 @@ pub struct TraderPlugin;
 impl Plugin for TraderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Shops>()
-            .init_resource::<HudNote>()
             .add_systems(Update, shop_touch.after(crate::game::wave_timer));
     }
 }
@@ -269,12 +251,11 @@ type PlayerQuery<'w, 's> = Query<'w, 's, (&'static mut Transform, &'static mut c
 /// BootShopPlayers when the game asks.
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn shop_touch(
-    time: Res<Time>,
     game: Res<crate::game::WaveGame>,
     options: Res<crate::game::GameOptions>,
     mut shops: ResMut<Shops>,
     doors: Res<crate::door::Doors>,
-    mut note: ResMut<HudNote>,
+    mut hud_messages: MessageWriter<crate::hud::LocalMessage>,
     mut player: PlayerQuery,
     (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
 ) {
@@ -291,7 +272,6 @@ fn shop_touch(
         runlog::kv("shop_doors", &lines.join(" "));
     }
     let Ok((mut t, mut cam, mut walker)) = player.single_mut() else { return };
-    let now = time.elapsed_secs();
     // Test action "warp_shop": stand at the current shop's Location.
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "warp_shop")
         && let Some(c) = shops.current
@@ -316,7 +296,8 @@ fn shop_touch(
             runlog::kv("shop_touch", &format!("shop={} open={} wave_running={wave_running}", shops.shops[s].name, shops.shops[s].open));
             if !wave_running {
                 if shops.shops[s].open {
-                    note.show(SHOP_IT_BASE, now);
+                    // KFMainMessages 3: "Press 'E' to TRADE".
+                    hud_messages.write(crate::hud::LocalMessage::new(crate::hud::MessageClass::Main, 3));
                 } else {
                     boot = true;
                 }
@@ -345,7 +326,8 @@ fn shop_touch(
     cam.yaw = -(yaw as f32) / 65536.0 * std::f32::consts::TAU;
     cam.yaw = cam.yaw.rem_euclid(std::f32::consts::TAU);
     t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
-    note.show(SHOP_BOOT_MSG, now);
+    // KFMainMessages 0: "You can't stay in this shop after closing".
+    hud_messages.write(crate::hud::LocalMessage::new(crate::hud::MessageClass::Main, 0));
     runlog::kv(
         "shop_boot",
         &format!("shop={} teleporter={} to_unreal=({:.0}, {:.0}, {:.0}) yaw={}", shops.shops[s].name, tel.name, tel.location.x, tel.location.y, tel.location.z, yaw & 65535),

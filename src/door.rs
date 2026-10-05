@@ -117,6 +117,8 @@ pub struct Doors {
     /// Which triggers each pawn touched last frame (pawn key: 0 = player,
     /// zed id + 1), to fire Touch only on entering.
     touching: std::collections::HashMap<usize, Vec<usize>>,
+    /// Messages for the player this frame (sent on by `use_and_touch`).
+    outbox: Vec<crate::hud::LocalMessage>,
 }
 
 pub struct DoorPlugin;
@@ -515,6 +517,7 @@ fn used_by_player(doors: &mut Doors, t: usize, user: [f32; 3], now: f32) {
     let key = open_key(trig, user);
     let members = trig.doors.clone();
     let mut attempted = false;
+    let mut welded = false;
     for i in members {
         let d = &mut doors.doors[i];
         if !d.sealed && !d.hidden && !d.info.key_locked {
@@ -527,6 +530,8 @@ fn used_by_player(doors: &mut Doors, t: usize, user: [f32; 3], now: f32) {
         }
         if d.sealed && !d.hidden && d.closed {
             runlog::kv("message", &format!("text=\"This door is welded shut.|Use the Welder's alt-fire to unweld.\" door={}", d.info.name));
+            // KFUseTrigger.UsedBy: WaitingMessage 4.
+            welded = true;
             attempted = true;
         }
         if d.info.key_locked && !d.sealed && !d.hidden && d.closed {
@@ -535,6 +540,10 @@ fn used_by_player(doors: &mut Doors, t: usize, user: [f32; 3], now: f32) {
     }
     if attempted {
         doors.triggers[t].last_attempt = now.floor() as i32;
+    }
+    // One per welded door in KF; the class is unique, so one shows.
+    if welded {
+        doors.outbox.push(crate::hud::LocalMessage::new(crate::hud::MessageClass::Waiting, 4));
     }
 }
 
@@ -561,20 +570,26 @@ fn touch(doors: &mut Doors, t: usize, pawn: [f32; 3], zed: Option<usize>, now: f
                 if trig.last_message >= now || trig.info.message.is_empty() {
                     continue;
                 }
-                let text = if !d.sealed && !d.hidden {
-                    // Messages containing "USE" show WaitingMessage's door hint.
+                let (text, message) = if !d.sealed && !d.hidden {
+                    // Messages containing "USE" show WaitingMessage's door
+                    // hint (6); others go out as ClientMessage 'CriticalEvent'
+                    // (KFCriticalEventPlus).
                     if trig.info.message.contains("USE") {
-                        "Press '%Use%' to open/close the door.|Use the Welder to seal closed doors."
+                        let m = crate::hud::LocalMessage::new(crate::hud::MessageClass::Waiting, 6);
+                        ("Press '%Use%' to open/close the door.|Use the Welder to seal closed doors.".to_string(), m)
                     } else {
-                        trig.info.message.as_str()
+                        let m = crate::hud::LocalMessage { class: crate::hud::MessageClass::Critical, switch: 0, text: Some(trig.info.message.clone()) };
+                        (trig.info.message.clone(), m)
                     }
                 } else if !d.hidden && trig.info.always_show_message {
-                    trig.info.message.as_str()
+                    let m = crate::hud::LocalMessage { class: crate::hud::MessageClass::Critical, switch: 0, text: Some(trig.info.message.clone()) };
+                    (trig.info.message.clone(), m)
                 } else {
                     continue;
                 };
                 trig.last_message = now + 0.6;
                 runlog::kv("message", &format!("text=\"{text}\" trigger={}", trig.info.name));
+                doors.outbox.push(message);
             }
         }
     }
@@ -590,7 +605,11 @@ fn use_and_touch(
     player: Query<&crate::walk::Walker>,
     zeds: Query<&crate::zed::Zed>,
     mut doors: ResMut<Doors>,
+    mut hud_messages: MessageWriter<crate::hud::LocalMessage>,
 ) {
+    for m in std::mem::take(&mut doors.outbox) {
+        hud_messages.write(m);
+    }
     if doors.triggers.is_empty() {
         return;
     }
