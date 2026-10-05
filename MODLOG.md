@@ -3134,3 +3134,19 @@ only the old `boss.rs` warning.
 **Still broken / not tested:** the glass's reflection layer is dropped;
 additive map materials are still drawn as alpha blend; other maps' glass
 and fences not looked at; not checked by you.
+
+## 2026-10-05 Fix: KF-Farm completely black (vision overlay)
+
+**Changed:** `overlay.rs`: until a zone gives a tint, the overlay leaves
+the view unchanged (it started black and stayed black).
+**Why:** you saw KF-Farm all black after LV. Its start zone (ZoneInfo19)
+has fog but bNoKFColorCorrection, so no tint was ever chosen and the
+screen was multiplied by black. KF's DrawModOverlay returns without
+drawing in that case.
+**Tested how:** KF-Farm screenshot and log; KF-WestLondon log
+(`vision_overlay` still ZoneInfo4); tests, clippy.
+**Result:** KF-Farm visible (moonlit field). Tests 96 pass; clippy only
+the old `boss.rs` warning.
+**Still broken / not tested:** KF-Farm's terrain still uses the sun
+(L3); KF's fade-in from black at the start now only happens in zones
+that tint. Other maps not checked.

@@ -110,7 +110,7 @@ fn spawn_overlay(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut m
     ));
     commands.spawn((
         Mesh3d(meshes.add(Rectangle::new(4.0, 4.0))),
-        MeshMaterial3d(materials.add(OverlayMaterial { color: LinearRgba::BLACK })),
+        MeshMaterial3d(materials.add(OverlayMaterial { color: LinearRgba::rgb(0.5, 0.5, 0.5) })),
         Transform::from_xyz(0.0, 0.0, -1.0),
         layer,
         Overlay,
@@ -143,7 +143,13 @@ fn update_overlay(
             tint.target = Some(t);
         }
     }
-    let Some(target) = tint.target else { return };
+    // No tint yet (the zone has no fog or opts out with
+    // bNoKFColorCorrection): DrawModOverlay returns before drawing, so the
+    // view is unchanged (2 x 0.5). Was left black: KF-Farm's start zone.
+    let Some(target) = tint.target else {
+        mat.color = LinearRgba::rgb(0.5, 0.5, 0.5);
+        return;
+    };
     // Tick: ease toward the target.
     for (last, goal) in tint.last.iter_mut().zip(target) {
         let step = ((*last - goal).abs() * 0.1).round() + 0.0625;
