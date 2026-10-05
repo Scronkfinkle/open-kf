@@ -118,6 +118,7 @@ impl Plugin for DoorPlugin {
             .init_resource::<WeldView>()
             .add_message::<WeldHit>()
             .add_message::<ZedDoorHit>()
+            .add_message::<DoorBlast>()
             .add_systems(PostStartup, spawn_doors)
             .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, move_doors, door_path_costs).chain());
     }
@@ -163,6 +164,11 @@ fn glide(a: f32) -> f32 {
 }
 
 impl Door {
+    /// The mover's Location now (Unreal units).
+    pub fn location(&self) -> [f32; 3] {
+        self.pos
+    }
+
     fn new(info: DoorInfo, root: Entity, collider: Option<Entity>) -> Self {
         let k = (info.key_num as usize).min(23);
         let (pos, rot) = key_pose(&info, k);
@@ -811,6 +817,8 @@ pub struct ZedDoorHit {
     /// UsedMeleeDamage (MeleeDamage -5% .. +5%).
     pub damage: f32,
     pub zed: usize,
+    /// What hit, for the log (claw, vomit, scream).
+    pub kind: &'static str,
 }
 
 impl Doors {
@@ -855,9 +863,67 @@ impl Doors {
     }
 }
 
+/// Radius damage reaching doors (Actor.HurtRadius and its KF versions).
+/// Each door within `radius` of `at`, measured to its Location (the
+/// pivot; KFDoorMover CollisionRadius is 0), takes damage x (1 -
+/// distance / radius). `direct`: the door a projectile hit (Projectile
+/// .HitWall: full damage, and it is left out of the radius part).
+/// `line_of_sight`: VisibleCollidingActors (the Siren) rather than
+/// CollidingActors (LAWProj: the Husk's fireball, the Patriarch's rocket).
+/// Unreal units.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct DoorBlast {
+    pub at: Vec3,
+    pub radius: f32,
+    pub damage: f32,
+    /// The instigating zed (KFMonster damage rules); None = the player.
+    pub zed: Option<usize>,
+    pub direct: Option<usize>,
+    pub line_of_sight: bool,
+    pub source: &'static str,
+}
+
+/// KFDoorMover.GoBang: no collision, hidden, the wood or metal break
+/// emitter at the door's Location facing up.
+#[allow(clippy::too_many_arguments)]
+fn go_bang(
+    doors: &mut Doors,
+    i: usize,
+    by: &str,
+    commands: &mut Commands,
+    library: Option<&crate::particles::EffectLibrary>,
+    meshes: &mut Assets<Mesh>,
+    visibility: &mut Query<&mut Visibility>,
+    seed: &mut u32,
+) {
+    let d = &mut doors.doors[i];
+    if d.hidden {
+        return;
+    }
+    d.hidden = true;
+    d.dead = true;
+    d.sealed = false;
+    if let Some(c) = d.collider {
+        commands.entity(c).insert(CollisionLayers::NONE);
+    }
+    if let Ok(mut v) = visibility.get_mut(d.root) {
+        *v = Visibility::Hidden;
+    }
+    // EST_Metal is 3 (Actor.ESurfaceTypes).
+    let class = if d.info.surface_type == 3 { "KFMod.KFDoorExplodeMetal" } else { "KFMod.KFDoorExplodeWood" };
+    if let Some(lib) = library {
+        *seed = seed.wrapping_add(1);
+        crate::particles::spawn_effect(commands, lib, meshes, class, Vec3::from_array(d.pos), crate::fireball::axes_along(Vec3::Z), *seed);
+    }
+    d.log("broken", by);
+    runlog::kv("door_broken", &format!("door={} effect={class}", d.info.name));
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zed_door_hits(
     mut hits: MessageReader<ZedDoorHit>,
+    mut blasts: MessageReader<DoorBlast>,
+    spatial: SpatialQuery,
     mut doors: ResMut<Doors>,
     mut commands: Commands,
     library: Option<Res<crate::particles::EffectLibrary>>,
@@ -865,38 +931,56 @@ fn zed_door_hits(
     mut visibility: Query<&mut Visibility>,
     mut seed: Local<u32>,
 ) {
+    // (door, damage, zed, what) for every door hurt this frame.
+    let mut damage: Vec<(usize, f32, Option<usize>, String)> = Vec::new();
     for h in hits.read() {
-        let (broken, text) = doors.zed_damage(h.door, h.damage);
-        let d = &doors.doors[h.door];
+        damage.push((h.door, h.damage, Some(h.zed), h.kind.into()));
+    }
+    // FastTrace for VisibleCollidingActors: level geometry only.
+    let level = SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::TraceBlocking]);
+    for b in blasts.read() {
+        if let Some(i) = b.direct
+            && i < doors.doors.len()
+        {
+            damage.push((i, b.damage, b.zed, format!("{} direct", b.source)));
+        }
+        for (i, d) in doors.doors.iter().enumerate() {
+            if Some(i) == b.direct || d.hidden || d.trigger.is_none() {
+                continue;
+            }
+            let loc = Vec3::from_array(d.pos);
+            let dist = (loc - b.at).length().max(1.0);
+            if dist > b.radius {
+                continue;
+            }
+            if b.line_of_sight {
+                let (from, to) = (coords::pos(b.at.to_array()), coords::pos(d.pos));
+                if let Ok(dir) = Dir3::new(to - from)
+                    && spatial.cast_ray(from, dir, (to - from).length(), true, &level).is_some()
+                {
+                    runlog::kv("door_blast_blocked", &format!("door={} source={} distance={dist:.0}", d.info.name, b.source));
+                    continue;
+                }
+            }
+            let scale = 1.0 - (dist / b.radius).max(0.0);
+            damage.push((i, scale * b.damage, b.zed, format!("{} radius distance={dist:.0} scale={scale:.2}", b.source)));
+        }
+    }
+    for (i, amount, zed, what) in damage {
+        let Some(id) = zed else {
+            // The player's blasts (DamTypeFrag) are D4.
+            runlog::kv("door_player_blast_not_done", &format!("door={} damage={amount:.1} {what}", doors.doors[i].info.name));
+            continue;
+        };
+        let (broken, text) = doors.zed_damage(i, amount);
+        let d = &doors.doors[i];
         let pct = if d.max_weld > 0.0 { d.weld / d.max_weld * 100.0 } else { 0.0 };
         runlog::kv(
             "door_zed_hit",
-            &format!("door={} zed={} claw={:.1} {text} percent={pct:.0} sealed={}", d.info.name, h.zed, h.damage, d.sealed),
+            &format!("door={} zed={id} by={what} amount={amount:.1} {text} percent={pct:.0} sealed={}", d.info.name, d.sealed),
         );
-        for i in broken {
-            // GoBang: no collision, hidden, the wood or metal break emitter
-            // at the door's Location facing up.
-            let d = &mut doors.doors[i];
-            if d.hidden {
-                continue;
-            }
-            d.hidden = true;
-            d.dead = true;
-            d.sealed = false;
-            if let Some(c) = d.collider {
-                commands.entity(c).insert(CollisionLayers::NONE);
-            }
-            if let Ok(mut v) = visibility.get_mut(d.root) {
-                *v = Visibility::Hidden;
-            }
-            // EST_Metal is 3 (Actor.ESurfaceTypes).
-            let class = if d.info.surface_type == 3 { "KFMod.KFDoorExplodeMetal" } else { "KFMod.KFDoorExplodeWood" };
-            if let Some(lib) = library.as_deref() {
-                *seed = seed.wrapping_add(1);
-                crate::particles::spawn_effect(&mut commands, lib, &mut meshes, class, Vec3::from_array(d.pos), crate::fireball::axes_along(Vec3::Z), *seed);
-            }
-            d.log("broken", &format!("zed{}", h.zed));
-            runlog::kv("door_broken", &format!("door={} effect={class}", d.info.name));
+        for j in broken {
+            go_bang(&mut doors, j, &format!("zed{id}"), &mut commands, library.as_deref(), &mut meshes, &mut visibility, &mut seed);
         }
     }
 }

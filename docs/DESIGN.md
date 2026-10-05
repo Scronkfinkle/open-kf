@@ -2033,7 +2033,7 @@ perk chosen uses the plain values; perk bonuses come with the game loop),
 the trader and buying (W1's `--give` stands in), third-person weapon
 models, the flashlight, zed time.
 
-## Doors (milestone 8, planned 2026-10-05; D1, D2, D3a implemented 2026-10-05)
+## Doors (milestone 8, planned 2026-10-05; D1-D3 implemented 2026-10-05)
 
 Goal: KF's doors. They open and close with the USE key (E), zeds open the ones
 that are not welded, the Welder seals them, and zeds bash welded doors until
@@ -2115,10 +2115,11 @@ not part of this milestone and keep being drawn but not blocking.
   the 0.85 factor, GoBang (break emitters, door gone), path cost for
   sealed doors. Every zed with a DoorBash animation (all but the Siren
   and the Patriarch).
-- **D3b, ranged door attacks.** ZombieBloat / ZombieHusk
-  (bCanDistanceAttackDoors: puke or shoot at a sealed door their path
-  trace hits), ZombieSiren.DoorAttack (Siren_Scream), ZombieBoss.DoorAttack
-  (a rocket). Needs vomit, fireballs, screams and rockets to damage doors.
+- **D3b, ranged door attacks.** bCanDistanceAttackDoors zeds (class
+  defaults: Bloat, Husk, Siren, Patriarch) attack a sealed door their
+  path trace hits from where they are; ZombieSiren.DoorAttack
+  (Siren_Scream), ZombieBoss.DoorAttack (a rocket); blasts (rockets,
+  fireballs, screams) hurt doors in range.
 - **D4, grenades and unwelded door health.** DamTypeFrag damage,
   bSmallArmsDamage doors, Health.
 
@@ -2184,6 +2185,28 @@ the effect class on 3 doors is not read). `door_path_costs`: DoorPathNode
 found once colliders exist (ray hits along each link from points within
 800), ExtraCost every 0.5 s into `NavNetwork::extra_cost`, which routing
 adds when entering a point. Test action `toggle_zeds` (the X key).
+
+**D3b as built.** `door.rs` `DoorBlast`: radius damage to doors measured
+to the door's Location (its pivot), scale 1 - distance / radius, a
+direct hit at full damage and left out of the radius part
+(Projectile.HitWall), a line-of-sight test (level only) for the Siren's
+VisibleCollidingActors, none for LAWProj's CollidingActors. Our test is
+the pivot inside the radius; KF's CollidingActors checks the door's
+collision bounds (native), so doors whose pivot is just outside may be
+missed. Sent by `fireball.rs` (Husk fireball, Patriarch rocket; a hit on
+a door collider is direct) and by the Siren's scream pulses. `zed.rs`
+`door_bashing` per class: DoorBash; ZombieBarf / ShootBurns (22 per
+SpawnTwoShots) when bDistanceAttackingDoor; Siren_Scream (ScreamDamage x
+0.6 per pulse, none while zapped; headless: nothing, the loop waits);
+the Patriarch's missile (boss_busy aims at the door, then back to the
+loop). FindPath's check: when a bCanDistanceAttackDoors zed takes a new
+path point, a ray to it that hits a sealed door starts DoorBashing with
+bDistanceAttackingDoor. Changed with it: the router's run-time reach
+tests (ActorReachable / pointReachable stand-ins) now count closed doors
+(native; assumed, not verified), so a zed behind a shut door follows the
+path through the doorway instead of walking straight at the player; the
+start-up link check still ignores doors. Not done: Bloat vomit globs
+sticking to doors and bursting there (KFBloatVomit.HitWall on a mover).
 
 Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar

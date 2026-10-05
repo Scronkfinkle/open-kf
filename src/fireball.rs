@@ -272,6 +272,7 @@ fn move_fireballs(
     mut damage: MessageWriter<crate::combat::PlayerDamaged>,
     mut push: MessageWriter<crate::walk::PlayerPush>,
     mut decals: MessageWriter<SpawnDecal>,
+    (door_colliders, mut door_blasts): (Query<&crate::door::DoorCollider>, MessageWriter<crate::door::DoorBlast>),
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |c: Vec3| Vec3::new(-c.z, c.x, c.y) / SCALE;
@@ -294,12 +295,14 @@ fn move_fireballs(
         let (a, b) = (f.at, f.at + step);
         // The first thing touched: the level, the player or a zed.
         let mut hit: Option<(f32, Vec3, &str)> = None;
+        let mut level_door = None;
         if let Ok(d) = Dir3::new(coords::dir(step.to_array()))
             && let Some(h) = spatial.cast_ray(coords::pos(a.to_array()), d, (step.length() + RADIUS) * SCALE, true, &crate::collision::world_filter())
         {
             let n = h.normal;
             let n = to_ue(if n.dot(*d) > 0.0 { -n } else { n }) * SCALE;
-            hit = Some(((h.distance / SCALE / step.length()).min(1.0), n, "level"));
+            level_door = door_colliders.get(h.entity).ok().map(|c| c.0);
+            hit = Some(((h.distance / SCALE / step.length()).min(1.0), n, if level_door.is_some() { "door" } else { "level" }));
         }
         if let Some(p) = player
             && let Some(frac) = segment_hits_cylinder(a, b, p, PLAYER_RADIUS + RADIUS, PLAYER_HALF_HEIGHT + RADIUS)
@@ -343,6 +346,17 @@ fn move_fireballs(
             at,
             dir: -normal,
             trace: false,
+        });
+        // Projectile.HitWall on a door, then LAWProj.HurtRadius
+        // (CollidingActors: no line-of-sight test) on the doors around.
+        door_blasts.write(crate::door::DoorBlast {
+            at,
+            radius: spec.radius,
+            damage: spec.damage,
+            zed: Some(f.zed_id),
+            direct: if what == "door" { level_door } else { None },
+            line_of_sight: false,
+            source: if f.kind == Projectile::BossRocket { "boss_rocket" } else { "husk_fireball" },
         });
         let mut dealt = 0.0;
         if let Some(p) = player {

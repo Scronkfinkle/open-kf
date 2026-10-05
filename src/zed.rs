@@ -112,6 +112,9 @@ struct ZedClass {
     melee: Vec<usize>,
     /// The DoorBash animation (KFMonster.DoorAttack), if the mesh has one.
     door_bash: Option<usize>,
+    /// bCanDistanceAttackDoors (Bloat, Husk): attack a welded door seen on
+    /// the way from range (lost with the head).
+    distance_door_attack: bool,
     /// Pawn.Intelligence (BRAINS_None 0 .. BRAINS_Human 3): from Mammal
     /// (2) up, a door-bashing zed leaves the door for a reachable enemy.
     intelligence: u8,
@@ -280,6 +283,11 @@ struct DoorBash {
     hits: u8,
     /// Seconds since the animation started.
     anim_time: f32,
+    /// bDistanceAttackingDoor: BreakUpDoor from the path check (Bloat,
+    /// Husk), so DoorAttack uses the ranged attack.
+    distance: bool,
+    /// The animation playing is the ranged attack (hits on SpawnTwoShots).
+    ranged: bool,
 }
 
 /// An attack in progress.
@@ -508,6 +516,9 @@ pub struct Zed {
     meshes: Vec<Handle<Mesh>>,
     /// At a welded door (state DoorBashing).
     door_bash: Option<DoorBash>,
+    /// The path point last checked for a welded door in the way (Bloat,
+    /// Husk), Bevy space.
+    door_checked: Option<Vec3>,
 }
 
 /// One damage event, for gore effects (KFMonster.DoDamageFX). Bevy space.
@@ -1025,7 +1036,8 @@ fn boss_busy(
             }
             Some(crate::boss::MissileEvent::Done) => {
                 b.missile = None;
-                z.state = ZedState::Chase;
+                // Back to the DoorBashing loop if the rocket was at a door.
+                z.state = if z.door_bash.is_some() { ZedState::DoorBashing } else { ZedState::Chase };
                 z.sequence = None;
                 runlog::kv("boss_missile", &format!("id={} done next_in={:.1}", z.id, b.missile_wait));
             }
@@ -1958,6 +1970,7 @@ fn load_class(
             }
             seq
         },
+        distance_door_attack: matches!(get("bCanDistanceAttackDoors"), Some((Value::Bool(true), _))),
         intelligence: match get("Intelligence") {
             Some((Value::Byte(b), _)) => b,
             _ => 3,
@@ -2373,6 +2386,7 @@ impl Zed {
             air_velocity: Vec3::ZERO,
             jump_cooldown: 0.0,
             door_bash: None,
+            door_checked: None,
             pouncing: false,
             since_pounce: f32::MAX,
             can_flip: true,
@@ -2459,13 +2473,24 @@ impl Zed {
     }
 }
 
+/// A door's Location (Unreal units) as an array, for aiming.
+fn d_pos(d: &crate::door::Door) -> [f32; 3] {
+    d.location()
+}
+
 /// KFMonsterController.DoorBashing for one frame. The loop: while the
-/// door is sealed, visible and not bZombiesIgnore, AttackDoor (KFMonster
-/// .DoorAttack: the full-body DoorBash animation; its ClawDamageTarget
-/// notifies each hit the door for MeleeDamage -5% .. +5%), wait for the
-/// animation (polled every 0.25 s), Sleep(0.1); after each, a zed of
+/// door is sealed, visible and not bZombiesIgnore, AttackDoor, wait for
+/// the animation (polled every 0.25 s), Sleep(0.1); after each, a zed of
 /// Intelligence BRAINS_Mammal or more leaves for an enemy it can reach.
 /// When the loop ends: WhatToDoNext (back to the chase).
+///
+/// DoorAttack by class: KFMonster plays the full-body DoorBash, whose
+/// ClawDamageTarget notifies each hit the door for MeleeDamage -5% ..
+/// +5%. ZombieBloat / ZombieHusk with bDistanceAttackingDoor (and a head):
+/// ZombieBarf / ShootBurns, whose SpawnTwoShots each do 22 to the door.
+/// ZombieSiren (with a head): Siren_Scream, each SpawnTwoShots
+/// ScreamDamage x 0.6 to the door (nothing while zapped). ZombieBoss:
+/// PreFireMissile and a rocket at the door (state FireMissile).
 fn door_bashing(
     z: &mut Zed,
     c: &ZedClass,
@@ -2485,34 +2510,59 @@ fn door_bashing(
         z.state = ZedState::Chase;
         z.sequence = None;
     };
-    let Some(seq) = c.door_bash else {
-        return leave(z, "no_animation");
+    // The loop's ActorReachable(Enemy) check, with doors in the way.
+    let reachable = |z: &Zed| {
+        let hunt = crate::nav::hunt_size(c.collision_radius, c.collision_height);
+        let touch = crate::nav::HUNT_RADIUS + PLAYER_RADIUS;
+        c.intelligence >= 2 && crate::nav::probe_with(spatial, crate::collision::zed_filter(), z.centre, target, touch, hunt.0, hunt.1).is_ok()
     };
     if b.in_anim {
         b.anim_time += dt;
+        let Some(seq) = z.sequence else {
+            b.in_anim = false;
+            z.door_bash = Some(b);
+            return;
+        };
         let len = c.model.length(seq).max(1.0);
         let p = z.frame / len;
-        for (i, n) in c.model.notifies(seq).iter().filter(|n| n.name.eq_ignore_ascii_case("ClawDamageTarget")).enumerate().take(8) {
-            if p >= n.time && b.hits & (1 << i) == 0 {
+        let times: Vec<f32> = if b.ranged {
+            c.ranged_shots.clone()
+        } else {
+            c.model.notifies(seq).iter().filter(|n| n.name.eq_ignore_ascii_case("ClawDamageTarget")).map(|n| n.time).collect()
+        };
+        for (i, at) in times.iter().enumerate().take(8) {
+            if p >= *at && b.hits & (1 << i) == 0 {
                 b.hits |= 1 << i;
-                let roll = (z.random() % 1000) as f32 / 1000.0;
-                let damage = if z.melee_damage > 1.0 { z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll } else { z.melee_damage };
-                hits.write(crate::door::ZedDoorHit { door: b.door, damage, zed: z.id });
+                let (damage, kind) = if !b.ranged {
+                    let roll = (z.random() % 1000) as f32 / 1000.0;
+                    (if z.melee_damage > 1.0 { z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll } else { z.melee_damage }, "claw")
+                } else if let Some((scream, _, _)) = c.scream {
+                    if z.zapped() {
+                        continue;
+                    }
+                    (scream * 0.6, "scream")
+                } else {
+                    // DamTypeVomit for both the Bloat and the Husk.
+                    (22.0, "ranged")
+                };
+                hits.write(crate::door::ZedDoorHit { door: b.door, damage, zed: z.id, kind });
+            }
+        }
+        // The ranged animation's own effects (the vomit jet, the scream).
+        if b.ranged {
+            for (at, effect) in c.ranged_effects.iter().take(8) {
+                if p >= *at && p - dt * c.model.rate(seq) / len < *at {
+                    z.pending_fx.push(effect.clone());
+                }
             }
         }
         if z.frame >= len - 0.5 {
-            // While(bShotAnim) Sleep(0.25), then Sleep(0.1): the loop
-            // resumes at the first 0.25 s step after the animation, + 0.1.
+            // While(bShotAnim) Sleep(0.25), then Sleep(0.1).
             b.in_anim = false;
             b.wait = (b.anim_time / 0.25).ceil() * 0.25 - b.anim_time + 0.1;
             z.door_bash = Some(b);
-            // ActorReachable(Enemy), with doors in the way.
-            if c.intelligence >= 2 {
-                let hunt = crate::nav::hunt_size(c.collision_radius, c.collision_height);
-                let touch = crate::nav::HUNT_RADIUS + PLAYER_RADIUS;
-                if crate::nav::probe_with(spatial, crate::collision::zed_filter(), z.centre, target, touch, hunt.0, hunt.1).is_ok() {
-                    return leave(z, "enemy_reachable");
-                }
+            if reachable(z) {
+                return leave(z, "enemy_reachable");
             }
             return;
         }
@@ -2536,12 +2586,50 @@ fn door_bashing(
     if d.info.zombies_ignore {
         return leave(z, "zombies_ignore");
     }
+    // AttackDoor.
+    let (seq, ranged) = if let (Some(bc), Some(mut boss)) = (c.boss.as_ref(), z.boss) {
+        let Some(anims) = bc.missile_anims else {
+            return leave(z, "no_missile_animation");
+        };
+        // PreFireMissile (full body), state FireMissile; boss_busy aims
+        // at the door and comes back here when it is done.
+        boss.missile = Some(crate::boss::Missile::start(anims[0].1));
+        z.boss = Some(boss);
+        z.state = ZedState::BossBusy;
+        z.sequence = None;
+        start_anim(z, Some(anims[0].0), false);
+        b.wait = 0.1;
+        z.door_bash = Some(b);
+        runlog::kv("zed_door_attack", &format!("id={} door={} kind=rocket", z.id, d.info.name));
+        return;
+    } else if c.scream.is_some() {
+        (if z.decapitated { None } else { c.ranged_anim }, true)
+    } else if b.distance && !z.decapitated && c.ranged_anim.is_some() {
+        (c.ranged_anim, true)
+    } else {
+        (c.door_bash, false)
+    };
+    let Some(seq) = seq else {
+        // ZombieSiren.DoorAttack does nothing without a head; the loop
+        // goes on (Sleep(0.1)) while the door stays sealed.
+        b.wait = 0.1;
+        z.door_bash = Some(b);
+        if reachable(z) {
+            leave(z, "enemy_reachable");
+        }
+        return;
+    };
     b.in_anim = true;
+    b.ranged = ranged;
     b.hits = 0;
     b.anim_time = 0.0;
     z.door_bash = Some(b);
     z.sequence = None;
     start_anim(z, Some(seq), false);
+    runlog::kv(
+        "zed_door_attack",
+        &format!("id={} door={} kind={} sequence={}", z.id, d.info.name, if ranged { "ranged" } else { "bash" }, c.model.sequence_name(seq).unwrap_or("?")),
+    );
 }
 
 /// KFMonster.PlayDyingAnimation's start motion: 0.6 x the zed's horizontal
@@ -2676,6 +2764,7 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 air_velocity: Vec3::ZERO,
                 jump_cooldown: 0.0,
                 door_bash: None,
+                door_checked: None,
                 pouncing: false,
                 since_pounce: f32::MAX,
                 can_flip: !c.no_flip,
@@ -2878,10 +2967,11 @@ fn think_and_move(
     nav: Res<crate::nav::NavNetwork>,
     script: Res<crate::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
-    (doors, door_colliders, mut door_hits): (
+    (doors, door_colliders, mut door_hits, mut door_blasts): (
         Res<crate::door::Doors>,
         Query<&crate::door::DoorCollider>,
         MessageWriter<crate::door::ZedDoorHit>,
+        MessageWriter<crate::door::DoorBlast>,
     ),
     mut log_timer: Local<f32>,
 ) {
@@ -3092,7 +3182,13 @@ fn think_and_move(
         if z.state == ZedState::BossBusy {
             if active.0 {
                 let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
-                boss_busy(&mut z, c, &t, target, player_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball, &mut bullet_fx);
+                // ZombieBoss.DoorAttack: the rocket goes at the door
+                // (Controller.Target, its Location), not the player.
+                let (aim, aim_velocity) = match z.door_bash.and_then(|b| doors.doors.get(b.door)) {
+                    Some(d) => (coords::pos(d_pos(d)), Vec3::ZERO),
+                    None => (target, player_velocity),
+                };
+                boss_busy(&mut z, c, &t, aim, aim_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball, &mut bullet_fx);
             }
             t.translation = z.centre;
             continue;
@@ -3155,6 +3251,29 @@ fn think_and_move(
                 };
                 z.router.update(&nav, &spatial, &input, dt, &mut frand)
             };
+            // KFMonsterController.FindPath: a zed with bCanDistanceAttackDoors
+            // traces to its new MoveTarget; a sealed door in the way means
+            // BreakUpDoor(door, true): attack it from here.
+            if c.distance_door_attack && !z.decapitated && z.attack.is_none() && steer != goal && z.door_checked != Some(steer) {
+                z.door_checked = Some(steer);
+                if let Ok(dir) = Dir3::new(steer - z.centre)
+                    && let Some(h) = spatial.cast_ray(z.centre, dir, (steer - z.centre).length(), true, &crate::collision::world_filter())
+                    && let Ok(dc) = door_colliders.get(h.entity)
+                    && let Some(d) = doors.doors.get(dc.0)
+                    && d.sealed
+                    && !d.hidden
+                {
+                    z.door_bash = Some(DoorBash { door: dc.0, wait: 0.0, in_anim: false, hits: 0, anim_time: 0.0, distance: true, ranged: false });
+                    z.state = ZedState::DoorBashing;
+                    z.overlay = None;
+                    runlog::kv(
+                        "zed_door_bash",
+                        &format!("id={} door={} start distance=true distance_unreal={:.0} weld={:.0}", z.id, d.info.name, h.distance / SCALE, d.weld),
+                    );
+                    t.translation = z.centre;
+                    continue;
+                }
+            }
             let to_steer = (steer - z.centre).with_y(0.0);
             // Turn toward it at RotationRate.
             if to_steer.length() / SCALE > 1.0 {
@@ -3212,6 +3331,17 @@ fn think_and_move(
                         // ZombieSiren.SpawnTwoShots: nothing while zapped.
                         if !z.zapped() {
                             scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
+                            // ZombieSiren.HurtRadius reaches doors too (any
+                            // non-zed actor in sight within ScreamRadius).
+                            door_blasts.write(crate::door::DoorBlast {
+                                at: ue_pos(z.centre),
+                                radius,
+                                damage,
+                                zed: Some(z.id),
+                                direct: None,
+                                line_of_sight: true,
+                                source: "siren_scream",
+                            });
                         }
                     } else if c.kind == ZedKind::Husk {
                         let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
@@ -3784,8 +3914,10 @@ fn think_and_move(
                     && !d.hidden
                     && !d.info.zombies_ignore
                 {
-                    if c.door_bash.is_some() {
-                        z.door_bash = Some(DoorBash { door: dc.0, wait: 0.0, in_anim: false, hits: 0, anim_time: 0.0 });
+                    // ZombieSiren / ZombieBoss have no DoorBash: their
+                    // DoorAttack screams or fires a rocket.
+                    if c.door_bash.is_some() || c.scream.is_some() || c.boss.is_some() {
+                        z.door_bash = Some(DoorBash { door: dc.0, wait: 0.0, in_anim: false, hits: 0, anim_time: 0.0, distance: false, ranged: false });
                         z.state = ZedState::DoorBashing;
                         z.attack = None;
                         z.overlay = None;
@@ -3793,9 +3925,6 @@ fn think_and_move(
                         runlog::kv("zed_door_bash", &format!("id={} door={} start weld={:.0}", z.id, d.info.name, d.weld));
                         t.translation = z.centre;
                         continue;
-                    } else if log_now {
-                        // ZombieSiren / ZombieBoss.DoorAttack: ranged (D3b).
-                        runlog::kv("zed_door_attack_not_done", &format!("id={} door={}", z.id, d.info.name));
                     }
                 }
                 let progress = (moved - z.centre).with_y(0.0).length();

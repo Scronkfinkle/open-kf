@@ -2667,3 +2667,33 @@ Patriarch push against welded doors (no DoorBash animation; D3b). The
 Broken doors do not respawn (no waves). A zed that is already in a
 trigger when the door is shut still gets stuck behind it unwelded.
 **Next:** D3b, ranged door attacks; or D4 (grenades) — your call.
+
+## 2026-10-05 Doors D3b: ranged door attacks and blasts
+
+**Changed:** `door.rs`: `DoorBlast` (radius and direct damage to doors),
+shared `go_bang`, a label on `ZedDoorHit`. `zed.rs`: per-class door
+attacks in `door_bashing` (DoorBash, ZombieBarf / ShootBurns, Siren_Scream,
+the Patriarch's rocket), the FindPath door check for
+bCanDistanceAttackDoors zeds, Siren scream blasts reach doors, Siren and
+Patriarch enter DoorBashing on a bump. `fireball.rs`: explosions send
+`DoorBlast` (a door hit counts as direct). `nav.rs`: run-time reach tests
+count closed doors. DESIGN, README.
+**Why:** D3b of the doors plan.
+**Tested how:** KF-Manor runs: Siren at a 50 weld; Siren screaming at the
+player 214 units from a welded door; Bloat from PathNode109 at a 50 weld;
+Patriarch at a 10 weld (and at 240, where he took another door); Clot
+opening a shut unwelded door after the reach change.
+`cargo test --release --workspace`; clippy.
+**Result:** Siren: 5 per pulse, door broken in two screams. Scream radius:
+the door 214 away lost 5 per pulse; two doors behind walls blocked. Bloat:
+ZombieBarf from 280 units, 18 a barf, broken in three. Patriarch: rocket
+hit the door directly, 63, broken; KFDoorMover2 399 away took 12 (6 off
+health). At weld 240 the Patriarch routed round through the other door
+(path cost). Clot still opens the shut door. Tests 65 + 21.
+**Failures on the way:** with doors left out of the run-time reach test
+the Bloat walked straight at the player and only bashed; counting doors
+(as I believe native reachability does) gave the KF behaviour.
+**Still broken / not tested:** Husk door attack not run (same code path as
+the Bloat). Bloat vomit globs on doors not done. The radius test uses the
+door's pivot, not its bounds. Effects not looked at.
+**Next:** D4, grenades and unwelded door health from the player.

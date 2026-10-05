@@ -169,9 +169,15 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   Checked by unit tests and logged runs on KF-Manor: a Clot broke a 50
   weld in 11 s (5 per hit), a Fleshpound a 150 weld in two bashes (28-30
   per hit). Not play-tested by you; the break effect not looked at.
-  Sirens, the Patriarch, and the Bloat's and Husk's ranged door attacks
-  are not done (D3b): Sirens and the Patriarch just push against a welded
-  door.
+- Ranged door attacks (D3b, 2026-10-05): Bloats, Husks, Sirens and the
+  Patriarch attack a welded door they see on their path from where they
+  stand: puke or burn (18 a shot), scream (5 a pulse) or a rocket (63 on
+  a direct hit). Rockets, Husk fireballs and Siren screams also hurt
+  doors around them (an unwelded door loses health and can break).
+  Checked by logged runs on KF-Manor (Siren at the door and screaming
+  near one, Bloat from 280 units, Patriarch rocket breaking a door and
+  scratching another 399 away). Not play-tested by you. Not done: Bloat
+  vomit sticking to a door.
 - Doors (D1, 2026-10-05): KF's doors swing open and shut with E (USE)
   when you stand in their trigger, away from you on two-way doors. They
   block you, zeds and bullets when shut, and swing through pawns as in
@@ -390,8 +396,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   maps look flatter and brighter than in the game.
 - Animated or complex materials (panners, shaders, combiners) show their base
   texture only, without animation or blending tricks.
-- Sirens and the Patriarch cannot break welded doors yet; broken doors
-  never come back (no waves yet). Breakable windows and scripted
+- Broken doors never come back (no waves yet). Breakable windows and scripted
   movers (lifts, barriers, KF-Aperture's button doors) do not move and do
   not block.
 - Pressing into a wall or door flickers between walking and falling (the

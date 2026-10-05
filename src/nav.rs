@@ -381,8 +381,12 @@ pub struct RouteInput<'a> {
 
 impl RouteInput<'_> {
     /// Can this zed walk straight from `from` to `to`?
+    /// ActorReachable / pointReachable at run time: closed doors block
+    /// (native code; assumed that movers block it, not verified), so a
+    /// zed behind a shut door follows the path through the doorway (and
+    /// meets the trigger or, for a Bloat or Husk, sees the welded door).
     fn walkable(&self, spatial: &SpatialQuery, from: Vec3, to: Vec3, touch: f32) -> bool {
-        probe(spatial, from, to, touch, self.radius, self.half_height).is_ok()
+        probe_with(spatial, crate::collision::zed_filter(), from, to, touch, self.radius, self.half_height).is_ok()
     }
 }
 
