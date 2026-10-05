@@ -26,6 +26,9 @@ pub enum Blend {
 pub struct SimpleMaterial {
     /// The texture to draw, if one was found.
     pub texture: Option<ObjectHandle>,
+    /// A Shader's Opacity texture when it is not `texture`: its alpha is
+    /// the material's alpha (KF's window glass, GlassShader).
+    pub opacity: Option<ObjectHandle>,
     pub blend: Blend,
     pub two_sided: bool,
     /// Classes passed through, e.g. ["Shader", "TexPanner", "Texture"], for logging.
@@ -162,10 +165,21 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             if !follow("Diffuse", out) || out.texture.is_none() {
                 follow("SelfIllumination", out);
             }
+            // OB_Normal with an Opacity: alpha blended by the Opacity's
+            // alpha (was masked at 50%, which hid all of KF's window glass;
+            // on/off alphas are still drawn masked by the map loader).
             if let Some(b) = blend {
                 out.blend = b;
             } else if has_opacity {
-                out.blend = Blend::Masked;
+                // Skinned meshes (zeds, weapons) keep the old masked rule:
+                // their loader has no on/off-alpha check.
+                out.blend = if out.opacity_from_combiner { Blend::Masked } else { Blend::Translucent };
+            }
+            if has_opacity
+                && let Some(op) = object(&props, "Opacity")
+                && out.texture.as_ref().is_none_or(|t| !same(t, &op))
+            {
+                out.opacity = Some(op);
             }
             // A Diffuse Combiner that has the Opacity texture as an input
             // (weapon reflex sights: reflection speckle + reticle, Opacity =
@@ -188,11 +202,14 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             out.two_sided |= get_bool("TwoSided");
             follow("Material", out);
             // EFrameBufferBlending: Overwrite, Modulate, AlphaBlend, AlphaModulate, Translucent, Darken, Brighten, Invisible
+            // AlphaTest only drops pixels below AlphaRef; with a blending
+            // mode the material still blends (KF-WestLondon's phone booth
+            // glass, FBGlass: FB_Translucent, AlphaTest, AlphaRef 13, was
+            // masked at 50% and vanished).
             out.blend = match get_byte("FrameBufferBlending") {
                 Some(7) => Blend::Invisible,
                 Some(0) | None if get_bool("AlphaTest") => Blend::Masked,
                 Some(0) | None => out.blend,
-                _ if get_bool("AlphaTest") => Blend::Masked,
                 Some(4) | Some(6) => Blend::Additive,
                 _ => Blend::Translucent,
             };

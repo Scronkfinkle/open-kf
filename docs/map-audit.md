@@ -26,7 +26,7 @@ inside static meshes.
 | PathNode, ZombiePathNode, InventorySpot, PlayerStart, JumpSpot... | all | navigation | nav.rs (walk, forced, door, jump links) |
 | UTJumppad | 20 / 138 | throws pawns at JumpTarget | zeds and the player (M4), from the pad's centre (approximation) |
 | SkyZoneInfo | 29 / 29 | sky box | drawn |
-| KFGlassMover | 12 / 691 | breakable windows | M1 (2026-10-05): block, break from shots, pellets, bolts, melee, blasts, bumps |
+| KFGlassMover | 12 / 691 | breakable windows | M1 (2026-10-05): block, break from shots, pellets, bolts, melee, blasts, bumps; drawn see-through since 2026-10-05 (were invisible) |
 | ZoneInfo distance fog | 31 / 638 | sight checks skip beyond DistanceFogEnd | M2: drawn and used by the spawn and seen checks |
 | LavaVolume (pain volumes), ZoneInfo.KillZ | 13 / 42 | 1-2 burn a second; falling below KillZ kills | M3 |
 

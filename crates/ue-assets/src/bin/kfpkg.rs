@@ -52,6 +52,7 @@ const USAGE: &str = "usage:
   kfpkg scan
   kfpkg info <file>
   kfpkg exports <file> [CLASS]
+  kfpkg mesh <file> <name>   (a static mesh's sections and their materials)
   kfpkg lighting <map>   (baked mesh colours vs mesh vertex counts)
   kfpkg raw <file> <name> [FROM]   (hex dump of an export, after its properties)
   kfpkg props <file> [CLASS]
@@ -110,6 +111,7 @@ fn main() -> ExitCode {
         ["emitter", class] => emitter(&install, class),
         ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
+        ["mesh", file, name] => mesh_materials(&install, file, name),
         ["lighting", map] => lighting(&install, map, None),
         ["lighting", map, at] => lighting(&install, map, Some(at)),
         ["raw", file, name] => raw(&install, file, name, None),
@@ -1482,6 +1484,46 @@ fn notifies(install: &Install, file: &str, anim: &str) -> Result<bool, String> {
         for n in &s.notifies {
             println!("{} frames={} time={:.3} function={} object={} name={} effect={:?}", s.name, s.num_frames, n.time, n.function, n.object_class, n.name, n.effect);
         }
+    }
+    Ok(true)
+}
+
+/// A static mesh's sections: triangles, material, and how it resolves.
+fn mesh_materials(install: &Install, file: &str, name: &str) -> Result<bool, String> {
+    use ue_assets::package_set::{ObjectHandle, PackageSet};
+    let set = PackageSet::new(&install.root);
+    let lp = set.load_path(&resolve(install, file)).map_err(|e| e.to_string())?;
+    let i = (0..lp.pkg.exports.len())
+        .find(|&i| lp.pkg.export_class_name(i) == "StaticMesh" && lp.pkg.object_name(ObjectRef::Export(i)).eq_ignore_ascii_case(name))
+        .ok_or("mesh not found")?;
+    let sm = ue_assets::static_mesh::read_static_mesh(&lp.pkg, i).map_err(|e| e.to_string())?;
+    let h = ObjectHandle { package: lp.clone(), export: i };
+    for (si, sec) in sm.sections.iter().enumerate() {
+        let rf = sm.materials.get(si).copied().unwrap_or(ObjectRef::Null);
+        let m = ue_assets::material::resolve(&set, &h, rf);
+        println!(
+            "section {si}: triangles={} material={} blend={:?} two_sided={} chain={} texture={}",
+            sec.num_triangles,
+            lp.pkg.object_path(rf),
+            m.blend,
+            m.two_sided,
+            m.chain.join(">"),
+            m.texture.as_ref().map_or("none".into(), |t| t.path())
+        );
+        // Triangles by the texture alpha at their UV centre (top mip).
+        let Some(t) = m.texture.as_ref() else { continue };
+        let Ok(tex) = read_texture(&t.package.pkg, t.export) else { continue };
+        let Some(mip) = tex.mips.first() else { continue };
+        let Some(rgba) = decode_rgba(tex.format, mip, None) else { continue };
+        let uv = sm.uvs.first().ok_or("no uvs")?;
+        let mut buckets = [0usize; 4];
+        for tri in sm.indices[sec.first_index..sec.first_index + sec.num_triangles * 3].as_chunks::<3>().0 {
+            let c = tri.iter().fold([0.0f32; 2], |a, &v| [a[0] + uv[v as usize][0] / 3.0, a[1] + uv[v as usize][1] / 3.0]);
+            let x = ((c[0].rem_euclid(1.0) * mip.width as f32) as usize).min(mip.width - 1);
+            let y = ((c[1].rem_euclid(1.0) * mip.height as f32) as usize).min(mip.height - 1);
+            buckets[(rgba[(y * mip.width + x) * 4 + 3] / 64) as usize] += 1;
+        }
+        println!("  triangles by alpha at UV centre (0-63, 64-127, 128-191, 192-255): {buckets:?}");
     }
     Ok(true)
 }

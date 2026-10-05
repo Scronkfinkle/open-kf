@@ -3108,3 +3108,29 @@ old `boss.rs` warning.
 less orange; phone booth glass not drawn; a fire decal brighter in KF;
 the fade between zones not watched; not checked by you.
 **Next:** your notes: sky layer order, booth glass, fire decal.
+
+## 2026-10-05 Fix: window glass invisible (phone booth glass)
+
+**Changed:** `ue-assets/material.rs`: a Shader with an Opacity texture
+(OutputBlending normal) is blended, not masked at 50%, and keeps the
+Opacity texture (`SimpleMaterial.opacity`); FinalBlend AlphaTest no
+longer overrides a blending FrameBufferBlending (it only drops alpha below
+AlphaRef). Skinned meshes keep the old masked rule. `map.rs`: colour from
+the diffuse, alpha from the Opacity texture (`texture_with_alpha`); the
+on/off-alpha -> masked rule now applies to any blended map material; log
+`glass_pane_material`. `kfpkg mesh <file> <name>`: sections, materials,
+triangles by texture alpha.
+**Why:** your note: the phone booth glass did not render.
+**Tested how:** `kfpkg mesh` (the booth mesh has no glass: the glass is
+4 KFGlassMover panes); log of pane materials; close-up and your matching
+pose, side by side with precise.jpg; KF-Manor load; tests, clippy.
+**Result:** all 71 KF-WestLondon panes (GlassShader /
+GlassShaderDoubleSide: Diffuse = a combiner, Opacity = WindowGlassTex)
+were masked at 50% and so invisible since M1; now blended: the booth
+glass dulls the ambulance behind it as in the game (KF's is a bit
+lighter and greener). Also now blended: FBGlass and FogFB (additive),
+ChurchLampFB, HeavyFenceFB, RedPhoneBoothWindowFB. Tests 96 pass; clippy
+only the old `boss.rs` warning.
+**Still broken / not tested:** the glass's reflection layer is dropped;
+additive map materials are still drawn as alpha blend; other maps' glass
+and fences not looked at; not checked by you.

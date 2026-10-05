@@ -387,6 +387,51 @@ impl Loader<'_> {
         result.map(|t| t.0)
     }
 
+    /// Colour from one texture, alpha from another (a Shader's Opacity),
+    /// sampled nearest at the colour texture's size. Top mip only.
+    fn texture_with_alpha(&mut self, color: &ObjectHandle, alpha: &ObjectHandle) -> Option<(Handle<Image>, UVec2)> {
+        let key = format!("{}|alpha:{}", color.path(), alpha.path());
+        if let Some(cached) = self.texture_cache.get(&key) {
+            return cached.clone();
+        }
+        let result = (|| {
+            let decode = |h: &ObjectHandle| -> Option<(Vec<u8>, usize, usize)> {
+                let tex = read_texture(&h.package.pkg, h.export).ok()?;
+                let palette = match tex.palette_ref {
+                    ObjectRef::Null => None,
+                    rf => self.set.resolve(&h.package, rf).and_then(|p| read_palette(&p.package.pkg, p.export).ok()),
+                };
+                let mip = tex.mips.first()?;
+                Some((decode_rgba(tex.format, mip, palette.as_deref())?, mip.width, mip.height))
+            };
+            let (mut rgba, w, h) = decode(color)?;
+            let (a, aw, ah) = decode(alpha)?;
+            for y in 0..h {
+                for x in 0..w {
+                    let (ax, ay) = (x * aw / w, y * ah / h);
+                    rgba[(y * w + x) * 4 + 3] = a[(ay * aw + ax) * 4 + 3];
+                }
+            }
+            let mut image = Image::new(
+                Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                rgba,
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                mag_filter: ImageFilterMode::Linear,
+                min_filter: ImageFilterMode::Linear,
+                ..default()
+            });
+            Some((self.images.add(image), UVec2::new(w as u32, h as u32)))
+        })();
+        self.texture_cache.insert(key, result.clone());
+        result
+    }
+
     /// A Bevy material for an Unreal material reference. `None` means "do not
     /// draw" (invisible materials). The size is the texture size for BSP UVs.
     fn material(
@@ -400,12 +445,12 @@ impl Loader<'_> {
             return cached.clone();
         }
         let mut simple: SimpleMaterial = resolve(self.set, from, rf);
-        // A plain bAlphaTexture texture whose alpha is a cut-out (e.g.
-        // kf_generic_t.Generic_Gibbs on KF-WestLondon's Clot gibs): masked,
-        // so the mesh hides its own far side (blending writes no depth).
+        // A blended material whose alpha (the texture's, or the Shader's
+        // Opacity texture's) is a cut-out (e.g. kf_generic_t.Generic_Gibbs
+        // on KF-WestLondon's Clot gibs): masked, so the mesh hides its own
+        // far side (blending writes no depth). Looks the same.
         if simple.blend == Blend::Translucent
-            && simple.chain.len() == 1
-            && let Some(t) = simple.texture.clone()
+            && let Some(t) = simple.opacity.clone().or_else(|| simple.texture.clone())
             && self.alpha_is_binary(&t)
         {
             simple.blend = Blend::Masked;
@@ -416,7 +461,11 @@ impl Loader<'_> {
         let result = if simple.blend == Blend::Invisible {
             None
         } else {
-            let tex = simple.texture.as_ref().and_then(|t| self.texture(t));
+            let tex = match (&simple.texture, &simple.opacity) {
+                (Some(t), Some(o)) => self.texture_with_alpha(t, o),
+                (Some(t), None) => self.texture(t),
+                _ => None,
+            };
             if tex.is_none() {
                 self.materials_without_texture += 1;
             }
@@ -975,6 +1024,10 @@ fn load_map(
         // Breakable windows (glass.rs): own entity and collider, so a pane
         // can block, crack and break.
         if let Some(info) = &actor.glass {
+            if let Some(&skin) = actor.skins.first() {
+                let m = resolve(&set, &ObjectHandle { package: lp.clone(), export: actor.export }, skin);
+                runlog::kv("glass_pane_material", &format!("pane={} skin={} blend={:?} chain={}", info.name, lp.pkg.object_path(skin), m.blend, m.chain.join(">")));
+            }
             let mut soup = crate::collision::TriSoup::default();
             for part in parts.iter() {
                 if let Some(tris) = &part.collision {
