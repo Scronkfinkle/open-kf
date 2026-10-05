@@ -91,6 +91,26 @@ impl PropertyList {
     }
 }
 
+/// The elements of a dynamic array of strings (`array<string>`).
+pub fn string_array(value: &Value) -> Vec<String> {
+    let Value::Array { count, raw } = value else {
+        return Vec::new();
+    };
+    let mut r = Reader::new(raw);
+    (0..*count).map_while(|_| r.fstring().ok()).collect()
+}
+
+/// The elements of a dynamic array of structs, each stored as its own
+/// tagged property list (names from `pkg`, the package the array was read
+/// from).
+pub fn struct_array(pkg: &Package, value: &Value) -> Vec<PropertyList> {
+    let Value::Array { count, raw } = value else {
+        return Vec::new();
+    };
+    let mut r = Reader::new(raw);
+    (0..*count).map_while(|_| read_properties(pkg, &mut r).ok()).collect()
+}
+
 // Property type ids in UE2.
 const T_BYTE: u8 = 1;
 const T_INT: u8 = 2;

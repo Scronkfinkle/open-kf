@@ -2721,3 +2721,33 @@ of the door (you spotted the staircase); the shell hit them inside its
 respawn (no waves). Grenade blast reach uses the door's pivot, not its
 shape.
 **Next:** the doors plan is done; your call.
+
+## 2026-10-05 Game loop G1: wave mode
+
+**Changed:** New `game.rs`: `--mode waves|debug` (debug default, as
+before), `--length`, `--wave N`; wave data from the class defaults and
+the map; the KFGameType wave state machine; HUD line; win / loss /
+restart. `properties.rs`: `string_array`, `struct_array`. `zed.rs`:
+`SpawnZedAt` handling, `kill_zeds` test action, clearing on restart,
+`is_dead` public. `map.rs`: loads the wave data in wave mode. `main.rs`:
+the flags. `combat.rs`: wave text on the HUD. DESIGN (plan and G1),
+README.
+**Why:** You asked for waves, then the trader, then door respawns; G1
+of the game-loop plan.
+**Tested how:** unit tests (squad strings, spawn timing range, wave
+masks); KF-Manor runs: waves 1-3 with `kill_zeds` every 4 s; `--wave 4`
+with `next_wave` through the Patriarch to a win; `--wave 4` without god
+mode to a loss and `restart_game`; a debug-mode run.
+`cargo test --release --workspace`; clippy.
+**Result:** game_data: Short waves 20/32/35/42, 27 squads, letters A-I as
+KF, special squads in waves 3 and 4, WaveSpawnPeriod 2.5, 39 volumes.
+Waves started 10 s in and 60 s after each end; wave 3's special squad (6)
+came second; wave 4 capped at 32 alive; the Patriarch spawned, died, game
+won. Loss detected on death; restart cleared 32 zeds. Debug mode logged
+no wave data. Tests 69 + 21.
+**Failures on the way:** WaveMaxMonsters is a byte, read as 0 at first
+(every wave fell to the minimum 5).
+**Still broken / not tested:** Spawning is at a volume's pivot (often in
+view, some spots may be bad): G2. No stuck-zed cleanup, no x 0.75 zed
+damage yet (G2). The Patriarch's own wave rules: G3. Not played.
+**Next:** G2, KF's spawn volume rules.

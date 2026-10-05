@@ -2458,7 +2458,6 @@ impl Zed {
         (self.melee_range, self.melee_damage)
     }
 
-    #[cfg(test)]
     pub fn is_dead(&self) -> bool {
         self.state == ZedState::Dead
     }
@@ -2850,6 +2849,7 @@ fn spawn_zeds(
     mut active: ResMut<ZedsActive>,
     mut z_spawn: ResMut<ZSpawn>,
     script: Res<crate::weapon::ScriptedInput>,
+    mut wave_spawns: MessageReader<crate::game::SpawnZedAt>,
     mut next_id: Local<usize>,
 ) {
     // Test action "toggle_zeds": the same as X.
@@ -2863,6 +2863,17 @@ fn spawn_zeds(
     };
     if classes.0.is_empty() || frames.0 < 6 {
         return;
+    }
+    // Zeds from the wave loop (game.rs): a class standing on a floor point.
+    for w in wave_spawns.read() {
+        let Some(class) = classes.0.iter().position(|c| c.name.eq_ignore_ascii_case(&w.class)) else {
+            runlog::kv("zed_spawn_failed", &format!("reason=class_not_loaded class={}", w.class));
+            continue;
+        };
+        let c = &classes.0[class];
+        let centre = coords::pos(w.floor.to_array()) + Vec3::Y * (c.collision_height + 1.0) * SCALE;
+        spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, w.yaw);
+        *next_id += 1;
     }
     let start = frames.0 == 6;
     let scripted = |action: &str| script.0.iter().any(|(f, a)| *f == frames.0 && a == action);
@@ -2967,11 +2978,12 @@ fn think_and_move(
     nav: Res<crate::nav::NavNetwork>,
     script: Res<crate::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
-    (doors, door_colliders, mut door_hits, mut door_blasts): (
+    (doors, door_colliders, mut door_hits, mut door_blasts, mut clear_zeds): (
         Res<crate::door::Doors>,
         Query<&crate::door::DoorCollider>,
         MessageWriter<crate::door::ZedDoorHit>,
         MessageWriter<crate::door::DoorBlast>,
+        MessageReader<crate::game::ClearZeds>,
     ),
     mut log_timer: Local<f32>,
 ) {
@@ -2983,6 +2995,9 @@ fn think_and_move(
     let hurt = script.0.iter().any(|(f, a)| *f == frames.0 && a == "hurt_zeds");
     // Test action "zap_zeds": SetZapped(10) on every living zed.
     let zap_all = script.0.iter().any(|(f, a)| *f == frames.0 && a == "zap_zeds");
+    // Test action "kill_zeds": every living zed dies (wave tests); also a
+    // wave game's restart.
+    let kill_all = script.0.iter().any(|(f, a)| *f == frames.0 && a == "kill_zeds") || clear_zeds.read().count() > 0;
     let Ok((pt, walker)) = player.single() else {
         return;
     };
@@ -3058,6 +3073,13 @@ fn think_and_move(
                 commands.entity(entity).despawn();
                 runlog::kv("zed_removed", &format!("id={}", z.id));
             }
+            continue;
+        }
+        if kill_all {
+            z.last_hit = None;
+            z.kill();
+            kills.0 += 1;
+            runlog::kv("zed_killed_test", &format!("id={}", z.id));
             continue;
         }
         // Bleeding out (KFMonster.Tick): dies when the time is up. No hit

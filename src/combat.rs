@@ -240,6 +240,7 @@ fn update_hud(
     ammo: Res<AmmoDisplay>,
     kills: Res<KillCount>,
     z_spawn: Res<crate::zed::ZSpawn>,
+    wave: Res<crate::game::WaveHud>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = text.single_mut() else {
@@ -253,11 +254,12 @@ fn update_hud(
         + &ammo.syringe.map_or(String::new(), |p| format!("    SYRINGE {p}%"));
     let ammo = format!("    {}{rounds}{mode}{frags}", ammo.weapon.to_uppercase());
     **t = format!(
-        "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
+        "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}{}",
         health.health.max(0.0),
         if health.god { " (GOD)" } else { "" },
         kills.0,
-        z_spawn.label.to_uppercase()
+        z_spawn.label.to_uppercase(),
+        if wave.0.is_empty() { String::new() } else { format!("    {}", wave.0) }
     );
 }
 

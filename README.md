@@ -159,6 +159,16 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Waves (G1, 2026-10-05): `--mode waves` plays KF's waves (default
+  length Short: 4 waves and the Patriarch; `--length normal|long`). A 10 s
+  countdown, waves of 20 / 32 / 35 / 42 zeds (Short) drawn from KF's squad
+  tables, at most 32 alive, 60 s between waves, the Patriarch last; win or
+  die, Enter starts again. The HUD shows the wave, zeds left and the
+  countdown. Zeds still appear at the middle of a random spawn area,
+  including ones you can see (G2 will do KF's spawn rules). Checked by
+  logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
+  loss and restart). Not play-tested by you. Without `--mode waves` the
+  game is the debug setup as before.
 - Zeds against welded doors (D3a, 2026-10-05): a zed that walks into a
   welded door stands and bashes it (DoorBash animation); each hit takes
   85% of its claw damage off the weld (at least 5), and at 0 the door

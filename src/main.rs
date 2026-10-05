@@ -8,6 +8,7 @@ mod decals;
 mod door;
 mod fireball;
 mod firing;
+mod game;
 mod gore;
 mod map;
 mod nav;
@@ -65,6 +66,8 @@ struct Args {
     give: Option<String>,
     /// Cap the frame rate (frames per second).
     fps: Option<f64>,
+    /// `--mode waves|debug` and `--length short|normal|long`.
+    game: game::GameOptions,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -94,6 +97,22 @@ fn parse_args() -> Result<Args, String> {
                     let f: u32 = f.trim().parse().map_err(|_| format!("bad --input frame: {item}"))?;
                     args.input.push((f, a.trim().to_ascii_lowercase()));
                 }
+            }
+            "--mode" => {
+                let n = it.next().ok_or("--mode needs waves or debug")?;
+                args.game.mode = match n.as_str() {
+                    "waves" => game::GameMode::Waves,
+                    "debug" => game::GameMode::Debug,
+                    _ => return Err(format!("bad --mode value: {n} (waves or debug)")),
+                };
+            }
+            "--length" => {
+                let n = it.next().ok_or("--length needs short, normal or long")?;
+                args.game.length = game::GameLength::parse(&n).ok_or(format!("bad --length value: {n}"))?;
+            }
+            "--wave" => {
+                let n = it.next().ok_or("--wave needs a number")?;
+                args.game.start_wave = Some(n.parse().map_err(|_| format!("bad --wave value: {n}"))?);
             }
             "--walk" => args.walk = true,
             "--god" => args.god = true,
@@ -137,7 +156,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--mode waves|debug] [--length short|normal|long] [--wave N]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -193,6 +212,8 @@ fn main() -> AppExit {
     if let Some(fps) = args.fps {
         runlog::kv("frame_limit", &format!("fps={fps}"));
     }
+    let game_options = args.game;
+    runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
     let walk_settings = walk::WalkSettings {
         start_walking: args.walk,
         autowalk: args.autowalk,
@@ -230,9 +251,10 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
+        .insert_resource(game_options)
         .insert_resource(scripted)
         .insert_resource(loadout)
         .insert_resource(zed_settings)

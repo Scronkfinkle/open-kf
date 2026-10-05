@@ -336,6 +336,7 @@ fn load_map(
     mut sky: ResMut<SkyInfo>,
     mut collision: ResMut<CollisionGeometry>,
     mut door_setup: ResMut<crate::door::DoorSetup>,
+    game_options: Res<crate::game::GameOptions>,
     compressed: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let started = Instant::now();
@@ -353,6 +354,9 @@ fn load_map(
     let class_defaults = ClassDefaults::new(&set);
     let contents = read_level_with(&lp, &class_defaults);
     door_setup.triggers = contents.use_triggers.clone();
+    if game_options.mode == crate::game::GameMode::Waves {
+        commands.insert_resource(crate::game::load_game_data(&set, &class_defaults, &lp, game_options.length));
+    }
     commands.insert_resource(crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg)));
     runlog::kv(
         "class_defaults",

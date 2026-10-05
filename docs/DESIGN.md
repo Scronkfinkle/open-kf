@@ -2225,6 +2225,112 @@ Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
 (HUD milestone), door respawn (waves milestone), other movers.
 
+## Game loop: waves, trader, door respawns (milestone 9, planned 2026-10-05; G1 implemented)
+
+Goal: play a KF game solo: waves of zeds from the map's spawn volumes, the
+trader between waves with dosh to spend, broken doors back each wave, the
+Patriarch at the end. Rules researched from KFGameType, ZombieVolume,
+ShopVolume, KFPawn and the class defaults (checked 2026-10-05; numbers
+are for one player on Normal difficulty).
+
+**Modes (your requirement).** `--mode waves` runs the game loop. `--mode
+debug` is today's behaviour, unchanged: no waves, no trader, zeds from
+`--spawn` / `--zed-at` and the spawn keys, every test action as now.
+Debug stays the default so every existing test command still means the
+same thing (your call: it can be the other way round). `--length
+short|normal|long` picks the game length; KF's own default (KillingFloor.ini
+KFGameLength=0) is Short.
+
+**Rules from the scripts.**
+- *Flow* (KFGameType state MatchInProgress, Timer once a second): a 10 s
+  countdown, wave 1 (no trader before it), then each wave end: doors
+  respawn, team dosh paid out, WaveNum + 1, 60 s of trader time
+  (TimeBetweenWavesNormal), next wave. After the last wave the boss wave
+  (the Patriarch, ZombieBoss_STANDARD); killing him wins. Dying loses
+  (solo: no respawn).
+- *Waves:* Short 4, Normal 7, Long 10, then the Patriarch. Zeds per wave
+  (WaveMaxMonsters x 1.0 Normal x 1.0 for one player): Normal 20, 28, 32,
+  32, 35, 40, 42; Short 20, 32, 35, 42. At most 32 alive at once.
+- *Which zeds:* 27 standard squads ("4A1G" = 4 Clots and a Bloat; letters A
+  Clot, B Crawler, C Gorefast, D Stalker, E Scrake, F Fleshpound, G Bloat,
+  H Siren, I Husk); each wave's WaveMask enables some. A squad is drawn at
+  random without repeats until the list is used up, then it refills. Some
+  waves have a special squad (Fleshpounds, Scrakes, Sirens) that comes in
+  on odd passes through the list.
+- *Spawn timing:* the next squad after WaveSpawnPeriod (map's KFLevelRules,
+  KF-Manor 2.5 s; x 1.1 in later waves), stretched by up to 3x by a sine
+  of the wave's elapsed time.
+- *Where:* ZombieVolumes. Each gets an 11 x 11 grid of spawn points that a
+  zed fits on. A volume is rated (desirability, distance to the player,
+  time since last used, a random part) and refused if: the player can see
+  it or is inside it, it is within MinDistanceToPlayer (600), it failed in
+  the last 5 s, one of its RoomDoorsList doors is welded, or it does not
+  allow that zed type. A spawn point the player can see is skipped.
+- *Wave end:* every zed spawned and dead. With 5 or fewer left, a zed not
+  seen for 8 s is killed (one a second) so a lost zed cannot stall the
+  game.
+- *Zed scaling:* one player on Normal: normal health, damage x 0.75
+  (KFMonster DifficultyDamageModifer). We do not apply the 0.75 yet.
+- *Dosh:* start 250. A kill pays ScoringValue (Clot 7 .. Fleshpound 200,
+  Patriarch 500; x 1.75 on Short) at once, and the same again into the
+  team pot paid out to the survivors at wave end (so solo, twice; read
+  from the code, not seen in game). Death costs 10%.
+- *Trader:* one of the map's ShopVolumes (KF-Manor 5), random, never the
+  same twice running; its KFTraderDoor opens for trader time and closes at
+  the wave start; anyone inside then is teleported to one of its 6
+  Teleporters. USE inside the open shop opens the buy menu. A trail shows
+  the way (RedWhisp along the path) and a HUD arrow points at it.
+- *Buying* (KFPawn.ServerBuy*): weapons at Pickup Cost (no perk: no
+  discount), carry weight <= 15, not already owned, dual pistols half price
+  with the single; a bought weapon comes with InitialAmount ammo. Selling
+  pays 75%. Ammo per magazine at AmmoCost (partial if short of dosh);
+  grenades 40 each, up to 5; armour 300 for 100 points. Base-game weapons
+  only (no DLC), as in the weapons milestone.
+
+**Steps.** Each step logs its state changes and is tested by a logged run.
+- **G1, modes and the wave state machine.** `--mode`, `--length`; the
+  countdown, wave start / end, between-wave time, WaveNum, boss wave,
+  won / lost; zeds per wave and squads (the squad tables and masks from
+  the class defaults); a HUD line (wave, zeds left, countdown). Spawning
+  in G1 is simple (random ZombieVolume centre) to get the loop running.
+- **G2, ZombieVolume spawning.** Read the volumes (with their array
+  properties: RoomDoorsList, DisallowedZeds, OnlyAllowedZeds), the spawn
+  point grid, the rating and refusals, sight checks, timing (sine), the
+  stuck-zed cleanup, damage x 0.75.
+- **G3, the Patriarch wave.** Boss spawn rules, his helper squads when he
+  runs off to heal (FinalSquads), the win.
+- **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
+  (or open if it was), bStartSealed doors re-welded.
+- **T1, dosh.** Starting cash, kill rewards, team pot, death penalty, HUD.
+- **T2, shops.** ShopVolumes, trader doors, which shop, booting players
+  out with the teleporters, the trail (and an arrow / distance on the HUD).
+- **T3, buying.** A simple keyboard buy menu (text list on screen):
+  weapons, sell, ammo (clip / fill), grenades, armour; all the
+  server-side rules above. Armour itself (absorbing damage) needs reading
+  KFPawn's armour rules first; may become its own step.
+
+**G1 as built (`game.rs`).** `load_game_data` (called by the map loader
+in wave mode) reads the length's WaveInfo array (WaveMask int,
+WaveMaxMonsters byte), StandardMonsterSquads (27 strings) and the
+KFMonstersCollection MonsterClasses (MID letter, MClassName) and special
+squads (struct arrays: `properties::string_array` / `struct_array` decode
+them), EndGameBossClass, the map's KFLevelRules WaveSpawnPeriod and its
+ZombieVolumes. `wave_timer` runs MatchInProgress.Timer once a game second:
+the countdown (10, then 60), SetupWave, AddSquad (special squad on odd
+passes; as in KF the first AddSquad of a game, having no volume yet,
+draws a fresh squad over SetupWave's), CalcNextSquadSpawnTime, DoWaveEnd,
+the boss wave, won / lost. Zeds are spawned through `SpawnZedAt`, handled
+in `zed.rs` next to the debug spawns. G1 spawns at a random volume's pivot
+dropped to the floor (G2 replaces this). Losing: KF ends the game when the
+solo player dies; we stop the loop and show "YOU DIED"; Enter (test
+action `restart_game`) clears the zeds and starts over (the debug respawn
+at the start is kept). Test aids: `--wave N` (start at wave N; one past
+the last is the Patriarch), test actions `next_wave` (end the countdown)
+and `kill_zeds`. HUD: wave, zeds left, countdown.
+
+Not in this milestone: pickups lying in the map (SetupPickups), dropped
+weapons, perks, multiplayer, voice lines and sounds.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style
