@@ -158,6 +158,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Grenades, rockets, frags, pipe bombs and nails are drawn with their own
+  models (2026-10-04). Checked by screenshot (pipe bomb).
 - Crossbow and M99 (W6c, 2026-10-04): bolts / bullets go through every
   zed in line (losing a fifth each time), with KF's big headshot
   multipliers; Crossbow bolts stick in walls and can be picked back up.

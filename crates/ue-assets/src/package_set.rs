@@ -162,10 +162,21 @@ impl PackageSet {
 
     /// Finds an object by its full dotted path, e.g. "KF_Weapons2_Trip.AK47_Trip"
     /// (as in UnrealScript's DynamicLoadObject). `class` limits the match.
+    /// A path without a group ("Package.Name") also finds an object of that
+    /// name inside a group: KF names e.g. "KF_pickups2_Trip.Pipebomb_Pickup"
+    /// for the export "Supers.Pipebomb_Pickup", and the game loads it.
     pub fn find_object(&self, path: &str, class: Option<&str>) -> Option<ObjectHandle> {
         let (pkg_name, inner) = path.split_once('.')?;
         let package = self.load(pkg_name)?;
-        let export = package.find(inner, class)?;
+        let export = package.find(inner, class).or_else(|| {
+            if inner.contains('.') {
+                return None;
+            }
+            (0..package.pkg.exports.len()).find(|&i| {
+                package.pkg.object_name(crate::package::ObjectRef::Export(i)).eq_ignore_ascii_case(inner)
+                    && class.is_none_or(|c| package.pkg.export_class_name(i).eq_ignore_ascii_case(c))
+            })
+        })?;
         Some(ObjectHandle { package, export })
     }
 

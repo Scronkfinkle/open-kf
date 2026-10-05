@@ -2316,3 +2316,22 @@ Fleshpound), kick 150 back / 85 up.
 pinned bodies not done. Not play-tested by you.
 **Next:** W7, fire: zeds burning, Flamethrower, Trenchgun, MAC10, Husk
 gun.
+
+## 2026-10-04 Projectile models (pipe bomb visible)
+
+**Changed:** `projectile.rs`: `ProjectileModels` loaded at startup
+(StaticMesh / StaticMeshRef of 7 classes), `attach_model`, `sync_bodies`
+(transform follows the flight; resting pipe bombs lie flat), stats carry
+their class. `package_set.rs`: `find_object` finds group-less
+"Package.Name". `gore.rs`: `load_piece_with_mesh` uses it. `weapon.rs`:
+passes the projectile class. DESIGN, README.
+**Why:** You saw a dropped pipe bomb was invisible (no projectile was
+drawn).
+**Tested how:** load log; screenshots looking down at a dropped pipe
+bomb; `cargo test --release`.
+**Result:** All 7 models load (3 needed the group-less lookup). The pipe
+bomb lies on the floor where it stopped. Tests 51/51.
+**Still broken / not tested:** Grenades, rockets, frags and nails in
+flight not looked at by eye. The Crossbow bolt (skeletal mesh), pellets
+and the M99 bullet are not drawn.
+**Next:** W7, fire.

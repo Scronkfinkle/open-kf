@@ -360,10 +360,8 @@ pub fn load_piece_with_mesh(
         _ => 1.0,
     };
     let skins = skins_of(defaults, class);
-    let (pkg_name, object) = mesh_path.split_once('.').ok_or("mesh path needs Package.Name")?;
-    let package = set.load(pkg_name).ok_or("mesh package not found")?;
-    let export = package.find(object, Some("StaticMesh")).ok_or("static mesh not found")?;
-    static_piece(set, &ObjectHandle { package, export }, &skins, name, draw_scale, meshes, images, materials)
+    let h = set.find_object(mesh_path, Some("StaticMesh")).ok_or("static mesh not found")?;
+    static_piece(set, &h, &skins, name, draw_scale, meshes, images, materials)
 }
 
 #[allow(clippy::too_many_arguments)]

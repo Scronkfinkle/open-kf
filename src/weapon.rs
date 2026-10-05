@@ -564,6 +564,8 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         velocity_scale: ffloat("RecoilVelocityScale", 0.0),
     };
     if let Some(pc) = pellet_class {
+        // Leaked once per loaded fire mode (projectiles keep a &'static name).
+        let projectile_path: &'static str = Box::leak(pc.path().into_boxed_str());
         let pget = |p: &str| defaults.get(pc, p);
         let pfloat = |p: &str, d: f32| match pget(p) {
             Some((Value::Float(f), _)) => f,
@@ -606,6 +608,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         };
         let is_law = defaults.is_a(pc, "LAWProj");
         let explosive = (defaults.is_a(pc, "M79GrenadeProjectile") || is_law).then(|| crate::projectile::ExplosiveStats {
+            class: projectile_path,
             speed: pfloat("Speed", 2000.0),
             damage: pfloat("Damage", 0.0),
             radius: pfloat("DamageRadius", 0.0),
@@ -630,6 +633,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         let is_bolt = defaults.is_a(pc, "CrossbowArrow") || defaults.is_a(pc, "M99Bullet");
         let dt_mult = if is_bolt { class_mult("DamageTypeHeadShot") } else { dt_mult };
         let thrown = (defaults.is_a(pc, "Nade") || is_pipe).then(|| crate::projectile::ThrownStats {
+            class: projectile_path,
             // FragFire.PostSpawnProjectile: a quick throw (HoldTime 0) at
             // mHoldSpeedMin; the pipe bomb at its own Speed.
             speed: if is_pipe { pfloat("Speed", 50.0) } else { ffloat("mHoldSpeedMin", 850.0) },
@@ -660,6 +664,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             thrown,
             explosive,
             stats: crate::projectile::ProjectileStats {
+                class: projectile_path,
                 speed: pfloat("Speed", 3500.0),
                 damage: pfloat("Damage", 0.0),
                 max_penetrations: pfloat("MaxPenetrations", 1.0),

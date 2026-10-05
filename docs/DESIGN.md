@@ -1801,6 +1801,12 @@ W6c (`projectile.rs` PenRule::Bolt):
   until its LifeSpan (10 s) ends.
 - CrossbowFire / M99Fire need only the ammo total (no reload step).
 - SpreadStyle SS_None (the Crossbow) now fires straight.
+- Projectile models (added after W6 on request): the classes' StaticMesh
+  / StaticMeshRef for the M79 family, LAW, frag, pipe bomb and nails, at
+  DrawScale, pointing along the flight; a pipe bomb at rest lies flat
+  (HitWall: pitch and roll 0). `PackageSet::find_object` now also finds
+  "Package.Name" when the export is inside a group (the pipe bomb's and
+  40 mm grenade's StaticMeshRef omit the group, and KF loads them).
 - Not done: the arrow / bullet meshes, bodies pinned to walls
   (BodyAttacher), the M99's 3D scope is from the scope step.
 

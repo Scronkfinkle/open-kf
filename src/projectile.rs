@@ -20,6 +20,8 @@ const GRAVITY: f32 = 950.0;
 /// A projectile class's values (from its defaults).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProjectileStats {
+    /// The projectile class (for its model, if it has one).
+    pub class: &'static str,
     /// Speed (Unreal units/s).
     pub speed: f32,
     pub damage: f32,
@@ -73,6 +75,8 @@ pub struct BoltPickedUp;
 /// A grenade or rocket's values (M79GrenadeProjectile family, LAWProj).
 #[derive(Clone, Copy, Debug)]
 pub struct ExplosiveStats {
+    /// The projectile class (for its model).
+    pub class: &'static str,
     pub speed: f32,
     /// HurtRadius: Damage, DamageRadius, MomentumTransfer.
     pub damage: f32,
@@ -147,15 +151,137 @@ struct PlayerProjectile {
     id: u32,
 }
 
+/// Projectile classes whose models are drawn (their StaticMesh or
+/// StaticMeshRef): grenades, the LAW rocket, the frag, the pipe bomb and
+/// nails. Pellets and the M99 bullet are tiny and fast (their tracers show
+/// them); the Crossbow bolt is a skeletal mesh (not drawn yet).
+const MODEL_CLASSES: [&str; 7] = [
+    "KFMod.M79GrenadeProjectile",
+    "KFMod.M32GrenadeProjectile",
+    "KFMod.M203GrenadeProjectile",
+    "KFMod.LAWProj",
+    "KFMod.Nade",
+    "KFMod.PipeBombProjectile",
+    "KFMod.NailGunProjectile",
+];
+
+#[derive(Resource, Default)]
+struct ProjectileModels(Vec<(String, crate::gore::PieceModel)>);
+
+impl ProjectileModels {
+    fn get(&self, class: &str) -> Option<&crate::gore::PieceModel> {
+        self.0.iter().find(|(c, _)| c.eq_ignore_ascii_case(class)).map(|(_, m)| m)
+    }
+}
+
+fn load_models(
+    request: Res<crate::map::MapRequest>,
+    mut models: ResMut<ProjectileModels>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    use ue_assets::properties::Value;
+    let set = ue_assets::package_set::PackageSet::new(&request.install_root);
+    let defaults = ue_assets::class_defaults::ClassDefaults::new(&set);
+    for class_path in MODEL_CLASSES {
+        let loaded = crate::gore::find_class(&set, class_path).ok_or_else(|| "class not found".to_string()).and_then(|class| {
+            match defaults.get(&class, "StaticMeshRef") {
+                Some((Value::Str(path), _)) if !path.is_empty() => crate::gore::load_piece_with_mesh(
+                    &set,
+                    &defaults,
+                    &class,
+                    &path,
+                    class_path,
+                    &mut meshes,
+                    &mut images,
+                    &mut materials,
+                ),
+                _ => crate::gore::load_piece(&set, &defaults, &class, class_path, &mut meshes, &mut images, &mut materials),
+            }
+        });
+        match loaded {
+            Ok(m) => {
+                runlog::kv("projectile_model_loaded", &format!("class={class_path} draw_scale={}", m.draw_scale()));
+                models.0.push((class_path.to_string(), m));
+            }
+            Err(e) => runlog::kv("projectile_model_error", &format!("class={class_path} error=\"{e}\"")),
+        }
+    }
+}
+
+/// The Bevy transform of a projectile at `pos` (Unreal) pointing along `dir`.
+fn pose(pos: Vec3, dir: Vec3, scale: f32) -> Transform {
+    let d = dir.normalize_or(Vec3::X);
+    let k = 65536.0 / std::f32::consts::TAU;
+    let rot = ue_assets::properties::Rotator {
+        pitch: (d.z.clamp(-1.0, 1.0).asin() * k) as i32,
+        yaw: (d.y.atan2(d.x) * k) as i32,
+        roll: 0,
+    };
+    Transform {
+        translation: coords::pos(pos.to_array()),
+        rotation: coords::rotation(rot),
+        scale: Vec3::splat(scale),
+    }
+}
+
+/// Gives a projectile entity a transform and, if its class has one, its
+/// model (as children).
+fn attach_model(commands: &mut Commands, models: &ProjectileModels, entity: Entity, class: &str, pos: Vec3, dir: Vec3) {
+    let scale = models.get(class).map_or(1.0, |m| m.draw_scale());
+    commands.entity(entity).insert((pose(pos, dir, scale), Visibility::Visible, BodyScale(scale)));
+    if let Some(m) = models.get(class) {
+        m.spawn_parts(commands, entity);
+    }
+}
+
+/// The model's DrawScale, kept for updating the transform.
+#[derive(Component)]
+struct BodyScale(f32);
+
+/// Keeps each projectile's transform on its position, pointing along its
+/// velocity (at rest: as it was).
+#[allow(clippy::type_complexity)] // Bevy system parameters
+fn sync_bodies(
+    mut pellets: Query<(&PlayerProjectile, &BodyScale, &mut Transform), (Without<PlayerExplosive>, Without<PlayerThrown>)>,
+    mut explosives: Query<(&PlayerExplosive, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerThrown>)>,
+    mut thrown: Query<(&PlayerThrown, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerExplosive>)>,
+) {
+    let update = |t: &mut Transform, pos: Vec3, vel: Vec3, scale: f32| {
+        if vel.length_squared() > 1.0 {
+            *t = pose(pos, vel, scale);
+        } else {
+            t.translation = coords::pos(pos.to_array());
+        }
+    };
+    for (p, s, mut t) in &mut pellets {
+        update(&mut t, p.pos, p.vel, s.0);
+    }
+    for (p, s, mut t) in &mut explosives {
+        update(&mut t, p.pos, p.vel, s.0);
+    }
+    for (p, s, mut t) in &mut thrown {
+        if p.resting {
+            // HitWall at rest: DesiredRotation with pitch and roll 0.
+            *t = pose(p.pos, p.throw_dir.with_z(0.0), s.0);
+        } else {
+            update(&mut t, p.pos, p.vel, s.0);
+        }
+    }
+}
+
 pub struct ProjectilePlugin;
 
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SpawnPlayerProjectile>()
+            .init_resource::<ProjectileModels>()
+            .add_systems(PostStartup, load_models)
             .add_message::<BoltPickedUp>()
             .init_resource::<BoltRoom>()
             .add_systems(Update, pick_up_bolts)
-            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown).chain());
+            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown, sync_bodies).chain());
     }
 }
 
@@ -172,6 +298,7 @@ fn spawn_projectiles(
     mut bullet_fx: MessageWriter<crate::bullet_fx::BulletFx>,
     library: Option<Res<crate::particles::EffectLibrary>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    models: Res<ProjectileModels>,
 ) {
     for s in spawns.read() {
         *next_id += 1;
@@ -189,7 +316,7 @@ fn spawn_projectiles(
                 ThrownKind::Frag { fuse } => fuse,
                 ThrownKind::Pipe { .. } => 1.0,
             };
-            commands.spawn(PlayerThrown {
+            let e = commands.spawn(PlayerThrown {
                 pos: origin,
                 vel: dir * (t.speed + s.extra_speed),
                 stats: t,
@@ -200,8 +327,10 @@ fn spawn_projectiles(
                 timer: fuse,
                 arming: None,
                 countdown: None,
+                throw_dir: dir,
                 id: *next_id,
-            });
+            }).id();
+            attach_model(&mut commands, &models, e, t.class, origin, dir);
             runlog::kv(
                 "thrown_spawned",
                 &format!("id={} weapon={} speed={:.0} damage={} radius={}", *next_id, s.weapon, t.speed + s.extra_speed, t.damage, t.radius),
@@ -214,7 +343,7 @@ fn spawn_projectiles(
                 let lib = library.as_deref()?;
                 crate::particles::spawn_effect(&mut commands, lib, &mut meshes, class, origin, crate::fireball::axes_along(-dir), *next_id)
             });
-            commands.spawn(PlayerExplosive {
+            let e = commands.spawn(PlayerExplosive {
                 pos: origin,
                 vel: dir * x.speed,
                 stats: x,
@@ -224,7 +353,8 @@ fn spawn_projectiles(
                 dud: None,
                 trail,
                 id: *next_id,
-            });
+            }).id();
+            attach_model(&mut commands, &models, e, x.class, origin, dir);
             runlog::kv(
                 "explosive_fired",
                 &format!(
@@ -262,7 +392,7 @@ fn spawn_projectiles(
                 });
             }
         }
-        commands.spawn(PlayerProjectile {
+        let e = commands.spawn(PlayerProjectile {
             pos: origin,
             vel: s.dir.normalize_or_zero() * s.stats.speed,
             damage: s.stats.damage,
@@ -273,7 +403,8 @@ fn spawn_projectiles(
             falling: false,
             age: 0.0,
             id: *next_id,
-        });
+        }).id();
+        attach_model(&mut commands, &models, e, s.stats.class, origin, s.dir);
     }
 }
 
@@ -714,6 +845,8 @@ fn blast(
 /// A thrown explosive's values: the frag's Nade or a PipeBombProjectile.
 #[derive(Clone, Copy, Debug)]
 pub struct ThrownStats {
+    /// The projectile class (for its model).
+    pub class: &'static str,
     pub speed: f32,
     pub damage: f32,
     pub radius: f32,
@@ -754,6 +887,8 @@ struct PlayerThrown {
     arming: Option<f32>,
     /// Pipe: beeps left once a zed is detected.
     countdown: Option<u32>,
+    /// The throw's direction (its yaw is kept at rest).
+    throw_dir: Vec3,
     id: u32,
 }
 
