@@ -2394,7 +2394,7 @@ action `kill_near_zeds` (zeds within 500 of the player die).
 Not in this milestone: pickups lying in the map (SetupPickups), dropped
 weapons, perks, multiplayer, voice lines and sounds.
 
-## Map fixes (milestone 10, planned 2026-10-05; M1-M4 implemented)
+## Map fixes (milestone 10, planned 2026-10-05; M1-M5 implemented)
 
 Goal: the map features the audit (`docs/map-audit.md`) found missing that
 change what zeds and the player do, so map gaps stop looking like AI
@@ -2456,6 +2456,28 @@ errors. You asked for these before the rest of the game loop.
   and nothing triggers them, so in KF they never teleport on touch;
   Teleporters only matter as the trader's boot-out spots (T2). Nothing to
   simulate here.
+- **M5, emitters placed in maps, and the sky (you saw both).** Placed
+  Emitter actors (fires, smoke; KF-WestLondon 37, KF-Manor 42) were never
+  drawn. `emitter::read_emitter_actor` reads an Emitter actor's own
+  Emitters sub-objects (else its class's); `particles.rs` loads each as
+  "map:<name>" and starts it once at its Location / Rotation (sky layer
+  when in the sky zone). The actor's DrawScale is not applied (not known
+  whether UE2 scales particles by it). The sky changed colour with the
+  view: its dome (KF-WestLondon London_Skybox) was lit by our one sun,
+  KF lit it with baked lighting we do not read. Sky-zone surfaces are now
+  unlit, and Unreal's own unlit flags are honoured (bUnlit actors,
+  PF_Unlit BSP faces). That was only half of it: the dome, cloud
+  cylinders and fog ring are see-through layers within 170 units of the
+  sky camera, and Bevy sorts see-through things by distance along the
+  view direction, so turning the camera swapped which layer was on top.
+  Each see-through sky-zone mesh now gets a fixed order from its distance
+  to the sky camera (farther drawn first, via depth_bias; log
+  `sky_layer_order`). Assumption: KF drew them back to front the same
+  way; not checked against the game. Baked lighting itself (StaticMeshInstance vertex
+  colours, BSP light maps) is a later rendering task.
+- **M6, decals placed in maps (planned).** Projector actors (blood
+  splatters, scorch marks, KF-WestLondon 68 + 4) with their own
+  ProjTexture, DrawScale, FOV, MaxTraceDistance.
 - Later (needs an event system): plain movers, lifts, scripted triggers.
 
 ## Later milestones (rough order, to be planned in detail when reached)

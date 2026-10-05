@@ -177,9 +177,23 @@ struct Loader<'a> {
     materials_without_texture: usize,
     /// The GPU accepts DXT (BC1-3) textures directly.
     bc_supported: bool,
+    /// Unlit copies of materials (sky zone, bUnlit actors, PF_Unlit faces).
+    unlit_cache: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
 }
 
 impl Loader<'_> {
+    /// The same material drawn without lighting.
+    fn unlit(&mut self, h: &Handle<StandardMaterial>) -> Handle<StandardMaterial> {
+        if let Some(u) = self.unlit_cache.get(&h.id()) {
+            return u.clone();
+        }
+        let mut m = self.materials.get(h).cloned().unwrap_or_default();
+        m.unlit = true;
+        let u = self.materials.add(m);
+        self.unlit_cache.insert(h.id(), u.clone());
+        u
+    }
+
     /// Decodes a texture (all usable mips) and uploads it. Returns the handle
     /// and the base size in texels.
     fn texture(&mut self, h: &ObjectHandle) -> Option<(Handle<Image>, UVec2)> {
@@ -468,6 +482,7 @@ fn load_map(
         materials: &mut materials,
         texture_cache: HashMap::new(),
         material_cache: HashMap::new(),
+        unlit_cache: HashMap::new(),
         textures_uploaded: 0,
         texture_bytes: 0,
         textures_failed: 0,
@@ -548,7 +563,12 @@ fn load_map(
                             }
                         }
                     }
-                    let key = format!("{:?}|{two_sided}|{in_sky}", surf.material);
+                    // PF_Unlit faces, and the sky zone (its dome was lit by
+                    // baked light we do not have; our one sun made it change
+                    // colour with the view): drawn unlit.
+                    let unlit = in_sky || surf.flags & poly_flags::UNLIT != 0;
+                    let mat = if unlit { loader.unlit(&mat) } else { mat };
+                    let key = format!("{:?}|{two_sided}|{in_sky}|{unlit}", surf.material);
                     let builder = &mut groups
                         .entry(key)
                         .or_insert_with(|| (mat, in_sky, MeshBuilder::default()))
@@ -860,6 +880,24 @@ fn load_map(
                 invisible_parts += 1;
                 continue;
             };
+            // bUnlit actors and everything in the sky zone: unlit.
+            let mut material = if in_sky || actor.unlit { loader.unlit(&material) } else { material };
+            // See-through sky layers (dome, fog shells) all sit within a few
+            // hundred units of the sky camera; Bevy sorts transparent meshes
+            // by depth along the view, so their order flipped as you looked
+            // around and the sky changed colour. Draw them back to front by
+            // distance from the sky camera, fixed (assumed to be Unreal's
+            // order; for nested shells it is outermost first): a sort bias
+            // far larger than the view-depth differences.
+            if in_sky
+                && let Some(cam) = sky.camera_position
+                && let Some(m) = loader.materials.get(&material).cloned()
+                && !matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
+            {
+                let d = (transform.translation - cam).length();
+                material = loader.materials.add(StandardMaterial { depth_bias: d * 100.0, ..m });
+                runlog::kv("sky_layer_order", &format!("actor={} distance_unreal={:.0}", lp.pkg.object_name(ObjectRef::Export(actor.export)), d / coords::SCALE));
+            }
             let mut e = commands.spawn((
                 Mesh3d(part.mesh.clone()),
                 MeshMaterial3d(material),
@@ -1168,6 +1206,7 @@ fn spawn_terrains(
                 alpha_mode: if li == 0 { AlphaMode::Opaque } else { AlphaMode::Add },
                 perceptual_roughness: 1.0,
                 reflectance: 0.1,
+                unlit: in_sky,
                 ..default()
             });
             let mut e = commands.spawn((Mesh3d(meshes.add(b.build())), MeshMaterial3d(material), Transform::IDENTITY, MapGeometry));

@@ -37,6 +37,8 @@ pub struct MeshActor {
     pub door: Option<DoorInfo>,
     /// Set for KFGlassMover actors (breakable windows).
     pub glass: Option<GlassInfo>,
+    /// bUnlit: drawn without lighting.
+    pub unlit: bool,
 }
 
 /// A KFGlassMover: a pane of breakable glass.
@@ -436,6 +438,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             blocks_player,
             door,
             glass,
+            unlit: matches!(effective("bUnlit"), Some(Value::Bool(true))),
         });
     }
 

@@ -320,6 +320,46 @@ fn struct_range(lp: &LoadedPackage, list: &PropertyList) -> Option<Range> {
     Some((struct_float(lp, list, "Min").unwrap_or(0.0), struct_float(lp, list, "Max").unwrap_or(0.0)))
 }
 
+/// Reads an Emitter actor placed in a map (export `export` of `map`): its
+/// own `Emitters` (sub-objects in the map), else its class's.
+pub fn read_emitter_actor(
+    set: &PackageSet,
+    defaults: &ClassDefaults,
+    map: &std::rc::Rc<LoadedPackage>,
+    export: usize,
+) -> Result<EmitterEffect, String> {
+    let props = crate::properties::read_export_properties(&map.pkg, export).map_err(|e| e.to_string())?;
+    let class = defaults.class_of(map, export);
+    let (refs, from) = match props.get(&map.pkg, "Emitters") {
+        Some(Value::Array { count, raw }) => {
+            let mut r = Reader::new(raw);
+            ((0..*count).filter_map(|_| r.compact_index().ok().map(ObjectRef::from_raw)).collect::<Vec<_>>(), map.clone())
+        }
+        _ => match class.as_ref().and_then(|c| defaults.get(c, "Emitters")) {
+            Some((Value::Array { count, raw }, p)) => {
+                let mut r = Reader::new(&raw);
+                ((0..count).filter_map(|_| r.compact_index().ok().map(ObjectRef::from_raw)).collect(), p)
+            }
+            _ => return Err("no Emitters".into()),
+        },
+    };
+    let mut emitters = Vec::new();
+    for (i, rf) in refs.into_iter().enumerate() {
+        let h = set.resolve(&from, rf).ok_or_else(|| format!("emitter {i} not found"))?;
+        emitters.push(read_def(set, defaults, &h).map_err(|e| format!("emitter {i}: {e}"))?);
+    }
+    let value = |n: &str| defaults.actor_value(map, export, &props, n);
+    Ok(EmitterEffect {
+        class: map.pkg.object_name(ObjectRef::Export(export)).to_string(),
+        emitters,
+        auto_destroy: matches!(value("AutoDestroy"), Some(Value::Bool(true))),
+        life_span: match value("LifeSpan") {
+            Some(Value::Float(f)) => f,
+            _ => 0.0,
+        },
+    })
+}
+
 /// Reads an Emitter actor class (e.g. `KFMod.DismembermentJetHead`).
 pub fn read_emitter_class(set: &PackageSet, defaults: &ClassDefaults, class_path: &str) -> Result<EmitterEffect, String> {
     let (pkg_name, class_name) = class_path.split_once('.').ok_or("class path must be Package.Class")?;

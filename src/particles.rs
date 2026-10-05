@@ -129,6 +129,7 @@ impl Plugin for ParticlePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<ModulateMaterial>::default())
             .add_systems(PostStartup, load_library)
+            .add_systems(Update, spawn_map_emitters)
             .add_systems(PostUpdate, update_effects);
         app.world_mut()
             .resource_mut::<Assets<bevy::shader::Shader>>()
@@ -456,59 +457,143 @@ fn load_library(
                 continue;
             }
         };
-        let mut emitters = Vec::new();
-        let mut notes = Vec::new();
-        for (def, assets) in effect.emitters {
-            let mut loaded = LoadedEmitter {
-                def,
-                material: None,
-                mesh: Vec::new(),
-            };
-            let d = &loaded.def;
-            match d.kind {
-                EmitterKind::Sprite => {
-                    let opaque = matches!(d.draw_style, 2 | 3 | 5 | 6);
-                    let image = assets.texture.as_ref().and_then(|t| {
-                        let m = ue_assets::material::resolve(&set, t, ObjectRef::Export(t.export));
-                        m.texture.as_ref().and_then(|tex| decode(tex, opaque, d.draw_style == 2, &mut images))
-                    });
-                    notes.push(format!("{}:sprite:texture={}", d.name, image.is_some()));
-                    loaded.material = Some(match (d.draw_style, image) {
-                        (2, Some(texture)) => SpriteMaterial::Modulate(modulate.add(ModulateMaterial { texture })),
-                        (_, image) => SpriteMaterial::Standard(materials.add(StandardMaterial {
-                            base_color_texture: image,
-                            unlit: true,
-                            alpha_mode: alpha_mode(d.draw_style),
-                            cull_mode: None,
-                            double_sided: true,
-                            ..default()
-                        })),
-                    });
-                }
-                EmitterKind::Mesh => {
-                    loaded.mesh = assets
-                        .static_mesh
-                        .as_ref()
-                        .map(|h| load_mesh(&set, h, &mut images, &mut materials))
-                        .unwrap_or_default();
-                    notes.push(format!("{}:mesh:sections={}", d.name, loaded.mesh.len()));
-                }
-                _ => notes.push(format!("{}:{:?}:not_drawn", d.name, d.kind)),
-            }
-            emitters.push(loaded);
-        }
-        runlog::kv("effect_loaded", &format!("class={class} life_span={} emitters=[{}]", effect.life_span, notes.join(" ")));
-        library.0.insert(
-            class.to_string(),
-            Arc::new(LoadedEffect {
-                class: class.to_string(),
-                emitters,
-                life_span: effect.life_span,
-            }),
-        );
+        let loaded = load_effect(effect, class, &set, &mut images, &mut materials, &mut modulate);
+        library.0.insert(class.to_string(), Arc::new(loaded));
     }
+    // Emitters placed in the map (fires, smoke...): loaded under
+    // "map:<name>" and spawned once by `spawn_map_emitters`.
+    let mut placed = MapEmitters::default();
+    let path = request.install_root.join("Maps").join(format!("{}.rom", request.map));
+    if let Ok(map) = set.load_path(&path) {
+        let (mut ok, mut failed) = (0usize, Vec::new());
+        for i in 0..map.pkg.exports.len() {
+            let Some(class) = defaults.class_of(&map, i) else { continue };
+            if !defaults.is_a(&class, "Emitter") {
+                continue;
+            }
+            let name = map.pkg.object_name(ObjectRef::Export(i)).to_string();
+            let effect = match ue_assets::emitter::read_emitter_actor(&set, &defaults, &map, i) {
+                Ok(e) => e,
+                Err(e) => {
+                    failed.push(format!("{name}:{e}"));
+                    continue;
+                }
+            };
+            let props = ue_assets::properties::read_export_properties(&map.pkg, i).ok();
+            let get = |n: &str| props.as_ref().and_then(|p| p.get(&map.pkg, n).cloned());
+            let location = match get("Location") {
+                Some(ue_assets::properties::Value::Vector(v)) => Vec3::from_array(v),
+                _ => continue,
+            };
+            let rotation = match get("Rotation") {
+                Some(ue_assets::properties::Value::Rotator(r)) => r,
+                _ => Rotator::default(),
+            };
+            let key = format!("map:{name}");
+            let loaded = load_effect(effect, &key, &set, &mut images, &mut materials, &mut modulate);
+            library.0.insert(key.clone(), Arc::new(loaded));
+            placed.0.push((key, location, rotation));
+            ok += 1;
+        }
+        runlog::kv("map_emitters", &format!("loaded={ok} failed={} [{}]", failed.len(), failed.iter().take(8).cloned().collect::<Vec<_>>().join(" | ")));
+    }
+    commands.insert_resource(placed);
     runlog::kv("effects_ready", &format!("count={} seconds={:.2}", library.0.len(), started.elapsed().as_secs_f64()));
     commands.insert_resource(library);
+}
+
+/// Builds a loaded effect (materials, meshes) from an emitter definition.
+fn load_effect(
+    effect: ue_assets::emitter::EmitterEffect,
+    class: &str,
+    set: &PackageSet,
+    images: &mut Assets<Image>,
+    materials: &mut Assets<StandardMaterial>,
+    modulate: &mut Assets<ModulateMaterial>,
+) -> LoadedEffect {
+    let mut emitters = Vec::new();
+    let mut notes = Vec::new();
+    for (def, assets) in effect.emitters {
+        let mut loaded = LoadedEmitter {
+            def,
+            material: None,
+            mesh: Vec::new(),
+        };
+        let d = &loaded.def;
+        match d.kind {
+            EmitterKind::Sprite => {
+                let opaque = matches!(d.draw_style, 2 | 3 | 5 | 6);
+                let image = assets.texture.as_ref().and_then(|t| {
+                    let m = ue_assets::material::resolve(set, t, ObjectRef::Export(t.export));
+                    m.texture.as_ref().and_then(|tex| decode(tex, opaque, d.draw_style == 2, images))
+                });
+                notes.push(format!("{}:sprite:texture={}", d.name, image.is_some()));
+                loaded.material = Some(match (d.draw_style, image) {
+                    (2, Some(texture)) => SpriteMaterial::Modulate(modulate.add(ModulateMaterial { texture })),
+                    (_, image) => SpriteMaterial::Standard(materials.add(StandardMaterial {
+                        base_color_texture: image,
+                        unlit: true,
+                        alpha_mode: alpha_mode(d.draw_style),
+                        cull_mode: None,
+                        double_sided: true,
+                        ..default()
+                    })),
+                });
+            }
+            EmitterKind::Mesh => {
+                loaded.mesh = assets
+                    .static_mesh
+                    .as_ref()
+                    .map(|h| load_mesh(set, h, images, materials))
+                    .unwrap_or_default();
+                notes.push(format!("{}:mesh:sections={}", d.name, loaded.mesh.len()));
+            }
+            _ => notes.push(format!("{}:{:?}:not_drawn", d.name, d.kind)),
+        }
+        emitters.push(loaded);
+    }
+    runlog::kv("effect_loaded", &format!("class={class} life_span={} emitters=[{}]", effect.life_span, notes.join(" ")));
+    LoadedEffect {
+        class: class.to_string(),
+        emitters,
+        life_span: effect.life_span,
+    }
+}
+
+/// Emitters placed in the map: (library key, Unreal location, rotation).
+#[derive(Resource, Default)]
+pub struct MapEmitters(pub Vec<(String, Vec3, Rotator)>);
+
+/// Starts the map's placed emitters once (on the sky layer when they are
+/// in the sky zone).
+fn spawn_map_emitters(
+    mut commands: Commands,
+    library: Option<Res<EffectLibrary>>,
+    placed: Option<Res<MapEmitters>>,
+    zones: Option<Res<crate::zones::Zones>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut done: Local<bool>,
+) {
+    let (Some(library), Some(placed)) = (library, placed) else { return };
+    if *done {
+        return;
+    }
+    *done = true;
+    let mut sky = 0;
+    for (i, (key, location, rotation)) in placed.0.iter().enumerate() {
+        let in_sky = zones.as_deref().is_some_and(|z| {
+            z.zones.get(z.bsp.point_zone(location.to_array())).is_some_and(|zf| zf.name.contains("SkyZone"))
+        });
+        if in_sky {
+            sky += 1;
+        }
+        let options = SpawnOptions {
+            layer: in_sky.then_some(crate::map::SKY_LAYER),
+            ..default()
+        };
+        spawn_effect_with(&mut commands, &library, &mut meshes, key, *location, coords::ue_rotation_matrix(*rotation), 7000 + i as u32, options);
+    }
+    runlog::kv("map_emitters_spawned", &format!("count={} in_sky={sky}", placed.0.len()));
 }
 
 fn load_mesh(

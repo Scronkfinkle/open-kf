@@ -159,6 +159,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Map effects and sky (M5, 2026-10-05): fires, smoke and other effects
+  placed in maps now run (37 on KF-WestLondon, 42 on KF-Manor); the sky
+  no longer changes colour as you turn (it is drawn unlit; KF's baked
+  lighting is not read yet). Checked by logs and screenshots; the fires
+  not looked at closely.
 - Jump pads throw the player too (M4, 2026-10-05): checked on the
   KF-WestLondon fence pad, you land on its target.
 - Distance fog (M2, 2026-10-05): each zone's fog is drawn and, as in KF,
@@ -430,7 +435,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   The black tunnel ceilings and walls on KF-WestLondon really are black in the
   map data (`Engine.BlackTexture`).
 - No baked lighting: everything is lit by one fixed sun plus ambient light, so
-  maps look flatter and brighter than in the game.
+  maps look flatter and brighter than in the game (the sky is drawn unlit).
+- Decals placed in maps (blood splatters, scorch marks) are not drawn yet.
 - Animated or complex materials (panners, shaders, combiners) show their base
   texture only, without animation or blending tricks.
 - Broken doors never come back (no waves yet). Breakable windows and scripted

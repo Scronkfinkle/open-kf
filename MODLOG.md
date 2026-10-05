@@ -2920,3 +2920,44 @@ walk's map params as a type (clippy). DESIGN, audit, README.
 **Result:** a shot broke KFGlassMover94 (pellet 35 vs Health 5). Tests
 73 + 21, clippy clean.
 **Next:** your call on the event system (movers, scripted triggers).
+
+## 2026-10-05 Map fixes M5: placed emitters; the sky drawn unlit
+
+**Changed:** `ue-assets/emitter.rs`: `read_emitter_actor`. `particles.rs`:
+`load_effect` shared, map emitters loaded and spawned
+(`spawn_map_emitters`). `map.rs`: unlit material copies for the sky zone,
+bUnlit actors and PF_Unlit faces. `level.rs`: MeshActor.unlit. DESIGN,
+audit, README.
+**Why:** You saw fires missing on KF-WestLondon and the sky changing
+colour with the view angle.
+**Tested how:** screenshots of the sky in 4 directions before and 2
+after; load logs on 4 maps; the taxi fire's particle log; tests, clippy.
+**Result:** Sky: before, one side bright orange and the other dark (sun
+lighting the dome); after, the same brownish clouds both ways. Emitters:
+KF-WestLondon 37, KF-Manor 42, KF-Farm 7, KF-BioticsLab 14, none failed;
+the taxi fire (Emitter8) keeps about 25 flames rising 100+ units.
+**Failures on the way:** two screenshots wasted (one camera inside a
+wall); per your earlier advice I stopped hunting and ask you to look.
+**Still broken / not tested:** fire look not checked by eye; DrawScale of
+emitter actors not applied; map decals (M6) and baked lighting not done.
+**Next:** M6, map decals.
+
+## 2026-10-05 Map fixes M5b: sky layers in a fixed order
+
+**Changed:** `map.rs`: see-through sky-zone meshes get a depth_bias from
+their distance to the sky camera, so they draw farthest first whatever
+the view; log `sky_layer_order`. DESIGN.
+**Why:** your two screenshots: same spot, only the pitch changed, and the
+sky went from orange to grey-brown. Unlit (M5) did not fix it.
+**Tested how:** retook both of your camera poses
+(`--camera " -4197,438,-3778,-1.6274,-0.0258"` and `...,-1.6434,0.4102`);
+tests, clippy.
+**Result:** both poses now show the same grey-brown sky. Ordered layers:
+StaticMeshActor1256 (fog ring, 60 units), StaticMeshActor126 (cylinder,
+130), StaticMeshActor1291 (dome, 166). Tests 94 pass; clippy 1 warning,
+an old one in `boss.rs` (not this change).
+**Still broken / not tested:** not known whether KF's sky is the orange
+or the grey-brown one (the orange came from a different layer being on
+top); cylinder StaticMeshActor111 is opaque/masked so not reordered; not
+checked in play by you.
+**Next:** you check the sky and the fires; then M6, map decals.
