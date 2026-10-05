@@ -3467,3 +3467,37 @@ The quick-syringe popup and the bile colour are not done. Wide windows
 stretch the boxes as KF's formula says; not compared with the real game
 at 16:9. Not played by you.
 **Next:** H2, KF's fonts.
+
+## 2026-10-05 H2: KF's fonts and the HUD texts
+
+**Changed:** new `crates/ue-assets/src/font.rs`: reads UE2 Font objects
+(glyph table, page textures, kerning, CharRemap) and looks glyphs up
+(through the remap for remapped fonts); `kfpkg fonts` reads every Font in
+the install. `src/hud.rs`: loads HUD.FontArrayNames and
+SmallFontArrayNames (ROFontsTwo.ROArial24DS-7DS) with their pages;
+Canvas.StrLen / DrawText; GetFontSizeIndex; the weight "1/15"
+(LoadSmallFontStatic(5), scaled ClipX / 1024), DrawWeaponName and
+DrawTraderDistance. Text is laid out in physical pixels like KF's canvas.
+1 test in ue-assets, 1 in hud.rs.
+**Why:** H2, next step of the HUD milestone.
+**Tested how:** hex dump of ROFontsTwo.ROArial14DS (4367 bytes); `kfpkg
+fonts` over the install; the remap order checked on ROFonts.ROBtsrmVr12;
+screenshots at `--window 1280x960` from the matched view compared crop by
+crop with your screenshot; the default HiDPI widescreen window.
+**Result:** the layout added up to the object's exact size (1 + 2 + 256 x
+17 + 3 + 9 = 4367). First scan: all 120 fonts "failed" with "0 bytes
+left over": my end check used the reader's `is_empty()`, which means "no
+data at all", not "nothing left" (fixed to `remaining()`); then
+`summary fonts=120 failed=0`. Remapped fonts store (character code,
+glyph index): ROBtsrmVr12 maps 260 (A with ogonek) to glyph 256, ASCII
+to itself. `hud_fonts` loaded all 7 HUD fonts with their pages. Side by
+side at 1280 x 960: "1/15", "9mm Tactical" and "Trader: 35m" (yours
+36m: we stand a few units from your spawn) in the same fonts, sizes and
+places. At 2556 wide the weight text grows and the weapon name does not
+(KF's own rules: one scales with width / 1024, the other's size steps
+stop at 1600). Tests 123 pass; clippy clean.
+**Still broken / not tested:** the glyph advance (USize + Kerning) is
+assumed from the native code (Kerning is 0 in these fonts). Fonts other
+than the HUD's are read but not drawn anywhere yet. You confirmed it
+working in the game.
+**Next:** H3, the top-right wave / countdown circle.

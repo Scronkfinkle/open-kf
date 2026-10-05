@@ -2931,12 +2931,22 @@ Steps:
   no flashlight yet). Not done: the quick-syringe popup, the bile
   colour on the health digits. On wide windows the boxes stretch
   sideways (ResScaleX and ResScaleY differ); not compared with KF.
-- **H2, fonts and text.** A reader for UE2 Font objects (ROFontsTwo,
+- **H2, fonts and text (done 2026-10-05).** A reader for UE2 Font objects (ROFontsTwo,
   ROFonts, KFFonts: glyph rectangles on textures; the byte layout is
   worked out with `kfpkg raw` and checked by drawing known strings),
   then the texts: the weight "1/15" (LoadSmallFontStatic(5), scaled
   width / 1024), the weapon name under the cash (DrawWeaponName), and
   "Trader: 36m" under the arrow (DrawTraderDistance, colour 255,50,50).
+  As built: the Font layout (`ue_assets::font`, worked out from the
+  bytes): empty property list; Characters (compact count; per glyph
+  StartU, StartV, USize, VSize int32 and a page byte); Textures (compact
+  count of object references); Kerning int32; CharRemap (compact count
+  of (character code u16, glyph index u16)); IsRemapped int32. All 120
+  Font objects in the install read to their last byte (`kfpkg fonts`).
+  Text is laid out in physical pixels (KF's canvas), then divided by the
+  window's scale factor. Glyphs advance by USize + Kerning (assumed;
+  Kerning is 0 in every HUD font). Compared at 1280 x 960 with the
+  screenshot: same font, size and place for all three texts.
 - **H3, the top-right circle.** Trader time: Hud_Bio_Clock_Circle with
   the countdown (mm:ss). Waves: Hud_Bio_Circle with the zeds left and
   "Wave 1/4" (DrawKFHUDTextElements). Then our debug line goes off by

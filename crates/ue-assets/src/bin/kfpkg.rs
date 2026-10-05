@@ -108,6 +108,7 @@ fn main() -> ExitCode {
         ["skelmeshes"] => scan_skeletal(&install),
         ["anims"] => scan_anims(&install),
         ["karma"] => scan_karma(&install),
+        ["fonts"] => scan_fonts(&install),
         ["emitter", class] => emitter(&install, class),
         ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
@@ -1355,6 +1356,44 @@ fn brush_bounds(install: &Install, map: &str, actor: &str) -> Result<bool, Strin
 /// Reads every SkeletalMesh; checks weights and that bone names match the
 /// mesh's own animation set when it is in the same package.
 /// Parses every Karma ragdoll file (`KarmaData/*.ka`) and lists its ragdolls.
+/// Reads every Font object to its last byte; prints each font's
+/// characters with a size, pages, kerning and the "A" glyph.
+fn scan_fonts(install: &Install) -> Result<bool, String> {
+    let (mut total, mut failed) = (0usize, 0usize);
+    for (_, path) in package_files(install)? {
+        let rel = path.strip_prefix(&install.root).unwrap_or(&path).display().to_string();
+        let p = Package::open(&path).map_err(|e| format!("{rel}: {e}"))?;
+        for i in 0..p.exports.len() {
+            if p.export_class_name(i) != "Font" {
+                continue;
+            }
+            total += 1;
+            let name = p.object_name(ObjectRef::Export(i));
+            match ue_assets::font::read_font(&p, i) {
+                Ok(f) => {
+                    let used = f.chars.iter().filter(|c| c.u_size > 0 && c.v_size > 0).count();
+                    let pages: Vec<String> = f.textures.iter().map(|&t| p.object_name(t).to_string()).collect();
+                    println!(
+                        "{rel} {name}: chars={} with_size={used} pages=[{}] kerning={} remap={} remapped={} A={:?}",
+                        f.chars.len(),
+                        pages.join(" "),
+                        f.kerning,
+                        f.remap.len(),
+                        f.is_remapped,
+                        f.glyph('A')
+                    );
+                }
+                Err(e) => {
+                    failed += 1;
+                    println!("{rel} {name}: FAILED {e}");
+                }
+            }
+        }
+    }
+    println!("summary fonts={total} failed={failed}");
+    Ok(failed == 0)
+}
+
 fn scan_karma(install: &Install) -> Result<bool, String> {
     use ue_assets::karma::{JointKind, parse_ka};
     let dir = install.root.join("KarmaData");

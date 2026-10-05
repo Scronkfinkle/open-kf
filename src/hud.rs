@@ -1,7 +1,9 @@
 //! KF's HUD (milestone 12): HUDKillingFloor's widgets drawn from the
 //! game's own layout data (the class defaults), textures and digit sets.
 //! H1: the bottom bar (health, armour, weight, grenades, ammo, syringe,
-//! welder, medic gun charge) and the cash. See DESIGN.md, "KF's HUD".
+//! welder, medic gun charge) and the cash. H2: KF's bitmap fonts and the
+//! weight, weapon name and trader distance texts. See DESIGN.md, "KF's
+//! HUD".
 //!
 //! DrawSpriteWidget and DrawNumericWidget are native (not in the
 //! scripts). Their sizing is taken from DrawHudPassA's own weight-box
@@ -24,7 +26,7 @@ use crate::runlog;
 
 const HUD_CLASS: &str = "KFMod.HUDKillingFloor";
 /// UI image nodes reused every frame (more than the HUD ever draws).
-const POOL: usize = 48;
+const POOL: usize = 96;
 
 /// IntBox: X1, Y1, X2, Y2 in texels.
 #[derive(Clone, Copy, Debug, Default)]
@@ -89,7 +91,19 @@ struct Hud {
     weapons: HashMap<String, WeaponHud>,
     /// KFHUDAlpha.
     alpha: u8,
+    /// HUD.FontArrayNames and HUDKillingFloor.SmallFontArrayNames (sizes
+    /// 0-8, indices into `fonts`).
+    font_array: [Option<usize>; 9],
+    small_font_array: [Option<usize>; 9],
+    fonts: Vec<HudFont>,
     loaded: bool,
+}
+
+/// A Font with its pages loaded (indices into `Hud::textures`).
+struct HudFont {
+    name: String,
+    font: ue_assets::font::Font,
+    pages: Vec<Option<usize>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -265,6 +279,46 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
             hud.digits_big = d;
         }
     }
+    // The font arrays (HUD.FontArrayNames as HUDKillingFloor sets it, and
+    // its SmallFontArrayNames): each name loaded once.
+    let mut font_index: HashMap<String, Option<usize>> = HashMap::new();
+    let mut fonts: Vec<HudFont> = Vec::new();
+    let mut font_missing = Vec::new();
+    for (prop, which) in [("FontArrayNames", 0), ("SmallFontArrayNames", 1)] {
+        for i in 0..9u32 {
+            let Some((Value::Str(name), _)) = defaults.get_at(&class, prop, i) else { continue };
+            let idx = *font_index.entry(name.to_ascii_lowercase()).or_insert_with(|| {
+                let h = set.find_object(&name, Some("Font"))?;
+                let font = match ue_assets::font::read_font(&h.package.pkg, h.export) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        font_missing.push(format!("{name}:{e}"));
+                        return None;
+                    }
+                };
+                let pages = font.textures.iter().map(|&t| loader.texture(&h.package, t)).collect();
+                fonts.push(HudFont { name: name.clone(), font, pages });
+                Some(fonts.len() - 1)
+            });
+            if idx.is_none() && !font_missing.iter().any(|m: &String| m.starts_with(&name)) {
+                font_missing.push(name.clone());
+            }
+            if which == 0 {
+                hud.font_array[i as usize] = idx;
+            } else {
+                hud.small_font_array[i as usize] = idx;
+            }
+        }
+    }
+    runlog::kv(
+        "hud_fonts",
+        &format!(
+            "loaded=[{}] missing=[{}]",
+            fonts.iter().map(|f| format!("{}:{}pages", f.name, f.pages.iter().filter(|p| p.is_some()).count())).collect::<Vec<_>>().join(" "),
+            font_missing.join(" ")
+        ),
+    );
+    hud.fonts = fonts;
     // DrawHudPassA's weapon checks (IsA, so subclasses count).
     let is = |c: &ObjectHandle, names: &[&str]| names.iter().any(|n| defaults.is_a(c, n));
     let mut weapons = HashMap::new();
@@ -355,15 +409,59 @@ fn pivot_shift(pivot: u8, size: Vec2) -> Vec2 {
 }
 
 struct Canvas {
+    /// Window size in logical pixels (what the UI nodes use).
     size: Vec2,
     res: Vec2,
     alpha: u8,
+    /// Physical pixels per logical pixel. KF's fonts are fixed pixel sizes
+    /// on its canvas (physical pixels): text is laid out in physical
+    /// pixels and divided by this.
+    scale_factor: f32,
     quads: Vec<Quad>,
 }
 
 impl Canvas {
     fn new(size: Vec2, alpha: u8) -> Self {
-        Canvas { size, res: Vec2::new(size.x / 640.0, size.y / 480.0), alpha, quads: Vec::new() }
+        Canvas { size, res: Vec2::new(size.x / 640.0, size.y / 480.0), alpha, scale_factor: 1.0, quads: Vec::new() }
+    }
+
+    /// The canvas width KF's font choices look at (C.ClipX).
+    fn clip_x(&self) -> f32 {
+        self.size.x * self.scale_factor
+    }
+
+    /// Canvas.StrLen: the text's size in physical pixels (glyph sizes plus
+    /// Kerning, times the font scale; native, assumed).
+    fn text_size(font: &HudFont, text: &str, scale: f32) -> Vec2 {
+        let mut w = 0.0f32;
+        let mut h = 0.0f32;
+        for ch in text.chars() {
+            if let Some(g) = font.font.glyph(ch) {
+                w += (g.u_size + font.font.kerning) as f32 * scale;
+                h = h.max(g.v_size as f32 * scale);
+            }
+        }
+        Vec2::new(w, h)
+    }
+
+    /// Canvas.DrawText at a physical pixel position (SetPos), tinted.
+    fn text(&mut self, font: &HudFont, text: &str, at: Vec2, scale: f32, tint: [u8; 4], what: &str) {
+        let mut x = at.x;
+        for ch in text.chars() {
+            let Some(g) = font.font.glyph(ch) else { continue };
+            let size = Vec2::new(g.u_size as f32, g.v_size as f32) * scale;
+            if let Some(Some(page)) = font.pages.get(g.page as usize) {
+                let min = Vec2::new(x, at.y) / self.scale_factor;
+                self.quads.push(Quad {
+                    texture: *page,
+                    uv: Rect::new(g.start_u as f32, g.start_v as f32, (g.start_u + g.u_size) as f32, (g.start_v + g.v_size) as f32),
+                    screen: Rect::from_corners(min, min + size / self.scale_factor),
+                    tint,
+                    what: format!("{what}'{ch}'"),
+                });
+            }
+            x += (g.u_size + font.font.kerning) as f32 * scale;
+        }
     }
 
     /// DrawSpriteWidget (assumed native rules, see the module comment).
@@ -428,6 +526,7 @@ fn draw_hud(
     ammo: Res<crate::combat::AmmoDisplay>,
     (dosh, inv, time): (Res<crate::dosh::Dosh>, Res<crate::buy_menu::ShopInventory>, Res<Time>),
     (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
+    (shops, menu, player): (Res<crate::trader::Shops>, Res<crate::buy_menu::BuyMenu>, PlayerQuery),
     mut slots: Query<(&HudSlot, &mut Node, &mut ImageNode, &mut Visibility)>,
     mut spawned: Local<bool>,
 ) {
@@ -450,6 +549,7 @@ fn draw_hud(
     }
     let Ok(win) = window.single() else { return };
     let mut c = Canvas::new(Vec2::new(win.width(), win.height()), hud.alpha);
+    c.scale_factor = win.scale_factor();
     let sprite = |c: &mut Canvas, name: &str| {
         if let Some(s) = hud.sprites.get(name) {
             c.sprite(s, name);
@@ -485,8 +585,14 @@ fn draw_hud(
         c.quads.push(Quad { texture: t, uv: Rect::from_corners(Vec2::ZERO, size), screen, tint: [s.tint[0], s.tint[1], s.tint[2], c.alpha], what: "WeightBG".into() });
     }
     sprite(&mut c, "WeightIcon");
-    // The weight text ("1/15") needs KF's fonts: H2.
-    let _ = inv.weight;
+    // "1/15": LoadSmallFontStatic(5), scaled ClipX / 1024, at WeightDigits'
+    // position in its colour (alpha KFHUDAlpha).
+    if let (Some(f), Some(n)) = (hud.small_font_array[5].map(|i| &hud.fonts[i]), hud.numerics.get("WeightDigits")) {
+        let text = format!("{}/{}", inv.weight as i32, crate::buy_menu::MAX_CARRY_WEIGHT as i32);
+        let at = n.pos * c.size * c.scale_factor;
+        let scale = c.clip_x() / 1024.0;
+        c.text(f, &text, at, scale, [n.tint[0], n.tint[1], n.tint[2], hud.alpha], "Weight");
+    }
     sprite(&mut c, "GrenadeBG");
     sprite(&mut c, "GrenadeIcon");
     numeric(&mut c, "GrenadeDigits", ammo.frags.unwrap_or(0) as i32, false, None);
@@ -571,6 +677,42 @@ fn draw_hud(
     }
     sprite(&mut c, "CashIcon");
     numeric(&mut c, "CashDigits", dosh.score as i32, true, None);
+    // DrawWeaponName: GetFontSizeIndex(C, -1), (255, 50, 50, KFHUDAlpha),
+    // right edge at 0.983 x ClipX, top at 0.90 x ClipY.
+    if !ammo.weapon.is_empty()
+        && let Some(f) = hud.font_array[font_size_index(c.clip_x(), -1)].map(|i| &hud.fonts[i])
+    {
+        let size = Canvas::text_size(f, ammo.weapon, 1.0);
+        let phys = c.size * c.scale_factor;
+        c.text(f, ammo.weapon, Vec2::new(phys.x * 0.983 - size.x, phys.y * 0.90), 1.0, [255, 50, 50, hud.alpha], "WeaponName");
+    }
+    // DrawTraderDistance (from DrawKFHUDTextElements: not while shopping,
+    // only with a current shop): "Trader: Nm", N = int(distance / 50),
+    // centred on SizeX / 14, top at SizeX / 10, (255, 50, 50, 255).
+    if !menu.open
+        && let Some(cur) = shops.current
+        && let Ok((cam, walker)) = player.single()
+    {
+        let centre = walker.map_or(cam.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * crate::coords::SCALE, |w| w.center);
+        let pawn = Vec3::new(-centre.z, centre.x, centre.y) / crate::coords::SCALE;
+        let text = format!("Trader: {}m", ((shops.shops[cur].location - pawn).length() / 50.0) as i32);
+        let clip = c.clip_x();
+        let size_index = if clip <= 640.0 {
+            7
+        } else if clip <= 800.0 {
+            6
+        } else if clip <= 1024.0 {
+            5
+        } else if clip <= 1280.0 {
+            4
+        } else {
+            3
+        };
+        if let Some(f) = hud.font_array[size_index].map(|i| &hud.fonts[i]) {
+            let w = Canvas::text_size(f, &text, 1.0).x;
+            c.text(f, &text, Vec2::new(clip / 14.0 - w / 2.0, clip / 10.0), 1.0, [255, 50, 50, 255], "Trader");
+        }
+    }
 
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "hud_dump") {
         let lines: Vec<String> = c
@@ -598,6 +740,15 @@ fn draw_hud(
         *vis = Visibility::Inherited;
     }
 }
+
+/// HUD.GetFontSizeIndex: one size step per width threshold passed, then
+/// LoadFont(Clamp(8 - FontSize, 0, 8)).
+fn font_size_index(clip_x: f32, font_size: i32) -> usize {
+    let steps = [512.0, 640.0, 800.0, 1024.0, 1280.0, 1600.0].iter().filter(|&&t| clip_x >= t).count() as i32;
+    (8 - (font_size + steps)).clamp(0, 8) as usize
+}
+
+type PlayerQuery<'w, 's> = Query<'w, 's, (&'static Transform, Option<&'static crate::walk::Walker>), With<crate::camera::FlyCamera>>;
 
 /// UpdateHud's syringe / medic gun digit colours by charge.
 fn charge_tint(v: i32) -> [u8; 3] {
@@ -632,6 +783,13 @@ mod tests {
         let r = c.quads[0].screen;
         assert!((r.min.x - 19.2).abs() < 0.01 && (r.min.y - 897.6).abs() < 0.01);
         assert!((r.width() - 89.6).abs() < 0.01 && (r.height() - 44.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn weapon_name_font_at_1280_is_size_4() {
+        assert_eq!(font_size_index(1280.0, -1), 4);
+        assert_eq!(font_size_index(1024.0, -1), 5);
+        assert_eq!(font_size_index(2556.0, -1), 3);
     }
 
     #[test]
