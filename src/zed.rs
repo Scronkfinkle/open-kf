@@ -203,6 +203,7 @@ struct ZedClass {
     small_arms_scale: f32,
     /// ZombieHusk BurnDamageScale (Normal difficulty), else 1.
     fire_resist: f32,
+    zap: ZapValues,
     /// BurningWalkFAnims[0] (all three are the same).
     burning_walk: Option<usize>,
     /// MotionDetectorThreat: how much this zed counts toward setting off a pipe bomb.
@@ -433,6 +434,17 @@ pub struct Zed {
     /// DamTypeBurned / DamTypeFlamethrower (1 for others).
     pub(crate) burned_scale: f32,
     pub(crate) fire_resist: f32,
+    /// ZED gun zap (KFMonster): TotalZap, RemainingZap (> 0 = bZapped),
+    /// seconds since LastZapTime, ZapThreshold (grows x ZapResistanceScale
+    /// after each zap), and the class's values.
+    pub(crate) total_zap: f32,
+    pub(crate) remaining_zap: f32,
+    since_zap: f32,
+    pub(crate) zap_threshold: f32,
+    pub(crate) zap: ZapValues,
+    /// A run, rage or charge was going when a zap wore off: KF's
+    /// UnSetZappedBehavior set the normal GroundSpeed and the state kept it.
+    run_speed_lost: bool,
     /// MotionDetectorThreat (pipe bombs).
     pub(crate) motion_threat: f32,
     /// Patriarch: the head never comes off (ZombieBoss.RemoveHead is empty)
@@ -939,7 +951,8 @@ fn boss_busy(
         if b.knockdown_step(dt) {
             z.state = ZedState::Chase;
             z.sequence = None;
-            z.cloaked = true;
+            // CloakBoss: not while zapped.
+            z.cloaked = !z.zapped();
             z.cloak_dirty = true;
             z.router = Default::default();
             runlog::kv("boss_escape", &format!("id={} start health={:.0}", z.id, z.health));
@@ -1087,7 +1100,7 @@ fn boss_escape(z: &mut Zed, c: &ZedClass, player: Vec3, dt: f32, nav: &crate::na
     if z.state != ZedState::Chase {
         return None;
     }
-    if b.escape_step(dt, z.attack.is_some()) {
+    if b.escape_step(dt, z.attack.is_some()) && !z.zapped() {
         z.cloaked = true;
         z.cloak_dirty = true;
         runlog::kv("boss_sneak", &format!("id={} cloak reason=escaping", z.id));
@@ -1397,6 +1410,25 @@ const RAG_MAX_SPIN_AMOUNT: f32 = 100.0;
 const RAG_INV_INERTIA: f32 = 4.0;
 const GRAVITY: f32 = 950.0;
 
+/// KFMonster zap values (ZED guns), from the class defaults.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ZapValues {
+    /// ZapDuration, ZappedSpeedMod, ZapThreshold, ZappedDamageMod,
+    /// ZapResistanceScale.
+    pub duration: f32,
+    pub speed_mod: f32,
+    pub threshold: f32,
+    pub damage_mod: f32,
+    pub resistance: f32,
+}
+
+impl Default for ZapValues {
+    /// KFMonster's defaults.
+    fn default() -> Self {
+        ZapValues { duration: 4.0, speed_mod: 0.5, threshold: 0.25, damage_mod: 2.0, resistance: 2.0 }
+    }
+}
+
 /// KFMonster.CrispUpThreshhold (no zed changes it).
 const CRISP_UP_THRESHOLD: u32 = 5;
 
@@ -1435,6 +1467,19 @@ fn burn_zeds(
         let b = t.translation;
         let ue = Vec3::new(-b.z, b.x, b.y) / SCALE;
         let alive = z.health > 0.0;
+        // Zap (KFMonster.Tick). SetZappedBehavior uncloaks (the Stalker
+        // and the Patriarch do not cloak while zapped); when it wears off
+        // during a run, rage or charge, that state keeps the normal speed.
+        if alive {
+            if z.zapped() && z.cloaked {
+                z.cloaked = false;
+                z.cloak_dirty = true;
+            }
+            if z.zap_tick(dt) {
+                z.run_speed_lost = z.running || z.raging || z.fp_rage.is_some() || z.boss.is_some_and(|b| b.charge.is_some() || b.escaping());
+                runlog::kv("zed_unzapped", &format!("zed={} next_threshold={:.2} run_speed_lost={}", z.id, z.zap_threshold, z.run_speed_lost));
+            }
+        }
         if z.burn_down > 0 && alive {
             z.burn_timer -= dt;
             if z.burn_timer <= 0.0 {
@@ -1776,6 +1821,16 @@ fn load_class(
         small_arms_scale: if kind == ZedKind::Fleshpound { 0.5 } else { 1.0 },
         motion_threat: float("MotionDetectorThreat", 1.0),
         fire_resist: if kind == ZedKind::Husk { float("BurnDamageScale", 1.0) } else { 1.0 },
+        zap: {
+            let d = ZapValues::default();
+            ZapValues {
+                duration: float("ZapDuration", d.duration),
+                speed_mod: float("ZappedSpeedMod", d.speed_mod),
+                threshold: float("ZapThreshold", d.threshold),
+                damage_mod: float("ZappedDamageMod", d.damage_mod),
+                resistance: float("ZapResistanceScale", d.resistance),
+            }
+        },
         burning_walk: defaults.get_array_names(&class, "BurningWalkFAnims").first().and_then(|n| model.sequence(n)),
         ranged_anim,
         ranged_distance: match kind {
@@ -2062,9 +2117,51 @@ impl Zed {
         }
         self.fp_since_damaged = 0.0;
         self.fp_two_sec_damage += lost;
-        if self.fp_two_sec_damage > threshold && !self.decapitated && self.fp_rage.is_none() {
+        if self.fp_two_sec_damage > threshold && !self.decapitated && self.fp_rage.is_none() && !self.zapped() {
             self.fp_start_rage = true;
         }
+    }
+
+    /// bZapped.
+    pub(crate) fn zapped(&self) -> bool {
+        self.remaining_zap > 0.0
+    }
+
+    /// KFMonster.SetZapped: zapped already: back to a full ZapDuration;
+    /// otherwise TotalZap grows, and at ZapThreshold the zed is zapped.
+    pub(crate) fn set_zapped(&mut self, amount: f32) {
+        self.since_zap = 0.0;
+        if self.zapped() {
+            self.total_zap = self.zap_threshold;
+            self.remaining_zap = self.zap.duration;
+        } else {
+            self.total_zap += amount;
+            if self.total_zap >= self.zap_threshold {
+                self.remaining_zap = self.zap.duration;
+                runlog::kv(
+                    "zed_zapped",
+                    &format!("zed={} threshold={:.2} duration={}", self.id, self.zap_threshold, self.zap.duration),
+                );
+            }
+        }
+    }
+
+    /// KFMonster.Tick: a zap runs out (the threshold then grows x
+    /// ZapResistanceScale); zap taken but not enough fades 1 per second
+    /// once none came for 0.1 s. Returns true when a zap wears off.
+    fn zap_tick(&mut self, dt: f32) -> bool {
+        self.since_zap += dt;
+        if self.zapped() {
+            self.remaining_zap -= dt;
+            if self.remaining_zap <= 0.0 {
+                self.remaining_zap = 0.0;
+                self.zap_threshold *= self.zap.resistance;
+                return true;
+            }
+        } else if self.total_zap > 0.0 && self.since_zap > 0.1 {
+            self.total_zap = (self.total_zap - dt).max(0.0);
+        }
+        false
     }
 
     fn random(&mut self) -> u32 {
@@ -2082,6 +2179,10 @@ impl Zed {
             return None;
         }
         if !self.running {
+            // RunningState.BeginState: not while zapped.
+            if self.zapped() {
+                return None;
+            }
             // RangedAttack: no attack started and the target within 700.
             if attacking || dist > GOREFAST_RUN_DISTANCE {
                 return None;
@@ -2265,6 +2366,12 @@ impl Zed {
             burn_fx: None,
             burned_scale: 1.0,
             fire_resist: 1.0,
+            total_zap: 0.0,
+            remaining_zap: 0.0,
+            since_zap: 1e6,
+            zap_threshold: ZapValues::default().threshold,
+            zap: ZapValues::default(),
+            run_speed_lost: false,
             keeps_head: false,
             no_hit_reactions: false,
             boss: None,
@@ -2476,6 +2583,12 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 burn_fx: None,
                 burned_scale: if c.kind == ZedKind::Bloat { 1.5 } else { 1.0 },
                 fire_resist: c.fire_resist,
+                total_zap: 0.0,
+                remaining_zap: 0.0,
+                since_zap: 1e6,
+                zap_threshold: c.zap.threshold,
+                zap: c.zap,
+                run_speed_lost: false,
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
                 boss: c.boss.is_some().then(|| crate::boss::BossState::new(c.health)),
@@ -2647,6 +2760,8 @@ fn think_and_move(
     // Test action "hurt_zeds": 100 damage to every living zed (no hit
     // reaction), to test rules that depend on health.
     let hurt = script.0.iter().any(|(f, a)| *f == frames.0 && a == "hurt_zeds");
+    // Test action "zap_zeds": SetZapped(10) on every living zed.
+    let zap_all = script.0.iter().any(|(f, a)| *f == frames.0 && a == "zap_zeds");
     let Ok((pt, walker)) = player.single() else {
         return;
     };
@@ -2740,6 +2855,9 @@ fn think_and_move(
         }
         z.since_pain_anim = (z.since_pain_anim + dt).min(1e6);
         z.since_hit = (z.since_hit + dt).min(1e6);
+        if zap_all && z.health > 0.0 {
+            z.set_zapped(10.0);
+        }
         if hurt && z.health > 100.0 {
             z.health -= 100.0;
             z.note_damage(100.0);
@@ -2784,7 +2902,7 @@ fn think_and_move(
             z.cloak_check -= dt;
             if z.cloak_check <= 0.0 {
                 z.cloak_check = 0.5;
-                if !z.cloaked && !z.decapitated && z.since_uncloak > 1.2 {
+                if !z.cloaked && !z.decapitated && !z.zapped() && z.since_uncloak > 1.2 {
                     z.cloaked = true;
                     z.cloak_dirty = true;
                     runlog::kv("stalker_cloak", &format!("id={}", z.id));
@@ -2953,7 +3071,10 @@ fn think_and_move(
                 });
                 for _ in 0..due {
                     if let Some((damage, radius, force)) = c.scream {
-                        scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
+                        // ZombieSiren.SpawnTwoShots: nothing while zapped.
+                        if !z.zapped() {
+                            scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
+                        }
                     } else if c.kind == ZedKind::Husk {
                         let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
                         shoot_fireball(&mut z, c, &t, crate::fireball::Projectile::HuskFire, c.barrel_bone, target, player_velocity, &spatial, &mut fireball);
@@ -3107,7 +3228,8 @@ fn think_and_move(
             // IsInPounceDist (within MeleeRange x 5, landing at its height):
             // leap at PounceSpeed with JumpZ upward.
             z.since_pounce = (z.since_pounce + dt).min(1e6);
-            if c.pounce_speed > 0.0 && z.attack.is_none() && dist > reach && z.state == ZedState::Chase && !z.decapitated {
+            // ZombieCrawler.DoPounce: not while zapped.
+            if c.pounce_speed > 0.0 && z.attack.is_none() && dist > reach && z.state == ZedState::Chase && !z.decapitated && !z.zapped() {
                 let wait = 4.5 - (z.random() % 1000) as f32 / 1000.0 * 3.0;
                 let to_ue = (target - z.centre) / SCALE;
                 let ahead = dir_of(z.yaw).dot(to_ue) > 0.85;
@@ -3136,8 +3258,10 @@ fn think_and_move(
             }
             // ZombieScrake.RangedAttack: not attacking, has a head, under
             // half health: RunningState (rage), GroundSpeed x 3.5.
+            // RunningState.BeginState: not while zapped.
             if c.saw_impale.is_some()
                 && !z.raging
+                && !z.zapped()
                 && !z.sawing
                 && z.attack.is_none()
                 && !z.decapitated
@@ -3154,7 +3278,7 @@ fn think_and_move(
                     z.fp_frustration = 0.0;
                 } else {
                     z.fp_frustration += dt;
-                    if z.fp_frustration >= z.fp_frustration_limit && !z.decapitated {
+                    if z.fp_frustration >= z.fp_frustration_limit && !z.decapitated && !z.zapped() {
                         z.fp_frustration = 0.0;
                         z.fp_frustrated = true;
                         z.fp_start_rage = true;
@@ -3170,7 +3294,9 @@ fn think_and_move(
             // (Focus); HuskZombieController: not before NextFireProjectileTime.
             let dist3 = (target - z.centre).length() / SCALE;
             z.ranged_wait = (z.ranged_wait - dt).max(0.0);
+            // ZombieSiren.RangedAttack: no scream while zapped.
             if let Some(ranged) = c.ranged_anim
+                && !(c.scream.is_some() && z.zapped())
                 && z.attack.is_none()
                 && z.stunned <= 0.0
                 && !z.decapitated
@@ -3334,7 +3460,7 @@ fn think_and_move(
                             {
                                 z.overlay = Some((seq, 0.0, root));
                             }
-                            z.cloaked = true;
+                            z.cloaked = !z.zapped();
                             z.cloak_dirty = true;
                             runlog::kv("boss_sneak", &format!("id={} start distance_unreal={dist3:.0}", z.id));
                         }
@@ -3455,8 +3581,21 @@ fn think_and_move(
                 z.state = ZedState::Chase;
                 // RemoveHead: GroundSpeed x 0.8 once headless; a running
                 // Gorefast x 1.875.
-                let speed = if z.decapitated {
+                let any_run = z.running || z.raging || z.fp_rage.is_some() || z.boss.is_some_and(|b| b.charge.is_some() || b.escaping());
+                if !any_run {
+                    z.run_speed_lost = false;
+                }
+                let speed = if z.zapped() && z.boss.is_some_and(|b| b.charge.is_some() || b.escaping()) {
+                    // ZombieBoss Charging / Escaping: "Zapping slows him
+                    // down, but doesn't stop him": x 1.5.
+                    c.ground_speed * 1.5
+                } else if z.zapped() {
+                    // SetZappedBehavior: OriginalGroundSpeed x ZappedSpeedMod.
+                    c.ground_speed * z.zap.speed_mod
+                } else if z.decapitated {
                     c.ground_speed * 0.8
+                } else if z.run_speed_lost && any_run {
+                    c.ground_speed
                 } else if z.running {
                     c.ground_speed * GOREFAST_RUN_SPEED
                 } else if z.fp_rage.is_some() {
@@ -3482,7 +3621,7 @@ fn think_and_move(
                 };
                 // KFMonster.TakeDamage on catching fire: GroundSpeed x 0.8
                 // (of the current speed, so headless zeds slow down more).
-                let speed = if z.burn_down > 0 { speed * 0.8 } else { speed };
+                let speed = if z.burn_down > 0 && !z.zapped() { speed * 0.8 } else { speed };
                 let delta = dir_of(z.yaw) * speed * SCALE * dt;
                 let others: Vec<(Option<Entity>, Cylinder)> =
                     blockers.iter().filter(|(e, _)| *e != Some(entity)).copied().collect();
@@ -3599,7 +3738,8 @@ fn think_and_move(
                 let anim = if speed >= STANDING_SPEED {
                     if z.decapitated {
                         c.headless_walk.or(c.walk)
-                    } else if z.burn_down > 0 && z.burn_down < CRISP_UP_THRESHOLD {
+                    } else if z.zapped() || (z.burn_down > 0 && z.burn_down < CRISP_UP_THRESHOLD) {
+                        // SetZappedBehavior also sets the burning walk.
                         // ZombieCrispUp (BurnDown below CrispUpThreshhold) ->
                         // SetBurningBehavior: MovementAnims[0] = BurningWalkFAnims.
                         c.burning_walk.or(c.walk)
@@ -3972,6 +4112,29 @@ fn apply_cloaks(mut commands: Commands, classes: Option<Res<ZedClasses>>, mut ze
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zap_builds_up_lasts_and_raises_the_threshold() {
+        let mut z = Zed::test_clot();
+        // Under ZapThreshold (0.25): not zapped; the zap fades after 0.1 s.
+        z.set_zapped(0.2);
+        assert!(!z.zapped());
+        z.zap_tick(0.05);
+        assert!((z.total_zap - 0.2).abs() < 1e-6, "no fade within 0.1 s");
+        z.zap_tick(0.1);
+        assert!((z.total_zap - 0.1).abs() < 1e-6, "{}", z.total_zap);
+        // Reaching it: zapped for ZapDuration (4 s).
+        z.set_zapped(0.15);
+        assert!(z.zapped());
+        assert!(!z.zap_tick(3.9));
+        // Zapped again: back to the full 4 s.
+        z.set_zapped(0.01);
+        assert!((z.remaining_zap - 4.0).abs() < 1e-6);
+        assert!(!z.zap_tick(3.9));
+        assert!(z.zap_tick(0.2), "wears off");
+        // ZapResistanceScale 2: the next zap needs 0.5.
+        assert!((z.zap_threshold - 0.5).abs() < 1e-6);
+    }
 
     /// ZombieGoreFast.RangedAttack / RunningState: runs within 700 when not
     /// attacking, stops when the target is 700+ away at a CheckCharge, never

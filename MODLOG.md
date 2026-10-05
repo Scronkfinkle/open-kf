@@ -2520,3 +2520,21 @@ for alt fire, no animation (before: the fire animation and
 **Still broken / not tested:** No doors, so no welding; the welder's
 screen texture ("Integrity:") not drawn; messages are only logged.
 **Next:** W9, ZED guns.
+
+## 2026-10-05 Weapons W9a: zapping (ZED gun effect on zeds)
+
+**Changed:** `zed.rs`: `ZapValues` from the class defaults, zap state on
+`Zed`, `set_zapped`, `zap_tick` (in `burn_zeds`), half speed and the
+burning walk while zapped, no run / rage / pounce / scream / cloak while
+zapped, the lost run speed after a zap, test action `zap_zeds`.
+`combat.rs`: damage x ZappedDamageMod. DESIGN.
+**Why:** W9, the ZED guns, need it (they zap rather than only damage).
+**Tested how:** unit tests `zap_builds_up_lasts_and_raises_the_threshold`,
+`zapped_zeds_take_more_damage`; a run: a Gorefast running at the player,
+`zap_zeds` mid-run; `cargo test --release --workspace`; clippy.
+**Result:** Gorefast 225 (running) -> 60 zapped with WalkF_Fire for 4 s
+-> 120 after (run speed lost, as in KF), next threshold 0.5. Tests 57 + 21.
+**Still broken / not tested:** No zapped look (overlay material). The
+blocked specials (Siren, Crawler, Fleshpound, Scrake, Patriarch) are
+coded from the scripts but not run.
+**Next:** W9b, the ZED MKII.

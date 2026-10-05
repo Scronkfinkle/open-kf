@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W8 implemented 2026-10-05)
+## Weapons (milestone 7, W1-W8 and W9a implemented 2026-10-05)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1961,6 +1961,31 @@ always the case for now; welding (WeldStrength, the screen showing
 "Integrity: n %", KFWelderHitEffect, the 40 per second charge) comes with
 doors. Before this the Welder played its fire animation and logged
 "not implemented".
+
+**W9 ZED guns**, in three parts: W9a zapping on zeds (done), W9b the ZED
+MKII, W9c the ZED Gun.
+
+W9a (`zed.rs` set_zapped / zap_tick, `combat.rs` damage):
+- KFMonster.SetZapped(amount): already zapped: back to a full ZapDuration
+  (4 s); otherwise TotalZap += amount, and at ZapThreshold the zed is
+  zapped. Tick: the zap runs out after ZapDuration and ZapThreshold grows
+  x ZapResistanceScale (2; the Patriarch 1); zap below the threshold
+  fades 1 per second once none came for 0.1 s.
+- Thresholds / damage multipliers (Zombie*Base defaults): most 0.25 /
+  x 2; Bloat, Siren 0.5 / x 1.5; Husk 0.75 / x 2; Scrake 1.25 / x 1.25;
+  Fleshpound 1.75 / x 1.25; Patriarch 5 / x 1.25.
+- Zapped (SetZappedBehavior and the zed scripts): GroundSpeed = original
+  x 0.5 (the Patriarch charging or escaping: x 1.5), the burning walk
+  animation, damage taken x ZappedDamageMod (after the zed's own scales,
+  before the fire rule), uncloaked; no Gorefast run, Scrake rage,
+  Fleshpound rage, Crawler pounce, Siren scream (a scream in progress
+  does no damage), Stalker or Patriarch cloaking.
+- UnSetZappedBehavior sets the normal speed; a run, rage or charge that
+  was going keeps it (KF's states only set their speed on entry), until
+  it ends.
+- Test action `zap_zeds` (SetZapped(10) on every zed).
+- Not done: the zapped overlay material (ZED_overlay_Hit_Shdr), the
+  zapped hit effect, the worse aim of zapped zeds.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

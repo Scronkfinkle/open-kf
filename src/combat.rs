@@ -402,6 +402,10 @@ pub(crate) fn damage_zed(
         _ => 1.0,
     };
     let mut damage = damage * fleshpound * zed_fire;
+    // KFMonster.TakeDamage: x ZappedDamageMod while zapped.
+    if z.zapped() {
+        damage *= z.zap.damage_mod;
+    }
     // KFMonster.TakeDamage, bDealBurningDamage: remember the hit for the
     // burn ticks, x 1.5 (not the MAC10), and set the zed on fire at 15 or
     // after more than 4 lighter hits (HeatAmount).
@@ -969,6 +973,17 @@ mod tests {
         assert!(z.is_dead() && z.decapitated);
         assert_eq!(z.bleed_out, None);
         assert_eq!(kills.0, 1);
+    }
+
+    #[test]
+    fn zapped_zeds_take_more_damage() {
+        let mut kills = KillCount::default();
+        let mut z = Zed::test_patriarch();
+        let h = z.health;
+        z.zap.damage_mod = 1.25;
+        z.set_zapped(10.0);
+        damage_zed(&mut z, 100.0, false, 1.0, "t", 1.0, SRC, &mut kills);
+        assert!((h - z.health - 125.0).abs() < 0.01, "{}", h - z.health);
     }
 
     #[test]
