@@ -168,6 +168,7 @@ struct Loader<'a> {
     images: &'a mut Assets<Image>,
     materials: &'a mut Assets<StandardMaterial>,
     texture_cache: HashMap<String, Option<(Handle<Image>, UVec2)>>,
+    binary_alpha_cache: HashMap<String, bool>,
     material_cache: HashMap<String, Option<(Handle<StandardMaterial>, UVec2)>>,
     textures_uploaded: usize,
     texture_bytes: usize,
@@ -283,6 +284,30 @@ impl Loader<'_> {
         Some((self.images.add(image), UVec2::new(w as u32, h0 as u32)))
     }
 
+    /// True if the texture's alpha is on/off only (under 1% of pixels in
+    /// between, top mip). Alpha blending such a texture looks the same as
+    /// masking it, and masking writes depth (see `material`).
+    fn alpha_is_binary(&mut self, h: &ObjectHandle) -> bool {
+        let key = h.path();
+        if let Some(b) = self.binary_alpha_cache.get(&key) {
+            return *b;
+        }
+        let result = (|| {
+            let tex = read_texture(&h.package.pkg, h.export).ok()?;
+            let palette = match tex.palette_ref {
+                ObjectRef::Null => None,
+                rf => self.set.resolve(&h.package, rf).and_then(|p| read_palette(&p.package.pkg, p.export).ok()),
+            };
+            let rgba = decode_rgba(tex.format, tex.mips.first()?, palette.as_deref())?;
+            let n = rgba.len() / 4;
+            let between = rgba.as_chunks::<4>().0.iter().filter(|p| (8..248).contains(&p[3])).count();
+            Some(n > 0 && between * 100 < n)
+        })()
+        .unwrap_or(false);
+        self.binary_alpha_cache.insert(key, result);
+        result
+    }
+
     /// The texture with alpha forced to fully opaque, decoded to RGBA. Used
     /// for terrain layers, whose own alpha channel (often a specular mask)
     /// must not weaken the layer blend.
@@ -360,7 +385,20 @@ impl Loader<'_> {
         if let Some(cached) = self.material_cache.get(&key) {
             return cached.clone();
         }
-        let simple: SimpleMaterial = resolve(self.set, from, rf);
+        let mut simple: SimpleMaterial = resolve(self.set, from, rf);
+        // A plain bAlphaTexture texture whose alpha is a cut-out (e.g.
+        // kf_generic_t.Generic_Gibbs on KF-WestLondon's Clot gibs): masked,
+        // so the mesh hides its own far side (blending writes no depth).
+        if simple.blend == Blend::Translucent
+            && simple.chain.len() == 1
+            && let Some(t) = simple.texture.clone()
+            && self.alpha_is_binary(&t)
+        {
+            simple.blend = Blend::Masked;
+        }
+        if !matches!(simple.blend, Blend::Opaque) {
+            runlog::kv("material_see_through", &format!("material={} blend={:?} chain={}", from.package.pkg.object_path(rf), simple.blend, simple.chain.join(">")));
+        }
         let result = if simple.blend == Blend::Invisible {
             None
         } else {
@@ -482,6 +520,7 @@ fn load_map(
         images: &mut images,
         materials: &mut materials,
         texture_cache: HashMap::new(),
+        binary_alpha_cache: HashMap::new(),
         material_cache: HashMap::new(),
         unlit_cache: HashMap::new(),
         textures_uploaded: 0,

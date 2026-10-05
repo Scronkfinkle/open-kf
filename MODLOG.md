@@ -3007,3 +3007,24 @@ toward Emitter23; tests, clippy.
 **Still broken / not tested:** assumed KF draws nothing for a textureless
 sprite (not in the scripts; the welder's has no visible squares in KF).
 My screenshot may not be your exact view; not checked by you.
+
+## 2026-10-05 Fix: Clot gib props drawn see-through (cut-out alpha)
+
+**Changed:** `map.rs`: a plain texture flagged bAlphaTexture whose alpha
+is on/off only (under 1% of pixels in between) is drawn masked, not
+blended (`alpha_is_binary`); log `material_see_through` lists every
+non-opaque map material with its blend and chain.
+**Why:** you saw a corpse prop in the KF-WestLondon tunnel drawn
+transparent: StaticMeshActor288 / 1172 (22Patch.ClotGibLowerTorso /
+ClotGibLeg) use kf_generic_t.Generic_Gibbs, bAlphaTexture, whose alpha is
+a cut-out mask (33% at 0, 67% at 255, nothing between). Blended surfaces
+write no depth, so the mesh's far side showed through its front.
+**Tested how:** alpha histogram of the texture; the log; a screenshot of
+the gib at (-7097, 2893); tests, clippy.
+**Result:** KF-WestLondon: 4 textures switched blended -> masked
+(Generic_Gibbs, LabCommon.voidtex, LondonCommon.SkyLine, Statics.Rubbish1);
+soft-alpha ones (fog rings, moss, leaves, road stripes) stay blended. The
+gib looks solid in the screenshot (partly behind the gun). Tests pass;
+clippy only the old `boss.rs` warning.
+**Still broken / not tested:** SkyLine is the sky's city silhouette, now
+masked: not looked at. Other maps not checked. Not checked by you.
