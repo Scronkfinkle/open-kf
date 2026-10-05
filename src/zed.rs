@@ -506,6 +506,10 @@ pub struct Zed {
     pub scoring_value: f32,
     pub killed_by_player: bool,
     pub kill_paid: bool,
+    /// The killing hit was a headshot (KFMonster.TakeDamage's DramaticEvent).
+    pub headshot_kill: bool,
+    /// Zed time's kill rolls done for this death (zed_time.rs).
+    pub zed_time_rolled: bool,
     /// Patriarch: the chaingun's MuzzleFlash3rdMG (mMuzzleFlash) on `tip`,
     /// and AddTraceHitFX calls not yet shown on it.
     mg_flash: Option<Entity>,
@@ -2471,6 +2475,8 @@ impl Zed {
             scoring_value: 7.0,
             killed_by_player: false,
             kill_paid: false,
+            headshot_kill: false,
+            zed_time_rolled: false,
             mg_flash: None,
             mg_flash_shots: 0,
             cloaked: false,
@@ -2867,6 +2873,8 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 scoring_value: c.scoring_value,
                 killed_by_player: false,
                 kill_paid: false,
+                headshot_kill: false,
+                zed_time_rolled: false,
                 mg_flash: None,
                 mg_flash_shots: 0,
                 // ZombieStalker.PostBeginPlay: CloakStalker.

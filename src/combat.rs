@@ -510,6 +510,8 @@ pub(crate) fn damage_zed(
         z.kill();
         kills.0 += 1;
         z.killed_by_player = true;
+        // KFMonster.TakeDamage: bIsHeadShot && Health <= 0 -> DramaticEvent(0.03).
+        z.headshot_kill = headshot;
     } else {
         // Hit reactions (KFMonster.PlayHit). The head explosion is its own
         // damage event and comes first; the main hit's reaction is then

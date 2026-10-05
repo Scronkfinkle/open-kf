@@ -2981,6 +2981,57 @@ Logs: `hud_loaded` (widgets, textures found or missing, fonts), and on
 F3 or a test action `hud_dump` (each drawn widget's pixel box) so the
 layout can be checked against the screenshots by numbers.
 
+## Zed time (milestone 13, implemented 2026-10-05)
+
+KF's slow motion (KFGameType.DramaticEvent, Tick, Killed, DoBossDeath;
+KFPlayerController.ClientEnterZedTime / ClientExitZedTime). One step,
+`zed_time.rs`:
+
+- **Speed.** GameInfo.SetGameSpeed(T): Level.TimeDilation = 1.1 x T.
+  Zed time is SetGameSpeed(ZedTimeSlomoScale 0.2): everything runs at 0.2
+  of normal. Ours: Bevy's virtual clock at relative speed 0.2 (every
+  gameplay system, physics and ragdolls included, uses it; mouse look
+  reads raw motion and stays full speed, as in KF; the frame limiter,
+  frame stats, recording and screenshots use the real clock).
+- **Length.** Tick: CurrentZEDTimeDuration -= DeltaTime x 1.1 /
+  TimeDilation, i.e. 1.1 x real seconds: ZEDTimeDuration 3 lasts 2.73
+  real seconds. When under 16.6% is left: ClientExitZedTime (once) and
+  the speed eases back: SetGameSpeed(Lerp(left / (0.498), 1.0, 0.2)),
+  from 0.2 to 1. At 0: normal speed, extensions used reset.
+- **DramaticEvent(chance, duration).** Not within 10 game seconds of the
+  last event unless the chance is 1; chance x 4 if the last event was
+  over 60 s ago, x 2 if over 30 s; FRand() <= chance starts it (duration
+  3 unless given), LastZedTimeEvent = now (game time: LastZedTimeEvent
+  starts at 0, so none in the first 10 s of a game; copied).
+- **Who calls it.** KFGameType.Killed, for a zed the player killed and
+  more than 0.1 s after the last event: 0.05 if within 150 units (3 m,
+  VSizeSquared < 22500) of the player, else 0.025 (perk extensions:
+  no perks yet). KFMonster.TakeDamage: a headshot that kills, 0.03 (after
+  Killed's roll, so usually blocked by its 10 s rule if that one
+  fired). Explosions (Nade, LAWProj, M79, pipe bomb, ... HurtRadius):
+  4+ zeds killed 0.05, 2+ 0.03. ZombieBoss radial attack hitting
+  someone: 0.3; not done: he only does it with 3 or more players around
+  him (NumPlayersSurrounding >= 3), never solo. DoBossDeath: forced, 6 s
+  (ZEDTimeDuration x 2). Not done: the Husk Gun's, flare revolver's,
+  ZED MKII's and Husk fireball's own multi-kill rolls (their projectiles
+  in our code do not count kills yet).
+- **Player side.** ClientEnterZedTime: "ZED TIME ACTIVATED!"
+  (WaitingMessage 5) the first time ever (bHadZED, saved in the
+  player's ini; ours: once per run), and the Zedtime_Enter / _Exit
+  sounds (we have no sound yet: not done). No screen effect in the
+  scripts.
+- Logs `zed_time` (start: reason, chance, roll, duration; speed-up;
+  end), `dramatic_event` (refused: cooldown or roll). Test action
+  `zed_time` and the debug key F2 (DramaticEvent(1.0)). The rolls use a fixed seed like the
+  rest of the project (each run repeats exactly).
+
+**Open question (not part of this step): the engine's normal speed.**
+UE2 runs the whole game at TimeDilation 1.1 (LevelInfo default 1.1,
+SetGameSpeed(1) gives 1.1): animations, movement, fire rates and
+game-time timers run 10% faster than the wall clock. We run at 1.0.
+Zed time copies the ratios, so it is unaffected; matching KF's 1.1
+everywhere is a separate decision.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

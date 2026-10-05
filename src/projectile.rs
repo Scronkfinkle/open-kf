@@ -772,6 +772,7 @@ fn move_explosives(
     mut decals: MessageWriter<crate::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
     mut door_blasts: MessageWriter<crate::door::DoorBlast>,
+    mut dramatic: MessageWriter<crate::zed_time::DramaticEvent>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -916,6 +917,9 @@ fn move_explosives(
                 id: p.id,
             },
         );
+        if let Some(e) = crate::zed_time::blast_event(zeds_killed as usize) {
+            dramatic.write(e);
+        }
         runlog::kv(
             "explosive_exploded",
             &format!(
@@ -1453,6 +1457,7 @@ fn move_thrown(
     mut decals: MessageWriter<crate::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
     mut door_blasts: MessageWriter<crate::door::DoorBlast>,
+    mut dramatic: MessageWriter<crate::zed_time::DramaticEvent>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1588,6 +1593,9 @@ fn move_thrown(
                 id: p.id,
             },
         );
+        if let Some(e) = crate::zed_time::blast_event(zeds_killed as usize) {
+            dramatic.write(e);
+        }
         runlog::kv(
             "thrown_exploded",
             &format!(

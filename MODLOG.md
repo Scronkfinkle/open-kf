@@ -3558,3 +3558,46 @@ text, zed time, pickup messages, announcer not done. You looked at it
 in the game and said it looks great.
 **Next:** your call: G3b (the Patriarch's entrance), lighting leftovers,
 or the end-of-game screen.
+
+## 2026-10-05 Zed time
+
+**Changed:** DESIGN.md: milestone 13, "Zed time". New `src/zed_time.rs`:
+`ZedTime` (KFGameType's bZEDTimeActive, CurrentZEDTimeDuration,
+LastZedTimeEvent, bSpeedingBackUp, GameSpeed), `DramaticEvent` (the
+10 s cooldown, x 2 / x 4 after 30 / 60 s, the roll), Tick (1.1 x real
+seconds, easing back over the last 16.6% of 3 s), DoBossDeath (6 s,
+forced), the kill rolls (KFGameType.Killed 0.05 within 3 m / 0.025, a
+headshot kill 0.03), "ZED TIME ACTIVATED!" once per run; the speed is
+Bevy's virtual clock. `zed.rs`: `headshot_kill`, `zed_time_rolled` on
+each zed; `combat.rs` marks headshot kills; `projectile.rs`: both blast
+callers send the explosion roll (2+ zeds 0.03, 4+ 0.05). Test action
+`zed_time`; debug key F2 does the same (you asked for a hotkey). 3
+tests.
+**Why:** you asked for zed time.
+**Tested how:** read KFGameType (Tick, DramaticEvent, Killed,
+DoBossDeath), GameInfo.SetGameSpeed, LevelInfo, KFPlayerController
+(ClientEnterZedTime, ClientExitZedTime, CheckZEDMessage), KFMonster,
+ZombieBoss, the projectiles. Checked nothing gameplay-side reads the
+real clock. Logged runs on KF-WestLondon: wave 1 with `zed_time`
+forced; a wave of 20 kills (`kill_zeds`, credited to the player).
+**Result:** forced: started at real 12.71 s, speed-up at 14.98, end at
+15.43: 2.72 real seconds (3 / 1.1 = 2.727), easing 0.45 s (0.453);
+game time 12.53 -> 13.25 (0.72 s, as 0.2 x 2.27 + the easing predicts);
+the zed log (once a game second) went quiet 3 real seconds. "ZED TIME
+ACTIVATED!" shown. Natural run, first seed: 20 rolls, 16 cooldown, 3
+failed, the 4th eligible roll started it; it was 0.000 in the log, which
+I checked by hand (0.0004: the generator is right). But a fixed seed
+means it would start on that same kill every game, and the wave game
+uses the very same seed: changed to its own seed. Second run: 9
+cooldown, 11 failed, none started, as the odds allow. Tests 127 pass;
+clippy clean.
+**Still broken / not tested:** the Zedtime_Enter / _Exit sounds (no
+sound system). The boss radial attack roll (never solo) and the Husk Gun
+/ flare / ZED MKII / Husk fireball multi-kill rolls not done. Perk
+extensions (no perks). The boss-death zed time not seen in a run. You
+tried it in the game (with F2) and said it feels good. Found, not changed: UE2 runs the whole game at 1.1 x real
+time (TimeDilation 1.1 normally); we run at 1.0 (see DESIGN.md, "Zed
+time", open question). All randomness here uses fixed seeds, so every
+run repeats; KF's FRand differs each game.
+**Next:** your call on the two findings; then G3b or the lighting
+leftovers.

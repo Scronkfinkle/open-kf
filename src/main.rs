@@ -39,6 +39,7 @@ mod vomit;
 mod weapon;
 mod zed;
 mod zed_beam;
+mod zed_time;
 
 use bevy::diagnostic::FrameCount;
 use bevy::prelude::*;
@@ -283,7 +284,7 @@ fn main() -> AppExit {
             fireball::FireballPlugin,
         ))
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
-        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin))
+        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)

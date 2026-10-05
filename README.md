@@ -61,7 +61,9 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | Q | quick heal: bring out the Syringe, inject, switch back (HUD: SYRINGE %) |
 | H | spawn a Gorefast in front of you |
 | X | pause / resume zeds |
-| F1 | god mode on / off (HUD shows "(GOD)") |
+| F1 | god mode on / off (the debug line shows "(GOD)") |
+| F2 | zed time now (debug) |
+| F3 | show / hide the debug line at the top |
 | Space (walking) | jump |
 
 Each run writes `logs/latest.log`: what was loaded (counts, load time), camera
@@ -220,6 +222,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   corner points at the shop at all times; its size is fitted to your
   real-game screenshot (matches it within a few pixels at 1280 x 960).
   `--window 1280x960` sets the window size for such comparisons.
+- Zed time (2026-10-05): KF's slow motion. A kill has a 2.5% chance
+  (5% within 3 m), a headshot kill 3%, an explosion killing 2+ zeds 3%
+  (4+: 5%); not within 10 s of the last one, more likely after 30 s
+  and 60 s without; the Patriarch's death always. Everything runs at a
+  fifth of normal speed for about 2.7 real seconds, then eases back;
+  "ZED TIME ACTIVATED!" the first time. No sounds yet (no sound
+  system). F2 forces it (debug). Checked by unit tests and logged runs,
+  and tried by you in the game.
 - KF's HUD, part 1 (H1, 2026-10-05): the bottom bar drawn with KF's own
   textures, digits and layout: health, armour, weight box, grenades,
   the ammo boxes for each kind of weapon (clips and rounds, single
