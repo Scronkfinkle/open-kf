@@ -356,6 +356,7 @@ fn move_fireballs(
             zed: Some(f.zed_id),
             direct: if what == "door" { level_door } else { None },
             line_of_sight: false,
+            frag: false,
             source: if f.kind == Projectile::BossRocket { "boss_rocket" } else { "husk_fireball" },
         });
         let mut dealt = 0.0;

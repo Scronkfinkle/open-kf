@@ -654,6 +654,9 @@ pub struct WeldHit {
     pub unweld: bool,
 }
 
+/// KFDoorMover DamageThreshold (class default; no map changes it).
+const DAMAGE_THRESHOLD: i32 = 50;
+
 /// How far the aim trace looks (Unreal units); the Welder's own range
 /// (70) is checked by the weapon.
 const AIM_TRACE: f32 = 200.0;
@@ -822,6 +825,50 @@ pub struct ZedDoorHit {
 }
 
 impl Doors {
+    /// KFUseTrigger.DamageWeld: weld off every door of trigger `t`; at 0
+    /// they all break (returned).
+    fn damage_weld(&mut self, t: usize, dmg: i32) -> Vec<usize> {
+        self.triggers[t].weld_strength -= dmg as f32;
+        if self.triggers[t].weld_strength <= 0.0 {
+            self.triggers[t].weld_strength = 0.0;
+            self.set_weld(t);
+            return self.triggers[t].doors.clone();
+        }
+        self.set_weld(t);
+        Vec::new()
+    }
+
+    /// KFDoorMover.TakeDamage from the player (not the welder): nothing
+    /// unless the damage type is DamTypeFrag (or the door has
+    /// bSmallArmsDamage) and the damage (an int) reaches DamageThreshold
+    /// 50. Then an unsealed door loses half from Health, a sealed one the
+    /// whole from the weld (unless bBlockDamagingOfWeld).
+    fn player_damage(&mut self, i: usize, damage: f32, frag: bool) -> (Vec<usize>, String) {
+        let d = &self.doors[i];
+        let Some(t) = d.trigger else {
+            return (Vec::new(), "ignored reason=no_trigger".into());
+        };
+        if d.hidden {
+            return (Vec::new(), "ignored reason=hidden".into());
+        }
+        let dmg = damage as i32;
+        if (!d.info.small_arms_damage && !frag) || dmg < DAMAGE_THRESHOLD {
+            return (Vec::new(), format!("ignored damage={dmg} frag={frag}"));
+        }
+        if !d.sealed {
+            let half = dmg / 2;
+            let d = &mut self.doors[i];
+            d.health -= half as f32;
+            let text = format!("damage={dmg} health_damage={half} health={:.0}", d.health);
+            return (if d.health <= 0.0 { vec![i] } else { Vec::new() }, text);
+        }
+        if d.info.block_damaging_of_weld {
+            return (Vec::new(), format!("damage={dmg} blocked=bBlockDamagingOfWeld"));
+        }
+        let broken = self.damage_weld(t, dmg);
+        (broken, format!("damage={dmg} weld={:.0}", self.triggers[t].weld_strength))
+    }
+
     /// KFDoorMover.TakeDamage from a zed. Damage is an int parameter, so
     /// the claw damage is truncated; then Max(5, Damage x
     /// ZombieDamageReductionFactor 0.85), again whole. Returns the doors
@@ -850,16 +897,8 @@ impl Doors {
         if d.info.block_damaging_of_weld {
             return (Vec::new(), format!("damage={dmg} blocked=bBlockDamagingOfWeld"));
         }
-        // KFUseTrigger.DamageWeld: at 0 every door of the trigger breaks.
-        self.triggers[t].weld_strength -= dmg as f32;
-        if self.triggers[t].weld_strength <= 0.0 {
-            self.triggers[t].weld_strength = 0.0;
-            self.set_weld(t);
-            let all = self.triggers[t].doors.clone();
-            return (all, format!("damage={dmg} weld=0"));
-        }
-        self.set_weld(t);
-        (Vec::new(), format!("damage={dmg} weld={:.0}", self.triggers[t].weld_strength))
+        let broken = self.damage_weld(t, dmg);
+        (broken, format!("damage={dmg} weld={:.0}", self.triggers[t].weld_strength))
     }
 }
 
@@ -880,6 +919,9 @@ pub struct DoorBlast {
     pub zed: Option<usize>,
     pub direct: Option<usize>,
     pub line_of_sight: bool,
+    /// The damage type is DamTypeFrag (the player's hand grenade; the
+    /// only player damage doors take, KFDoorMover.TakeDamage).
+    pub frag: bool,
     pub source: &'static str,
 }
 
@@ -931,10 +973,10 @@ fn zed_door_hits(
     mut visibility: Query<&mut Visibility>,
     mut seed: Local<u32>,
 ) {
-    // (door, damage, zed, what) for every door hurt this frame.
-    let mut damage: Vec<(usize, f32, Option<usize>, String)> = Vec::new();
+    // (door, damage, zed, frag, what) for every door hurt this frame.
+    let mut damage: Vec<(usize, f32, Option<usize>, bool, String)> = Vec::new();
     for h in hits.read() {
-        damage.push((h.door, h.damage, Some(h.zed), h.kind.into()));
+        damage.push((h.door, h.damage, Some(h.zed), false, h.kind.into()));
     }
     // FastTrace for VisibleCollidingActors: level geometry only.
     let level = SpatialQueryFilter::from_mask([GameLayer::World, GameLayer::TraceBlocking]);
@@ -942,7 +984,7 @@ fn zed_door_hits(
         if let Some(i) = b.direct
             && i < doors.doors.len()
         {
-            damage.push((i, b.damage, b.zed, format!("{} direct", b.source)));
+            damage.push((i, b.damage, b.zed, b.frag, format!("{} direct", b.source)));
         }
         for (i, d) in doors.doors.iter().enumerate() {
             if Some(i) == b.direct || d.hidden || d.trigger.is_none() {
@@ -963,24 +1005,28 @@ fn zed_door_hits(
                 }
             }
             let scale = 1.0 - (dist / b.radius).max(0.0);
-            damage.push((i, scale * b.damage, b.zed, format!("{} radius distance={dist:.0} scale={scale:.2}", b.source)));
+            damage.push((i, scale * b.damage, b.zed, b.frag, format!("{} radius distance={dist:.0} scale={scale:.2}", b.source)));
         }
     }
-    for (i, amount, zed, what) in damage {
-        let Some(id) = zed else {
-            // The player's blasts (DamTypeFrag) are D4.
-            runlog::kv("door_player_blast_not_done", &format!("door={} damage={amount:.1} {what}", doors.doors[i].info.name));
-            continue;
+    for (i, amount, zed, frag, what) in damage {
+        let (broken, text, by) = match zed {
+            Some(id) => {
+                let (b, t) = doors.zed_damage(i, amount);
+                (b, t, format!("zed{id}"))
+            }
+            None => {
+                let (b, t) = doors.player_damage(i, amount, frag);
+                (b, t, "player".to_string())
+            }
         };
-        let (broken, text) = doors.zed_damage(i, amount);
         let d = &doors.doors[i];
         let pct = if d.max_weld > 0.0 { d.weld / d.max_weld * 100.0 } else { 0.0 };
         runlog::kv(
-            "door_zed_hit",
-            &format!("door={} zed={id} by={what} amount={amount:.1} {text} percent={pct:.0} sealed={}", d.info.name, d.sealed),
+            "door_damage",
+            &format!("door={} by={by} source={what} amount={amount:.1} {text} percent={pct:.0} sealed={}", d.info.name, d.sealed),
         );
         for j in broken {
-            go_bang(&mut doors, j, &format!("zed{id}"), &mut commands, library.as_deref(), &mut meshes, &mut visibility, &mut seed);
+            go_bang(&mut doors, j, &by, &mut commands, library.as_deref(), &mut meshes, &mut visibility, &mut seed);
         }
     }
 }
@@ -1247,5 +1293,23 @@ mod tests {
         // bZedHittingDoor is never cleared in single player.
         doors.welder_damage(0, 10.0, false);
         assert_eq!(doors.doors[0].weld, 10.0);
+    }
+
+    #[test]
+    fn only_frag_damage_of_fifty_hurts_doors_from_the_player() {
+        let mut doors = test_doors(400.0);
+        // Not DamTypeFrag (an M79, a bullet): nothing.
+        doors.player_damage(0, 260.0, false);
+        assert_eq!(doors.doors[0].health, 400.0);
+        // Under DamageThreshold 50: nothing.
+        doors.player_damage(0, 49.9, true);
+        assert_eq!(doors.doors[0].health, 400.0);
+        // Unsealed: half off Health (int).
+        doors.player_damage(0, 211.0, true);
+        assert_eq!(doors.doors[0].health, 295.0);
+        // Sealed: the whole off the weld; at 0 it breaks.
+        doors.welder_damage(0, 10.0, false);
+        let (broken, _) = doors.player_damage(0, 60.0, true);
+        assert_eq!(broken, vec![0]);
     }
 }

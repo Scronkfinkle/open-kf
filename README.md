@@ -169,6 +169,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   Checked by unit tests and logged runs on KF-Manor: a Clot broke a 50
   weld in 11 s (5 per hit), a Fleshpound a 150 weld in two bashes (28-30
   per hit). Not play-tested by you; the break effect not looked at.
+- Grenades against doors (D4, 2026-10-05): as in KF, only your hand
+  grenade hurts doors (50 damage or more): half its damage comes off an
+  unwelded door's health (400 by default), the whole of it off a weld.
+  The M79, M32, LAW, pipe bombs, guns and melee do nothing to doors.
+  Checked by unit tests and logged runs on KF-Manor: grenades took 105
+  health a throw off a shut door (two doors in range hurt), one grenade
+  broke a door welded to about 170, an M79 burst on a door did nothing.
+  Not play-tested by you.
 - Ranged door attacks (D3b, 2026-10-05): Bloats, Husks, Sirens and the
   Patriarch attack a welded door they see on their path from where they
   stand: puke or burn (18 a shot), scream (5 a pulse) or a rocket (63 on

@@ -765,6 +765,7 @@ fn move_explosives(
     mut meshes: ResMut<Assets<Mesh>>,
     mut decals: MessageWriter<crate::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
+    mut door_blasts: MessageWriter<crate::door::DoorBlast>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -891,6 +892,7 @@ fn move_explosives(
             &mut meshes,
             &mut decals,
             &mut player_damage,
+            &mut door_blasts,
             &Blast {
                 at,
                 normal,
@@ -903,6 +905,7 @@ fn move_explosives(
                 fire: p.stats.fire,
                 hurts_self: p.stats.hurts_self,
                 zap: p.stats.zap,
+                frag: false,
                 weapon: p.weapon,
                 id: p.id,
             },
@@ -1260,6 +1263,9 @@ struct Blast {
     fire: Option<crate::combat::FireType>,
     hurts_self: bool,
     zap: Option<f32>,
+    /// MyDamageType is DamTypeFrag (the Nade): the only player blast
+    /// KFDoorMover.TakeDamage accepts.
+    frag: bool,
     weapon: &'static str,
     id: u32,
 }
@@ -1280,6 +1286,7 @@ fn blast(
     meshes: &mut Assets<Mesh>,
     decals: &mut MessageWriter<crate::decals::SpawnDecal>,
     player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
+    door_blasts: &mut MessageWriter<crate::door::DoorBlast>,
     b: &Blast,
 ) -> (u32, u32, f32) {
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1311,6 +1318,17 @@ fn blast(
         }
         return (zeds_hit, 0, 0.0);
     }
+    // HurtRadius (CollidingActors) reaches doors too; KFDoorMover decides.
+    door_blasts.write(crate::door::DoorBlast {
+        at,
+        radius: b.radius,
+        damage: b.damage,
+        zed: None,
+        direct: None,
+        line_of_sight: false,
+        frag: b.frag,
+        source: b.weapon,
+    });
     for mut z in zeds.iter_mut() {
         if z.health <= 0.0 {
             continue;
@@ -1426,6 +1444,7 @@ fn move_thrown(
     mut meshes: ResMut<Assets<Mesh>>,
     mut decals: MessageWriter<crate::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
+    mut door_blasts: MessageWriter<crate::door::DoorBlast>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1541,6 +1560,7 @@ fn move_thrown(
             &mut meshes,
             &mut decals,
             &mut player_damage,
+            &mut door_blasts,
             &Blast {
                 at: p.pos,
                 normal,
@@ -1553,6 +1573,9 @@ fn move_thrown(
                 fire: None,
                 hurts_self: true,
                 zap: None,
+                // Nade.MyDamageType DamTypeFrag; PipeBombProjectile's is
+                // DamTypePipeBomb.
+                frag: matches!(p.stats.kind, ThrownKind::Frag { .. }),
                 weapon: p.weapon,
                 id: p.id,
             },

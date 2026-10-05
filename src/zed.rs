@@ -3340,6 +3340,7 @@ fn think_and_move(
                                 zed: Some(z.id),
                                 direct: None,
                                 line_of_sight: true,
+                                frag: false,
                                 source: "siren_scream",
                             });
                         }

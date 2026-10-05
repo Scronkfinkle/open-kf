@@ -2697,3 +2697,27 @@ the Bloat walked straight at the player and only bashed; counting doors
 the Bloat). Bloat vomit globs on doors not done. The radius test uses the
 door's pivot, not its bounds. Effects not looked at.
 **Next:** D4, grenades and unwelded door health from the player.
+
+## 2026-10-05 Doors D4: grenades against doors
+
+**Changed:** `door.rs`: `player_damage` (KFDoorMover.TakeDamage's player
+rules), `DoorBlast.frag`, shared `damage_weld`, one `door_damage` log line
+for zeds and the player. `projectile.rs`: every player blast sends a
+`DoorBlast`, frag only for the Nade. `fireball.rs`, `zed.rs`: the new
+field. DESIGN, README.
+**Why:** D4, the last step of the doors plan.
+**Tested how:** unit test (non-frag, under 50, unsealed half off health,
+sealed off the weld); KF-Manor runs: three grenades at a shut door; weld
+then a grenade; an M79 shell at the door. `cargo test --release
+--workspace`; clippy.
+**Result:** Grenade at 125 units: 210 damage, 105 off health (400 -> 295
+-> 190 -> 85); KFDoorMover2 318 away took 72 (36). Welded about 170: one
+grenade (186) broke it. M79: 260 at the door, ignored (frag=false).
+Tests 66 + 21.
+**Failures on the way:** my first M79 test fired into the steps in front
+of the door (you spotted the staircase); the shell hit them inside its
+300-unit arming distance and was a dud. Fired from the flat side instead.
+**Still broken / not tested:** Break effects not looked at. Doors do not
+respawn (no waves). Grenade blast reach uses the door's pivot, not its
+shape.
+**Next:** the doors plan is done; your call.

@@ -2033,7 +2033,7 @@ perk chosen uses the plain values; perk bonuses come with the game loop),
 the trader and buying (W1's `--give` stands in), third-person weapon
 models, the flashlight, zed time.
 
-## Doors (milestone 8, planned 2026-10-05; D1-D3 implemented 2026-10-05)
+## Doors (milestone 8, implemented 2026-10-05: D1-D4)
 
 Goal: KF's doors. They open and close with the USE key (E), zeds open the ones
 that are not welded, the Welder seals them, and zeds bash welded doors until
@@ -2207,6 +2207,19 @@ tests (ActorReachable / pointReachable stand-ins) now count closed doors
 path through the doorway instead of walking straight at the player; the
 start-up link check still ignores doors. Not done: Bloat vomit globs
 sticking to doors and bursting there (KFBloatVomit.HitWall on a mover).
+
+**D4 as built.** `projectile.rs` `blast` sends every player blast as a
+`DoorBlast` (no line of sight: Nade, M79GrenadeProjectile and LAWProj
+use CollidingActors), flagged `frag` only for the Nade (MyDamageType
+DamTypeFrag; the M79, M32, M203, LAW and pipe bomb have their own types,
+so KF doors ignore them). `door.rs` `player_damage`: KFDoorMover
+.TakeDamage's filter ((not bSmallArmsDamage and not DamTypeFrag) or
+int damage < DamageThreshold 50: nothing), then unsealed: half off
+Health (MaxWeld at the start), sealed: the whole off the weld; 0 breaks.
+No map sets bSmallArmsDamage, so bullets and melee never hurt doors.
+Log line `door_damage` (by=zedN or player). Test spot note: on
+KF-Manor the floor steps up 42 units just in front of KFDoorMover5 on
+the -2075 side; shoot from the flat side (x -1980, yaw 0).
 
 Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
