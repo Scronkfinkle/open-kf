@@ -43,7 +43,8 @@ pub struct MeleeSwing {
     pub weapon: &'static str,
 }
 
-/// Damage to the player from a zed attack.
+/// Damage to the player from a zed attack, or from the player's own
+/// weapon (`zed_id` = `SELF_DAMAGE`; `amount` before ReduceDamage).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct PlayerDamaged {
     pub amount: f32,
@@ -74,6 +75,16 @@ struct Burning {
 }
 
 const BURN_INTERVAL: f32 = 1.5;
+
+/// `PlayerDamaged.zed_id` for the player's own explosives and fire.
+pub const SELF_DAMAGE: usize = usize::MAX;
+
+/// KFGameType.ReduceDamage on the player's own damage in single player at
+/// Normal difficulty (GameDifficulty 2): halved as instigator == injured,
+/// then halved again (difficulty <= 3, standalone); Damage is an int.
+pub fn reduce_self_damage(amount: f32) -> f32 {
+    ((amount.floor() * 0.5).floor() * 0.5).floor()
+}
 
 /// KFPawn bile: any vomit damage sets BileCount to 7; every BileFrequency
 /// (0.5 s) one is used up for TakeBileDamage, 2 + Rand(3) damage.
@@ -713,15 +724,18 @@ fn apply_player_damage(
     time: Res<Time>,
 ) {
     for hit in hits.read() {
+        // KFPawn.TakeDamage reads the burn from the damage before
+        // ReduceDamage; the health loss is after it.
+        let taken = if hit.zed_id == SELF_DAMAGE { reduce_self_damage(hit.amount) } else { hit.amount };
         if !health.god {
-            health.health -= hit.amount;
+            health.health -= taken;
         }
         runlog::kv(
             "player_hit",
             &format!(
                 "zed={} damage={} kind={:?} health_left={:.0} god={}",
-                if hit.zed_id == usize::MAX { "self".to_string() } else { hit.zed_id.to_string() },
-                hit.amount,
+                if hit.zed_id == SELF_DAMAGE { "self".to_string() } else { hit.zed_id.to_string() },
+                taken,
                 hit.kind,
                 health.health.max(0.0),
                 health.god
@@ -864,6 +878,14 @@ mod tests {
         assert!(z.is_dead() && z.decapitated);
         assert_eq!(z.bleed_out, None);
         assert_eq!(kills.0, 1);
+    }
+
+    #[test]
+    fn own_damage_is_quartered_at_normal() {
+        // ReduceDamage: int halvings. A full M79 blast on yourself (350): 87.
+        assert_eq!(reduce_self_damage(350.0), 87.0);
+        assert_eq!(reduce_self_damage(12.0), 3.0);
+        assert_eq!(reduce_self_damage(3.0), 0.0);
     }
 
     fn fire_src(f: FireType) -> HitSource {

@@ -1755,7 +1755,8 @@ W6a (`projectile.rs` PlayerExplosive):
   KFMonster.GetExposureTo (head 0.4, root 0.3, feet 0.15 each, by line of
   sight; feet approximated at the cylinder's bottom); no headshots
   (bCheckForHeadShots false). The player: x KFPawn exposure (head, root),
-  halved (KFGameType.ReduceDamage, self damage), no push
+  x 0.25 at Normal (KFGameType.ReduceDamage halves own damage, then
+  halves it again at difficulty <= 3 in single player; fixed after W7a), no push
   (KFHumanPawn.TakeDamage zeroes a player's momentum).
 - ZombieFleshPound.TakeDamage now as in KF: listed explosive types x 1,
   frag and pipe bomb x 2, others x 0.5 or x 0.75 for a headshot by a type

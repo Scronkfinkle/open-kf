@@ -765,8 +765,9 @@ struct Blast {
 
 /// The effect, the decal, and HurtRadius: every zed whose cylinder reaches
 /// the radius takes Damage x (1 - max(0, (distance - its radius) / radius))
-/// x its exposure; the player the same with KFPawn's exposure, halved (own
-/// explosive), with no push. Returns (zeds hit, zeds killed, self damage).
+/// x its exposure; the player the same with KFPawn's exposure, reduced as
+/// own damage (combat::reduce_self_damage), with no push. Returns (zeds
+/// hit, zeds killed, self damage after the reduction).
 #[allow(clippy::too_many_arguments)]
 fn blast(
     commands: &mut Commands,
@@ -822,7 +823,7 @@ fn blast(
         }
     }
     // The player: KFPawn.GetExposureTo (head and root, half each);
-    // KFGameType.ReduceDamage halves self damage; KFHumanPawn.TakeDamage
+    // KFGameType.ReduceDamage reduces self damage; KFHumanPawn.TakeDamage
     // drops the momentum of a player's damage (no push).
     let mut self_damage = 0.0;
     if let Some(pl) = player_ue {
@@ -831,11 +832,12 @@ fn blast(
             let exposure = 0.5 * in_sight(spatial, at_bevy, coords::pos((pl + Vec3::Z * PLAYER_HEAD).to_array())) as u8 as f32
                 + 0.5 * in_sight(spatial, at_bevy, coords::pos(pl.to_array())) as u8 as f32;
             let scale = (1.0 - ((dist - PLAYER_RADIUS) / b.radius).max(0.0)) * exposure;
-            self_damage = (scale * b.damage * 0.5).floor();
-            if self_damage > 0.0 {
+            let raw = scale * b.damage;
+            self_damage = crate::combat::reduce_self_damage(raw);
+            if raw >= 1.0 {
                 player_damage.write(crate::combat::PlayerDamaged {
-                    amount: self_damage,
-                    zed_id: usize::MAX,
+                    amount: raw,
+                    zed_id: crate::combat::SELF_DAMAGE,
                     kind: crate::combat::HurtKind::Plain,
                 });
             }

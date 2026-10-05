@@ -2385,3 +2385,19 @@ skeleton. Crisped skins, burn sounds, pain-animation rule not done. The
 MAC10 stays non-burning (KF with no perk). Bloat / Husk fire scales only
 by unit test (no weapon in W7a uses those damage types).
 **Next:** W7b, the Flamethrower.
+
+## 2026-10-04 Fix: own damage x 0.25 at Normal
+
+**Changed:** `combat.rs`: `reduce_self_damage`, `SELF_DAMAGE`;
+`apply_player_damage` reduces own damage (and the burn ticks it starts).
+`projectile.rs`: `blast` sends the raw damage. DESIGN.
+**Why:** Found while reading KFGameType.ReduceDamage for W7b: in single
+player at Normal it halves your own damage twice (instigator == injured,
+then GameDifficulty <= 3 in standalone). W6 halved it once.
+**Tested how:** unit test `own_damage_is_quartered_at_normal`; `cargo
+test --release --workspace`.
+**Result:** A full M79 blast on yourself: 87 instead of 175. Tests 54 +
+21 pass.
+**Still broken / not tested:** Not checked in a run (the frag test
+landed out of range). Difficulty is fixed at Normal.
+**Next:** W7b, the Flamethrower.
