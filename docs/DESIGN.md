@@ -2225,7 +2225,7 @@ Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
 (HUD milestone), door respawn (waves milestone), other movers.
 
-## Game loop: waves, trader, door respawns (milestone 9, planned 2026-10-05; G1 implemented)
+## Game loop: waves, trader, door respawns (milestone 9, planned 2026-10-05; G1, G2a implemented)
 
 Goal: play a KF game solo: waves of zeds from the map's spawn volumes, the
 trader between waves with dosh to spend, broken doors back each wave, the
@@ -2293,10 +2293,12 @@ KFGameLength=0) is Short.
   won / lost; zeds per wave and squads (the squad tables and masks from
   the class defaults); a HUD line (wave, zeds left, countdown). Spawning
   in G1 is simple (random ZombieVolume centre) to get the loop running.
-- **G2, ZombieVolume spawning.** Read the volumes (with their array
+- **G2a, ZombieVolume spawning.** Read the volumes (with their array
   properties: RoomDoorsList, DisallowedZeds, OnlyAllowedZeds), the spawn
-  point grid, the rating and refusals, sight checks, timing (sine), the
-  stuck-zed cleanup, damage x 0.75.
+  point grid, the rating and refusals, sight checks.
+- **G2b, being seen.** LastSeenOrRelevantTime, HiddenGroundSpeed (unseen
+  zeds move at 300), the stuck-zed cleanup, zed damage x 0.75 for one
+  player (MeleeDamage, ScreamDamage, SpinDam; whole numbers, at least 1).
 - **G3, the Patriarch wave.** Boss spawn rules, his helper squads when he
   runs off to heal (FinalSquads), the win.
 - **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
@@ -2327,6 +2329,48 @@ action `restart_game`) clears the zeds and starts over (the debug respawn
 at the start is kept). Test aids: `--wave N` (start at wave N; one past
 the last is the Patriarch), test actions `next_wave` (end the countdown)
 and `kill_zeds`. HUD: wave, zeds left, countdown.
+
+**G2a as built (`zvolume.rs`).** Volumes read with their class defaults
+(SpawnDesirability 3000, MinDistanceToPlayer 600, TouchDisableTime 10,
+the b*Zeds flags...), the brush polygons in world space (Encompasses:
+point inside by ray parity), RoomDoorsList (door by object name),
+DisallowedZeds / OnlyAllowedZeds (class names; each wave zed's chain is
+checked with ClassDefaults.is_a), each zed's ZombieFlag and cylinder.
+Spawn points are built on the first wave tick (colliders exist then).
+Native SetLocation's move to a free spot is approximated by lifting the
+26 x 44 tester up to 44 units: without it 5 KF-Manor volumes, whose pivots
+sit 20-42 above the terrain, had no points. `game.rs`: FindSpawningVolume
+(LastSpawningVolume x 0.2, refusal reasons logged when none is left),
+SpawnInHere (type filter edits the squad in place: refused zeds are lost,
+as in KF; ZombieCountMulti; 3 random points the player cannot see;
+native Spawn's fit test approximated by the zed's own cylinder not
+overlapping the level, raised to stand where the tester stood), the
+failed / TryToSpawnInAnotherVolume path, Touch disabling a volume for 10 s
+when the player walks in. Distance fog is not modelled (KF skips the
+sight test beyond DistanceFogEnd).
+
+**Fix while testing G2a (you found zeds stuck behind the tall fence
+behind the KF-WestLondon start).** That spawn area is a pocket left by a
+JumpPad: UTJumppad0 throws zeds over the fence (JumpVelocity (-268, 254,
+729), JumpZModifier 3.7) to PathNode111, and every other link out of it is
+a jump (R_JUMP) link. Our nav had dropped both (jump and special links),
+so the pocket was cut off (`nav_groups` now logs connected groups: 11
+groups before, 1 after). Now: R_JUMP links are used (the start-up check
+drops the ones our zeds cannot jump); JumpPads are read from the map
+(`NavNetwork::add_jump_pads`; KF-WestLondon has 6), their pad -> target
+link skips the check, and a zed touching a pad (40 x 43 cylinder) is
+thrown with its JumpVelocity (JumpPad.PostTouch). Launched from the pad's
+centre: KF launches on first touch (up to 66 units off), which on that
+pad hits the fence top; the editor computed the velocity from the centre,
+and whatever native detail gets KF's zeds over is not known
+(approximation). Players are not thrown yet. Also fixed in `walk.rs`
+(shared by the player and zeds): a sweep along a surface the cylinder
+touches reported a hit at distance 0 (walking flickered into falling
+against walls; a falling zed sliding down a wall in a corner stuck in the
+air); such a hit is now re-swept from a skin off the surface, on
+whichever side is free. Still seen on KF-WestLondon: 2 of 20 zeds wedged
+in the falling state in tight spots (two surfaces at once); KF's answer
+to stuck zeds is the cleanup in G2b.
 
 Not in this milestone: pickups lying in the map (SetupPickups), dropped
 weapons, perks, multiplayer, voice lines and sounds.

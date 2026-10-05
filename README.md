@@ -164,8 +164,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   countdown, waves of 20 / 32 / 35 / 42 zeds (Short) drawn from KF's squad
   tables, at most 32 alive, 60 s between waves, the Patriarch last; win or
   die, Enter starts again. The HUD shows the wave, zeds left and the
-  countdown. Zeds still appear at the middle of a random spawn area,
-  including ones you can see (G2 will do KF's spawn rules). Checked by
+  countdown. Zeds come from the map's spawn areas by KF's rules (G2a):
+  never where you can see the spot or within 600 units, not from areas
+  behind a welded door, spread over the map. Jump pads throw zeds into
+  the map (KF-WestLondon's fence behind the start). Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.
@@ -417,8 +419,9 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Broken doors never come back (no waves yet). Breakable windows and scripted
   movers (lifts, barriers, KF-Aperture's button doors) do not move and do
   not block.
-- Pressing into a wall or door flickers between walking and falling (the
-  floor check touches the wall); found 2026-10-05, not fixed yet.
+- Zeds can wedge in tight spots and hang in the air (2 of 20 in a
+  KF-WestLondon test); KF's stuck-zed cleanup comes with G2b.
+- Jump pads throw zeds only, not the player.
 - No crouching. Ladders, water and swimming are not handled.
 - No sound.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be

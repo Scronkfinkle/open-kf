@@ -7,7 +7,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use ue_assets::nav::{NavGraph, R_DOOR, R_FORCED, R_WALK};
+use ue_assets::nav::{NavGraph, R_DOOR, R_FORCED, R_JUMP, R_WALK};
 
 use crate::coords::{self, SCALE};
 use crate::runlog;
@@ -45,12 +45,33 @@ pub struct NavNetwork {
     /// NavigationPoint.ExtraCost per point, added when a route enters it
     /// (KFDoorMover raises its DoorPathNode's while welded, door.rs).
     pub extra_cost: Vec<f32>,
+    /// JumpPads: touching one launches a pawn at its JumpTarget.
+    pub jump_pads: Vec<JumpPad>,
 }
 
+/// A JumpPad (UTJumppad): a navigation point that throws pawns touching
+/// it (CollisionRadius 40, CollisionHeight 43, NavigationPoint defaults)
+/// with the JumpVelocity the editor saved, toward JumpTarget
+/// (JumpPad.PostTouch). Its link to the target is a special link the
+/// walk check leaves alone.
+#[derive(Clone, Copy, Debug)]
+pub struct JumpPad {
+    pub point: usize,
+    pub target: usize,
+    /// Bevy space, metres per second.
+    pub velocity: Vec3,
+}
+
+/// JumpPad touch cylinder (NavigationPoint CollisionRadius / Height).
+pub const JUMP_PAD_RADIUS: f32 = 40.0;
+pub const JUMP_PAD_HALF_HEIGHT: f32 = 43.0;
+
 impl NavNetwork {
-    /// Links a 24 x 44 zed may walk: walk / forced / door flags only (no
-    /// jump, fly, swim, ladder, special, proscribed or player-only: our zeds
-    /// cannot jump yet) and wide and tall enough.
+    /// Links a 24 x 44 zed may take: walk / forced / door / jump flags only
+    /// (no fly, swim, ladder, special, proscribed or player-only) and wide
+    /// and tall enough. Jump links (R_JUMP, e.g. over the KF-WestLondon
+    /// fence behind the start) need the zeds' jumps; the start-up check
+    /// drops those our zeds cannot make.
     pub fn from_graph(g: &NavGraph) -> Self {
         let points = g
             .nodes
@@ -63,7 +84,7 @@ impl NavNetwork {
         let mut links = vec![Vec::new(); points.len()];
         let mut used = 0;
         for e in &g.edges {
-            if e.flags & !(R_WALK | R_FORCED | R_DOOR) == 0 && e.radius >= HUNT_RADIUS && e.height >= HUNT_HALF_HEIGHT && !e.pruned {
+            if e.flags & !(R_WALK | R_FORCED | R_DOOR | R_JUMP) == 0 && e.radius >= HUNT_RADIUS && e.height >= HUNT_HALF_HEIGHT && !e.pruned {
                 links[e.from].push((e.to, e.distance.max(1.0)));
                 used += 1;
             }
@@ -80,7 +101,61 @@ impl NavNetwork {
             ),
         );
         let extra_cost = vec![0.0; points.len()];
-        NavNetwork { points, links, extra_cost }
+        NavNetwork {
+            points,
+            links,
+            extra_cost,
+            jump_pads: Vec::new(),
+        }
+    }
+
+    /// Reads the map's JumpPads (any class named *Jumppad) and adds each
+    /// pad -> JumpTarget link.
+    pub fn add_jump_pads(&mut self, pkg: &ue_assets::package::Package) {
+        use ue_assets::properties::{Value, read_export_properties};
+        let index = |name: &str| self.points.iter().position(|p| p.name.eq_ignore_ascii_case(name));
+        let mut pads = Vec::new();
+        for i in 0..pkg.exports.len() {
+            if !pkg.export_class_name(i).to_ascii_lowercase().ends_with("jumppad") {
+                continue;
+            }
+            let Ok(props) = read_export_properties(pkg, i) else { continue };
+            let name = pkg.object_name(ue_assets::package::ObjectRef::Export(i)).to_string();
+            let (Some(Value::Vector(v)), Some(Value::Object(t))) = (props.get(pkg, "JumpVelocity"), props.get(pkg, "JumpTarget")) else {
+                continue;
+            };
+            let (Some(point), Some(target)) = (index(&name), index(pkg.object_name(*t))) else {
+                continue;
+            };
+            pads.push(JumpPad {
+                point,
+                target,
+                velocity: coords::dir(*v) * SCALE,
+            });
+            if !self.links[point].iter().any(|&(b, _)| b == target) {
+                let d = (self.points[target].pos - self.points[point].pos).length() / SCALE;
+                self.links[point].push((target, d.max(1.0)));
+            }
+        }
+        runlog::kv(
+            "nav_jump_pads",
+            &format!(
+                "pads=[{}]",
+                pads.iter()
+                    .map(|p| {
+                        let v = p.velocity / SCALE;
+                        format!("{}->{} up={:.0}", self.points[p.point].name, self.points[p.target].name, v.y)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        );
+        self.jump_pads = pads;
+    }
+
+    /// The pad -> target links skip the walk check.
+    fn is_pad_link(&self, a: usize, b: usize) -> bool {
+        self.jump_pads.iter().any(|p| p.point == a && p.target == b)
     }
 
     /// Points within `range` metres of `p`, nearest first.
@@ -276,6 +351,11 @@ fn check_links_once(
     for (a, links) in nav.links.iter().enumerate() {
         let mut keep = Vec::new();
         for &(b, cost) in links {
+            if nav.is_pad_link(a, b) {
+                ok += 1;
+                keep.push((b, cost));
+                continue;
+            }
             // Checked at the Clot's and Gorefast's hunting size (26 x 44).
             match probe(&spatial, nav.points[a].pos, nav.points[b].pos, HUNT_RADIUS, 26.0, HUNT_HALF_HEIGHT) {
                 Ok(()) => {
@@ -317,6 +397,37 @@ fn check_links_once(
     for f in &failed {
         runlog::kv("nav_link_unwalkable", f);
     }
+    // Which points can reach each other over the links zeds use (one-way
+    // links count both ways here): the groups, largest first.
+    let n = nav.points.len();
+    let mut group = vec![usize::MAX; n];
+    let mut sizes = Vec::new();
+    for start in 0..n {
+        if group[start] != usize::MAX {
+            continue;
+        }
+        let g = sizes.len();
+        let mut stack = vec![start];
+        group[start] = g;
+        let mut size = 0;
+        while let Some(a) = stack.pop() {
+            size += 1;
+            let next: Vec<usize> = nav.links[a].iter().map(|&(b, _)| b).chain((0..n).filter(|&b| nav.links[b].iter().any(|&(c, _)| c == a))).collect();
+            for b in next {
+                if group[b] == usize::MAX {
+                    group[b] = g;
+                    stack.push(b);
+                }
+            }
+        }
+        sizes.push(size);
+    }
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&g| std::cmp::Reverse(sizes[g]));
+    runlog::kv(
+        "nav_groups",
+        &format!("groups={} sizes={:?}", sizes.len(), order.iter().map(|&g| sizes[g]).take(12).collect::<Vec<_>>()),
+    );
 }
 
 /// Where a hunting zed is heading.

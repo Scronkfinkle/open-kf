@@ -198,7 +198,30 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
     }
 
     /// Sweeps the cylinder from `from` along `dir` for up to `max` metres.
+    ///
+    /// A surface the cylinder is touching (within the skin) is reported at
+    /// distance 0 even when the move runs along it or away from it. Such a
+    /// hit is not a block: the sweep is repeated from a skin off that
+    /// surface. Without this, a pawn pressed against a wall found no floor
+    /// below (walking flickered into falling) and a pawn falling down a
+    /// wall in a corner stuck in the air.
     pub fn cast(&self, from: Vec3, dir: Vec3, max: f32) -> Option<Hit> {
+        let hit = self.cast_once(from, dir, max)?;
+        if hit.distance > 1e-5 || hit.normal.dot(dir) < -0.1 {
+            return Some(hit);
+        }
+        // Moving along the surface. The normal's side is not known (two-sided
+        // triangles), so push off to whichever side is free.
+        let off = hit.normal * kf::SKIN * SCALE;
+        for start in [from + off, from - off] {
+            if self.spatial.shape_intersections(&self.shape, start, Quat::IDENTITY, &self.filter).is_empty() {
+                return self.cast_once(start, dir, max);
+            }
+        }
+        Some(hit)
+    }
+
+    fn cast_once(&self, from: Vec3, dir: Vec3, max: f32) -> Option<Hit> {
         let dir3 = Dir3::new(dir).ok()?;
         let config = ShapeCastConfig {
             max_distance: max,

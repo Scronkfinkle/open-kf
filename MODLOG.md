@@ -2751,3 +2751,56 @@ no wave data. Tests 69 + 21.
 view, some spots may be bad): G2. No stuck-zed cleanup, no x 0.75 zed
 damage yet (G2). The Patriarch's own wave rules: G3. Not played.
 **Next:** G2, KF's spawn volume rules.
+
+## 2026-10-05 Game loop G2a: ZombieVolume spawning
+
+**Changed:** New `zvolume.rs`: ZombieVolumes from the map (settings,
+brush shape, RoomDoorsList, allowed / disallowed zeds), spawn point grid,
+RateZombieVolume, PlayerCanSeePoint, Touch. `game.rs`: GameData holds
+the volumes and zed info; FindSpawningVolume, SpawnInHere, failed spawns;
+`SpawnZedAt` now gives the cylinder centre. `zed.rs`: uses it. DESIGN
+(G2 split into G2a / G2b), README.
+**Why:** G2 of the game-loop plan (you asked for the spawn rules next).
+**Tested how:** unit tests (inside a brush, zed type filters); KF-Manor
+runs: wave 1 and wave 3 with `kill_zeds`; `cargo test --release
+--workspace`; clippy.
+**Result:** 39 volumes, all with spawn points (3 to 121). Wave 1: squads
+from volumes 942-1958 units away; wave 3: 11 squads, 942-7097 (median
+1773), no failed or dropped squads; the Crawler / Stalker-only volumes
+(38, 39) took squads with a Crawler and dropped the rest, as KF does.
+Tests 71 + 21.
+**Failures on the way:** 5 volumes had no spawn points: their pivots sit
+20-42 units above the terrain and the 44-high tester overlapped it.
+Lifting the tester (standing in for native SetLocation) fixed it.
+**Still broken / not tested:** Not played. Distance fog ignored. The
+native placement and Spawn fit tests are approximations. Hidden speed,
+stuck-zed cleanup and the x 0.75 damage are G2b.
+**Next:** G2b.
+
+## 2026-10-05 Fix: zeds stuck behind the KF-WestLondon fence (jump pads); wall flicker
+
+**Changed:** `nav.rs`: R_JUMP links used; JumpPads read (`add_jump_pads`)
+with their pad -> target links kept; `nav_groups` log. `map.rs`: loads
+the pads. `zed.rs`: a zed touching a pad is thrown with its JumpVelocity
+from the pad's centre; `ZedWorld` system param (clippy). `walk.rs`:
+`Mover::cast` re-sweeps a distance-0 hit on a surface the move runs along.
+`game.rs`: clippy fixes. DESIGN, README.
+**Why:** You saw zeds stuck at the tall fence behind the KF-WestLondon
+start and remembered they jump high over it in KF.
+**Tested how:** KF-WestLondon wave 1 runs (god mode, standing at the
+start), logged routes, launches and positions; KF-Manor: walking into a
+wall and into the shut door, a Clot opening the door. Tests, clippy.
+**Result:** Before: the 5 zeds from ZombieVolume12 had no route
+(`zed_path_none`), nav groups 11 (the pocket cut off). After: 1 group;
+each of the 5 launched once from UTJumppad0 (up 729) and reached the
+player. Pressing into a wall: 0 frames airborne (it flickered before).
+Door still blocks at x -1544; the Clot still opens it. Tests 71 + 21,
+clippy clean.
+**Failures on the way:** launched where the zed first touched the pad,
+the arc hit the fence top and zeds fell back and relaunched; launching
+from the pad's centre (where the editor computed the arc from) clears it.
+My clippy check earlier missed warnings from G1 (now fixed).
+**Still broken / not tested:** 2 of 20 zeds still wedge in tight spots
+(two surfaces at once) on KF-WestLondon; the pad launch point is an
+approximation; players are not thrown by pads.
+**Next:** commit G2a with this fix; then G2b.

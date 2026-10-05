@@ -357,7 +357,9 @@ fn load_map(
     if game_options.mode == crate::game::GameMode::Waves {
         commands.insert_resource(crate::game::load_game_data(&set, &class_defaults, &lp, game_options.length));
     }
-    commands.insert_resource(crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg)));
+    let mut nav = crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg));
+    nav.add_jump_pads(&lp.pkg);
+    commands.insert_resource(nav);
     runlog::kv(
         "class_defaults",
         &format!(

@@ -519,6 +519,8 @@ pub struct Zed {
     /// The path point last checked for a welded door in the way (Bloat,
     /// Husk), Bevy space.
     door_checked: Option<Vec3>,
+    /// The JumpPad being touched (Touch fires on entering).
+    on_pad: Option<usize>,
 }
 
 /// One damage event, for gore effects (KFMonster.DoDamageFX). Bevy space.
@@ -2387,6 +2389,7 @@ impl Zed {
             jump_cooldown: 0.0,
             door_bash: None,
             door_checked: None,
+            on_pad: None,
             pouncing: false,
             since_pounce: f32::MAX,
             can_flip: true,
@@ -2764,6 +2767,7 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 jump_cooldown: 0.0,
                 door_bash: None,
                 door_checked: None,
+                on_pad: None,
                 pouncing: false,
                 since_pounce: f32::MAX,
                 can_flip: !c.no_flip,
@@ -2870,8 +2874,7 @@ fn spawn_zeds(
             runlog::kv("zed_spawn_failed", &format!("reason=class_not_loaded class={}", w.class));
             continue;
         };
-        let c = &classes.0[class];
-        let centre = coords::pos(w.floor.to_array()) + Vec3::Y * (c.collision_height + 1.0) * SCALE;
+        let centre = coords::pos(w.centre.to_array());
         spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, w.yaw);
         *next_id += 1;
     }
@@ -2957,6 +2960,16 @@ fn spawn_zeds(
     }
 }
 
+/// Doors and game messages `think_and_move` uses.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ZedWorld<'w, 's> {
+    doors: Res<'w, crate::door::Doors>,
+    door_colliders: Query<'w, 's, &'static crate::door::DoorCollider>,
+    door_hits: MessageWriter<'w, crate::door::ZedDoorHit>,
+    door_blasts: MessageWriter<'w, crate::door::DoorBlast>,
+    clear_zeds: MessageReader<'w, 's, crate::game::ClearZeds>,
+}
+
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn think_and_move(
     mut commands: Commands,
@@ -2978,15 +2991,11 @@ fn think_and_move(
     nav: Res<crate::nav::NavNetwork>,
     script: Res<crate::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
-    (doors, door_colliders, mut door_hits, mut door_blasts, mut clear_zeds): (
-        Res<crate::door::Doors>,
-        Query<&crate::door::DoorCollider>,
-        MessageWriter<crate::door::ZedDoorHit>,
-        MessageWriter<crate::door::DoorBlast>,
-        MessageReader<crate::game::ClearZeds>,
-    ),
+    mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds } = &mut world;
+    let (doors, door_colliders) = (&*doors, &*door_colliders);
     let Some(classes) = classes else {
         return;
     };
@@ -3217,7 +3226,7 @@ fn think_and_move(
         }
         if z.state == ZedState::DoorBashing {
             if active.0 {
-                door_bashing(&mut z, c, dt, &doors, &spatial, target, &mut door_hits);
+                door_bashing(&mut z, c, dt, doors, &spatial, target, door_hits);
             }
             t.translation = z.centre;
             continue;
@@ -4004,6 +4013,36 @@ fn think_and_move(
                 runlog::kv("crawler_pounce_hit", &format!("id={} damage={amount:.1}", z.id));
             }
         }
+        // JumpPad.Touch / PostTouch: a pawn touching a pad is thrown with
+        // its JumpVelocity (falling), heading for its JumpTarget.
+        let touching_pad = nav.jump_pads.iter().position(|p| {
+            let d = nav.points[p.point].pos - z.centre;
+            d.with_y(0.0).length() / SCALE < crate::nav::JUMP_PAD_RADIUS + c.collision_radius
+                && (d.y / SCALE).abs() < crate::nav::JUMP_PAD_HALF_HEIGHT + c.collision_height
+        });
+        if let Some(i) = touching_pad
+            && z.on_pad != Some(i)
+            && z.health > 0.0
+        {
+            let pad = nav.jump_pads[i];
+            // Launched from the pad's centre: the editor worked JumpVelocity
+            // out for a jump from there. KF launches where the zed first
+            // touches (up to 66 units off), which on the KF-WestLondon
+            // fence pad hits the fence; whatever native detail gets KF's
+            // zeds over is not known, so this is an approximation.
+            let pc = nav.points[pad.point].pos;
+            z.centre = Vec3::new(pc.x, z.centre.y, pc.z);
+            z.state = ZedState::Falling;
+            z.vertical_speed = pad.velocity.y;
+            z.air_velocity = pad.velocity.with_y(0.0);
+            z.yaw = yaw_of(pad.velocity.with_y(0.0));
+            z.attack = None;
+            runlog::kv(
+                "zed_jump_pad",
+                &format!("id={} pad={} target={} up_unreal={:.0}", z.id, nav.points[pad.point].name, nav.points[pad.target].name, pad.velocity.y / SCALE),
+            );
+        }
+        z.on_pad = touching_pad;
         if z.state == ZedState::Falling {
             // PHYS_Falling: gravity, the horizontal velocity kept (AirControl
             // 0.05 is not applied), sliding along whatever is hit.

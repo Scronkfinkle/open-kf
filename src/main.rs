@@ -9,6 +9,7 @@ mod door;
 mod fireball;
 mod firing;
 mod game;
+mod zvolume;
 mod gore;
 mod map;
 mod nav;

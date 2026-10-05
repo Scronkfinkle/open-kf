@@ -14,7 +14,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use ue_assets::class_defaults::ClassDefaults;
 use ue_assets::package_set::{LoadedPackage, PackageSet};
-use ue_assets::properties::{PropertyList, Value, read_export_properties, string_array, struct_array};
+use ue_assets::properties::{Value, read_export_properties, string_array, struct_array};
 
 use crate::coords::{self, SCALE};
 use crate::runlog;
@@ -74,14 +74,6 @@ pub struct WaveConfig {
     pub max_monsters: i32,
 }
 
-/// A ZombieVolume (G1: only where it is).
-#[derive(Clone, Debug)]
-pub struct SpawnVolume {
-    pub name: String,
-    /// Unreal units.
-    pub location: [f32; 3],
-}
-
 /// Everything the wave loop reads from the game's classes and the map.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct GameData {
@@ -93,7 +85,11 @@ pub struct GameData {
     pub boss_class: String,
     /// KFLevelRules.WaveSpawnPeriod (the map's, else the class default 2).
     pub spawn_period: f32,
-    pub volumes: Vec<SpawnVolume>,
+    pub volumes: Vec<crate::zvolume::ZombieVolume>,
+    /// ZombieFlag, size and class names of every zed the waves use.
+    pub zeds: std::collections::HashMap<String, crate::zvolume::ZedInfo>,
+    /// Spawn points are built once the level's colliders exist.
+    pub points_ready: bool,
 }
 
 /// KFGameType defaults for Normal difficulty.
@@ -126,7 +122,7 @@ pub fn parse_squad(s: &str, letters: &[(String, String)]) -> Vec<String> {
 
 fn int_array(value: Option<&Value>) -> Vec<i32> {
     match value {
-        Some(Value::Array { count, raw }) => raw.chunks_exact(4).take(*count).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect(),
+        Some(Value::Array { count, raw }) => raw.as_chunks::<4>().0.iter().take(*count).map(|b| i32::from_le_bytes(*b)).collect(),
         _ => Vec::new(),
     }
 }
@@ -200,33 +196,25 @@ pub fn load_game_data(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
         Some((Value::Str(s), _)) => s,
         _ => "KFChar.ZombieBoss_STANDARD".into(),
     };
-    // The map: ZombieVolumes (not bObjectiveModeOnly) and KFLevelRules.
+    // The map: KFLevelRules and the ZombieVolumes.
     let pkg = &map.pkg;
     for i in 0..pkg.exports.len() {
-        let class = pkg.export_class_name(i);
-        if class != "ZombieVolume" && class != "KFLevelRules" {
+        if pkg.export_class_name(i) != "KFLevelRules" {
             continue;
         }
-        let Ok(props) = read_export_properties(pkg, i) else { continue };
-        let get = |p: &PropertyList, n: &str| p.get(pkg, n).cloned();
-        if class == "KFLevelRules" {
-            if let Some(Value::Float(f)) = get(&props, "WaveSpawnPeriod") {
-                data.spawn_period = f;
-            }
-            continue;
+        if let Ok(props) = read_export_properties(pkg, i)
+            && let Some(Value::Float(f)) = props.get(pkg, "WaveSpawnPeriod")
+        {
+            data.spawn_period = *f;
         }
-        if matches!(get(&props, "bObjectiveModeOnly"), Some(Value::Bool(true))) {
-            continue;
-        }
-        let location = match get(&props, "Location") {
-            Some(Value::Vector(v)) => v,
-            _ => continue,
-        };
-        data.volumes.push(SpawnVolume {
-            name: pkg.object_name(ue_assets::package::ObjectRef::Export(i)).to_string(),
-            location,
-        });
     }
+    let mut classes: Vec<String> = data.squads.iter().chain(data.special.iter()).flatten().cloned().collect();
+    classes.push(data.boss_class.clone());
+    classes.sort();
+    classes.dedup();
+    let (volumes, zeds) = crate::zvolume::load(set, defaults, map, &classes);
+    data.volumes = volumes;
+    data.zeds = zeds;
     runlog::kv(
         "game_data",
         &format!(
@@ -272,6 +260,8 @@ pub struct WaveGame {
     wave_time_elapsed: f32,
     /// LastZVol: the volume a squad is being spawned in.
     last_volume: Option<usize>,
+    /// LastSpawningVolume (rated x 0.2 next time).
+    last_spawning_volume: Option<usize>,
     /// The Timer's next tick (game seconds).
     next_tick: f32,
     pub living: usize,
@@ -295,6 +285,7 @@ impl Default for WaveGame {
             next_monster_time: 0.0,
             wave_time_elapsed: 0.0,
             last_volume: None,
+            last_spawning_volume: None,
             next_tick: 1.0,
             living: 0,
             rng: 0x2545_F491,
@@ -383,12 +374,12 @@ impl WaveGame {
     }
 }
 
-/// A zed for `zed.rs` to spawn: class path, the floor point it stands on
-/// (Unreal units), yaw (Unreal rotation units).
+/// A zed for `zed.rs` to spawn: class path, its cylinder centre (Unreal
+/// units), yaw (Unreal rotation units).
 #[derive(Message, Clone, Debug)]
 pub struct SpawnZedAt {
     pub class: String,
-    pub floor: Vec3,
+    pub centre: Vec3,
     pub yaw: f32,
 }
 
@@ -412,22 +403,13 @@ impl Plugin for GamePlugin {
     }
 }
 
-/// Where a squad member can stand in volume `v` (G1: the volume's pivot,
-/// spread on a 60-unit row, dropped to the floor). Unreal units.
-fn spawn_spot(spatial: &SpatialQuery, data: &GameData, v: usize, k: usize) -> Option<Vec3> {
-    let l = data.volumes[v].location;
-    let offset = (k as f32 - 2.0) * 60.0;
-    let p = Vec3::new(l[0] + offset, l[1], l[2]);
-    let from = coords::pos(p.to_array());
-    let hit = spatial.cast_ray(from, Dir3::NEG_Y, 400.0 * SCALE, true, &crate::collision::world_filter())?;
-    Some(p - Vec3::Z * (hit.distance / SCALE))
-}
+type PlayerQuery<'w, 's> = Query<'w, 's, (&'static Transform, Option<&'static crate::walk::Walker>), With<crate::camera::FlyCamera>>;
 
 #[allow(clippy::too_many_arguments)]
 fn wave_timer(
     time: Res<Time>,
     options: Res<GameOptions>,
-    data: Option<Res<GameData>>,
+    data: Option<ResMut<GameData>>,
     mut game: ResMut<WaveGame>,
     mut hud: ResMut<WaveHud>,
     zeds: Query<&crate::zed::Zed>,
@@ -437,15 +419,49 @@ fn wave_timer(
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
+    (player, doors): (PlayerQuery, Res<crate::door::Doors>),
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
         return;
     }
     // Test action "next_wave": the countdown ends at the next tick.
     let skip = script.0.iter().any(|(f, a)| *f == frames.0 && a == "next_wave");
-    let Some(data) = data else { return };
+    let Some(mut data) = data else { return };
     let now = time.elapsed_secs();
     let g = &mut *game;
+    let data = &mut *data;
+    // The player's cylinder centre, Unreal units.
+    let Ok((cam, walker)) = player.single() else { return };
+    let centre = walker.map_or(cam.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center);
+    let view = crate::zvolume::PlayerView {
+        location: Vec3::new(-centre.z, centre.x, centre.y) / SCALE,
+    };
+    if !data.points_ready {
+        data.points_ready = true;
+        let mut empty = Vec::new();
+        for v in data.volumes.iter_mut() {
+            v.init_spawn_points(&spatial);
+            if v.spawn_pos.is_empty() {
+                empty.push(v.name.clone());
+            }
+        }
+        runlog::kv(
+            "zvolume_points",
+            &format!(
+                "volumes={} points={:?} without_points=[{}]",
+                data.volumes.len(),
+                data.volumes.iter().map(|v| v.spawn_pos.len()).collect::<Vec<_>>(),
+                empty.join(" ")
+            ),
+        );
+    }
+    crate::zvolume::touch(&mut data.volumes, &view, now);
+    let ctx = SpawnCtx {
+        spatial: &spatial,
+        player: view,
+        doors: &doors,
+        now,
+    };
     // After a win or a loss, Enter (test action "restart_game") starts over.
     let restart = keys.just_pressed(KeyCode::Enter) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
     if restart && matches!(g.phase, Phase::Won | Phase::Lost) {
@@ -493,14 +509,16 @@ fn wave_timer(
     match g.phase {
         Phase::Won | Phase::Lost => {}
         Phase::BossWave => {
-            // StartWaveBoss / AddBoss (G3 adds the boss's own rules).
+            // StartWaveBoss / AddBoss: a volume rated for the boss (G3 adds
+            // the rest of the boss's own rules).
             if g.total_max_monsters > 0 {
-                if let Some(v) = (!data.volumes.is_empty()).then(|| g.rand(data.volumes.len()))
-                    && let Some(at) = spawn_spot(&spatial, &data, v, 2)
-                {
-                    spawns.write(SpawnZedAt { class: data.boss_class.clone(), floor: at, yaw: 0.0 });
-                    g.total_max_monsters = 0;
-                    runlog::kv("boss_spawned", &format!("volume={}", data.volumes[v].name));
+                g.next_squad = vec![data.boss_class.clone()];
+                if let Some(v) = find_volume(g, data, &ctx, true) {
+                    let n = spawn_in_here(g, data, v, &ctx, num_monsters, &mut spawns);
+                    if n > 0 {
+                        g.last_volume = Some(v);
+                        runlog::kv("boss_spawned", &format!("volume={}", data.volumes[v].name));
+                    }
                 }
             } else if num_monsters <= 0 {
                 do_wave_end(g);
@@ -513,8 +531,8 @@ fn wave_timer(
                     do_wave_end(g);
                 }
             } else if now > g.next_monster_time && num_monsters + g.next_squad.len() as i32 <= g.max_monsters {
-                add_squad(g, &data, num_monsters, &spatial, &mut spawns);
-                g.next_monster_time = if g.next_squad.is_empty() { now + g.next_squad_time(&data, options.length) } else { now + 0.2 };
+                add_squad(g, data, num_monsters, &ctx, &mut spawns);
+                g.next_monster_time = if g.next_squad.is_empty() { now + g.next_squad_time(data, options.length) } else { now + 0.2 };
             }
         }
         Phase::Countdown => {
@@ -539,59 +557,170 @@ fn wave_timer(
                     runlog::kv("wave_start", &format!("wave=boss class={}", data.boss_class));
                 } else {
                     g.phase = Phase::Wave;
-                    g.setup_wave(&data);
+                    g.setup_wave(data);
                 }
             }
         }
     }
 }
 
+/// What spawning needs to know about the world this tick.
+struct SpawnCtx<'a, 'w, 's> {
+    spatial: &'a SpatialQuery<'w, 's>,
+    player: crate::zvolume::PlayerView,
+    doors: &'a crate::door::Doors,
+    now: f32,
+}
+
+/// FindSpawningVolume: the best-rated volume for the squad in
+/// `next_squad` (refused volumes skipped).
+fn find_volume(g: &mut WaveGame, data: &GameData, ctx: &SpawnCtx, boss: bool) -> Option<usize> {
+    let door_state = |name: &str| {
+        ctx.doors
+            .doors
+            .iter()
+            .find(|d| d.info.name.eq_ignore_ascii_case(name))
+            .map(|d| (d.sealed, d.key_num == 0))
+    };
+    let mut best: Option<(usize, f32)> = None;
+    let mut refused: std::collections::BTreeMap<&str, usize> = Default::default();
+    for (i, v) in data.volumes.iter().enumerate() {
+        let frand = g.frand();
+        match crate::zvolume::rate(ctx.spatial, v, g.last_spawning_volume == Some(i), boss, &g.next_squad, &data.zeds, &door_state, &ctx.player, ctx.now, frand) {
+            Ok(score) => {
+                if best.is_none_or(|(_, b)| score > b) {
+                    best = Some((i, score));
+                }
+            }
+            Err(why) => *refused.entry(why).or_default() += 1,
+        }
+    }
+    if best.is_none() {
+        runlog::kv("zvolume_none", &format!("refused={refused:?}"));
+    }
+    best.map(|(i, _)| i)
+}
+
+/// ZombieVolume.SpawnInHere: drop the squad's zeds this volume does not
+/// allow (they are lost, as in KF: the squad array is edited in place), then
+/// up to TotalMaxMonsters and MaxMonsters - NumMonsters zeds, each at one
+/// of 3 random spawn points the player cannot see. Native Spawn's fit test:
+/// the zed's own cylinder must not overlap the level (raised so a taller
+/// zed stands where the 44-high tester stood). Returns how many spawned.
+fn spawn_in_here(g: &mut WaveGame, data: &mut GameData, v: usize, ctx: &SpawnCtx, num_monsters: i32, spawns: &mut MessageWriter<SpawnZedAt>) -> usize {
+    let vol = &data.volumes[v];
+    let before = g.next_squad.len();
+    g.next_squad.retain(|c| vol.allows(&data.zeds, c));
+    if g.next_squad.len() < before {
+        runlog::kv("squad_filtered", &format!("volume={} removed={}", vol.name, before - g.next_squad.len()));
+    }
+    // ZombieCountMulti (1 on every KF-Manor volume).
+    let multi = vol.zombie_count_multi;
+    if multi < 1.0 {
+        let n = ((g.next_squad.len() as f32 * multi) as usize).max(1);
+        g.next_squad.truncate(n);
+    } else if multi > 1.0 {
+        let f = g.frand();
+        let n = ((g.next_squad.len() as f32 * (multi / 2.0 + multi * f)) as usize).max(g.next_squad.len());
+        while g.next_squad.len() < n {
+            let k = g.rand(g.next_squad.len());
+            let c = g.next_squad[k].clone();
+            g.next_squad.push(c);
+        }
+    }
+    if g.next_squad.is_empty() {
+        return 0;
+    }
+    let mut total = g.total_max_monsters;
+    let mut at_once_left = g.max_monsters - num_monsters;
+    let mut spawned = 0usize;
+    let mut names = Vec::new();
+    for i in 0..g.next_squad.len() {
+        if total <= 0 || at_once_left <= 0 {
+            continue;
+        }
+        let class = g.next_squad[i].clone();
+        let info = data.zeds.get(&class.to_ascii_lowercase()).cloned().unwrap_or_default();
+        let yaw = g.rand(65536) as f32;
+        for _ in 0..3 {
+            let k = g.rand(vol.spawn_pos.len());
+            let p = vol.spawn_pos[k];
+            if crate::zvolume::player_can_see_point(ctx.spatial, vol, p, &info, &ctx.player) {
+                continue;
+            }
+            let centre = p + Vec3::Z * (info.half_height - 44.0).max(0.0);
+            let shape = Collider::cylinder(info.radius * SCALE, 2.0 * info.half_height * SCALE);
+            if !ctx
+                .spatial
+                .shape_intersections(&shape, coords::pos(centre.to_array()), Quat::IDENTITY, &crate::collision::zed_filter())
+                .is_empty()
+            {
+                continue;
+            }
+            spawns.write(SpawnZedAt { class: class.clone(), centre, yaw });
+            total -= 1;
+            at_once_left -= 1;
+            spawned += 1;
+            names.push(class.rsplit('.').next().unwrap_or(&class).trim_end_matches("_STANDARD").to_string());
+            break;
+        }
+    }
+    g.total_max_monsters = total;
+    let vol = &mut data.volumes[v];
+    if spawned > 0 {
+        vol.last_spawn_time = ctx.now;
+        vol.last_failed_spawn_time = f32::MIN;
+        let d = (vol.location - ctx.player.location).length();
+        runlog::kv(
+            "squad_spawned",
+            &format!("wave={} volume={} distance={d:.0} zeds=[{}] left_in_wave={}", g.wave_num + 1, vol.name, names.join(" "), g.total_max_monsters),
+        );
+    } else {
+        vol.last_failed_spawn_time = ctx.now;
+    }
+    spawned
+}
+
 /// AddSquad: the special squad on odd passes through the list (once per
-/// pass), else the next squad; then spawn as many as fit.
-fn add_squad(g: &mut WaveGame, data: &GameData, num_monsters: i32, spatial: &SpatialQuery, spawns: &mut MessageWriter<SpawnZedAt>) {
+/// pass), else the next squad; a volume for it; spawn as many as fit, the
+/// rest next time (AddSquad removes the first `numspawned` entries, as in
+/// KF, even if a later one was the one that fitted).
+fn add_squad(g: &mut WaveGame, data: &mut GameData, num_monsters: i32, ctx: &SpawnCtx, spawns: &mut MessageWriter<SpawnZedAt>) {
     if g.last_volume.is_none() || g.next_squad.is_empty() {
-        let special = data.special.get(g.wave_num).filter(|s| !s.is_empty());
+        let special = data.special.get(g.wave_num).filter(|s| !s.is_empty()).cloned();
         if let Some(sq) = special
             && !g.used_special
             && g.special_counter % 2 == 1
         {
-            g.next_squad = sq.clone();
-            g.used_special = true;
             runlog::kv("squad_special", &format!("wave={} zeds={}", g.wave_num + 1, sq.len()));
+            g.next_squad = sq;
+            g.used_special = true;
         } else {
             g.build_next_squad(data);
         }
-        // FindSpawningVolume (G1: any volume, at random).
-        g.last_volume = (!data.volumes.is_empty()).then(|| g.rand(data.volumes.len()));
+        g.last_volume = find_volume(g, data, ctx, false);
+        if g.last_volume.is_some() {
+            g.last_spawning_volume = g.last_volume;
+        }
     }
     let Some(v) = g.last_volume else {
+        // No volume: the squad is dropped.
+        runlog::kv("squad_dropped", &format!("zeds={}", g.next_squad.len()));
         g.next_squad.clear();
         return;
     };
-    // SpawnInHere: up to TotalMaxMonsters and MaxMonsters - NumMonsters.
-    let room = (g.max_monsters - num_monsters).min(g.total_max_monsters).max(0) as usize;
-    let mut spawned = 0usize;
-    for k in 0..g.next_squad.len().min(room) {
-        let Some(at) = spawn_spot(spatial, data, v, k) else {
-            break;
-        };
-        let yaw = g.frand() * 65536.0;
-        spawns.write(SpawnZedAt { class: g.next_squad[k].clone(), floor: at, yaw });
-        spawned += 1;
-    }
-    if spawned == 0 {
+    let spawned = spawn_in_here(g, data, v, ctx, num_monsters, spawns);
+    if spawned > 0 {
+        let n = spawned.min(g.next_squad.len());
+        g.next_squad.drain(..n);
+    } else {
         // TryToSpawnInAnotherVolume.
         runlog::kv("squad_failed", &format!("volume={}", data.volumes[v].name));
-        g.last_volume = (!data.volumes.is_empty()).then(|| g.rand(data.volumes.len()));
-        return;
+        g.last_volume = find_volume(g, data, ctx, false);
+        if g.last_volume.is_some() {
+            g.last_spawning_volume = g.last_volume;
+        }
     }
-    let names: Vec<&str> = g.next_squad[..spawned].iter().map(|c| c.rsplit('.').next().unwrap_or(c).trim_end_matches("_STANDARD")).collect();
-    runlog::kv(
-        "squad_spawned",
-        &format!("wave={} volume={} zeds=[{}] left_in_wave={}", g.wave_num + 1, data.volumes[v].name, names.join(" "), g.total_max_monsters - spawned as i32),
-    );
-    g.total_max_monsters -= spawned as i32;
-    g.next_squad.drain(..spawned);
 }
 
 /// DoWaveEnd: WaveTimeElapsed reset only after the first wave, the
