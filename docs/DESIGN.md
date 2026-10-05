@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W7, W8a and W8b implemented 2026-10-05)
+## Weapons (milestone 7, W1-W8 implemented 2026-10-05)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1540,8 +1540,8 @@ damage, hits, penetrations) and adds unit tests for the rules.
   `SetBurningBehavior`), then the Flamethrower, Trenchgun, MAC10 and
   Husk gun (charged shots).
 - **W8, medic and equipment.** Syringe (heal yourself; Q quick heal),
-  medic dart alt fires. The Welder loads and animates, but doors are not
-  simulated, so it has nothing to weld yet.
+  medic dart alt fires. The Welder: doors are not simulated, so it has
+  nothing to weld yet (see W8c).
 - **W9, ZED guns.**
 
 **W1 findings (done).**
@@ -1909,7 +1909,7 @@ W7c (`weapon.rs` ChargeFire, `projectile.rs` Husk fields; the Husk Gun):
   charge light, the camera shake, sounds.
 
 **W8 medic and equipment**, in three parts: W8a Syringe, healing and
-quick heal (done), W8b medic gun darts, W8c Welder animations.
+quick heal, W8b medic gun darts, W8c the Welder (all done).
 
 W8a (`weapon.rs` HealCharge / syringe_fire / QuickHeal, `combat.rs`
 GiveHealth / add_health):
@@ -1951,6 +1951,16 @@ W8b (`projectile.rs` PlayerDart, `weapon.rs` medic HealCharge):
   model is drawn.
 - Not done: the alt fire's own muzzle flash (MuzzleFlash1stKar; the
   primary's flash plays), sounds.
+
+W8c (`weapon.rs` FireMode.weld): WeldFire.AllowFire needs a KFDoorMover
+within weaponRange (90 units) of the view; without one there is no shot
+and no animation, only NoWeldTargetMessage ("You must be near a weldable
+door to use the welder.", at most every 0.5 s while held; logged).
+UnWeldFire (alt) fails silently. Doors are not simulated, so this is
+always the case for now; welding (WeldStrength, the screen showing
+"Integrity: n %", KFWelderHitEffect, the 40 per second charge) comes with
+doors. Before this the Welder played its fire animation and logged
+"not implemented".
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

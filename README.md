@@ -159,6 +159,9 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Welder (W8c, 2026-10-05): as in KF away from a door: clicking only
+  gives the "near a weldable door" message (logged; no on-screen text
+  yet). There are no doors yet, so nothing to weld.
 - Medic gun darts (W8b, 2026-10-05): middle click on the MP7M, MP5M,
   M7A3M or KrissM fires a healing dart (250 of a 500 charge that
   refills); with no teammates they only fly and burst, and never hurt

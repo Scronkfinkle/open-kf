@@ -2503,3 +2503,20 @@ shotgun rule ProjPerFire x Load, with Load = the 250 charge).
 classes and code path). The alt fire uses the primary's muzzle flash.
 Not looked at by eye.
 **Next:** W8c, Welder animations.
+
+## 2026-10-05 Weapons W8c: Welder without doors
+
+**Changed:** `weapon.rs`: `FireMode.weld`; WeldFire gives only the
+no-target message (every 0.5 s while held), UnWeldFire nothing; no
+animation. DESIGN, README.
+**Why:** W8 of the weapons plan. The plan said "animates", but KF's
+WeldFire.AllowFire refuses without a door in front, so it never animates
+away from one; I followed the script.
+**Tested how:** slot 5 twice to the Welder, a click, a 1.2 s hold, an
+alt click; `cargo test --release --workspace`; clippy.
+**Result:** One message per click, one every ~0.5 s while held, nothing
+for alt fire, no animation (before: the fire animation and
+"fire_not_implemented"). Tests 55 + 21.
+**Still broken / not tested:** No doors, so no welding; the welder's
+screen texture ("Integrity:") not drawn; messages are only logged.
+**Next:** W9, ZED guns.

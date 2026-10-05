@@ -324,6 +324,8 @@ struct IronSights {
 #[derive(Clone, Debug)]
 struct FireMode {
     kind: FireKind,
+    /// WeldFire / UnWeldFire: needs a weldable door in front (none yet).
+    weld: bool,
     /// HuskGunFire's charged release.
     charge: Option<ChargeFire>,
     /// The bullets' damage type burns (instant fire; W7).
@@ -574,6 +576,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         spawn_delay: None,
         fire: None,
         charge: None,
+        weld: false,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -689,6 +692,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     };
     // ChainsawFire's and FlameBurstFire's FireLoop states work like
     // KFHighROFFire's (loop FireLoopAnim while held, no PlayFiring).
+    mode.weld = defaults.is_a(fm_class, "WeldFire");
     mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire") || mode.chainsaw || defaults.is_a(fm_class, "FlameBurstFire");
     mode.anim2 = fname("FireAnim2");
     mode.aimed_anim2 = fname("FireAimedAnim2");
@@ -1022,6 +1026,8 @@ struct Weapons {
     /// SyringeFire.AttemptHeal's LastHealAttempt (the "no one to heal"
     /// message at most every HealAttemptDelay).
     last_heal_attempt: f32,
+    /// WeldFire.FailTime.
+    last_weld_fail: f32,
     quick_heal: QuickHeal,
     /// Seconds left of the bring-up or put-down (Weapon's Timer), and
     /// whether the put-down is still waiting out DownDelay.
@@ -1240,6 +1246,7 @@ fn load_weapons(
         charge_fx: None,
         pending_inject: None,
         last_heal_attempt: -10.0,
+        last_weld_fail: -10.0,
         quick_heal: QuickHeal::Off,
         switch_timer: 0.0,
         down_delayed: false,
@@ -2206,6 +2213,17 @@ fn weapon_input(
             continue;
         }
         let fm = w.defs[cur].modes[mode].clone();
+        // WeldFire.AllowFire: GetDoor traces weaponRange (90) for a
+        // KFDoorMover. Doors are not simulated, so there is never one: no
+        // shot, no animation, only NoWeldTargetMessage (at most every
+        // 0.5 s while held, FailTime). UnWeldFire fails silently.
+        if fm.weld {
+            if mode == 0 && w.action == Action::Idle && now - w.last_weld_fail > 0.5 {
+                w.last_weld_fail = now;
+                runlog::kv("weld_no_target", "message=\"You must be near a weldable door to use the welder.\"");
+            }
+            continue;
+        }
         if let Some(h) = w.defs[cur].heal_charge.filter(|h| h.syringe) {
             syringe_fire(&mut w, mode, pressed[mode], h, health.health, now);
             continue;
