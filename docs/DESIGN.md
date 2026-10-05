@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W2 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W3 implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1641,6 +1641,33 @@ damage, hits, penetrations) and adds unit tests for the rules.
   not mirrored, right way up.
 - Not done: KF_TextureScope and KF_ModelScopeHigh (other settings);
   the FN FAL ACOG needs nothing (its lens is a masked material).
+
+**W3 pistols (done).**
+- Penetration (DeagleFire.DoTrace, identical in DeagleFire, Magnum44Fire,
+  MK23Fire and the three dual versions): up to 5 zeds, the damage
+  halved after each and cut to a whole number (int(HitDamage)), stopped
+  by the level. Checked: three Clots in a line took 115, 57, 28; the
+  9mm stops at the first.
+- Dual pistols (DualiesFire / Dualies): shots alternate FireAnim and
+  FireAnim2 (right, left; aimed and hip swap separately); the right shot
+  flashes at FlashBoneName and ejects at ShellEject2BoneName, the left at
+  altFlashBoneName and ShellEjectBoneName; the tracer starts at the
+  firing gun. Aiming plays GOTO_Iron, leaving GOTO_Hip (stretched to
+  ZoomTime).
+- Getting duals replaces the single (Dualies.GiveTo and the three
+  copies): magazine = single's + single MagCapacity (capped), ammo =
+  dual InitialAmount + all the single's (capped at MaxAmmo). Ammo
+  instances' fate not checked. Picking up a second single (pickups) is
+  not done: there are no pickups yet.
+- Found on the way: most guns had no muzzle flash or shell ejection; the
+  effect library listed only the 9mm's classes. Now every base weapon's
+  FlashEmitterClass / ShellEjectClass loads, with each class's Trigger
+  counts. The class defaults reader was changed again: the fullest-list
+  rule misread KFShellEjectEBR; now the candidate with the fewest bogus
+  (non-delegate Raw) values wins, then the most values. Compared with
+  the original reader over all 3757 classes: 449 change, every change
+  drops bogus values (often a leading "User" of type 0) or adds real
+  ones.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

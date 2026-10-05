@@ -156,6 +156,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Pistols (W3, 2026-10-04): Handcannon, 44 Magnum and MK23 bullets go
+  through up to 5 zeds at half damage each time; dual pistols fire left
+  and right in turn with their own flashes, shells and tracers, and
+  replace the single pistol (keeping its ammo). Every base weapon now has
+  its muzzle flash and shell effects. Checked by unit tests and logs;
+  flashes not checked by eye on every gun.
 - 3D scopes (2026-10-04): the Crossbow and M99 lenses show a live zoomed
   view with the reticle while aiming, as KF's default scope setting does.
   Checked by screenshots. Not play-tested by you.
@@ -288,8 +294,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - No sound.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons and
-  bullet guns deal damage. Pistol penetration and dual pistols are W3;
-  no crouching, so no crouch accuracy bonus. Melee hits
+  bullet guns deal damage. No crouching, so no crouch accuracy bonus. Melee hits
   one zed per swing, with no backstab bonus (KF hits every zed in the
   cone and doubles damage from behind; step W5). Alt fires other than
   melee (medic darts, M203 grenade, ...) do nothing yet. Shotguns,

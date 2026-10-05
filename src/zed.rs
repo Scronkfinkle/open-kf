@@ -2265,13 +2265,14 @@ fn spawn_in_front(
     id: usize,
     distance: f32,
     lift: f32,
+    in_line: bool,
 ) {
     let c = &classes.0[class];
     let forward = Vec3::new(-cam.yaw.sin(), 0.0, -cam.yaw.cos());
     let right = Vec3::new(cam.yaw.cos(), 0.0, -cam.yaw.sin());
     // Side by side, 60 units apart (0, +60, -60, +120, ...), so zeds spawned
     // in a row do not start inside each other.
-    let side = (id.div_ceil(2) as f32) * if id % 2 == 1 { 60.0 } else { -60.0 };
+    let side = if in_line { 0.0 } else { (id.div_ceil(2) as f32) * if id % 2 == 1 { 60.0 } else { -60.0 } };
     let probe = cam_t.translation + (forward * distance + right * side) * SCALE;
     let Some(hit) = spatial.cast_ray(probe, Dir3::NEG_Y, 20.0, true, &crate::collision::world_filter()) else {
         runlog::kv("zed_spawn_failed", "reason=no_floor_below");
@@ -2428,43 +2429,50 @@ fn spawn_zeds(
         runlog::kv("z_spawn_selected", &format!("kind={}", z_spawn.label));
     }
     // What to spawn this frame: (kind, distance in front, lift).
-    let mut wanted: Vec<(ZedKind, f32, f32)> = Vec::new();
+    // (kind, distance ahead, lift, in line: no sideways offset)
+    let mut wanted: Vec<(ZedKind, f32, f32, bool)> = Vec::new();
     // Z spawns the type picked with N.
     if keys.just_pressed(KeyCode::KeyZ) {
-        wanted.push((classes.0[z_spawn.class.min(classes.0.len() - 1)].kind, 300.0, 0.0));
+        wanted.push((classes.0[z_spawn.class.min(classes.0.len() - 1)].kind, 300.0, 0.0, false));
     }
     // H (G is KF's grenade key).
     if keys.just_pressed(KeyCode::KeyH) {
-        wanted.push((ZedKind::Gorefast, 300.0, 0.0));
+        wanted.push((ZedKind::Gorefast, 300.0, 0.0, false));
     }
     if start {
         if settings.spawn_at_start {
-            wanted.push((ZedKind::Clot, 300.0, 0.0));
+            wanted.push((ZedKind::Clot, 300.0, 0.0, false));
         }
         if settings.gorefast_at_start {
-            wanted.push((ZedKind::Gorefast, 300.0, 0.0));
+            wanted.push((ZedKind::Gorefast, 300.0, 0.0, false));
         }
         if let Some(name) = &settings.spawn_kind {
             match kind_named(name) {
-                Some(k) => wanted.push((k, 300.0, 0.0)),
+                Some(k) => wanted.push((k, 300.0, 0.0, false)),
                 None => runlog::kv("zed_spawn_failed", &format!("reason=unknown_kind name={name}")),
             }
         }
     }
     // Test actions: "zed" (Clot), "zed_drop" (a Clot 200 units up),
-    // "gorefast", "gorefast_far" (900 away), "spawn_<kind>".
+    // "gorefast", "gorefast_far" (900 away), "zed_line", "spawn_<kind>".
     for (f, a) in &script.0 {
         if *f != frames.0 {
             continue;
         }
         match a.as_str() {
-            "zed" => wanted.push((ZedKind::Clot, 300.0, 0.0)),
-            "zed_drop" => wanted.push((ZedKind::Clot, 300.0, 200.0)),
-            "gorefast" => wanted.push((ZedKind::Gorefast, 300.0, 0.0)),
-            "gorefast_far" => wanted.push((ZedKind::Gorefast, 900.0, 0.0)),
+            "zed" => wanted.push((ZedKind::Clot, 300.0, 0.0, false)),
+            "zed_drop" => wanted.push((ZedKind::Clot, 300.0, 200.0, false)),
+            "gorefast" => wanted.push((ZedKind::Gorefast, 300.0, 0.0, false)),
+            "gorefast_far" => wanted.push((ZedKind::Gorefast, 900.0, 0.0, false)),
+            // Three Clots straight ahead, one behind the other (penetration tests).
+            "zed_line" => {
+                for d in [250.0, 400.0, 550.0] {
+                    wanted.push((ZedKind::Clot, d, 0.0, true));
+                }
+            }
             other => {
                 if let Some(k) = other.strip_prefix("spawn_").and_then(kind_named) {
-                    wanted.push((k, 300.0, 0.0));
+                    wanted.push((k, 300.0, 0.0, false));
                 }
             }
         }
@@ -2472,7 +2480,7 @@ fn spawn_zeds(
     let Ok((t, cam)) = cams.single() else {
         return;
     };
-    for (kind, distance, lift) in wanted {
+    for (kind, distance, lift, in_line) in wanted {
         let Some(class) = classes.0.iter().position(|c| c.kind == kind) else {
             runlog::kv("zed_spawn_failed", &format!("reason=class_not_loaded kind={kind:?}"));
             continue;
@@ -2483,7 +2491,7 @@ fn spawn_zeds(
                 let centre = coords::pos(at);
                 spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, yaw_of(t.translation - centre));
             }
-            _ => spawn_in_front(&mut commands, &mut meshes, &classes, &spatial, t, cam, class, *next_id, distance, lift),
+            _ => spawn_in_front(&mut commands, &mut meshes, &classes, &spatial, t, cam, class, *next_id, distance, lift, in_line),
         }
         *next_id += 1;
     }

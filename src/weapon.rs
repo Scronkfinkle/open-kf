@@ -114,7 +114,8 @@ impl Plugin for WeaponPlugin {
 /// "fire_up" = hold / release, the same for "altfire", "1" to "5" =
 /// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = toggle iron sights, "zed" = spawn a Clot, "zed_drop" =
 /// spawn one 200 units up, "gorefast" = spawn a Gorefast,
-/// "gorefast_far" = one 900 units away, "cycle_zed" = press N,
+/// "gorefast_far" = one 900 units away, "zed_line" = three Clots in a
+/// line ahead, "cycle_zed" = press N,
 /// "spawn_<kind>" = spawn that zed, "hurt_zeds" = 100 damage to every zed).
 #[derive(Resource, Default, Clone)]
 pub struct ScriptedInput(pub Vec<(u32, String)>);
@@ -192,6 +193,8 @@ struct WeaponDef {
     fx: FireFx,
     /// The 3D scope (bHasScope), if any.
     scope: Option<WeaponScope>,
+    /// A Dualies class: two guns firing in turn.
+    dual: bool,
 }
 
 /// A scoped weapon's lens (Crossbow / M99SniperRifle): the model part that
@@ -206,6 +209,44 @@ struct WeaponScope {
     reticle: Option<Handle<Image>>,
 }
 
+/// A bone's origin and axes, Unreal world.
+type BoneFrame = (Vec3, Mat3);
+
+/// Dual pistols and the single pistol each replaces (their GiveTo).
+const DUAL_PAIRS: [(&str, &str); 4] = [
+    ("Dualies", "Single"),
+    ("DualDeagle", "Deagle"),
+    ("Dual44Magnum", "Magnum44Pistol"),
+    ("DualMK23Pistol", "MK23Pistol"),
+];
+
+/// Dualies.GiveTo (given, not picked up): the magazine is the single's
+/// plus the single's MagCapacity, up to the duals' capacity; the ammo is
+/// the duals' InitialAmount plus all of the single's, up to MaxAmmo
+/// (AddAmmo caps). My reading: KF weapons keep ammo as separate items
+/// (bNoAmmoInstances false); whether the single's item survives is not
+/// checked.
+fn merge_dual_ammo(single: Ammo, dual: Ammo) -> Ammo {
+    let mag = (single.mag + single.capacity).min(dual.capacity);
+    let total = (dual.initial + single.mag + single.spare).min(dual.max_total).max(mag);
+    Ammo {
+        mag,
+        spare: total - mag,
+        ..dual
+    }
+}
+
+/// Fire classes whose DoTrace lets a bullet pass through up to 5 zeds,
+/// halving its damage each time (the same function in all six).
+const PENETRATING_FIRE: [&str; 6] = [
+    "DeagleFire",
+    "Magnum44Fire",
+    "MK23Fire",
+    "DualDeagleFire",
+    "Dual44MagnumFire",
+    "DualMK23Fire",
+];
+
 /// UpdateScopeMode's reticle texture for each scoped class (KF_ModelScope).
 const SCOPE_RETICLES: [(&str, &str); 2] = [
     ("Crossbow", "KillingFloorWeapons.Xbow.CommandoCross"),
@@ -217,13 +258,21 @@ const SCOPE_RETICLES: [(&str, &str); 2] = [
 #[derive(Default)]
 struct FireFx {
     flash_class: Option<String>,
-    flash_bone: Option<usize>,
     shell_class: Option<String>,
+    /// One per gun: [0] the main one; dual pistols have [1], the left gun
+    /// (DualiesFire: Flash2Emitter on altFlashBoneName).
+    hands: Vec<FxHand>,
+    spawn_tried: bool,
+}
+
+/// A gun's muzzle flash and shell ejector bones, and the spawned effects
+/// (spawned once the effect library is loaded).
+#[derive(Default)]
+struct FxHand {
+    flash_bone: Option<usize>,
     shell_bone: Option<usize>,
-    /// The spawned effects (spawned once the effect library is loaded).
     flash: Option<Entity>,
     shell: Option<Entity>,
-    spawn_tried: bool,
 }
 
 /// Iron sight values from the weapon and fire mode classes.
@@ -260,6 +309,12 @@ struct FireMode {
     end_aimed_anim: String,
     loop_anim_rate: f32,
     end_anim_rate: f32,
+    /// DualiesFire: the other hand's FireAnim2 / FireAimedAnim2 (swapped
+    /// with FireAnim / FireAimedAnim after every shot).
+    anim2: String,
+    aimed_anim2: String,
+    /// Zeds a bullet passes through (DeagleFire.DoTrace: 5, else 1).
+    penetrations: u32,
     /// Seconds between shots (FireRate).
     rate: f32,
     /// bWaitForRelease: one shot per click.
@@ -291,6 +346,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         end_aimed_anim: "none".into(),
         loop_anim_rate: 1.0,
         end_anim_rate: 1.0,
+        anim2: "none".into(),
+        aimed_anim2: "none".into(),
+        penetrations: 1,
         rate: 0.5,
         wait_for_release: false,
         high_rof: false,
@@ -382,6 +440,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     mode.loop_anim_rate = ffloat("FireLoopAnimRate", 1.0);
     mode.end_anim_rate = ffloat("FireEndAnimRate", 1.0);
     mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire");
+    mode.anim2 = fname("FireAnim2");
+    mode.aimed_anim2 = fname("FireAimedAnim2");
+    mode.penetrations = if PENETRATING_FIRE.iter().any(|c| defaults.is_a(fm_class, c)) { 5 } else { 1 };
     mode.fire_while_reloading = defaults.is_a(fm_class, "WinchesterFire") || defaults.is_a(fm_class, "KFShotgunFire");
     // Only KFFire.ModeDoFire slows the player (shotguns: W4).
     mode.slows_movement = defaults.is_a(fm_class, "KFFire") && !fbool("bFiringDoesntAffectMovement");
@@ -431,6 +492,9 @@ struct Ammo {
     mag: u32,
     spare: u32,
     capacity: u32,
+    /// The ammo class's InitialAmount and MaxAmmo (total, magazine included).
+    initial: u32,
+    max_total: u32,
 }
 
 /// The weapon's state (KFWeapon ClientState and bIsReloading). Which
@@ -485,12 +549,15 @@ struct Weapons {
     zoom_time: f32,
     /// Simple random number state (spread, damage rolls).
     rng: u64,
-    /// Shots whose flash and shell are still to be triggered.
-    fx_shots: u32,
-    /// The current weapon's FlashBoneName frame, Unreal world (origin,
-    /// axes), as last posed: where tracers start (KFWeapon.GetEffectStart).
-    pub tip: Option<(Vec3, Mat3)>,
-    shell_frame: Option<(Vec3, Mat3)>,
+    /// Shots whose flash and shell are still to be triggered: the hand.
+    fx_shots: Vec<usize>,
+    /// Per hand of the current weapon: the flash bone frame (Unreal world
+    /// origin and axes, as last posed: where tracers start,
+    /// KFWeapon.GetEffectStart) and the shell ejector frame.
+    hand_frames: Vec<(Option<BoneFrame>, Option<BoneFrame>)>,
+    /// Dual pistols: the next shot is the left gun's, from the hip / aimed
+    /// (DualiesFire swaps FireAnim and FireAimedAnim separately).
+    dual_left: [bool; 2],
 }
 
 impl Weapons {
@@ -618,6 +685,29 @@ fn load_weapons(
             }
         }
     }
+    // Dual pistols replace the single they pair with (Dualies.GiveTo).
+    for (dual_class, single_class) in DUAL_PAIRS {
+        let dual = defs.iter().position(|d| d.class.eq_ignore_ascii_case(&format!("KFMod.{dual_class}")));
+        let single = defs.iter().position(|d| d.class.eq_ignore_ascii_case(&format!("KFMod.{single_class}")));
+        if let (Some(di), Some(si)) = (dual, single) {
+            let single_def = &defs[si];
+            if let (Some(s_ammo), Some(d_ammo)) = (single_def.ammo, defs[di].ammo) {
+                let merged = merge_dual_ammo(s_ammo, d_ammo);
+                runlog::kv(
+                    "dual_from_single",
+                    &format!(
+                        "dual={dual_class} single={single_class} single_mag={} single_spare={} -> mag={} spare={}",
+                        s_ammo.mag, s_ammo.spare, merged.mag, merged.spare
+                    ),
+                );
+                defs[di].ammo = Some(merged);
+            }
+            for &e in &defs[si].entities {
+                commands.entity(e).despawn();
+            }
+            defs.remove(si);
+        }
+    }
     let weight: f32 = defs.iter().map(|d| d.weight).sum();
     runlog::kv(
         "inventory",
@@ -634,8 +724,11 @@ fn load_weapons(
     if defs.is_empty() {
         return;
     }
-    // Start with the 9mm, as KF does.
-    let current = defs.iter().position(|d| d.class.eq_ignore_ascii_case("KFMod.Single")).unwrap_or(0);
+    // Start with the 9mm, as KF does (the dual 9mms if they replaced it).
+    let current = ["KFMod.Single", "KFMod.Dualies"]
+        .iter()
+        .find_map(|c| defs.iter().position(|d| d.class.eq_ignore_ascii_case(c)))
+        .unwrap_or(0);
     let mut w = Weapons {
         defs,
         current,
@@ -659,9 +752,9 @@ fn load_weapons(
         zoom: 0.0,
         zoom_time: 0.25,
         rng: 0x2545_F491_4F6C_DD1D,
-        fx_shots: 0,
-        tip: None,
-        shell_frame: None,
+        fx_shots: Vec::new(),
+        hand_frames: Vec::new(),
+        dual_left: [false; 2],
     };
     set_action(&mut w, Action::Select);
     commands.insert_resource(w);
@@ -757,6 +850,7 @@ fn load_weapon(
     let mut ammo = None;
     let mut fx = FireFx::default();
     let mut shell_bone_name = None;
+    let mut shell2_bone_name = None;
     if let Some(fm_class) = &primary_class {
         let fget = |p: &str| defaults.get(fm_class, p);
         let class_of = |p: &str| match fget(p) {
@@ -767,6 +861,9 @@ fn load_weapon(
         fx.shell_class = class_of("ShellEjectClass");
         if let Some((Value::Name(n), np)) = fget("ShellEjectBoneName") {
             shell_bone_name = Some(np.pkg.name(n).to_string());
+        }
+        if let Some((Value::Name(n), np)) = fget("ShellEject2BoneName") {
+            shell2_bone_name = Some(np.pkg.name(n).to_string());
         }
         // Ammo: magazine size from the weapon, starting total from the ammo class.
         if let Some((Value::Object(ac), ac_pkg)) = fget("AmmoClass")
@@ -780,11 +877,17 @@ fn load_weapon(
                 Some((Value::Int(i), _)) => i.max(1) as u32,
                 _ => 1,
             };
+            let max_total = match defaults.get(&ammo_class, "MaxAmmo") {
+                Some((Value::Int(i), _)) => i.max(0) as u32,
+                _ => initial,
+            };
             let mag = capacity.min(initial);
             ammo = Some(Ammo {
                 mag,
                 spare: initial - mag,
                 capacity,
+                initial,
+                max_total,
             });
         }
     }
@@ -843,7 +946,31 @@ fn load_weapon(
         fast_zoom_out_time: float("FastZoomOutTime", 0.2),
         idle_anim: name("IdleAimAnim").unwrap_or_else(|| "Idle".into()),
     });
-    fx.flash_bone = name("FlashBoneName").and_then(|n| model.find_bone(&n));
+    // Dual pistols (DualiesFire.FlashMuzzleFlash): the right shot flashes at
+    // FlashBoneName and ejects at ShellEject2BoneName, the left shot at
+    // altFlashBoneName and ShellEjectBoneName.
+    let dual = defaults.is_a(&class, "Dualies");
+    let bone = |n: Option<String>| n.and_then(|n| model.find_bone(&n));
+    fx.hands = if dual {
+        vec![
+            FxHand {
+                flash_bone: bone(name("FlashBoneName")),
+                shell_bone: bone(shell2_bone_name.clone()),
+                ..default()
+            },
+            FxHand {
+                flash_bone: bone(name("altFlashBoneName")),
+                shell_bone: bone(shell_bone_name.clone()),
+                ..default()
+            },
+        ]
+    } else {
+        vec![FxHand {
+            flash_bone: bone(name("FlashBoneName")),
+            shell_bone: bone(shell_bone_name.clone()),
+            ..default()
+        }]
+    };
     // KFWeapon.PostBeginPlay: no bHasScope, no scope.
     let scope = if matches!(get("bHasScope"), Some((Value::Bool(true), _))) {
         let lens_id = int("lenseMaterialID", 0).max(0) as usize;
@@ -878,7 +1005,6 @@ fn load_weapon(
     } else {
         None
     };
-    fx.shell_bone = shell_bone_name.and_then(|n| model.find_bone(&n));
     Ok(WeaponDef {
         class: class_path.to_string(),
         item_name,
@@ -908,6 +1034,7 @@ fn load_weapon(
         hold_to_reload: matches!(get("bHoldToReload"), Some((Value::Bool(true), _))),
         can_dry_fire: matches!(get("bModeZeroCanDryFire"), Some((Value::Bool(true), _))),
         scope,
+        dual,
         toggles_on_alt: TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)),
         fx,
     })
@@ -1049,7 +1176,16 @@ fn play_idle(w: &mut Weapons) {
 /// FireLoopAimedAnim, else FireAimedAnim), when the weapon has them.
 /// Melee modes cycle through FireAnims.
 fn play_firing(w: &mut Weapons, mode: usize) {
-    let m = w.defs[w.current].modes[mode].clone();
+    let mut m = w.defs[w.current].modes[mode].clone();
+    // DualiesFire: the left gun's turn plays FireAnim2 / FireAimedAnim2.
+    if w.defs[w.current].dual && mode == 0 {
+        if w.dual_left[0] {
+            m.anims = vec![m.anim2.clone()];
+        }
+        if w.dual_left[1] {
+            m.aimed_anim = m.aimed_anim2.clone();
+        }
+    }
     let fire = m.anims[w.fire_count % m.anims.len()].to_ascii_lowercase();
     let later = w.shots_this_press[mode] > 0;
     let (name, rate) = if later && w.aiming && has_anim(w, &m.loop_aimed_anim) {
@@ -1134,6 +1270,15 @@ fn zoom_out(w: &mut Weapons, fast: bool, reason: &str) {
         w.zoom_time = if fast { iron.fast_zoom_out_time } else { iron.zoom_time };
     }
     w.aiming = false;
+    // Dualies.ZoomOut, when animated (toggling off, not reload or switch):
+    // GOTO_Hip stretched to the zoom time.
+    if !fast && w.defs[cur].dual && has_anim(w, "goto_hip") {
+        let def = &w.defs[cur];
+        let seq = def.model.sequence("goto_hip").expect("checked");
+        let seconds = def.model.length(seq) / def.model.rate(seq).max(1e-3);
+        let rate = if w.zoom_time > 0.0 && seconds > 0.0 { seconds / w.zoom_time } else { 1.0 };
+        play(w, "goto_hip", rate, false);
+    }
     runlog::kv("iron_sights", &format!("weapon={} aiming=false reason={reason}", w.defs[cur].class));
 }
 
@@ -1227,6 +1372,10 @@ fn weapon_input(
             let iron = w.defs[cur].iron.as_ref().expect("checked");
             w.zoom_time = iron.zoom_time;
             w.aiming = true;
+            // Dualies.ZoomIn plays GOTO_Iron.
+            if w.defs[cur].dual && has_anim(&w, "goto_iron") {
+                play(&mut w, "goto_iron", 1.0, false);
+            }
             runlog::kv("iron_sights", &format!("weapon={} aiming=true reason=toggle", w.defs[cur].class));
         } else {
             runlog::kv(
@@ -1365,11 +1514,17 @@ fn weapon_input(
             a.mag -= 1;
         }
         w.fire_count += 1;
+        // Dual pistols: the hand whose turn it is (DualiesFire.ModeDoFire).
+        let dual_side = if w.aiming { 1 } else { 0 };
+        let hand = usize::from(w.defs[cur].dual && mode == 0 && w.dual_left[dual_side]);
         if mode == 0 {
-            w.fx_shots += 1;
+            w.fx_shots.push(hand);
         }
         if !(fm.high_rof && !fm.wait_for_release) {
             play_firing(&mut w, mode);
+        }
+        if w.defs[cur].dual && mode == 0 {
+            w.dual_left[dual_side] = !w.dual_left[dual_side];
         }
         w.shots_this_press[mode] += 1;
         let stats = fm.combat;
@@ -1410,7 +1565,8 @@ fn weapon_input(
                         damage: stats.damage_max,
                         headshot_mult: stats.headshot_mult,
                         weapon: item_name,
-                        effect_start: w.tip.map(|t| t.0),
+                        effect_start: w.hand_frames.get(hand).and_then(|h| h.0).map(|t| t.0),
+                        max_penetrations: fm.penetrations,
                     });
                     // HandleRecoil; speed in Unreal units/s.
                     let speed = walker.map_or(0.0, |wk| wk.velocity.length() / coords::SCALE);
@@ -1428,7 +1584,7 @@ fn weapon_input(
                     runlog::kv(
                         "gun_shot",
                         &format!(
-                            "weapon={item_name} anim={} shot_in_press={} semi_auto={} aiming={} spread={spread:.4} burst={} recoil_pitch={:.0} recoil_yaw={:.0} speed_unreal={speed:.0} mag_left={}",
+                            "weapon={item_name} hand={hand} anim={} shot_in_press={} semi_auto={} aiming={} spread={spread:.4} burst={} recoil_pitch={:.0} recoil_yaw={:.0} speed_unreal={speed:.0} mag_left={}",
                             w.anim,
                             w.shots_this_press[mode],
                             fm.wait_for_release,
@@ -1682,7 +1838,7 @@ fn animate_weapon(
     // The effect bones in the world. The weapon camera sits where the main
     // camera is, so the weapon's camera-space parts are in world space as KF
     // places its first-person weapon (Instigator.Location + CalcDrawOffset).
-    let (tip, shell) = match main_cam.single() {
+    let frames: Vec<_> = match main_cam.single() {
         Ok(main) => {
             let to_world = |bone: Option<usize>| -> Option<(Vec3, Mat3)> {
                 let (o, axes) = def.model.bone_frame(&bones, bone?)?;
@@ -1691,12 +1847,11 @@ fn animate_weapon(
                 let axes = axes.map(|a| to_ue(main.rotation * coords::dir((a * scale).to_array())).normalize_or_zero());
                 Some((pos, Mat3::from_cols(axes[0], axes[1], axes[2])))
             };
-            (to_world(def.fx.flash_bone), to_world(def.fx.shell_bone))
+            def.fx.hands.iter().map(|h| (to_world(h.flash_bone), to_world(h.shell_bone))).collect()
         }
-        Err(_) => (None, None),
+        Err(_) => Vec::new(),
     };
-    w.tip = tip;
-    w.shell_frame = shell;
+    w.hand_frames = frames;
     let def = &w.defs[w.current];
 
     *log_timer += dt;
@@ -1741,50 +1896,64 @@ fn weapon_fire_fx(
         };
         for def in w.defs.iter_mut().filter(|d| !d.fx.spawn_tried) {
             def.fx.spawn_tried = true;
-            for (class, slot) in [(&def.fx.flash_class, &mut def.fx.flash), (&def.fx.shell_class, &mut def.fx.shell)] {
-                if let (Some(class), None) = (class, &slot) {
-                    *slot = crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, class, Vec3::ZERO, Mat3::IDENTITY, 7, options);
-                    if slot.is_none() {
-                        runlog::kv("weapon_fx_missing", &format!("weapon={} class={class}", def.class));
+            let (flash_class, shell_class) = (def.fx.flash_class.clone(), def.fx.shell_class.clone());
+            for hand in &mut def.fx.hands {
+                for (class, slot) in [(&flash_class, &mut hand.flash), (&shell_class, &mut hand.shell)] {
+                    if let (Some(class), None) = (class, &slot) {
+                        *slot =
+                            crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, class, Vec3::ZERO, Mat3::IDENTITY, 7, options);
+                        if slot.is_none() {
+                            runlog::kv("weapon_fx_missing", &format!("weapon={} class={class}", def.class));
+                        }
                     }
                 }
             }
         }
     }
     let shots = std::mem::take(&mut w.fx_shots);
-    let (tip, shell) = (w.tip, w.shell_frame);
+    let frames = w.hand_frames.clone();
     for (i, def) in w.defs.iter().enumerate() {
-        for (entity, frame) in [(def.fx.flash, tip), (def.fx.shell, shell)] {
-            let Some(Ok((mut fx, mut vis))) = entity.map(|e| effects.get_mut(e)) else {
-                continue;
-            };
-            // Only the weapon in hand draws its effects.
-            *vis = if i == current { Visibility::Inherited } else { Visibility::Hidden };
-            if i != current {
-                continue;
-            }
-            if let Some(f) = frame {
-                fx.frame = f;
-            }
-            for _ in 0..shots {
-                fx.trigger();
+        for (h, hand) in def.fx.hands.iter().enumerate() {
+            let (tip, shell) = frames.get(h).copied().unwrap_or((None, None));
+            for (entity, frame) in [(hand.flash, tip), (hand.shell, shell)] {
+                let Some(Ok((mut fx, mut vis))) = entity.map(|e| effects.get_mut(e)) else {
+                    continue;
+                };
+                // Only the weapon in hand draws its effects.
+                *vis = if i == current { Visibility::Inherited } else { Visibility::Hidden };
+                if i != current {
+                    continue;
+                }
+                if let Some(f) = frame {
+                    fx.frame = f;
+                }
+                for _ in shots.iter().filter(|&&s| s == h) {
+                    fx.trigger();
+                }
             }
         }
     }
-    if shots > 0 {
+    if !shots.is_empty() {
         let def = &w.defs[current];
-        let fmt = |f: Option<(Vec3, Mat3)>| f.map_or("none".to_string(), |(p, _)| format!("({:.1}, {:.1}, {:.1})", p.x, p.y, p.z));
-        runlog::kv(
-            "weapon_fx",
-            &format!(
-                "weapon={} shots={shots} flash={} shell={} tip_unreal={} shell_unreal={}",
-                def.class,
-                def.fx.flash.is_some(),
-                def.fx.shell.is_some(),
-                fmt(tip),
-                fmt(shell)
-            ),
-        );
+        let fmt = |f: Option<(Vec3, Mat3)>| {
+            f.map_or("none".to_string(), |(p, m)| {
+                format!("({:.1}, {:.1}, {:.1}) x_axis=({:.2}, {:.2}, {:.2})", p.x, p.y, p.z, m.x_axis.x, m.x_axis.y, m.x_axis.z)
+            })
+        };
+        for &h in &shots {
+            let (tip, shell) = frames.get(h).copied().unwrap_or((None, None));
+            runlog::kv(
+                "weapon_fx",
+                &format!(
+                    "weapon={} hand={h} flash={} shell={} tip_unreal={} shell_unreal={}",
+                    def.class,
+                    def.fx.hands.get(h).is_some_and(|x| x.flash.is_some()),
+                    def.fx.hands.get(h).is_some_and(|x| x.shell.is_some()),
+                    fmt(tip),
+                    fmt(shell)
+                ),
+            );
+        }
     }
 }
 
@@ -1838,6 +2007,18 @@ mod tests {
         // Nothing in group 4; the Frag never answers for group 0.
         assert_eq!(switch_group(&inv, 3, 4), None);
         assert_eq!(switch_group(&inv, 3, 0), None);
+    }
+
+    #[test]
+    fn dualies_take_the_single_pistols_rounds() {
+        let single = Ammo { mag: 15, spare: 105, capacity: 15, initial: 120, max_total: 240 };
+        let dual = Ammo { mag: 30, spare: 90, capacity: 30, initial: 120, max_total: 240 };
+        let m = merge_dual_ammo(single, dual);
+        assert_eq!((m.mag, m.spare), (30, 210));
+        // A half-empty single: 7 + 15 in the magazine, 120 + 7 + 40 total.
+        let single = Ammo { mag: 7, spare: 40, ..single };
+        let m = merge_dual_ammo(single, dual);
+        assert_eq!((m.mag, m.spare), (22, 145));
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub struct ShotFired {
     /// The weapon's tip (KFWeapon.GetEffectStart), Unreal world: where the
     /// tracer starts.
     pub effect_start: Option<Vec3>,
+    /// Zeds one bullet can pass through: 1 for KFFire.DoTrace; 5 for the
+    /// DeagleFire family, whose DoTrace halves the damage after each.
+    pub max_penetrations: u32,
 }
 
 /// A knife swing reaching its damage moment (KFMeleeFire).
@@ -392,21 +395,27 @@ fn resolve_shots(
         let max = TRACE_RANGE * SCALE;
         let world_hit = spatial.cast_ray(shot.origin, Dir3::new(shot.dir).unwrap_or(Dir3::NEG_Z), max, true, &crate::collision::world_filter());
         let world = world_hit.map_or(max, |h| h.distance);
-        // Nearest live zed whose cylinder the ray enters before the world.
-        let mut best: Option<(f32, Mut<Zed>)> = None;
+        // Live zeds whose cylinders the ray enters before the world, nearest
+        // first. DeagleFire.DoTrace: up to 5, halving the (whole-number)
+        // damage after each; KFFire.DoTrace: the first only.
+        let mut hits: Vec<(f32, Mut<Zed>)> = Vec::new();
         for z in &mut zeds {
             if z.health <= 0.0 {
                 continue;
             }
             if let Some(t) = zed_hit(&z, shot.origin, shot.dir)
                 && t < world
-                && best.as_ref().is_none_or(|(bt, _)| t < *bt)
             {
-                best = Some((t, z));
+                hits.push((t, z));
             }
         }
-        match best {
-            Some((t, mut z)) => {
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        hits.truncate(shot.max_penetrations.max(1) as usize);
+        let penetrating = shot.max_penetrations > 1;
+        let mut hit_damage = shot.damage;
+        let any_hit = !hits.is_empty();
+        for (n, (t, mut z)) in hits.into_iter().enumerate() {
+            {
                 let hit = shot.origin + shot.dir * t;
                 z.last_hit = Some((hit, shot.dir));
                 let head = is_headshot(&z, hit, shot.dir, 1.0);
@@ -429,9 +438,20 @@ fn resolve_shots(
                     attacker: shot.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE,
                     melee: false,
                 };
-                damage_zed(&mut z, shot.damage, head, shot.headshot_mult, shot.weapon, t, source, &mut kills);
+                let damage = if penetrating { hit_damage.trunc() } else { hit_damage };
+                if penetrating {
+                    runlog::kv(
+                        "penetration",
+                        &format!("weapon={} zed={} hit_number={} damage={damage}", shot.weapon, z.id, n + 1),
+                    );
+                }
+                damage_zed(&mut z, damage, head, shot.headshot_mult, shot.weapon, t, source, &mut kills);
+                hit_damage /= 2.0;
             }
-            None => {
+        }
+        match any_hit {
+            true => {}
+            false => {
                 runlog::kv(
                     "miss",
                     &format!("weapon={} world_hit_distance_unreal={:.0}", shot.weapon, world / SCALE),

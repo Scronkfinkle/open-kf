@@ -467,10 +467,20 @@ pub fn find_class_defaults(
     // Every start offset whose properties read exactly to the end, with
     // only known property names, is a candidate. The earliest is not always
     // right: a false start can read as a few bogus properties that swallow
-    // the real ones (e.g. BullpupAmmo: from byte 66, a "Range" struct of 43
-    // bytes; the real list starts at 93). The candidate with the most
-    // properties wins; ties go to the earliest.
+    // the real ones (e.g. BullpupAmmo: from byte 66, a "Range" of type 14
+    // and 43 bytes; the real list starts at 93), or that add a bogus first
+    // value (often "User" of type 0). Bogus values come out as Raw: type 0,
+    // a map or fixed array (14, 15), or a wrong size for their type.
+    // Delegates (type 7) are also kept Raw but are real. So the candidate
+    // with the fewest non-delegate Raw values wins, then the one with the
+    // most properties, then the earliest.
     let data = pkg.export_data(export);
+    let raw_count = |l: &PropertyList| {
+        l.props
+            .iter()
+            .filter(|p| matches!(p.value, Value::Raw { type_id, .. } if type_id != 7))
+            .count()
+    };
     let mut best: Option<(PropertyList, usize)> = None;
     for start in 0..data.len() {
         let mut r = Reader::new(data);
@@ -487,7 +497,9 @@ pub fn find_class_defaults(
             .props
             .iter()
             .all(|p| property_names.contains(&pkg.name(p.name).to_ascii_lowercase()))
-            && best.as_ref().is_none_or(|(b, _)| list.props.len() > b.props.len())
+            && best
+                .as_ref()
+                .is_none_or(|(b, _)| (raw_count(&list), std::cmp::Reverse(list.props.len())) < (raw_count(b), std::cmp::Reverse(b.props.len())))
         {
             best = Some((list, start));
         }

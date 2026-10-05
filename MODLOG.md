@@ -2113,3 +2113,33 @@ KF; the M99's reticle shows light blue and a pale ring, which may be
 wrong for that reason. Texture-scope and high-detail settings not done.
 Not play-tested by you.
 **Next:** W3, pistols.
+
+## 2026-10-04 Weapons step W3: pistols; weapon effects; defaults reader rule
+
+**Changed:** `combat.rs`: shots pass through up to `max_penetrations`
+zeds, nearest first, damage halved and truncated. `weapon.rs`: fire
+modes know FireAnim2 / FireAimedAnim2 and their penetration count;
+effects per hand (`FxHand`); dual pistols alternate hands, tracer from
+the firing gun, GOTO_Iron / GOTO_Hip; duals replace their single
+(`merge_dual_ammo`, unit test). `zed.rs`: test action `zed_line`.
+`particles.rs`: 27 more effect classes (every base weapon's flash and
+shell) with their Trigger counts; status log shows positions.
+`properties.rs`: defaults candidate with fewest non-delegate Raw values
+wins, then most values. DESIGN, README.
+**Why:** Step W3. Effects and reader rule: found while testing.
+**Tested how:** `cargo test --release`; Handcannon and 9mm at
+`zed_line`; dual 9mms (hip and aimed); the three other duals given with
+their singles; screenshot of the left-hand dual shot; all 3757 script
+classes through the original and new defaults reader (a git worktree
+of f440bd8 under work/), diffed.
+**Result:** Tests 50/50. Handcannon: 115, 57, 28 through three Clots;
+9mm: 35 to the first only. Duals alternate fireright / fireleft with the
+matching flash and shell; aimed fireright_iron / fireleft_iron; merges
+30/210 (9mm), 16/80, 12/116, 24/120. 53 effects load, none missing.
+Reader: 449 classes change, all for the better as far as I can tell.
+**Still broken / not tested:** I spent too long trying to see flashes in
+single screenshots (they appear ~4 frames after the shot); you confirmed
+the Handcannon's; the other guns' flashes are not checked by eye. The
+duals' ammo merge is my reading of GiveTo. The M4's tip bone X axis
+points sideways, so its flash may point the wrong way (not checked).
+**Next:** W4, shotguns.

@@ -31,7 +31,7 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 26] = [
+const EFFECT_CLASSES: [&str; 53] = [
     "KFMod.DismembermentJetHead",
     "KFMod.DismembermentJetDecapitate",
     "KFMod.DismembermentJetLimb",
@@ -58,6 +58,34 @@ const EFFECT_CLASSES: [&str; 26] = [
     "KFMod.KFNewTracer",
     "ROEffects.MuzzleFlash3rdMG",
     "ROEffects.ROBulletHitRockEffect",
+    // Every FlashEmitterClass / ShellEjectClass of the base weapons.
+    "KFMod.KFShellEjectFAL",
+    "KFMod.KSGShellEject",
+    "KFMod.MK23Shell",
+    "KFMod.MuzzleFlashMK",
+    "KFMod.ShellEjectKriss",
+    "KFMod.TrenchgunMuzzFlash",
+    "KFMod.ZEDMKIIPrimaryMuzzleFlash1P",
+    "ROEffects.KFShellEjectAK",
+    "ROEffects.KFShellEjectBenelli",
+    "ROEffects.KFShellEjectBullpup",
+    "ROEffects.KFShellEjectEBR",
+    "ROEffects.KFShellEjectHandCannon",
+    "ROEffects.KFShellEjectM4Rifle",
+    "ROEffects.KFShellEjectMP",
+    "ROEffects.KFShellEjectMP5SMG",
+    "ROEffects.KFShellEjectMac",
+    "ROEffects.KFShellEjectMkb",
+    "ROEffects.KFShellEjectSCAR",
+    "ROEffects.KFShellEjectShotty",
+    "ROEffects.MuzzleFlash1stHusk",
+    "ROEffects.MuzzleFlash1stKar",
+    "ROEffects.MuzzleFlash1stNadeL",
+    "ROEffects.MuzzleFlash1stNailGun",
+    "ROEffects.MuzzleFlash1stPTRD",
+    "ROEffects.MuzzleFlash1stSTG",
+    "ROEffects.MuzzleFlash1stZEDGunPrimary",
+    "ROEffects.ZEDGunChargeDown",
 ];
 
 pub struct ParticlePlugin;
@@ -185,7 +213,7 @@ pub struct ParticleEffect {
 /// overrides Trigger with SpawnParticle calls (every KF muzzle flash and
 /// shell ejector does; the engine's own Trigger, which toggles emitters
 /// with TriggerDisabled, is never what these use).
-const TRIGGER_COUNTS: [(&str, &[u32]); 5] = [
+const TRIGGER_COUNTS: [(&str, &[u32]); 32] = [
     // MuzzleFlash1stMP.Trigger: Emitters[0] 2, Emitters[1] 1.
     ("ROEffects.MuzzleFlash1stMP", &[2, 1]),
     // KFShellEject9mm.Trigger: the casing, and 3 smoke puffs.
@@ -194,6 +222,35 @@ const TRIGGER_COUNTS: [(&str, &[u32]); 5] = [
     ("ROEffects.MuzzleFlash3rdPistol", &[2, 2, 2, 2, 2, 1, 2, 2]),
     // KFShellEject / ROMuzzleFlash1st / ROMuzzleFlash3rd: Emitters[0] 1.
     ("ROEffects.KFShellEject", &[1]),
+    // The other base weapons' flashes and shell ejectors: each class's
+    // Trigger (TrenchgunMuzzFlash inherits MuzzleFlash1stKar's).
+    ("KFMod.KFShellEjectFAL", &[1, 1]),
+    ("KFMod.KSGShellEject", &[1, 3]),
+    ("KFMod.MK23Shell", &[1, 3]),
+    ("KFMod.MuzzleFlashMK", &[2, 1]),
+    ("KFMod.ShellEjectKriss", &[1, 3]),
+    ("KFMod.TrenchgunMuzzFlash", &[2, 1]),
+    ("KFMod.ZEDMKIIPrimaryMuzzleFlash1P", &[2, 1, 5, 5]),
+    ("ROEffects.KFShellEjectAK", &[1, 1]),
+    ("ROEffects.KFShellEjectBenelli", &[1, 3]),
+    ("ROEffects.KFShellEjectBullpup", &[1, 1]),
+    ("ROEffects.KFShellEjectEBR", &[1, 1]),
+    ("ROEffects.KFShellEjectHandCannon", &[1, 3]),
+    ("ROEffects.KFShellEjectM4Rifle", &[1, 1]),
+    ("ROEffects.KFShellEjectMP", &[1, 3]),
+    ("ROEffects.KFShellEjectMP5SMG", &[1, 3]),
+    ("ROEffects.KFShellEjectMac", &[1, 1]),
+    ("ROEffects.KFShellEjectMkb", &[1, 1]),
+    ("ROEffects.KFShellEjectSCAR", &[1, 1]),
+    ("ROEffects.KFShellEjectShotty", &[1, 3]),
+    ("ROEffects.MuzzleFlash1stHusk", &[3, 3]),
+    ("ROEffects.MuzzleFlash1stKar", &[2, 1]),
+    ("ROEffects.MuzzleFlash1stNadeL", &[3, 1]),
+    ("ROEffects.MuzzleFlash1stNailGun", &[2]),
+    ("ROEffects.MuzzleFlash1stPTRD", &[2, 1]),
+    ("ROEffects.MuzzleFlash1stSTG", &[2, 1]),
+    ("ROEffects.MuzzleFlash1stZEDGunPrimary", &[2, 1, 5, 5]),
+    ("ROEffects.ZEDGunChargeDown", &[3, 3]),
 ];
 
 impl ParticleEffect {
@@ -855,9 +912,23 @@ fn update_effects(
         if (fx.log_timer >= 0.5 || fx.age <= dt) && !(fx.persistent && alive == 0) {
             fx.log_timer = 0.0;
             let counts: Vec<String> = fx.emitters.iter().map(|s| format!("{}/{}", s.particles.len(), s.spawned)).collect();
+            let first = fx
+                .emitters
+                .iter()
+                .find_map(|s| s.particles.first())
+                .map_or("none".to_string(), |p| format!("({:.1}, {:.1}, {:.1})", p.pos.x, p.pos.y, p.pos.z));
             runlog::kv(
                 "effect_status",
-                &format!("effect={} class={} age={:.2} alive/spawned=[{}]", fx.id, effect.class, fx.age, counts.join(" ")),
+                &format!(
+                    "effect={} class={} age={:.2} alive/spawned=[{}] first_particle_unreal={first} frame_unreal=({:.1}, {:.1}, {:.1})",
+                    fx.id,
+                    effect.class,
+                    fx.age,
+                    counts.join(" "),
+                    fx.frame.0.x,
+                    fx.frame.0.y,
+                    fx.frame.0.z
+                ),
             );
         }
         let expired = fx.life_span > 0.0 && fx.age > fx.life_span;
