@@ -104,6 +104,8 @@ struct ZedClass {
     collision_radius: f32,
     collision_height: f32,
     ground_speed: f32,
+    /// HiddenGroundSpeed: an unseen zed's speed (KFMonster 300).
+    hidden_speed: f32,
     /// Turn speed, Unreal rotation units per second (RotationRate.Yaw).
     turn_rate: f32,
     melee_range: f32,
@@ -339,6 +341,13 @@ const BLOAT_CHARGE_CHANCE: f32 = 0.4;
 /// ZombieFleshPound RageCharging: GroundSpeed x 2.3.
 const FLESHPOUND_RAGE_SPEED: f32 = 2.3;
 
+/// KFMonster.PostBeginPlay: MeleeDamage and ScreamDamage (ints) =
+/// Max(DifficultyDamageModifer x damage, 1); Normal 1.0, x 0.75 with one
+/// player.
+fn solo_damage(d: f32) -> f32 {
+    (d * 0.75).trunc().max(1.0)
+}
+
 /// KFMonster MinTimeBetweenPainAnims and StunTime (seconds).
 const MIN_TIME_BETWEEN_PAIN_ANIMS: f32 = 0.5;
 const STUN_TIME: f32 = 1.0;
@@ -521,6 +530,12 @@ pub struct Zed {
     door_checked: Option<Vec3>,
     /// The JumpPad being touched (Touch fires on entering).
     on_pad: Option<usize>,
+    /// LastSeenOrRelevantTime, LastRenderTime and LastViewCheckTime (game
+    /// seconds), and whether it moves at HiddenGroundSpeed.
+    last_seen: f32,
+    last_render: f32,
+    last_view_check: f32,
+    hidden: bool,
 }
 
 /// One damage event, for gore effects (KFMonster.DoDamageFX). Bevy space.
@@ -1891,7 +1906,7 @@ fn load_class(
             ZedKind::Bloat => BLOAT_CHARGE_CHANCE,
             _ => 0.0,
         },
-        scream: (kind == ZedKind::Siren).then(|| (float("ScreamDamage", 8.0), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
+        scream: (kind == ZedKind::Siren).then(|| (solo_damage(float("ScreamDamage", 8.0)), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
         boss: if kind == ZedKind::Patriarch {
             match crate::boss::BossClass::load(&model, name_of("ChargingAnim").as_deref()) {
                 Ok(b) => {
@@ -1952,13 +1967,14 @@ fn load_class(
         head_radius: float("HeadRadius", 7.0) * head_scale,
         head_offset: float("HeadHeight", 2.0) * head_scale,
         head_bone,
-        melee_damage: float("MeleeDamage", 6.0),
+        melee_damage: solo_damage(float("MeleeDamage", 6.0)),
         name: class_path.to_string(),
         draw_scale: float("DrawScale", 1.0),
         pre_pivot,
         collision_radius: float("CollisionRadius", 22.0),
         collision_height: float("CollisionHeight", 22.0),
         ground_speed: float("GroundSpeed", 440.0),
+        hidden_speed: float("HiddenGroundSpeed", 300.0),
         turn_rate,
         melee_range: float("MeleeRange", 50.0),
         idle: name_of("IdleRestAnim").and_then(|n| model.sequence(&n)),
@@ -2390,6 +2406,10 @@ impl Zed {
             door_bash: None,
             door_checked: None,
             on_pad: None,
+            last_seen: f32::MIN,
+            last_render: f32::MIN,
+            last_view_check: f32::MIN,
+            hidden: false,
             pouncing: false,
             since_pounce: f32::MAX,
             can_flip: true,
@@ -2459,6 +2479,11 @@ impl Zed {
     #[cfg(test)]
     pub fn melee_values(&self) -> (f32, f32) {
         (self.melee_range, self.melee_damage)
+    }
+
+    /// Seconds since the player last saw this zed (CanKillMeYet's test).
+    pub fn unseen_for(&self, now: f32) -> f32 {
+        now - self.last_seen
     }
 
     pub fn is_dead(&self) -> bool {
@@ -2768,6 +2793,10 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 door_bash: None,
                 door_checked: None,
                 on_pad: None,
+                last_seen: f32::MIN,
+                last_render: f32::MIN,
+                last_view_check: f32::MIN,
+                hidden: false,
                 pouncing: false,
                 since_pounce: f32::MAX,
                 can_flip: !c.no_flip,
@@ -2968,6 +2997,7 @@ struct ZedWorld<'w, 's> {
     door_hits: MessageWriter<'w, crate::door::ZedDoorHit>,
     door_blasts: MessageWriter<'w, crate::door::DoorBlast>,
     clear_zeds: MessageReader<'w, 's, crate::game::ClearZeds>,
+    kill_stuck: MessageReader<'w, 's, crate::game::KillStuckZed>,
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
@@ -2994,7 +3024,8 @@ fn think_and_move(
     mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
-    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds } = &mut world;
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck } = &mut world;
+    let stuck: Vec<usize> = kill_stuck.read().map(|k| k.0).collect();
     let (doors, door_colliders) = (&*doors, &*door_colliders);
     let Some(classes) = classes else {
         return;
@@ -3007,6 +3038,9 @@ fn think_and_move(
     // Test action "kill_zeds": every living zed dies (wave tests); also a
     // wave game's restart.
     let kill_all = script.0.iter().any(|(f, a)| *f == frames.0 && a == "kill_zeds") || clear_zeds.read().count() > 0;
+    // Test action "kill_near_zeds": zeds within 500 units of the player die
+    // (the ones that reached you), others live on (cleanup tests).
+    let kill_near = script.0.iter().any(|(f, a)| *f == frames.0 && a == "kill_near_zeds");
     let Ok((pt, walker)) = player.single() else {
         return;
     };
@@ -3084,12 +3118,51 @@ fn think_and_move(
             }
             continue;
         }
-        if kill_all {
+        if kill_all || (kill_near && (z.centre - target).length() / SCALE < 500.0 && !z.is_dead()) {
             z.last_hit = None;
             z.kill();
             kills.0 += 1;
             runlog::kv("zed_killed_test", &format!("id={}", z.id));
             continue;
+        }
+        if stuck.contains(&z.id) && !z.is_dead() {
+            z.last_hit = None;
+            z.kill();
+            runlog::kv("zed_killed_stuck", &format!("id={}", z.id));
+            continue;
+        }
+        // KFMonster.Tick (standalone), when CanSpeedAdjust (head on, not
+        // zapped): seen within the last 5 s of being drawn, else a sight
+        // check from its eyes to the player's every second; unseen zeds
+        // move at HiddenGroundSpeed. LastRenderTime (native: drawn this
+        // frame) is approximated as within 60 degrees of the view and in
+        // clear sight; the zed's eyes as 0.8 of its half height up.
+        let now = time.elapsed_secs();
+        if !z.decapitated && !z.zapped() {
+            let eye = z.centre + Vec3::Y * c.collision_height * 0.8 * SCALE;
+            let to = eye - pt.translation;
+            let in_view = to.normalize_or_zero().dot(*pt.forward()) > 0.5;
+            if in_view && sees(&spatial, pt.translation, eye) {
+                z.last_render = now;
+            }
+            if now - z.last_render > 5.0 {
+                if now - z.last_view_check > 1.0 {
+                    z.last_view_check = now;
+                    let was = z.hidden;
+                    z.hidden = !sees(&spatial, eye, pt.translation);
+                    if !z.hidden {
+                        z.last_seen = now;
+                    }
+                    if was != z.hidden && log_now {
+                        runlog::kv("zed_hidden", &format!("id={} hidden={}", z.id, z.hidden));
+                    }
+                }
+            } else {
+                z.last_seen = now;
+                z.hidden = false;
+            }
+        } else {
+            z.hidden = false;
         }
         // Bleeding out (KFMonster.Tick): dies when the time is up. No hit
         // momentum, so the ragdoll gets no push.
@@ -3916,6 +3989,9 @@ fn think_and_move(
                     // ZombieBoss Charging.Tick: x 2.5, x 1.25 while attacking.
                     let scale = if z.attack.is_some() { crate::boss::CHARGE_ATTACK_SPEED } else { crate::boss::CHARGE_SPEED };
                     c.ground_speed * scale
+                } else if z.hidden {
+                    // KFMonster.Tick: unseen, SetGroundSpeed(HiddenGroundSpeed).
+                    c.hidden_speed
                 } else {
                     c.ground_speed
                 };
@@ -4525,5 +4601,11 @@ mod tests {
         assert!(!z.running);
         assert_eq!(z.update_running(300.0, false, 0.1), None, "headless: no running");
     }
-}
 
+    #[test]
+    fn solo_damage_is_three_quarters_rounded_down() {
+        assert_eq!(solo_damage(6.0), 4.0); // Clot claw: 4.5 -> 4
+        assert_eq!(solo_damage(8.0), 6.0); // Siren scream
+        assert_eq!(solo_damage(1.0), 1.0); // at least 1
+    }
+}

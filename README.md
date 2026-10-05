@@ -167,7 +167,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   countdown. Zeds come from the map's spawn areas by KF's rules (G2a):
   never where you can see the spot or within 600 units, not from areas
   behind a welded door, spread over the map. Jump pads throw zeds into
-  the map (KF-WestLondon's fence behind the start). Checked by
+  the map (KF-WestLondon's fence behind the start). Zeds you have not
+  seen for a while move at 300 (KF's hidden speed, also in debug mode);
+  late in a wave, zeds nobody has seen for 8 s are removed. Zed damage is
+  x 0.75 for one player, as in KF (also in debug mode: a Clot hits for
+  about 4). Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.
@@ -420,7 +424,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   movers (lifts, barriers, KF-Aperture's button doors) do not move and do
   not block.
 - Zeds can wedge in tight spots and hang in the air (2 of 20 in a
-  KF-WestLondon test); KF's stuck-zed cleanup comes with G2b.
+  KF-WestLondon test); KF's stuck-zed cleanup removes them late in a wave.
 - Jump pads throw zeds only, not the player.
 - No crouching. Ladders, water and swimming are not handled.
 - No sound.

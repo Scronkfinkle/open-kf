@@ -2804,3 +2804,22 @@ My clippy check earlier missed warnings from G1 (now fixed).
 (two surfaces at once) on KF-WestLondon; the pad launch point is an
 approximation; players are not thrown by pads.
 **Next:** commit G2a with this fix; then G2b.
+
+## 2026-10-05 Game loop G2b: being seen, hidden speed, cleanup, solo damage
+
+**Changed:** `zed.rs`: `solo_damage` (MeleeDamage, ScreamDamage x 0.75,
+whole, at least 1), HiddenGroundSpeed per class, last seen / drawn / view
+check per zed, hidden zeds at 300, `unseen_for`, `KillStuckZed` handling,
+test action `kill_near_zeds`. `game.rs`: the stuck-zed cleanup. DESIGN
+(plus the retro / map audit step you asked for), README.
+**Why:** G2b; you agreed hidden speed and the damage apply in both modes.
+**Tested how:** KF-WestLondon wave 1 with `kill_near_zeds` every 2 s;
+KF-Manor debug runs with a Clot and a Siren; unit test; tests, clippy.
+**Result:** Zed speed logs: mostly 300 (hidden), 105 when seen. Cleanup
+killed 4 never-seen zeds (including the 2 that wedge in the air) at 5 or
+fewer left, one a second; the wave ended. Clot hits 3.9-4.2 (was about
+6); Siren scream 6 at full strength (was 8). Tests 72 + 21.
+**Still broken / not tested:** "Drawn" is an approximation (view cone and
+sight). Hidden speed is not applied to running / raging / charging
+speeds. Not played.
+**Next:** the retro and map audit, then G3 / D5 / trader.

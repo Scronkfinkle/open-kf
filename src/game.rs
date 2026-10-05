@@ -387,6 +387,11 @@ pub struct SpawnZedAt {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ClearZeds;
 
+/// The stuck-zed cleanup kills this zed (`Pawn.KilledBy(self)`: no kill
+/// credit, no dosh).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct KillStuckZed(pub usize);
+
 /// The wave line on the HUD (empty in debug mode).
 #[derive(Resource, Default)]
 pub struct WaveHud(pub String);
@@ -399,6 +404,7 @@ impl Plugin for GamePlugin {
             .init_resource::<WaveHud>()
             .add_message::<SpawnZedAt>()
             .add_message::<ClearZeds>()
+            .add_message::<KillStuckZed>()
             .add_systems(Update, wave_timer);
     }
 }
@@ -419,7 +425,7 @@ fn wave_timer(
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
-    (player, doors): (PlayerQuery, Res<crate::door::Doors>),
+    (player, doors, mut kill_stuck): (PlayerQuery, Res<crate::door::Doors>, MessageWriter<KillStuckZed>),
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
         return;
@@ -527,6 +533,15 @@ fn wave_timer(
         Phase::Wave => {
             g.wave_time_elapsed += 1.0;
             if g.total_max_monsters <= 0 {
+                // All spawned, 5 or fewer left: one zed a tick that
+                // CanKillMeYet (unseen for 8 s; any zed from the final wave
+                // on) is killed, so a stuck zed cannot stall the wave.
+                if num_monsters <= 5
+                    && let Some(z) = zeds.iter().find(|z| !z.is_dead() && (g.wave_num >= g.final_wave || z.unseen_for(now) > 8.0))
+                {
+                    kill_stuck.write(KillStuckZed(z.id));
+                    runlog::kv("zed_cleanup", &format!("id={} unseen_seconds={:.0} left={num_monsters}", z.id, z.unseen_for(now).min(9999.0)));
+                }
                 if num_monsters <= 0 {
                     do_wave_end(g);
                 }

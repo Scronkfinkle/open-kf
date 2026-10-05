@@ -2225,7 +2225,7 @@ Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
 (HUD milestone), door respawn (waves milestone), other movers.
 
-## Game loop: waves, trader, door respawns (milestone 9, planned 2026-10-05; G1, G2a implemented)
+## Game loop: waves, trader, door respawns (milestone 9, planned 2026-10-05; G1, G2a, G2b implemented)
 
 Goal: play a KF game solo: waves of zeds from the map's spawn volumes, the
 trader between waves with dosh to spend, broken doors back each wave, the
@@ -2299,6 +2299,12 @@ KFGameLength=0) is Short.
 - **G2b, being seen.** LastSeenOrRelevantTime, HiddenGroundSpeed (unseen
   zeds move at 300), the stuck-zed cleanup, zed damage x 0.75 for one
   player (MeleeDamage, ScreamDamage, SpinDam; whole numbers, at least 1).
+  Hidden speed and the damage scaling apply in debug mode too (your
+  call: they are KF zed rules, not wave rules).
+- **Retro and map audit (after G2b, your request).** List every actor
+  class the KF maps use and whether we simulate it (jump pads, teleporters,
+  ladders, movers, physics volumes, triggers, ...), so map gaps are not
+  mistaken for AI errors; a short retro of the milestone so far.
 - **G3, the Patriarch wave.** Boss spawn rules, his helper squads when he
   runs off to heal (FinalSquads), the win.
 - **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
@@ -2371,6 +2377,20 @@ air); such a hit is now re-swept from a skin off the surface, on
 whichever side is free. Still seen on KF-WestLondon: 2 of 20 zeds wedged
 in the falling state in tight spots (two surfaces at once); KF's answer
 to stuck zeds is the cleanup in G2b.
+
+**G2b as built.** `zed.rs`: MeleeDamage and ScreamDamage x 0.75, whole,
+at least 1 (`solo_damage`, at class load: every zed, both modes). Each
+frame for a zed with its head and not zapped: "drawn" (LastRenderTime,
+native) is approximated as within 60 degrees of the view and in clear
+sight; drawn in the last 5 s = seen; otherwise every second a sight
+check from 0.8 of its half height up to the player's eye: clear = seen,
+else hidden. Hidden zeds walk at HiddenGroundSpeed (300) instead of their
+GroundSpeed; their special speeds (running, raging, charging, headless)
+are left alone (KF's states set those themselves; their interplay with
+the hidden speed is not checked). `game.rs`: with every zed spawned and 5
+or fewer alive, one zed a tick that CanKillMeYet (unseen over 8 s; from
+the final wave on, any) is killed with no credit (`KillStuckZed`). Test
+action `kill_near_zeds` (zeds within 500 of the player die).
 
 Not in this milestone: pickups lying in the map (SetupPickups), dropped
 weapons, perks, multiplayer, voice lines and sounds.
