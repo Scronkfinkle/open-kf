@@ -158,6 +158,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Crossbow and M99 (W6c, 2026-10-04): bolts / bullets go through every
+  zed in line (losing a fifth each time), with KF's big headshot
+  multipliers; Crossbow bolts stick in walls and can be picked back up.
+  Checked by logged runs (pickup not tested). Not play-tested by you.
 - Frag grenades and pipe bombs (W6b, 2026-10-04): G throws a frag (your
   weapon goes down and comes back up), it bounces and explodes after 2 s;
   pipe bombs are placed and go off when enough zeds come near. Checked by
@@ -321,8 +325,9 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
   accuracy bonus. Alt fires other than melee, the rifle toggles and the shotguns
-  (medic darts, flashlights) do nothing yet. The crossbow, M99, flamethrower, husk gun, syringe, welder and ZED guns play
-  their fire animation and use ammo but do nothing. The Trenchgun's fire
+  (medic darts, flashlights) do nothing yet. The flamethrower, husk gun,
+  syringe, welder and ZED guns play their fire animation and use ammo but
+  do nothing. The Trenchgun's fire
   damage is not done (W7). No DLC weapons. No trader.
 - Frame rate not measured with the monitor on (during testing the monitor was
   off, which throttles to 1 fps).

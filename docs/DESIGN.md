@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W5 and W6a-b implemented 2026-10-04)
+## Weapons (milestone 7, W1-W6 implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1790,6 +1790,19 @@ W6b (`projectile.rs` PlayerThrown, `weapon.rs` Action::Grenade):
 - Not done: shooting a pipe bomb to set it off (PipeBombProjectile.
   TakeDamage), the Siren disintegrating explosives, shrapnel pieces, the
   pipe bomb's light and beeps (no sound), the frag mesh in flight.
+
+W6c (`projectile.rs` PenRule::Bolt):
+- CrossbowArrow (Speed 15000) and M99Bullet (Speed 28000), straight:
+  every zed on the path takes Damage (x HeadShotDamageMult 4 / 2.25 on a
+  headshot, with DamageTypeHeadShot, whose own multiplier is 1), then
+  Damage / 1.25 and Velocity x 0.85; walls: ROBulletHitEffect and the
+  projectile sticks. A stuck Crossbow bolt is picked up (+1 bolt, if the
+  Crossbow has room) by touching it (CrossbowArrow state OnWall, 25 x 25)
+  until its LifeSpan (10 s) ends.
+- CrossbowFire / M99Fire need only the ammo total (no reload step).
+- SpreadStyle SS_None (the Crossbow) now fires straight.
+- Not done: the arrow / bullet meshes, bodies pinned to walls
+  (BodyAttacher), the M99's 3D scope is from the scope step.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

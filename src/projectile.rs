@@ -35,7 +35,40 @@ pub struct ProjectileStats {
     pub life_span: f32,
     /// NailGunProjectile Bounces (0 for pellets).
     pub bounces: u32,
+    /// How it goes through zeds.
+    pub rule: PenRule,
+    /// CrossbowArrow: stuck in a wall it can be picked up (+1 bolt).
+    pub pickup: bool,
 }
+
+/// How a projectile passes through zeds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PenRule {
+    /// ShotgunBullet.ProcessTouch: damage x PenDamageReduction per zed,
+    /// gone at PenDamageReduction / MaxPenetrations of the start.
+    #[default]
+    Pellet,
+    /// CrossbowArrow / M99Bullet.ProcessTouch: damage / 1.25 and speed x
+    /// 0.85 per zed, through every zed; sticks in the wall.
+    Bolt,
+}
+
+/// A stuck Crossbow bolt (CrossbowArrow state OnWall): touching it (within
+/// 25 units) picks it up if the Crossbow has room (ProcessTouch).
+#[derive(Component)]
+struct StuckBolt {
+    pos: Vec3,
+    life: f32,
+    id: u32,
+}
+
+/// Whether the Crossbow can take a bolt back (weapon.rs sets it).
+#[derive(Resource, Default)]
+pub struct BoltRoom(pub bool);
+
+/// A bolt picked up: the weapon code adds one round.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct BoltPickedUp;
 
 /// A grenade or rocket's values (M79GrenadeProjectile family, LAWProj).
 #[derive(Clone, Copy, Debug)]
@@ -119,6 +152,9 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SpawnPlayerProjectile>()
+            .add_message::<BoltPickedUp>()
+            .init_resource::<BoltRoom>()
+            .add_systems(Update, pick_up_bolts)
             .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown).chain());
     }
 }
@@ -214,7 +250,7 @@ fn spawn_projectiles(
                     .filter(|&t| t < wall)
                     .collect();
                 zed_t.sort_by(f32::total_cmp);
-                let end_t = zed_t.get(penetration_limit(&s.stats) - 1).copied().unwrap_or(wall);
+                let end_t = zed_t.get(penetration_limit(&s.stats).saturating_sub(1)).copied().unwrap_or(wall);
                 bullet_fx.write(crate::bullet_fx::BulletFx {
                     shooter: crate::bullet_fx::Shooter::PlayerPellet((*next_id % PELLET_TRACERS) as u8),
                     start: Some(start),
@@ -244,6 +280,9 @@ fn spawn_projectiles(
 /// How many zeds a projectile passes before it stops (ProcessTouch's rule),
 /// for drawing its tracer only as far as it goes.
 pub fn penetration_limit(stats: &ProjectileStats) -> usize {
+    if stats.rule == PenRule::Bolt {
+        return usize::MAX;
+    }
     let r = stats.pen_damage_reduction;
     if !(0.0..1.0).contains(&r) || stats.max_penetrations <= 0.0 {
         return 1;
@@ -329,6 +368,11 @@ fn move_projectiles(
             );
             let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None };
             crate::combat::damage_zed(&mut z, damage, head, p.stats.damage_type_headshot_mult, p.weapon, t, source, &mut kills);
+            if p.stats.rule == PenRule::Bolt {
+                p.damage /= 1.25;
+                p.vel *= 0.85;
+                continue;
+            }
             p.damage *= p.stats.pen_damage_reduction;
             if p.damage / p.stats.damage <= p.stats.pen_damage_reduction / p.stats.max_penetrations.max(1e-3) {
                 stopped = true;
@@ -368,6 +412,14 @@ fn move_projectiles(
                     "projectile_wall",
                     &format!("id={} weapon={} flight_unreal={:.0} zeds_hit={}", p.id, p.weapon, p.age * p.stats.speed, p.hit.len()),
                 );
+                // CrossbowArrow.Stick: stays on the wall until LifeSpan.
+                if p.stats.pickup {
+                    commands.spawn(StuckBolt {
+                        pos: hit_ue + n_ue,
+                        life: p.stats.life_span - p.age,
+                        id: p.id,
+                    });
+                }
                 commands.entity(entity).despawn();
             }
             None => p.pos += step,
@@ -854,6 +906,40 @@ fn move_thrown(
             ),
         );
         commands.entity(entity).despawn();
+    }
+}
+
+
+/// CrossbowArrow state OnWall: the player touching a stuck bolt (collision
+/// 25 x 25 against the player's cylinder) takes it if the Crossbow has
+/// room; it is gone at its LifeSpan.
+fn pick_up_bolts(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut bolts: Query<(Entity, &mut StuckBolt)>,
+    room: Res<BoltRoom>,
+    player: Query<(&Transform, Option<&crate::walk::Walker>), With<crate::camera::FlyCamera>>,
+    mut picked: MessageWriter<BoltPickedUp>,
+) {
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    let player_ue = player.single().ok().map(|(t, w)| {
+        to_ue(w.map_or(t.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center)) / SCALE
+    });
+    for (e, mut b) in &mut bolts {
+        b.life -= time.delta_secs();
+        if b.life <= 0.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        if let Some(pl) = player_ue {
+            let d = b.pos - pl;
+            let touching = d.truncate().length() <= 25.0 + PLAYER_RADIUS && d.z.abs() <= 25.0 + 50.0;
+            if touching && room.0 {
+                picked.write(BoltPickedUp);
+                runlog::kv("bolt_picked_up", &format!("id={}", b.id));
+                commands.entity(e).despawn();
+            }
+        }
     }
 }
 

@@ -2298,3 +2298,21 @@ s later: Scrake 1370 (killed), self 661 (god mode).
 disintegration, shrapnel, sounds, meshes in flight. Not play-tested by
 you.
 **Next:** W6c, Crossbow and M99.
+
+## 2026-10-04 Weapons step W6c: Crossbow and M99
+
+**Changed:** `projectile.rs`: `PenRule` (Pellet / Bolt), `StuckBolt`,
+`BoltRoom`, `BoltPickedUp`, `pick_up_bolts`. `weapon.rs`: CrossbowArrow
+and M99Bullet loaded as bolts (DamageTypeHeadShot multiplier),
+CrossbowFire / M99Fire total-ammo only, bolt pickups add a round,
+SpreadStyle SS_None fires straight. DESIGN, README.
+**Why:** Step W6c.
+**Tested how:** `cargo test --release`; Crossbow at `zed_line_far`; M99
+at a Fleshpound.
+**Result:** Tests 51/51. Crossbow: 300 then 240 through two Clots (both
+killed), stuck in the wall; spread 0. M99: 675 (337.5 on the
+Fleshpound), kick 150 back / 85 up.
+**Still broken / not tested:** Bolt pickup not tried in a run. Meshes,
+pinned bodies not done. Not play-tested by you.
+**Next:** W7, fire: zeds burning, Flamethrower, Trenchgun, MAC10, Husk
+gun.

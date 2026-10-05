@@ -472,7 +472,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
                 || defaults.is_a(p, "TrenchgunBullet")
                 // Grenades and rockets (W6; the Husk gun's fireball is W7).
                 || defaults.is_a(p, "M79GrenadeProjectile")
-                || (defaults.is_a(p, "LAWProj") && !defaults.is_a(p, "HuskGunProjectile")))
+                || (defaults.is_a(p, "LAWProj") && !defaults.is_a(p, "HuskGunProjectile"))
+                || defaults.is_a(p, "CrossbowArrow")
+                || defaults.is_a(p, "M99Bullet"))
     });
     mode.kind = if welds {
         FireKind::None
@@ -623,6 +625,10 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             trail: Some("ROEffects.PanzerfaustTrail"),
         });
         let is_pipe = defaults.is_a(pc, "PipeBombProjectile");
+        // CrossbowArrow / M99Bullet: TakeDamage with DamageTypeHeadShot on a
+        // headshot (its HeadShotDamageMult is then the one KFMonster applies).
+        let is_bolt = defaults.is_a(pc, "CrossbowArrow") || defaults.is_a(pc, "M99Bullet");
+        let dt_mult = if is_bolt { class_mult("DamageTypeHeadShot") } else { dt_mult };
         let thrown = (defaults.is_a(pc, "Nade") || is_pipe).then(|| crate::projectile::ThrownStats {
             // FragFire.PostSpawnProjectile: a quick throw (HoldTime 0) at
             // mHoldSpeedMin; the pipe bomb at its own Speed.
@@ -646,8 +652,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
                 crate::projectile::ThrownKind::Frag { fuse: pfloat("ExplodeTimer", 2.0) }
             },
         });
-        mode.total_ammo_only =
-            defaults.is_a(fm_class, "M79Fire") || defaults.is_a(fm_class, "M203Fire") || defaults.is_a(fm_class, "LAWFire");
+        mode.total_ammo_only = ["M79Fire", "M203Fire", "LAWFire", "CrossbowFire", "M99Fire"]
+            .iter()
+            .any(|c| defaults.is_a(fm_class, c));
         mode.requires_aim = defaults.is_a(fm_class, "LAWFire");
         mode.pellets = Some(PelletFire {
             thrown,
@@ -661,10 +668,13 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
                 damage_type_headshot_mult: dt_mult,
                 life_span: pfloat("LifeSpan", 3.0),
                 bounces: pfloat("Bounces", 0.0) as u32,
+                rule: if is_bolt { crate::projectile::PenRule::Bolt } else { crate::projectile::PenRule::Pellet },
+                pickup: defaults.is_a(pc, "CrossbowArrow"),
             },
             per_fire: int("ProjPerFire", 1),
             ammo_per_fire: int("AmmoPerFire", 1),
-            spread: mode.combat.spread,
+            // SpreadStyle: SS_None (0) fires straight; SS_Random (1) spreads.
+            spread: if int("SpreadStyle", 1) == 0 { 0.0 } else { mode.combat.spread },
             kick: vector("KickMomentum"),
             spawn_offset: vector("ProjSpawnOffset"),
         });
@@ -1596,7 +1606,11 @@ fn weapon_input(
     ),
     mut ammo_display: ResMut<crate::combat::AmmoDisplay>,
     mut recoil: ResMut<crate::firing::Recoil>,
-    health: Res<crate::combat::PlayerHealth>,
+    (health, mut bolt_room, mut bolts_picked): (
+        Res<crate::combat::PlayerHealth>,
+        ResMut<crate::projectile::BoltRoom>,
+        MessageReader<crate::projectile::BoltPickedUp>,
+    ),
     mut scripted_held: Local<[bool; 2]>,
 ) {
     let Some(mut w) = weapons else {
@@ -2231,6 +2245,15 @@ fn weapon_input(
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
     ammo_display.alt_ammo = w.defs[w.current].alt_ammo.map(|a| a.0);
+    // CrossbowArrow pickups: room for one more bolt?
+    if let Some(d) = w.defs.iter().find(|d| d.class.eq_ignore_ascii_case("KFMod.Crossbow")) {
+        bolt_room.0 = d.ammo.is_some_and(|a| a.mag + a.spare < a.max_total);
+    }
+    for _ in bolts_picked.read() {
+        if let Some(a) = w.defs.iter_mut().find(|d| d.class.eq_ignore_ascii_case("KFMod.Crossbow")).and_then(|d| d.ammo.as_mut()) {
+            a.spare += 1;
+        }
+    }
     ammo_display.frags = w.defs.iter().find(|d| d.toss.is_some()).and_then(|d| d.ammo).map(|a| a.mag + a.spare);
     ammo_display.fire_mode = match w.defs[w.current].toggles_on_alt {
         Some(AltToggle::FireMode) => Some(if w.defs[w.current].modes[0].wait_for_release { "SEMI" } else { "AUTO" }),
