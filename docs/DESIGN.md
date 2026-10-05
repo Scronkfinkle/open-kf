@@ -2329,13 +2329,39 @@ KFGameLength=0) is Short.
     drops to 0, the wave ends, WaveNum passes FinalWave and the next
     tick ends the game won. Not done: the double-length zed time (no
     zed time yet) and the death camera on him (G3b).
-- **G3b, the grand entrance.** MakeGrandEntry: once he is spawned the
+- **G3b, the grand entrance (deferred until the trader core is in).** MakeGrandEntry: once he is spawned the
   view switches to him in third person while he plays Entrance, and
   BossBattleSong ("KF_Abandon") starts; back to the player when the
   animation ends. Also the death view on him. Later.
 - **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
   (or open if it was), bStartSealed doors re-welded.
-- **T1, dosh.** Starting cash, kill rewards, team pot, death penalty, HUD.
+- **T1, dosh (done 2026-10-05).** Starting cash, kill rewards, team pot, death penalty, HUD.
+  From KFGameType (ScoreKill, ScoreKillAssists, RewardSurvivingPlayers,
+  the StartingCash table) for GameDifficulty 2 (KillingFloor.ini):
+  - PRI.Score (the player's dosh, a float, shown whole) starts at
+    StartingCashNormal 250; a restart resets it.
+  - A zed killed by the player (Died with the player as Killer: a shot,
+    blast, burn, or bleeding out after the player took its head) pays
+    KillScore = Max(1, int(ScoringValue x 1.0 (Normal) x 1.75 (Short
+    only))). ScoringValue from the KFMod Zombie*Base defaults: Clot 7,
+    Crawler 10, Gorefast 12, Stalker 15, Bloat 17, Husk 17, Siren 25,
+    Scrake 75, Fleshpound 200, Patriarch 500. ScoreKillAssists gives it
+    to everyone who damaged the zed, split by damage; solo that is all
+    of it to the player. Team.Score also gets KillScore.
+  - Kills that are not the player's pay nothing: the level (lava,
+    KillZ), the stuck-zed cleanup (KilledBy itself), the boss's death.
+  - DoWaveEnd (boss wave too): RewardSurvivingPlayers: a living player
+    gets the whole Team.Score, which goes to 0. A dead one gets nothing
+    (MinRespawnCash only matters with respawns: not solo).
+  - The player's death (ScoreKill on the player): Score -= Score x
+    GameDifficulty x 0.05 (10%; the script's comment says 15%), and the
+    team pot loses 10% of the new score. Solo waves end there; it
+    matters in debug mode.
+  - HUD: the dosh as a whole number ("DOSH 250"; the HUD font has no £); logs `dosh` on each
+    change (reason, amount, total, team pot).
+  - Test kills (`kill_zeds` and the like) count as the player's, as they
+    already count in the kill counter (not KF: its KillZeds pays
+    nothing). Logged so it is clear.
 - **T2, shops.** ShopVolumes, trader doors, which shop, booting players
   out with the teleporters, the trail (and an arrow / distance on the HUD).
 - **T3, buying.** A simple keyboard buy menu (text list on screen):

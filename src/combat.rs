@@ -244,6 +244,7 @@ fn update_hud(
     kills: Res<KillCount>,
     z_spawn: Res<crate::zed::ZSpawn>,
     wave: Res<crate::game::WaveHud>,
+    dosh: Res<crate::dosh::Dosh>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = text.single_mut() else {
@@ -257,9 +258,10 @@ fn update_hud(
         + &ammo.syringe.map_or(String::new(), |p| format!("    SYRINGE {p}%"));
     let ammo = format!("    {}{rounds}{mode}{frags}", ammo.weapon.to_uppercase());
     **t = format!(
-        "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}{}",
+        "HEALTH {:.0}{}{ammo}    DOSH {}    KILLS {}    Z: {}{}",
         health.health.max(0.0),
         if health.god { " (GOD)" } else { "" },
+        dosh.score as i32,
         kills.0,
         z_spawn.label.to_uppercase(),
         if wave.0.is_empty() { String::new() } else { format!("    {}", wave.0) }
@@ -481,6 +483,7 @@ pub(crate) fn damage_zed(
     if killed {
         z.kill();
         kills.0 += 1;
+        z.killed_by_player = true;
     } else {
         // Hit reactions (KFMonster.PlayHit). The head explosion is its own
         // damage event and comes first; the main hit's reaction is then

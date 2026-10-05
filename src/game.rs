@@ -291,6 +291,10 @@ pub struct WaveGame {
     boss_killed: bool,
     /// The boss's finished knockdowns already answered.
     boss_knockdowns_seen: u32,
+    /// Counters other systems watch (dosh.rs): games restarted, DoWaveEnd
+    /// calls. Kept across a restart.
+    pub restarts: u32,
+    pub waves_ended: u32,
 }
 
 impl Default for WaveGame {
@@ -318,6 +322,8 @@ impl Default for WaveGame {
             wave_end_time: 0.0,
             boss_killed: false,
             boss_knockdowns_seen: 0,
+            restarts: 0,
+            waves_ended: 0,
         }
     }
 }
@@ -445,7 +451,7 @@ impl Plugin for GamePlugin {
 type PlayerQuery<'w, 's> = Query<'w, 's, (&'static Transform, Option<&'static crate::walk::Walker>), With<crate::camera::FlyCamera>>;
 
 #[allow(clippy::too_many_arguments)]
-fn wave_timer(
+pub fn wave_timer(
     time: Res<Time>,
     options: Res<GameOptions>,
     data: Option<ResMut<GameData>>,
@@ -507,6 +513,8 @@ fn wave_timer(
     let restart = keys.just_pressed(KeyCode::Enter) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
     if restart && matches!(g.phase, Phase::Won | Phase::Lost) {
         *g = WaveGame {
+            restarts: g.restarts + 1,
+            waves_ended: g.waves_ended,
             deaths_at_start: Some(health.deaths),
             final_wave: data.waves.len(),
             next_tick: now + 1.0,
@@ -926,6 +934,8 @@ fn do_wave_end(g: &mut WaveGame) {
     g.phase = Phase::Countdown;
     g.countdown = TIME_BETWEEN_WAVES;
     g.wave_num += 1;
+    // RewardSurvivingPlayers (dosh.rs).
+    g.waves_ended += 1;
 }
 
 #[cfg(test)]

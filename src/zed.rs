@@ -126,6 +126,8 @@ struct ZedClass {
     death: Option<usize>,
     death_hold_frame: f32,
     health: f32,
+    /// ScoringValue (dosh for the kill, before scaling).
+    scoring_value: f32,
     head_health: f32,
     /// HeadRadius x HeadScale.
     head_radius: f32,
@@ -499,6 +501,11 @@ pub struct Zed {
     /// but no longer thinks, moves or attacks, and is not a monster for
     /// the wave count.
     pub braindead: bool,
+    /// The class's ScoringValue; Died with the player as Killer; the
+    /// kill's dosh already paid (dosh.rs).
+    pub scoring_value: f32,
+    pub killed_by_player: bool,
+    pub kill_paid: bool,
     /// Patriarch: the chaingun's MuzzleFlash3rdMG (mMuzzleFlash) on `tip`,
     /// and AddTraceHitFX calls not yet shown on it.
     mg_flash: Option<Entity>,
@@ -1969,6 +1976,7 @@ fn load_class(
         death,
         death_hold_frame,
         health: float("Health", 100.0),
+        scoring_value: float("ScoringValue", 0.0),
         head_health: float("HeadHealth", 25.0),
         head_radius: float("HeadRadius", 7.0) * head_scale,
         head_offset: float("HeadHeight", 2.0) * head_scale,
@@ -2457,6 +2465,9 @@ impl Zed {
             no_hit_reactions: false,
             boss: None,
             braindead: false,
+            scoring_value: 7.0,
+            killed_by_player: false,
+            kill_paid: false,
             mg_flash: None,
             mg_flash_shots: 0,
             cloaked: false,
@@ -2850,6 +2861,9 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 no_hit_reactions: c.boss.is_some(),
                 boss: c.boss.is_some().then(|| crate::boss::BossState::new(c.health)),
                 braindead: false,
+                scoring_value: c.scoring_value,
+                killed_by_player: false,
+                kill_paid: false,
                 mg_flash: None,
                 mg_flash_shots: 0,
                 // ZombieStalker.PostBeginPlay: CloakStalker.
@@ -3145,6 +3159,7 @@ fn think_and_move(
             z.last_hit = None;
             z.kill();
             kills.0 += 1;
+            z.killed_by_player = true;
             runlog::kv("zed_killed_test", &format!("id={}", z.id));
             continue;
         }
@@ -3233,6 +3248,7 @@ fn think_and_move(
                 z.bled_out = true;
                 z.kill();
                 kills.0 += 1; // credited to the player, as KF credits LastDamagedBy
+                z.killed_by_player = true;
                 runlog::kv("zed_bled_out", &format!("id={} health_left={:.1}", z.id, z.health));
                 continue;
             }

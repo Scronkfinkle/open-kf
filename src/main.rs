@@ -8,6 +8,7 @@ mod decals;
 mod door;
 mod fireball;
 mod firing;
+mod dosh;
 mod game;
 mod glass;
 mod zvolume;
@@ -257,7 +258,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, dosh::DoshPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins(overlay::OverlayPlugin)
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)

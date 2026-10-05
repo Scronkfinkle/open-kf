@@ -3180,3 +3180,26 @@ braindead zeds drop their attack and idle (KF lets the animation play
 out with no controller); no zed time on his death (no zed time at all
 yet); the grand entrance and death camera are G3b. Not played by you.
 **Next:** G3b (entrance) or the trader (T1-T3), your call.
+
+## 2026-10-05 T1: dosh
+
+**Changed:** new `dosh.rs`: the player's cash (starts at 250) and the
+team pot, from KFGameType ScoreKill / ScoreKillAssists /
+RewardSurvivingPlayers. A zed the player kills pays int(ScoringValue x
+1.75 on Short) (Clot 12, Gorefast 21, Fleshpound 350, Patriarch 875) to
+the player and the pot; the pot is paid out at each wave end; dying
+costs 10%; a restart resets it. Zeds carry their class's ScoringValue
+and whether the player killed them (`zed.rs`, `combat.rs`). `game.rs`
+counts wave ends and restarts. The HUD shows "DOSH 250".
+**Why:** T1 in DESIGN.md; the trader needs money to spend.
+**Tested how:** waves run on KF-WestLondon with `kill_zeds` (logs
+`dosh`), a debug run killing a Clot with the pistol, a screenshot of the
+HUD, unit tests for the sums (kill score, the pot, the death penalty).
+**Result:** wave 1: 20 kills paid 249 in total and the same again at the
+wave end (748 after wave 1). Pistol kill: +12. Tests 99 pass; clippy
+clean. The HUD font has no £ sign (it drew a box), so it says DOSH.
+**Still broken / not tested:** the death penalty is only unit-tested
+(solo waves end on death anyway); test kills pay (KF's KillZeds would
+not); burn and bleed-out kills only follow the same code paths, not run.
+Not played by you.
+**Next:** T2, shops (ShopVolumes, trader doors, the trail).
