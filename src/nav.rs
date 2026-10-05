@@ -42,6 +42,9 @@ pub struct NavNetwork {
     pub points: Vec<NavPoint>,
     /// Per point: (next point, cost = ReachSpec Distance).
     pub links: Vec<Vec<(usize, f32)>>,
+    /// NavigationPoint.ExtraCost per point, added when a route enters it
+    /// (KFDoorMover raises its DoorPathNode's while welded, door.rs).
+    pub extra_cost: Vec<f32>,
 }
 
 impl NavNetwork {
@@ -76,7 +79,8 @@ impl NavNetwork {
                 &sizes[..sizes.len().min(3)]
             ),
         );
-        NavNetwork { points, links }
+        let extra_cost = vec![0.0; points.len()];
+        NavNetwork { points, links, extra_cost }
     }
 
     /// Points within `range` metres of `p`, nearest first.
@@ -162,7 +166,21 @@ pub fn hunt_size(radius: f32, half_height: f32) -> (f32, f32) {
 /// step up, snap to floor, fall up to MAX_DROP). Ok if it gets within
 /// `touch`; Err says why not and where (Unreal units).
 pub fn probe(spatial: &SpatialQuery, from: Vec3, to: Vec3, touch: f32, radius: f32, half_height: f32) -> Result<(), String> {
-    let mover = Mover::new(spatial, radius, half_height, crate::collision::zed_path_filter());
+    probe_with(spatial, crate::collision::zed_path_filter(), from, to, touch, radius, half_height)
+}
+
+/// `probe` blocked by what `filter` lets through (e.g. `zed_filter`, which
+/// counts closed doors).
+pub fn probe_with(
+    spatial: &SpatialQuery,
+    filter: SpatialQueryFilter,
+    from: Vec3,
+    to: Vec3,
+    touch: f32,
+    radius: f32,
+    half_height: f32,
+) -> Result<(), String> {
+    let mover = Mover::new(spatial, radius, half_height, filter);
     let ue = |p: Vec3| format!("({:.0}, {:.0}, {:.0})", -p.z / SCALE, p.x / SCALE, p.y / SCALE);
     let mut pos = from;
     let mut jumps = 0;
@@ -558,7 +576,7 @@ impl Router {
             {
                 c += x;
             }
-            c
+            c + nav.extra_cost.get(i).copied().unwrap_or(0.0)
         };
         let failed = &self.failed_links;
         let skip = |a: usize, b: usize| failed.iter().any(|&(l, n)| l == (a, b) && n >= 2);

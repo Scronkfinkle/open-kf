@@ -159,13 +159,26 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Zeds against welded doors (D3a, 2026-10-05): a zed that walks into a
+  welded door stands and bashes it (DoorBash animation); each hit takes
+  85% of its claw damage off the weld (at least 5), and at 0 the door
+  breaks and is gone (wood or metal break effect). Clever zeds leave the
+  door if they can reach you another way, and zeds route around welded
+  doors when they can (path cost 500 + weld x 6). Once zeds have hit a
+  door, welding it counts half for the rest of the game (copied from KF).
+  Checked by unit tests and logged runs on KF-Manor: a Clot broke a 50
+  weld in 11 s (5 per hit), a Fleshpound a 150 weld in two bashes (28-30
+  per hit). Not play-tested by you; the break effect not looked at.
+  Sirens, the Patriarch, and the Bloat's and Husk's ranged door attacks
+  are not done (D3b): Sirens and the Patriarch just push against a welded
+  door.
 - Doors (D1, 2026-10-05): KF's doors swing open and shut with E (USE)
   when you stand in their trigger, away from you on two-way doors. They
   block you, zeds and bullets when shut, and swing through pawns as in
   KF. Zeds open a shut door by walking into its trigger. Checked by
   logged runs on KF-Manor (open, walk through, blocked when shut, a Clot
   opening it, a shot stopping at it) and load logs on six maps. Not
-  play-tested by you. Known gaps: zeds do not bash welded doors yet (D3); a
+  play-tested by you. Known gaps: a
   zed already standing in the trigger when you shut the door stays stuck
   behind it (the scripts say so; KF's engine side unknown); KF-Aperture's
   button-driven doors and other scripted movers do not move.
@@ -377,8 +390,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   maps look flatter and brighter than in the game.
 - Animated or complex materials (panners, shaders, combiners) show their base
   texture only, without animation or blending tricks.
-- Zeds cannot break welded doors yet, so a welded door holds forever.
-  Breakable windows and scripted
+- Sirens and the Patriarch cannot break welded doors yet; broken doors
+  never come back (no waves yet). Breakable windows and scripted
   movers (lifts, barriers, KF-Aperture's button doors) do not move and do
   not block.
 - Pressing into a wall or door flickers between walking and falling (the

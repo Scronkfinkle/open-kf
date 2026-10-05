@@ -110,6 +110,11 @@ struct ZedClass {
     idle: Option<usize>,
     walk: Option<usize>,
     melee: Vec<usize>,
+    /// The DoorBash animation (KFMonster.DoorAttack), if the mesh has one.
+    door_bash: Option<usize>,
+    /// Pawn.Intelligence (BRAINS_None 0 .. BRAINS_Human 3): from Mammal
+    /// (2) up, a door-bashing zed leaves the door for a reachable enemy.
+    intelligence: u8,
     /// Death animation (no ragdolls yet) and the frame where the body is
     /// lowest, where it stops (KnockDown ends standing back up).
     death: Option<usize>,
@@ -256,7 +261,25 @@ enum ZedState {
     Enraging,
     /// Patriarch: a full-body action run by `boss.rs` (the chaingun).
     BossBusy,
+    /// KFMonsterController state DoorBashing: standing at a welded door,
+    /// hitting it (`door_bashing`).
+    DoorBashing,
     Dead,
+}
+
+/// KFMonsterController.DoorBashing's loop for one zed.
+#[derive(Clone, Copy, Debug)]
+struct DoorBash {
+    /// TargetDoor (index into `door::Doors`).
+    door: usize,
+    /// Seconds until the loop runs again (its Sleeps).
+    wait: f32,
+    /// A DoorBash animation is playing (bShotAnim).
+    in_anim: bool,
+    /// Which of its ClawDamageTarget notifies have fired (bits).
+    hits: u8,
+    /// Seconds since the animation started.
+    anim_time: f32,
 }
 
 /// An attack in progress.
@@ -483,6 +506,8 @@ pub struct Zed {
     frame: f32,
     looping: bool,
     meshes: Vec<Handle<Mesh>>,
+    /// At a welded door (state DoorBashing).
+    door_bash: Option<DoorBash>,
 }
 
 /// One damage event, for gore effects (KFMonster.DoDamageFX). Bevy space.
@@ -1925,6 +1950,18 @@ fn load_class(
         idle: name_of("IdleRestAnim").and_then(|n| model.sequence(&n)),
         walk: name_of("MovementAnims").and_then(|n| model.sequence(&n)),
         melee,
+        door_bash: {
+            let seq = model.sequence("DoorBash");
+            if let Some(s) = seq {
+                let notes: Vec<String> = model.notifies(s).iter().map(|n| format!("{}@{:.2}", n.name, n.time)).collect();
+                runlog::kv("zed_door_bash_anim", &format!("class={class_path} frames={} notifies=[{}]", model.length(s), notes.join(" ")));
+            }
+            seq
+        },
+        intelligence: match get("Intelligence") {
+            Some((Value::Byte(b), _)) => b,
+            _ => 3,
+        },
         model,
     })
 }
@@ -2335,6 +2372,7 @@ impl Zed {
             router: Default::default(),
             air_velocity: Vec3::ZERO,
             jump_cooldown: 0.0,
+            door_bash: None,
             pouncing: false,
             since_pounce: f32::MAX,
             can_flip: true,
@@ -2419,6 +2457,91 @@ impl Zed {
             half_height: self.half_height * SCALE,
         })
     }
+}
+
+/// KFMonsterController.DoorBashing for one frame. The loop: while the
+/// door is sealed, visible and not bZombiesIgnore, AttackDoor (KFMonster
+/// .DoorAttack: the full-body DoorBash animation; its ClawDamageTarget
+/// notifies each hit the door for MeleeDamage -5% .. +5%), wait for the
+/// animation (polled every 0.25 s), Sleep(0.1); after each, a zed of
+/// Intelligence BRAINS_Mammal or more leaves for an enemy it can reach.
+/// When the loop ends: WhatToDoNext (back to the chase).
+fn door_bashing(
+    z: &mut Zed,
+    c: &ZedClass,
+    dt: f32,
+    doors: &crate::door::Doors,
+    spatial: &SpatialQuery,
+    target: Vec3,
+    hits: &mut MessageWriter<crate::door::ZedDoorHit>,
+) {
+    let Some(mut b) = z.door_bash else {
+        z.state = ZedState::Chase;
+        return;
+    };
+    let leave = |z: &mut Zed, why: &str| {
+        runlog::kv("zed_door_bash", &format!("id={} door={} end reason={why}", z.id, b.door));
+        z.door_bash = None;
+        z.state = ZedState::Chase;
+        z.sequence = None;
+    };
+    let Some(seq) = c.door_bash else {
+        return leave(z, "no_animation");
+    };
+    if b.in_anim {
+        b.anim_time += dt;
+        let len = c.model.length(seq).max(1.0);
+        let p = z.frame / len;
+        for (i, n) in c.model.notifies(seq).iter().filter(|n| n.name.eq_ignore_ascii_case("ClawDamageTarget")).enumerate().take(8) {
+            if p >= n.time && b.hits & (1 << i) == 0 {
+                b.hits |= 1 << i;
+                let roll = (z.random() % 1000) as f32 / 1000.0;
+                let damage = if z.melee_damage > 1.0 { z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll } else { z.melee_damage };
+                hits.write(crate::door::ZedDoorHit { door: b.door, damage, zed: z.id });
+            }
+        }
+        if z.frame >= len - 0.5 {
+            // While(bShotAnim) Sleep(0.25), then Sleep(0.1): the loop
+            // resumes at the first 0.25 s step after the animation, + 0.1.
+            b.in_anim = false;
+            b.wait = (b.anim_time / 0.25).ceil() * 0.25 - b.anim_time + 0.1;
+            z.door_bash = Some(b);
+            // ActorReachable(Enemy), with doors in the way.
+            if c.intelligence >= 2 {
+                let hunt = crate::nav::hunt_size(c.collision_radius, c.collision_height);
+                let touch = crate::nav::HUNT_RADIUS + PLAYER_RADIUS;
+                if crate::nav::probe_with(spatial, crate::collision::zed_filter(), z.centre, target, touch, hunt.0, hunt.1).is_ok() {
+                    return leave(z, "enemy_reachable");
+                }
+            }
+            return;
+        }
+        z.door_bash = Some(b);
+        return;
+    }
+    if b.wait > 0.0 {
+        b.wait -= dt;
+        z.door_bash = Some(b);
+        return;
+    }
+    let Some(d) = doors.doors.get(b.door) else {
+        return leave(z, "no_door");
+    };
+    if d.hidden {
+        return leave(z, "door_broken");
+    }
+    if !d.sealed {
+        return leave(z, "door_unsealed");
+    }
+    if d.info.zombies_ignore {
+        return leave(z, "zombies_ignore");
+    }
+    b.in_anim = true;
+    b.hits = 0;
+    b.anim_time = 0.0;
+    z.door_bash = Some(b);
+    z.sequence = None;
+    start_anim(z, Some(seq), false);
 }
 
 /// KFMonster.PlayDyingAnimation's start motion: 0.6 x the zed's horizontal
@@ -2552,6 +2675,7 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 router: Default::default(),
                 air_velocity: Vec3::ZERO,
                 jump_cooldown: 0.0,
+                door_bash: None,
                 pouncing: false,
                 since_pounce: f32::MAX,
                 can_flip: !c.no_flip,
@@ -2639,7 +2763,9 @@ fn spawn_zeds(
     script: Res<crate::weapon::ScriptedInput>,
     mut next_id: Local<usize>,
 ) {
-    if keys.just_pressed(KeyCode::KeyX) {
+    // Test action "toggle_zeds": the same as X.
+    let toggle = script.0.iter().any(|(f, a)| *f == frames.0 && a == "toggle_zeds");
+    if keys.just_pressed(KeyCode::KeyX) || toggle {
         active.0 = !active.0;
         runlog::kv("zeds_active", &format!("active={}", active.0));
     }
@@ -2752,6 +2878,11 @@ fn think_and_move(
     nav: Res<crate::nav::NavNetwork>,
     script: Res<crate::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
+    (doors, door_colliders, mut door_hits): (
+        Res<crate::door::Doors>,
+        Query<&crate::door::DoorCollider>,
+        MessageWriter<crate::door::ZedDoorHit>,
+    ),
     mut log_timer: Local<f32>,
 ) {
     let Some(classes) = classes else {
@@ -2962,6 +3093,13 @@ fn think_and_move(
             if active.0 {
                 let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
                 boss_busy(&mut z, c, &t, target, player_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball, &mut bullet_fx);
+            }
+            t.translation = z.centre;
+            continue;
+        }
+        if z.state == ZedState::DoorBashing {
+            if active.0 {
+                door_bashing(&mut z, c, dt, &doors, &spatial, target, &mut door_hits);
             }
             t.translation = z.centre;
             continue;
@@ -3635,6 +3773,31 @@ fn think_and_move(
                     runlog::kv("pawn_blocked", &format!("mover=zed {} by={by}", z.id));
                 }
                 let (moved, wall) = mover.ground_move(z.centre, delta);
+                // KFDoorMover.Bump: a zed walking into a closed or sealed
+                // door is told to BreakUpDoor (state DoorBashing). Its loop
+                // only runs while the door is sealed, visible and not
+                // bZombiesIgnore, so only then does the zed stay.
+                if let Some(h) = &wall
+                    && let Ok(dc) = door_colliders.get(h.entity)
+                    && let Some(d) = doors.doors.get(dc.0)
+                    && d.sealed
+                    && !d.hidden
+                    && !d.info.zombies_ignore
+                {
+                    if c.door_bash.is_some() {
+                        z.door_bash = Some(DoorBash { door: dc.0, wait: 0.0, in_anim: false, hits: 0, anim_time: 0.0 });
+                        z.state = ZedState::DoorBashing;
+                        z.attack = None;
+                        z.overlay = None;
+                        z.running = false;
+                        runlog::kv("zed_door_bash", &format!("id={} door={} start weld={:.0}", z.id, d.info.name, d.weld));
+                        t.translation = z.centre;
+                        continue;
+                    } else if log_now {
+                        // ZombieSiren / ZombieBoss.DoorAttack: ranged (D3b).
+                        runlog::kv("zed_door_attack_not_done", &format!("id={} door={}", z.id, d.info.name));
+                    }
+                }
                 let progress = (moved - z.centre).with_y(0.0).length();
                 // Blocked by the level (not a pawn) while heading somewhere:
                 // jump it if a jump clears it (native PickWallAdjust jumps
@@ -3766,7 +3929,7 @@ fn think_and_move(
             }
             ZedState::Falling => start_anim(&mut z, c.air_anim.or(c.idle), true),
             ZedState::Idle => start_anim(&mut z, c.idle, true),
-            ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::BossBusy | ZedState::Dead => {}
+            ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::BossBusy | ZedState::DoorBashing | ZedState::Dead => {}
         }
         if z.sequence != old_sequence {
             runlog::kv(

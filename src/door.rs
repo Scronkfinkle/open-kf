@@ -78,8 +78,14 @@ pub struct Door {
     pub max_weld: f32,
     /// Health when not welded (MaxWeld at the start); damage to it is D3/D4.
     pub health: f32,
-    /// bZedHittingDoor: welding counts less while set (set by zed hits, D3).
+    /// bZedHittingDoor: welding counts less while set. Set by zed hits;
+    /// cleared by KFDoorMover.Timer, but Mover only starts that timer in
+    /// net games, so in single player it stays set (copied).
     pub zed_hitting: bool,
+    /// DoorPathNode (a nav point index) and its starting ExtraCost.
+    path_node: Option<usize>,
+    /// Broken (GoBang): bDoorIsDead.
+    pub dead: bool,
 }
 
 pub struct Trigger {
@@ -111,8 +117,9 @@ impl Plugin for DoorPlugin {
             .init_resource::<Doors>()
             .init_resource::<WeldView>()
             .add_message::<WeldHit>()
+            .add_message::<ZedDoorHit>()
             .add_systems(PostStartup, spawn_doors)
-            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, move_doors).chain());
+            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, move_doors, door_path_costs).chain());
     }
 }
 
@@ -178,6 +185,8 @@ impl Door {
             max_weld: 0.0,
             health: 0.0,
             zed_hitting: false,
+            path_node: None,
+            dead: false,
             info,
             root,
             collider,
@@ -794,6 +803,176 @@ fn weld_hits(
     }
 }
 
+/// A zed's door hit: KFMonster.MeleeDamageTarget with a KFDoorMover as
+/// Controller.Target calls its TakeDamage with the claw damage.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ZedDoorHit {
+    pub door: usize,
+    /// UsedMeleeDamage (MeleeDamage -5% .. +5%).
+    pub damage: f32,
+    pub zed: usize,
+}
+
+impl Doors {
+    /// KFDoorMover.TakeDamage from a zed. Damage is an int parameter, so
+    /// the claw damage is truncated; then Max(5, Damage x
+    /// ZombieDamageReductionFactor 0.85), again whole. Returns the doors
+    /// broken (GoBang) and a log text.
+    fn zed_damage(&mut self, i: usize, damage: f32) -> (Vec<usize>, String) {
+        let d = &self.doors[i];
+        let Some(t) = d.trigger else {
+            return (Vec::new(), "ignored reason=no_trigger".into());
+        };
+        if d.hidden {
+            return (Vec::new(), "ignored reason=hidden".into());
+        }
+        let dmg = ((damage as i32) as f32 * 0.85).max(5.0).trunc() as i32;
+        let d = &mut self.doors[i];
+        d.zed_hitting = true;
+        if !d.sealed {
+            // Unsealed: Damage *= 0.5 (int), from Health.
+            let half = dmg / 2;
+            d.health -= half as f32;
+            let text = format!("damage={dmg} health_damage={half} health={:.0}", d.health);
+            if d.health <= 0.0 {
+                return (vec![i], text);
+            }
+            return (Vec::new(), text);
+        }
+        if d.info.block_damaging_of_weld {
+            return (Vec::new(), format!("damage={dmg} blocked=bBlockDamagingOfWeld"));
+        }
+        // KFUseTrigger.DamageWeld: at 0 every door of the trigger breaks.
+        self.triggers[t].weld_strength -= dmg as f32;
+        if self.triggers[t].weld_strength <= 0.0 {
+            self.triggers[t].weld_strength = 0.0;
+            self.set_weld(t);
+            let all = self.triggers[t].doors.clone();
+            return (all, format!("damage={dmg} weld=0"));
+        }
+        self.set_weld(t);
+        (Vec::new(), format!("damage={dmg} weld={:.0}", self.triggers[t].weld_strength))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zed_door_hits(
+    mut hits: MessageReader<ZedDoorHit>,
+    mut doors: ResMut<Doors>,
+    mut commands: Commands,
+    library: Option<Res<crate::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut visibility: Query<&mut Visibility>,
+    mut seed: Local<u32>,
+) {
+    for h in hits.read() {
+        let (broken, text) = doors.zed_damage(h.door, h.damage);
+        let d = &doors.doors[h.door];
+        let pct = if d.max_weld > 0.0 { d.weld / d.max_weld * 100.0 } else { 0.0 };
+        runlog::kv(
+            "door_zed_hit",
+            &format!("door={} zed={} claw={:.1} {text} percent={pct:.0} sealed={}", d.info.name, h.zed, h.damage, d.sealed),
+        );
+        for i in broken {
+            // GoBang: no collision, hidden, the wood or metal break emitter
+            // at the door's Location facing up.
+            let d = &mut doors.doors[i];
+            if d.hidden {
+                continue;
+            }
+            d.hidden = true;
+            d.dead = true;
+            d.sealed = false;
+            if let Some(c) = d.collider {
+                commands.entity(c).insert(CollisionLayers::NONE);
+            }
+            if let Ok(mut v) = visibility.get_mut(d.root) {
+                *v = Visibility::Hidden;
+            }
+            // EST_Metal is 3 (Actor.ESurfaceTypes).
+            let class = if d.info.surface_type == 3 { "KFMod.KFDoorExplodeMetal" } else { "KFMod.KFDoorExplodeWood" };
+            if let Some(lib) = library.as_deref() {
+                *seed = seed.wrapping_add(1);
+                crate::particles::spawn_effect(&mut commands, lib, &mut meshes, class, Vec3::from_array(d.pos), crate::fireball::axes_along(Vec3::Z), *seed);
+            }
+            d.log("broken", &format!("zed{}", h.zed));
+            runlog::kv("door_broken", &format!("door={} effect={class}", d.info.name));
+        }
+    }
+}
+
+/// KFDoorMover.PostBeginPlay finds its DoorPathNode: the first navigation
+/// point within 800 units with a path through the door (TraceThisActor
+/// from the point to the path's end hits it), or that path's end if that is
+/// closer to the door. KFDoorMover.Tick then sets the node's ExtraCost to
+/// its start + 500 + WeldStrength x 6 while sealed, every 0.5 s (first
+/// update at a random time within 1 s).
+fn door_path_costs(
+    time: Res<Time>,
+    frames: Res<bevy::diagnostic::FrameCount>,
+    spatial: SpatialQuery,
+    mut doors: ResMut<Doors>,
+    nav: Option<ResMut<crate::nav::NavNetwork>>,
+    mut next: Local<Vec<f32>>,
+    mut done: Local<bool>,
+) {
+    let Some(mut nav) = nav else {
+        return;
+    };
+    if nav.points.is_empty() || doors.doors.is_empty() || frames.0 < 5 {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if !*done {
+        *done = true;
+        let mut found = 0usize;
+        let mut names = Vec::new();
+        let mask = SpatialQueryFilter::from_mask([GameLayer::Door, GameLayer::DoorTraces]);
+        for i in 0..doors.doors.len() {
+            let Some(collider) = doors.doors[i].collider else { continue };
+            let at = coords::pos(doors.doors[i].pos);
+            'points: for (n, p) in nav.points.iter().enumerate() {
+                let dist = p.pos.distance(at) / SCALE;
+                if dist >= 800.0 {
+                    continue;
+                }
+                for &(end, _) in &nav.links[n] {
+                    let to = nav.points[end].pos;
+                    let Ok(dir) = Dir3::new(to - p.pos) else { continue };
+                    let hits = spatial.ray_hits(p.pos, dir, (to - p.pos).length(), 8, true, &mask);
+                    if !hits.iter().any(|h| h.entity == collider) {
+                        continue;
+                    }
+                    let node = if dist < to.distance(at) / SCALE { n } else { end };
+                    doors.doors[i].path_node = Some(node);
+                    found += 1;
+                    names.push(format!("{}:{}", doors.doors[i].info.name, nav.points[node].name));
+                    break 'points;
+                }
+            }
+        }
+        *next = (0..doors.doors.len()).map(|i| now + (i as f32 * 0.618).fract()).collect();
+        runlog::kv("door_path_nodes", &format!("found={found} of={} nodes=[{}]", doors.doors.len(), names.join(" ")));
+    }
+    for (i, d) in doors.doors.iter().enumerate() {
+        let Some(node) = d.path_node else { continue };
+        if next[i] > now {
+            continue;
+        }
+        next[i] = now + 0.5;
+        // ExtraCost starts at 0 for every point here (the map's own
+        // ExtraCost values are not read).
+        let cost = match d.trigger {
+            Some(t) if d.sealed => 500.0 + doors.triggers[t].weld_strength * 6.0,
+            _ => 0.0,
+        };
+        if nav.extra_cost[node] != cost {
+            runlog::kv("door_path_cost", &format!("door={} node={} extra_cost={cost:.0}", d.info.name, nav.points[node].name));
+            nav.extra_cost[node] = cost;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,5 +1134,34 @@ mod tests {
         // The next weld starts from -5.
         doors.welder_damage(0, 10.0, false);
         assert_eq!(doors.doors[0].weld, 5.0);
+    }
+
+    #[test]
+    fn zed_hits_round_down_floor_at_five_and_break_at_zero() {
+        let mut doors = test_doors(400.0);
+        doors.welder_damage(0, 10.0, false);
+        doors.welder_damage(0, 10.0, false); // weld 20
+        // Clot claw 6.3: int 6 x 0.85 = 5.1 -> 5.
+        let (broken, _) = doors.zed_damage(0, 6.3);
+        assert!(broken.is_empty());
+        assert_eq!(doors.doors[0].weld, 15.0);
+        // A tiny hit still does 5.
+        doors.zed_damage(0, 1.0);
+        assert_eq!(doors.doors[0].weld, 10.0);
+        // Fleshpound claw 35.9: int 35 x 0.85 = 29.75 -> 29; breaks it.
+        let (broken, _) = doors.zed_damage(0, 35.9);
+        assert_eq!(broken, vec![0]);
+        assert_eq!(doors.doors[0].weld, 0.0);
+    }
+
+    #[test]
+    fn once_hit_by_a_zed_welding_stays_halved() {
+        let mut doors = test_doors(400.0);
+        doors.welder_damage(0, 10.0, false);
+        doors.zed_damage(0, 6.0);
+        assert_eq!(doors.doors[0].weld, 5.0);
+        // bZedHittingDoor is never cleared in single player.
+        doors.welder_damage(0, 10.0, false);
+        assert_eq!(doors.doors[0].weld, 10.0);
     }
 }

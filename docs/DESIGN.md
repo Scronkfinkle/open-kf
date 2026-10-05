@@ -2033,7 +2033,7 @@ perk chosen uses the plain values; perk bonuses come with the game loop),
 the trader and buying (W1's `--give` stands in), third-person weapon
 models, the flashlight, zed time.
 
-## Doors (milestone 8, planned 2026-10-05; D1-D2 implemented 2026-10-05)
+## Doors (milestone 8, planned 2026-10-05; D1, D2, D3a implemented 2026-10-05)
 
 Goal: KF's doors. They open and close with the USE key (E), zeds open the ones
 that are not welded, the Welder seals them, and zeds bash welded doors until
@@ -2111,9 +2111,14 @@ not part of this milestone and keep being drawn but not blocking.
 - **D2, welding.** The Welder finds the door, weld / unweld amounts, the
   shared strength, sealed doors refusing to open, bStartSealed,
   bDisallowWeld, messages and weld percent logged (no HUD text yet).
-- **D3, zeds break welded doors.** Bump -> DoorBash animation and damage,
+- **D3a, zeds bash welded doors.** Bump -> DoorBash animation and damage,
   the 0.85 factor, GoBang (break emitters, door gone), path cost for
-  sealed doors, ranged door attacks (read when reached).
+  sealed doors. Every zed with a DoorBash animation (all but the Siren
+  and the Patriarch).
+- **D3b, ranged door attacks.** ZombieBloat / ZombieHusk
+  (bCanDistanceAttackDoors: puke or shoot at a sealed door their path
+  trace hits), ZombieSiren.DoorAttack (Siren_Scream), ZombieBoss.DoorAttack
+  (a rocket). Needs vomit, fireballs, screams and rockets to damage doors.
 - **D4, grenades and unwelded door health.** DamTypeFrag damage,
   bSmallArmsDamage doors, Health.
 
@@ -2159,6 +2164,26 @@ zeds that step into the trace in the 0.1 s, the welder's screen.
 Noted for D3: Mover.BeginPlay sets the Timer only in net games, so in
 single player KFDoorMover.Timer never clears bZedHittingDoor; once a zed
 has hit a door, welding it stays halved.
+
+**D3a as built.** `zed.rs`: `ZedState::DoorBashing` and `door_bashing`.
+A zed whose ground move is blocked by a door collider that is sealed,
+visible and not bZombiesIgnore enters it (KFDoorMover.Bump ->
+BreakUpDoor; for a closed but unsealed door the KF loop would end at once,
+so we do not enter). Each pass: the full-body DoorBash; each
+ClawDamageTarget notify of that animation sends `ZedDoorHit` (MeleeDamage
+-5% .. +5%; DoorBash notifies: Clot 2, Fleshpound 3, Scrake 2, others 1);
+then the wait the latent code gives (next 0.25 s poll after the animation
++ 0.1 s); then, for Intelligence >= BRAINS_Mammal (Clot 3 by KFMonster's
+default, Husk 2, Bloat 1), `nav::probe_with` with doors blocking stands
+in for ActorReachable(Enemy): reachable -> back to the chase. `door.rs`
+`zed_damage`: Max(5, int(int(claw) x 0.85)) off the shared weld (or half
+of it off Health when unsealed); weld 0 -> every door of the trigger goes
+GoBang: hidden, collider on no layers (kept for a later RespawnDoor),
+KFDoorExplodeWood / Metal (SurfaceType 3 = EST_Metal; the map override of
+the effect class on 3 doors is not read). `door_path_costs`: DoorPathNode
+found once colliders exist (ray hits along each link from points within
+800), ExtraCost every 0.5 s into `NavNetwork::extra_cost`, which routing
+adds when entering a point. Test action `toggle_zeds` (the X key).
 
 Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar

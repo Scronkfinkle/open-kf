@@ -2638,3 +2638,32 @@ only). bDisallowWeld doors only covered by the code path, not a run.
 Sparks not looked at. Perk weld speed not applied. A zed between you and
 the door does not block the weld trace.
 **Next:** D3, zeds bash welded doors.
+
+## 2026-10-05 Doors D3a: zeds bash welded doors
+
+**Changed:** `zed.rs`: DoorBash animation and Intelligence per class,
+`ZedState::DoorBashing`, entering it on a bump into a sealed door,
+`door_bashing` (the controller loop, hits on the ClawDamageTarget
+notifies, leaving for a reachable enemy), test action `toggle_zeds`.
+`door.rs`: `ZedDoorHit`, KFDoorMover.TakeDamage from zeds, DamageWeld,
+GoBang with the break emitters, DoorPathNode and ExtraCost. `nav.rs`:
+`extra_cost` per point used by routing, `probe_with`. `particles.rs`:
+preload the break emitters. DESIGN (D3 split into D3a / D3b), README.
+**Why:** You asked for welders; zeds breaking welded doors is the other
+half. D3 was split: ranged door attacks (Bloat, Husk, Siren, Patriarch)
+need their projectiles to damage doors and come next as D3b.
+**Tested how:** unit tests (whole-number damage, floor of 5, break at 0,
+welding halved after a zed hit); KF-Manor runs: weld 50 then a Clot;
+weld 150 then a Fleshpound. `cargo test --release --workspace`; clippy.
+**Result:** Clot: 5 per hit, two hits per DoorBash about every 1.6 s,
+weld 50 -> 0 in 11 s, door broken (KFDoorExplodeWood), Clot then
+reached the player. Fleshpound: three hits per bash, 28-30 each, 150
+gone in two bashes. Path node JumpSpot30's cost went 560 .. 800 while
+welded and back to 0 when broken. DoorPathNodes found for 8 of 8 doors.
+Tests 65 + 21.
+**Still broken / not tested:** Break effect not looked at. Siren and
+Patriarch push against welded doors (no DoorBash animation; D3b). The
+3 doors whose map sets another break effect use the class default.
+Broken doors do not respawn (no waves). A zed that is already in a
+trigger when the door is shut still gets stuck behind it unwelded.
+**Next:** D3b, ranged door attacks; or D4 (grenades) — your call.
