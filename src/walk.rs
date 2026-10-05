@@ -335,6 +335,15 @@ fn calc_velocity(v: Vec3, accel: Vec3, friction: f32, max_speed: f32, dt: f32) -
     v
 }
 
+/// Map features the walk touches: glass panes (bumps) and jump pads (the
+/// nav network, and the pad being touched).
+type WalkMap<'w, 's> = (
+    Query<'w, 's, &'static crate::glass::GlassCollider>,
+    MessageWriter<'w, crate::glass::GlassBump>,
+    Option<Res<'w, crate::nav::NavNetwork>>,
+    Local<'s, Option<usize>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn walk(
     time: Res<Time>,
@@ -352,7 +361,7 @@ fn walk(
     mut pushes: MessageReader<PlayerPush>,
     mut kicks: MessageReader<PlayerAddVelocity>,
     mut last_log: Local<f32>,
-    mut glass: (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassBump>),
+    mut glass: WalkMap,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
     // Colliders become queryable a frame or two after they are spawned;
@@ -445,6 +454,27 @@ fn walk(
         }
 
         // KFShotgunFire.DoFireEffect: AddVelocity(KickMomentum >> view).
+        // JumpPad.Touch / PostTouch: the player is thrown with the pad's
+        // JumpVelocity (set, not added), from the pad's centre (as zeds:
+        // an approximation, see DESIGN "Map fixes" M4).
+        if let Some(nav) = glass.2.as_deref() {
+            let touching = nav.jump_pads.iter().position(|p| {
+                let d = nav.points[p.point].pos - w.center;
+                d.with_y(0.0).length() / SCALE < crate::nav::JUMP_PAD_RADIUS + kf::RADIUS
+                    && (d.y / SCALE).abs() < crate::nav::JUMP_PAD_HALF_HEIGHT + kf::HALF_HEIGHT
+            });
+            if let Some(i) = touching
+                && *glass.3 != Some(i)
+            {
+                let pad = nav.jump_pads[i];
+                let pc = nav.points[pad.point].pos;
+                w.center = Vec3::new(pc.x, w.center.y, pc.z);
+                w.velocity = pad.velocity;
+                w.on_ground = false;
+                runlog::kv("player_jump_pad", &format!("pad={} up_unreal={:.0}", nav.points[pad.point].name, pad.velocity.y / SCALE));
+            }
+            *glass.3 = touching;
+        }
         for kick in kicks.read() {
             let mut v = kick.velocity;
             if v == Vec3::ZERO {

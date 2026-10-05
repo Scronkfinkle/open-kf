@@ -603,6 +603,7 @@ fn move_projectiles(
     mut kills: ResMut<crate::combat::KillCount>,
     mut bullet_fx: MessageWriter<crate::bullet_fx::BulletFx>,
     player: Query<&Transform, With<crate::camera::FlyCamera>>,
+    (glass, mut glass_damage): (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassDamage>),
 ) {
     let dt = time.delta_secs();
     let attacker = player.single().map_or(Vec3::ZERO, |t| t.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE);
@@ -680,6 +681,11 @@ fn move_projectiles(
         }
         match world {
             Some(h) => {
+                // HitWall on a non-static actor: Wall.TakeDamage(Damage) (a
+                // glass pane).
+                if let Ok(g) = glass.get(h.entity) {
+                    glass_damage.write(crate::glass::GlassDamage { pane: g.0, damage: p.damage, by: p.weapon });
+                }
                 let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
                 let n = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
                 let n_ue = to_ue(n).normalize_or_zero();

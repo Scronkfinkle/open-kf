@@ -57,6 +57,40 @@ pub struct SkyInfo {
     pub camera_position: Option<Vec3>,
 }
 
+/// Each zone's fog: its ZoneInfo (zone 0 and zones without one: the
+/// LevelInfo, which is a ZoneInfo), own values else class defaults.
+fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &ClassDefaults, model: &ue_assets::bsp::Model) -> Vec<crate::zones::ZoneFog> {
+    let pkg = &lp.pkg;
+    let level_info = (0..pkg.exports.len()).find(|&i| pkg.export_class_name(i).ends_with("LevelInfo"));
+    (0..model.num_zones.max(1))
+        .map(|z| {
+            let export = match model.zone_actors.get(z) {
+                Some(ObjectRef::Export(e)) => Some(*e),
+                _ => level_info,
+            };
+            let Some(e) = export else {
+                return crate::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4] };
+            };
+            let props = read_export_properties(pkg, e).ok();
+            let value = |n: &str| props.as_ref().and_then(|p| defaults.actor_value(lp, e, p, n));
+            let float = |n: &str, d: f32| match value(n) {
+                Some(Value::Float(f)) => f,
+                _ => d,
+            };
+            crate::zones::ZoneFog {
+                name: pkg.object_name(ObjectRef::Export(e)).to_string(),
+                fog: matches!(value("bDistanceFog"), Some(Value::Bool(true))),
+                start: float("DistanceFogStart", 3000.0),
+                end: float("DistanceFogEnd", 8000.0),
+                color: match value("DistanceFogColor") {
+                    Some(Value::Color(c)) => c,
+                    _ => [128, 128, 128, 0],
+                },
+            }
+        })
+        .collect()
+}
+
 /// Map actor classes that change where pawns can go or what happens to
 /// them, and whether we simulate them (docs/map-audit.md). Logged at load
 /// so a misbehaving zed or player can be checked against the map first.
@@ -69,6 +103,7 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("KFZombieZoneVolume", true),
     ("TerrainInfo", true),
     ("KFGlassMover", true),
+    ("LavaVolume", true),
     ("Mover", false),
     ("ClientMover", false),
     ("KFElevator", false),
@@ -77,7 +112,6 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("KFTraderTeleporter", false),
     ("Teleporter", false),
     ("JumpSpot", false),
-    ("LavaVolume", false),
     ("WaterVolume", false),
     ("PhysicsVolume", false),
     ("KFPhysicsVolume", false),
@@ -413,6 +447,7 @@ fn load_map(
     let contents = read_level_with(&lp, &class_defaults);
     door_setup.triggers = contents.use_triggers.clone();
     log_map_features(&lp.pkg);
+    commands.insert_resource(crate::pain::load(&lp, &class_defaults));
     if game_options.mode == crate::game::GameMode::Waves {
         commands.insert_resource(crate::game::load_game_data(&set, &class_defaults, &lp, game_options.length));
     }
@@ -472,6 +507,22 @@ fn load_map(
                         });
                     sky.camera_position = location.map(coords::pos);
                 }
+                // Zones and their fog (zones.rs).
+                let zone_fog = zone_fog(&lp, &class_defaults, &model);
+                runlog::kv(
+                    "zones",
+                    &format!(
+                        "zones={} fog=[{}]",
+                        zone_fog.len(),
+                        zone_fog
+                            .iter()
+                            .enumerate()
+                            .map(|(i, z)| if z.fog { format!("{i}:{}..{}", z.start, z.end) } else { format!("{i}:off") })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                );
+                commands.insert_resource(crate::zones::Zones { bsp: model.clone(), zones: zone_fog });
                 let mut groups: HashMap<String, (Handle<StandardMaterial>, bool, MeshBuilder)> = HashMap::new();
                 for (i, node) in model.nodes.iter().enumerate() {
                     let surf = &model.surfs[node.surf];

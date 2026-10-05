@@ -2394,7 +2394,7 @@ action `kill_near_zeds` (zeds within 500 of the player die).
 Not in this milestone: pickups lying in the map (SetupPickups), dropped
 weapons, perks, multiplayer, voice lines and sounds.
 
-## Map fixes (milestone 10, planned 2026-10-05; M1 implemented)
+## Map fixes (milestone 10, planned 2026-10-05; M1-M4 implemented)
 
 Goal: the map features the audit (`docs/map-audit.md`) found missing that
 change what zeds and the player do, so map gaps stop looking like AI
@@ -2419,7 +2419,8 @@ errors. You asked for these before the rest of the game loop.
   instant-hit shots and melee traces that hit a pane (combat.rs), blasts
   (`DoorBlast`, read by glass.rs too), player bumps (walk.rs) and zed bumps
   (zed.rs: speed + MeleeDamage, MeleeAnims[0] full body, no damage to
-  the player). Pellet and arrow projectiles do not hurt panes yet.
+  the player). Pellets, nails and bolts hitting a pane do their Damage to
+  it (HitWall on a non-static actor) and stop.
   Checked on KF-WestLondon: a 9mm shot broke KFGlassMover94 (35 vs Health
   5) and the next shot went through; a Clot walking into it broke it
   (speed 300, hidden); a grenade broke the 7 panes within 420. Found on
@@ -2429,9 +2430,32 @@ errors. You asked for these before the rest of the game loop.
   the zone a point is in (BSP); KF's sight checks skip what is beyond the
   fog (RateZombieVolume, PlayerCanSeePoint, KFMonster.Tick's hidden-speed
   check); the fog drawn.
+  As built (`zones.rs`): the BSP nodes keep their back / front children;
+  `Model::point_zone` walks the tree (UModel::PointRegion as I remember
+  it). Zone fog from each ZoneInfo (zone 0 and zones without one: the
+  LevelInfo). The player's zone each frame (`PlayerZone`, logged on
+  change) sets the camera's DistanceFog (linear, start..end, the zone's
+  colour). Sight checks use the player zone's fog end: RateZombieVolume's
+  view of the volume, PlayerCanSeePoint, and the zeds' drawn / seen test
+  (a zed beyond the fog is neither). KF-WestLondon: 26 zones, the start
+  zone fogs -500..4500.
 - **M3, lava (LavaVolume, 13 maps).** Pain volumes: DamagePerSec (1-2) of
-  Burned while inside.
-- **M4, the player on jump pads, KF-Offices URL teleporters.**
+  Burned while inside. As built (`pain.rs`): every PhysicsVolume with
+  bPainCausing and DamagePerSec > 0; a pawn touching (cylinder centre, top
+  or bottom inside the brush) takes int(DamagePerSec) on entering and
+  everything inside again each second (the volume's timer). Zeds take it
+  with no credit; the player as level damage (`LEVEL_DAMAGE`, not reduced
+  like own damage). Also ZoneInfo.KillZ (-10000 everywhere): a pawn below
+  it dies (FellOutOfWorld). Damage type Burned is taken as plain damage.
+- **M4, the player on jump pads, KF-Offices URL teleporters.** As built
+  (`walk.rs`): touching a pad sets the player's velocity to its
+  JumpVelocity, from the pad's centre (as for zeds). KF-WestLondon
+  UTJumppad0 landed the player at (-2036, 314), on its target PathNode111
+  (-2027, 306). Teleporters: every Teleporter with a URL in the 35 maps
+  has bEnabled false (KF-Offices' six: the mapper put the tag in the URL)
+  and nothing triggers them, so in KF they never teleport on touch;
+  Teleporters only matter as the trader's boot-out spots (T2). Nothing to
+  simulate here.
 - Later (needs an event system): plain movers, lifts, scripted triggers.
 
 ## Later milestones (rough order, to be planned in detail when reached)

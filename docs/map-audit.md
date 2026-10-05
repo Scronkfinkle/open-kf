@@ -24,9 +24,11 @@ inside static meshes.
 | KFDoorMover, KFUseTrigger | 32 / 707, 30 / 397 | doors | D1-D4 |
 | ZombieVolume | 33 / 3532 | zed spawn areas | G2a |
 | PathNode, ZombiePathNode, InventorySpot, PlayerStart, JumpSpot... | all | navigation | nav.rs (walk, forced, door, jump links) |
-| UTJumppad | 20 / 138 | throws pawns at JumpTarget | zeds only, from the pad's centre (approximation) |
+| UTJumppad | 20 / 138 | throws pawns at JumpTarget | zeds and the player (M4), from the pad's centre (approximation) |
 | SkyZoneInfo | 29 / 29 | sky box | drawn |
-| KFGlassMover | 12 / 691 | breakable windows | M1 (2026-10-05): block, break from shots, melee, blasts, bumps; pellets and arrows not yet |
+| KFGlassMover | 12 / 691 | breakable windows | M1 (2026-10-05): block, break from shots, pellets, bolts, melee, blasts, bumps |
+| ZoneInfo distance fog | 31 / 638 | sight checks skip beyond DistanceFogEnd | M2: drawn and used by the spawn and seen checks |
+| LavaVolume (pain volumes), ZoneInfo.KillZ | 13 / 42 | 1-2 burn a second; falling below KillZ kills | M3 |
 
 ## Not simulated, by how much it matters
 
@@ -34,8 +36,6 @@ inside static meshes.
 
 | Class | Maps / count | In KF | Ours | Effect |
 | --- | --- | --- | --- | --- |
-| ZoneInfo distance fog | 31 / 638 (every zone sampled has fog, ends 2000-5000 typical) | sight checks (spawn volume and spawn point visibility, the hidden-speed check) skip anything beyond DistanceFogEnd | ignored | our spawn rules are stricter than KF's and zeds stay "seen" farther; fog is also not drawn |
-| UTJumppad for the player | 20 maps | pads throw players too | zeds only | the player cannot use pads (most sit behind fences, used by zeds) |
 | KFTraderDoor, ShopVolume, WeaponLocker | 34 maps | trader rooms open between waves | not simulated | trader milestone (T2) |
 
 **Medium**
@@ -45,8 +45,7 @@ inside static meshes.
 | Mover (plain), KFElevator | 17 / 159, 1 / 1 | scripted barriers, lifts, gates (e.g. KF-WestLondon's street barrier that rises when the helicopter leaves) | drawn, not blocking, not moving | areas KF closes are open; lifts do not lift |
 | ClientMover | 7 / 229 | decorative moving parts (fans, wheels) | static, not blocking | mostly visual |
 | ScriptedTrigger + Action_*, Trigger, KFProxyTrigger, UseTrigger, BETimedTrigger, NetworkTrigger | 14 / 172 and others | the event system: buttons, timed events, KF-Aperture's puzzle doors | not simulated | anything driven by events stays put |
-| LavaVolume | 13 / 42 | burn damage 1-2 a second (DamageType Burned) | not simulated | standing in fires costs nothing |
-| Teleporter with a URL | KF-Offices (6, "ThirdFloorTrader") | touching it sends you to the matching teleporter | not simulated | elsewhere Teleporters are trader boot spots (T2) |
+| Teleporter with a URL | none enabled in any map (KF-Offices' 6 are bEnabled false) | would teleport on touch | nothing to do | Teleporters are trader boot spots (T2) |
 | KFTraderTeleporter | 4 / 102 | older trader kick-out spots | not simulated | T2 |
 | KFRandomItemSpawn, KFAmmoPickup, weapon pickups | 34 maps | pickups | not simulated | no pickups yet |
 

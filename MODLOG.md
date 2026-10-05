@@ -2868,3 +2868,55 @@ break event (TriggerEvent) not simulated; visuals not looked at; the
 debug log file is shared by every running copy (a second run overwrites
 it).
 **Next:** M2, distance fog.
+
+## 2026-10-05 Map fixes M2 (distance fog) and M3 (lava, KillZ)
+
+**Changed:** `bsp.rs`: nodes keep back / front children; `point_zone`.
+New `zones.rs` (zone fog, the player's zone, camera fog), `pain.rs` (pain
+volumes, KillZ). `map.rs`: zone fog and pain volumes at load,
+`map_features` (lava simulated). `zvolume.rs`: `brush_polys` shared; fog in
+the rating and PlayerCanSeePoint. `zed.rs`: fog in the drawn / seen test,
+level damage to zeds. `game.rs`: the player's fog in the spawn checks.
+`combat.rs`: `LEVEL_DAMAGE` (level damage is not own damage). DESIGN,
+map audit, README.
+**Why:** next in the map-fix plan (you asked to keep working on the maps).
+**Tested how:** KF-WestLondon: zones and fog logged, one screenshot; wave
+1 spawns; standing in LavaVolume2; spawn point counts unchanged after the
+refactor; unit test for touching a volume; tests, clippy.
+**Result:** 26 zones, 14 with fog; start zone -500..4500; fog visible in
+the screenshot. Wave 1 squads unchanged at the start (all nearby volumes
+inside the fog). Lava: 1 on entering, then 1 a second (100 -> 94). Tests
+73 + 21.
+**Failures on the way:** level damage first used the own-damage marker
+(would have been cut to a quarter); caught before running.
+**Still broken / not tested:** point_zone is from memory of UE2, checked
+only by the start zone looking right; the fog colour / look not compared
+with KF; KillZ not seen triggering (nothing fell out).
+**Next:** M4, the player on jump pads and KF-Offices teleporters.
+
+## 2026-10-05 Map fixes M4: the player on jump pads; teleporters checked
+
+**Changed:** `walk.rs`: a player touching a jump pad is thrown with its
+JumpVelocity from the pad's centre. DESIGN, map audit, README.
+**Why:** M4 of the map-fix plan.
+**Tested how:** KF-WestLondon, starting on UTJumppad0; props of every
+map's Teleporter / KFTraderTeleporter. Build; tests and clippy below.
+**Result:** launched up 729, arc top about 280 above the pad, landed at
+(-2036, 314) next to the target PathNode111 (-2027, 306). No map has an
+enabled teleporter with a URL (KF-Offices' 6 are disabled), so nothing to
+simulate.
+**Still broken / not tested:** not played; pads launch from the centre
+(approximation).
+**Next:** shotgun pellets and arrows against glass, then the event system
+/ movers (needs a plan).
+
+## 2026-10-05 Glass: pellets and bolts break panes
+
+**Changed:** `projectile.rs`: a pellet / nail / bolt hitting a pane does
+its Damage to it (ShotgunBullet / CrossbowArrow HitWall). `walk.rs`: the
+walk's map params as a type (clippy). DESIGN, audit, README.
+**Why:** the gap left in M1.
+**Tested how:** KF-WestLondon shop window with the Shotgun; tests, clippy.
+**Result:** a shot broke KFGlassMover94 (pellet 35 vs Health 5). Tests
+73 + 21, clippy clean.
+**Next:** your call on the event system (movers, scripted triggers).

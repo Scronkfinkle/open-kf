@@ -159,12 +159,19 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Jump pads throw the player too (M4, 2026-10-05): checked on the
+  KF-WestLondon fence pad, you land on its target.
+- Distance fog (M2, 2026-10-05): each zone's fog is drawn and, as in KF,
+  zeds and spawn spots beyond the fog of your zone count as unseen.
+  Checked by logs and one screenshot on KF-WestLondon.
+- Lava and fires (M3, 2026-10-05): standing in a map's fire costs 1-2
+  health a second (zeds too); anything falling out of the world dies.
+  Checked by a logged run (KF-WestLondon fire: 100 -> 94 in 6 s).
 - Glass windows (M1, 2026-10-05): windows block you, zeds and bullets
   until broken; a shot, a melee hit, a grenade or a zed walking into one
   breaks it (glass burst; panes sharing a tag crack). Checked by logged
-  runs on KF-WestLondon. Not played; the glass effects and the cracked
-  look not looked at. Shotgun pellets and arrows pass the glass without
-  breaking it (not done yet).
+  runs on KF-WestLondon (pistol, shotgun, grenade, a Clot). Not played;
+  the glass effects and the cracked look not looked at.
 - Waves (G1, 2026-10-05): `--mode waves` plays KF's waves (default
   length Short: 4 waves and the Patriarch; `--length normal|long`). A 10 s
   countdown, waves of 20 / 32 / 35 / 42 zeds (Short) drawn from KF's squad
@@ -431,7 +438,6 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   not block.
 - Zeds can wedge in tight spots and hang in the air (2 of 20 in a
   KF-WestLondon test); KF's stuck-zed cleanup removes them late in a wave.
-- Jump pads throw zeds only, not the player.
 - No crouching. Ladders, water and swimming are not handled.
 - No sound.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be

@@ -35,7 +35,11 @@ pub struct BspNode {
     pub vert_pool: usize,
     pub surf: usize,
     pub num_verts: usize,
+    /// Zone behind ([0]) and in front ([1]) of the plane.
     pub zone: [u8; 2],
+    /// Child nodes behind and in front (iBack, iFront; -1 = none).
+    pub back: i32,
+    pub front: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -139,8 +143,8 @@ fn read_node(r: &mut Reader) -> Result<BspNode> {
     let _node_flags = r.u8()?;
     let vert_pool = index(r)?;
     let surf = index(r)?;
-    let _back = index(r)?;
-    let _front = index(r)?;
+    let back = index(r)?;
+    let front = index(r)?;
     let _coplanar = index(r)?;
     let _collision_bound = index(r)?;
     let _render_bound = index(r)?;
@@ -160,6 +164,8 @@ fn read_node(r: &mut Reader) -> Result<BspNode> {
         surf: surf as usize,
         num_verts,
         zone,
+        back,
+        front,
     })
 }
 
@@ -267,6 +273,25 @@ impl Model {
             }
         }
         Ok(())
+    }
+
+    /// The zone a point is in (UModel::PointRegion, as I remember it: walk
+    /// the tree, front child when the point is in front of the plane, else
+    /// the back; at a missing child, the node's zone on that side).
+    /// 0 when the model has no nodes.
+    pub fn point_zone(&self, p: [f32; 3]) -> usize {
+        let mut i = 0usize;
+        for _ in 0..self.nodes.len().max(1) {
+            let Some(n) = self.nodes.get(i) else { return 0 };
+            let d = n.plane[0] * p[0] + n.plane[1] * p[1] + n.plane[2] * p[2] - n.plane[3];
+            let front = d > 0.0;
+            let next = if front { n.front } else { n.back };
+            if next < 0 {
+                return n.zone[usize::from(front)] as usize;
+            }
+            i = next as usize;
+        }
+        0
     }
 
     /// The polygon of node `i`, as world positions (Unreal space).

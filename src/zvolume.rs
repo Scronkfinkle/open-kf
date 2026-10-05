@@ -108,6 +108,34 @@ fn class_handle(set: &PackageSet, path: &str) -> Option<ObjectHandle> {
         .map(|export| ObjectHandle { package: lp.clone(), export })
 }
 
+/// A brush actor's polygons in world space (Unreal units): subtract the
+/// pivot, rotate, add Location (as for blocking volumes in map.rs).
+pub fn brush_polys(pkg: &ue_assets::package::Package, props: &PropertyList) -> Vec<Vec<Vec3>> {
+    let vector = |n: &str| match props.get(pkg, n) {
+        Some(Value::Vector(v)) => Vec3::from_array(*v),
+        _ => Vec3::ZERO,
+    };
+    let (location, pre_pivot) = (vector("Location"), vector("PrePivot"));
+    let rotation = match props.get(pkg, "Rotation") {
+        Some(Value::Rotator(r)) => *r,
+        _ => Default::default(),
+    };
+    let rot = coords::ue_rotation_matrix(rotation);
+    match props.get(pkg, "Brush") {
+        Some(Value::Object(ObjectRef::Export(m))) => read_model(pkg, *m)
+            .ok()
+            .and_then(|model| match model.polys {
+                ObjectRef::Export(p) => read_polys(pkg, p).ok(),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .iter()
+            .map(|poly| poly.vertices.iter().map(|v| rot * (Vec3::from_array(*v) - pre_pivot) + location).collect())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Reads the map's ZombieVolumes (not bObjectiveModeOnly) and what the
 /// volumes need to know about `zed_classes`.
 pub fn load(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<LoadedPackage>, zed_classes: &[String]) -> (Vec<ZombieVolume>, HashMap<String, ZedInfo>) {
@@ -127,32 +155,11 @@ pub fn load(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<LoadedPackage>,
         if flag("bObjectiveModeOnly") {
             continue;
         }
-        let vector = |p: &PropertyList, n: &str| match p.get(pkg, n) {
+        let location = match props.get(pkg, "Location") {
             Some(Value::Vector(v)) => Vec3::from_array(*v),
             _ => Vec3::ZERO,
         };
-        let location = vector(&props, "Location");
-        let pre_pivot = vector(&props, "PrePivot");
-        let rotation = match props.get(pkg, "Rotation") {
-            Some(Value::Rotator(r)) => *r,
-            _ => Default::default(),
-        };
-        // Brush space to world: subtract the pivot, rotate, add Location
-        // (as for blocking volumes in map.rs).
-        let rot = coords::ue_rotation_matrix(rotation);
-        let polys: Vec<Vec<Vec3>> = match props.get(pkg, "Brush") {
-            Some(Value::Object(ObjectRef::Export(m))) => read_model(pkg, *m)
-                .ok()
-                .and_then(|model| match model.polys {
-                    ObjectRef::Export(p) => read_polys(pkg, p).ok(),
-                    _ => None,
-                })
-                .unwrap_or_default()
-                .iter()
-                .map(|poly| poly.vertices.iter().map(|v| rot * (Vec3::from_array(*v) - pre_pivot) + location).collect())
-                .collect(),
-            _ => Vec::new(),
-        };
+        let polys = brush_polys(pkg, &props);
         let class_names = |n: &str| -> Vec<String> {
             match props.get(pkg, n) {
                 Some(Value::Array { count, raw }) => {
@@ -319,6 +326,8 @@ fn fast_trace(spatial: &SpatialQuery, a: Vec3, b: Vec3) -> bool {
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerView {
     pub location: Vec3,
+    /// DistanceFogEnd of the player's zone (None: no fog).
+    pub fog_end: Option<f32>,
 }
 
 impl PlayerView {
@@ -329,9 +338,13 @@ impl PlayerView {
 
 /// ZombieVolume.PlayerCanSeePoint: the player sees the point, and both
 /// sides of the zed's top (1.25 x its height up, 1.1 x its radius out).
-/// Distance fog is not modelled (always in range).
+/// Beyond the DistanceFogEnd of the player's zone it is never seen.
 pub fn player_can_see_point(spatial: &SpatialQuery, v: &ZombieVolume, p: Vec3, zed: &ZedInfo, player: &PlayerView) -> bool {
     if v.allow_plain_sight {
+        return false;
+    }
+    // Beyond the player's zone fog nothing is seen.
+    if player.fog_end.is_some_and(|e| (p - player.location).length() >= e) {
         return false;
     }
     let eye = player.eye();
@@ -389,7 +402,8 @@ pub fn rate(
     let score_xy = (2000.0 - dxy).clamp(1.0, 2000.0) / 2000.0;
     let dist_score = if v.no_z_axis_penalty { score_xy } else { score_z * 0.3 + score_xy * 0.7 };
     let dist = (v.location - player.location).length();
-    if !v.allow_plain_sight && fast_trace(spatial, v.location, player.eye()) {
+    let in_fog_range = player.fog_end.is_none_or(|e| dist < e);
+    if !v.allow_plain_sight && in_fog_range && fast_trace(spatial, v.location, player.eye()) {
         return Err("in_sight");
     }
     if dist < v.min_distance_to_player {

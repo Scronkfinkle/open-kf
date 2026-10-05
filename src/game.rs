@@ -425,7 +425,7 @@ fn wave_timer(
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
-    (player, doors, mut kill_stuck): (PlayerQuery, Res<crate::door::Doors>, MessageWriter<KillStuckZed>),
+    (player, doors, mut kill_stuck, player_zone): (PlayerQuery, Res<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
         return;
@@ -441,6 +441,7 @@ fn wave_timer(
     let centre = walker.map_or(cam.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center);
     let view = crate::zvolume::PlayerView {
         location: Vec3::new(-centre.z, centre.x, centre.y) / SCALE,
+        fog_end: player_zone.fog_end,
     };
     if !data.points_ready {
         data.points_ready = true;

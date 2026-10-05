@@ -88,6 +88,9 @@ struct Burning {
 const BURN_INTERVAL: f32 = 1.5;
 
 /// `PlayerDamaged.zed_id` for the player's own explosives and fire.
+/// `zed_id` for damage from the level (pain volumes, falling out of the
+/// world): taken as is, no instigator.
+pub(crate) const LEVEL_DAMAGE: usize = usize::MAX - 1;
 pub const SELF_DAMAGE: usize = usize::MAX;
 
 /// KFGameType.ReduceDamage on the player's own damage in single player at
@@ -841,7 +844,11 @@ fn apply_player_damage(
             "player_hit",
             &format!(
                 "zed={} damage={} kind={:?} health_left={:.0} god={}",
-                if hit.zed_id == SELF_DAMAGE { "self".to_string() } else { hit.zed_id.to_string() },
+                match hit.zed_id {
+                    SELF_DAMAGE => "self".to_string(),
+                    LEVEL_DAMAGE => "level".to_string(),
+                    id => id.to_string(),
+                },
                 taken,
                 hit.kind,
                 health.health.max(0.0),

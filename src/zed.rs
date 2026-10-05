@@ -3001,6 +3001,8 @@ struct ZedWorld<'w, 's> {
     kill_stuck: MessageReader<'w, 's, crate::game::KillStuckZed>,
     glass: Query<'w, 's, &'static crate::glass::GlassCollider>,
     glass_bumps: MessageWriter<'w, crate::glass::GlassBump>,
+    player_zone: Res<'w, crate::zones::PlayerZone>,
+    level_damage: MessageReader<'w, 's, crate::pain::LevelDamageZed>,
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
@@ -3027,7 +3029,9 @@ fn think_and_move(
     mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
-    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps } = &mut world;
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage } = &mut world;
+    let level_hits: Vec<(usize, f32, &'static str)> = level_damage.read().map(|d| (d.zed, d.amount, d.cause)).collect();
+    let player_zone = **player_zone;
     let stuck: Vec<usize> = kill_stuck.read().map(|k| k.0).collect();
     let (doors, door_colliders) = (&*doors, &*door_colliders);
     let Some(classes) = classes else {
@@ -3128,6 +3132,24 @@ fn think_and_move(
             runlog::kv("zed_killed_test", &format!("id={}", z.id));
             continue;
         }
+        // Damage from the level (pain volumes, KillZ): no instigator, no
+        // kill credit.
+        let zid = z.id;
+        for &(_, amount, cause) in level_hits.iter().filter(|h| h.0 == zid) {
+            if z.is_dead() {
+                break;
+            }
+            z.health -= amount;
+            runlog::kv("zed_level_damage", &format!("id={} cause={cause} damage={amount} health={:.0}", z.id, z.health));
+            if z.health <= 0.0 {
+                z.last_hit = None;
+                z.kill();
+            }
+        }
+        if z.is_dead() {
+            t.translation = z.centre;
+            continue;
+        }
         if stuck.contains(&z.id) && !z.is_dead() {
             z.last_hit = None;
             z.kill();
@@ -3137,22 +3159,25 @@ fn think_and_move(
         // KFMonster.Tick (standalone), when CanSpeedAdjust (head on, not
         // zapped): seen within the last 5 s of being drawn, else a sight
         // check from its eyes to the player's every second; unseen zeds
-        // move at HiddenGroundSpeed. LastRenderTime (native: drawn this
+        // move at HiddenGroundSpeed; beyond the fog of the player's zone
+        // nothing is seen. LastRenderTime (native: drawn this
         // frame) is approximated as within 60 degrees of the view and in
         // clear sight; the zed's eyes as 0.8 of its half height up.
         let now = time.elapsed_secs();
         if !z.decapitated && !z.zapped() {
             let eye = z.centre + Vec3::Y * c.collision_height * 0.8 * SCALE;
             let to = eye - pt.translation;
+            // Beyond the player's zone fog a zed is neither drawn nor seen.
+            let in_fog = player_zone.in_fog_range(to.length() / SCALE);
             let in_view = to.normalize_or_zero().dot(*pt.forward()) > 0.5;
-            if in_view && sees(&spatial, pt.translation, eye) {
+            if in_fog && in_view && sees(&spatial, pt.translation, eye) {
                 z.last_render = now;
             }
             if now - z.last_render > 5.0 {
                 if now - z.last_view_check > 1.0 {
                     z.last_view_check = now;
                     let was = z.hidden;
-                    z.hidden = !sees(&spatial, eye, pt.translation);
+                    z.hidden = !(in_fog && sees(&spatial, eye, pt.translation));
                     if !z.hidden {
                         z.last_seen = now;
                     }
