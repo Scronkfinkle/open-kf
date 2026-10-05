@@ -18,8 +18,9 @@ history is in `MODLOG.md`; the plans and rules are in `docs/DESIGN.md`
 
 1. ~~T3b, armour~~ (done on the new machine, 2026-10-05; see MODLOG).
 2. ~~D5, doors respawn at wave end~~ (done on the new machine, 2026-10-05).
-3. **T2b, the trail.** RedWhisp / TraderPathEffect along the path every
-   TraderPathInterval, the HUD 3D arrow.
+3. **T2b, the trail.** T2b-1 (the whisp trail) done on the new machine,
+   2026-10-05. T2b-2, the HUD 3D arrow (KFShopDirectionPointer), still
+   to do.
 4. **G3b, the grand entrance** (deferred until the trader core is in):
    camera on the Patriarch during Entrance, BossBattleSong, death camera.
 5. Lighting leftovers (deferred): BSP ~20% dark, sky layer order, terrain

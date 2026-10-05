@@ -3351,3 +3351,43 @@ quirk is only unit-tested. The 63 TriggerControl doors on KF-Aperture
 are not simulated (as before), so `break_doors` skips them (no trigger).
 Not played by you.
 **Next:** T2b, the trader trail.
+
+## 2026-10-05 T2b-1: the trail to the trader
+
+**Changed:** new `src/trader_path.rs`: switching on at OpenShops and off
+at CloseShops or on touching the open shop (`TraderPath`), a whisp every
+1.1 s (KFGameType.ShowPathTo: current shop, its first teleporter, a nav
+route to it, at most 16 points), its way points (TraderPathEffect,
+including KF's unset-index RouteCache check), its flight (WillowWhisp
+StartNextPath / Pathing.Tick plus PHYS_Projectile, copied), its sprites
+(xEmitter, assumed from RedWhisp / WillowWhisp settings: 90 a second, at
+most 150, 1.25 s, size 25-30 growing 13/s, red, 4 x 4 tiles, spin, a
+small rise, fade in and out) drawn as one camera-facing additive mesh
+with RedWhisp's texture (alpha kept). `main.rs` registers it. DESIGN.md:
+T2b split into T2b-1 (this) and T2b-2 (the HUD arrow, later). 3 unit
+tests.
+**Why:** T2b, next in the handoff's order.
+**Tested how:** read KFPlayerController (SetShowPathToTrader, Timer),
+KFGameType (OpenShops, CloseShops, EndState, ShowPathTo), ShopVolume.Touch,
+TraderPathEffect, RedWhisp, WillowWhisp, xEmitter, and the defaults.
+Logged runs on KF-WestLondon, waves, Short, `--god`: wave 1 ended with
+`kill_zeds`, trader time watched; a second run with `warp_shop`.
+Screenshots during trader time.
+**Result:** `trader_path on=true reason=open_shops` 1 s after the wave
+end; 14 whisps 1.1-1.2 s apart, each with 8 way points; each ends at the
+last point about 3.5 s after starting, at about (-3180, -395) against
+the shop's (-3156, -448), 58 units (KF's reached distance is 80).
+About 115 sprites per whisp in flight. `warp_shop`: `trader_path
+on=false reason=touched_shop`, no whisp after it. First screenshot:
+visible grey-edged squares around each sprite: the texture
+(ROEffects.SmokeAlphab_t) holds its shape in alpha and I had dropped
+it; with alpha kept the trail is soft red smoke. A unit test of mine
+expected the whisp to pass close to a sharp corner; worked by hand,
+KF's rules (move on once the velocity turns away) take it 404 units wide,
+so the test was wrong, not the code; the test now checks that number.
+Tests 117 pass; clippy clean.
+**Still broken / not tested:** the smoke's look is assumed in parts
+(native xEmitter: fade curve, spin units, the rise, alpha weighting); not
+compared side by side with the real game, but you looked at it in our
+game and said it looks great. The HUD arrow (T2b-2) is not done.
+**Next:** T2b-2, the HUD arrow; or G3b.

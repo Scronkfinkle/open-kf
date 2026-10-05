@@ -2427,7 +2427,56 @@ KFGameLength=0) is Short.
       during trader time (no other players), the trader's voice lines and
       animation (WeaponLocker), USE in the shop (T3).
   - **T2b, the way there.** The red whisp trail along the path every
-    TraderPathInterval, and the HUD's 3D arrow.
+    TraderPathInterval, and the HUD's 3D arrow. Split in two:
+    - **T2b-1, the trail (done 2026-10-05)** (`trader_path.rs`). From KFPlayerController
+      (SetShowPathToTrader, Timer; TraderPathInterval 1.1,
+      bWantsTraderPath true), KFGameType (OpenShops, CloseShops,
+      ShowPathTo), ShopVolume.Touch, TraderPathEffect / RedWhisp,
+      WillowWhisp:
+      - On when the shops open (OpenShops): one whisp at once, then
+        one every 1.1 s. Off when they close (CloseShops, the wave
+        start) and when the player touches the open shop
+        (ShopVolume.Touch). Once off it stays off until the next trader
+        time, even after leaving the shop (KF quirk, copied).
+      - Each tick (ShowPathTo): only if there is a current shop, it has
+        a teleporter (TelList[0]: the first Teleporter whose Tag is the
+        shop's URL) and FindPathToward that teleporter finds a route.
+        The route: our nav route from the player (start points within
+        reach, as the zeds' FindPathToward) to the teleporter, up to 16
+        points (RouteCache).
+      - The whisp's way points (TraderPathEffect.PostBeginPlay): [0] =
+        200 units ahead along the view (cut short by a wall trace);
+        then up to 10 route points, from RouteCache[1] if
+        RouteCache[i] (i unset, so 0) exists, RouteCache[1] exists and
+        is reachable in a straight line; then the shop's Location if
+        fewer than start + 10 points were taken. No height offset
+        (WillowWhisp adds CollisionHeight; KF's version does not).
+        Velocity = 500 toward [0] plus the player's velocity.
+      - Its flight (WillowWhisp, script, exact): StartNextPath (next way
+        point; acceleration 1200 toward it; velocity halved; Z = half
+        (Z + accel Z)); each tick acceleration re-aimed, velocity +=
+        accel x dt in the script and again by PHYS_Projectile; next way
+        point once within 80 units or once it overshoots (velocity turns
+        away after having pointed at it). After the last point: no new
+        sprites, gone 1.5 s later. LifeSpan 10 s. Flies through walls.
+      - Its sprites (xEmitter, native: not in the scripts, so assumed
+        from the settings and labelled): 90 a second (mRegenRange) at
+        the head, at most 150, still (mSpeedRange 0), each 1.25 s
+        (mLifeRange), size 25-30 units growing 13 a second, colour
+        (255, 40, 40), a random tile of RedWhisp's 4 x 4 texture
+        (Skins[0]), random spin, drawn additively (Style 6), fading in
+        and out (mAttenuate; the exact curve is a guess), drifting up a
+        little (mMassRange -0.03 to -0.01 under gravity; a guess).
+        The texture (ROEffects.SmokeAlphab_t) is grey with its shape in
+        the alpha; the glow is weighted by that alpha (assumed: drawn
+        without it, the sprites are visible grey squares).
+      - Logs `trader_path` (on / off, reason), `trader_whisp`
+        (spawned, route, way points, or why not), `trader_whisp_end`.
+    - **T2b-2, the arrow.** KFShopDirectionPointer
+      (DebugObjects.Arrows.debugarrow1, DrawScale 0.25) drawn in the
+      top-left corner over the view, pointing at the shop (level unless
+      the shop is more than 50 units above or below), whenever the
+      match has begun and there is a current shop (waves too). Later.
 - **T3, buying.** A simple keyboard buy menu (text list on screen):
   weapons, sell, ammo (clip / fill), grenades, armour; all the
   server-side rules above. Armour itself (absorbing damage) needs reading

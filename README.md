@@ -210,7 +210,13 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   buys the vest, 300 for 100 points, less when topping up; it takes 3/4
   of each hit until it runs out (not the Siren's scream), shown as
   "ARMOUR n" on the HUD; lost on death. Checked by logged runs on
-  KF-WestLondon; not play-tested by you. No trail. Checked by
+  KF-WestLondon; not play-tested by you. The trail (T2b-1): during
+  trader time a red smoke whisp flies from you along the route to the
+  shop every 1.1 s, until you step into the shop (then it stays off
+  until the next trader time, as in KF). Checked by logs and a
+  screenshot on KF-WestLondon, and looked at by you in the game (it
+  looks right); the smoke's settings are partly guessed (KF draws it in
+  native code). No HUD arrow yet (T2b-2). Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.
