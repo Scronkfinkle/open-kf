@@ -32,6 +32,7 @@ cargo run --release -- --walk --spawn patriarch --god --input 300:record,600:rec
 cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
 cargo run --release -- --walk --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
+cargo run --release -- --walk --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
 

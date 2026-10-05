@@ -2162,3 +2162,18 @@ use a plain mask as Opacity). Tests 50/50.
 is dropped. SCAR and Bullpup not looked at after the fix (same material
 as the M4). Shotgun tracers: shotguns do not fire pellets yet (W4).
 **Next:** W4, shotguns.
+
+## 2026-10-04 Frame rate cap (--fps)
+
+**Changed:** `main.rs`: `--fps N` (1-1000); `limit_frame_rate` in the
+Last schedule waits until the next frame is due (sleep, then spin the
+last millisecond); after a slow frame it restarts from now rather than
+catching up. Logged as `frame_limit`. README.
+**Why:** You asked for an option to lock the frame rate at launch.
+**Tested how:** `--walk --fps 30 --frames 400`, `--fps 60`, and no cap;
+`frame_stats` in logs/latest.log.
+**Result:** --fps 30: 30-31 fps, 33.3 ms per frame. --fps 60: 60-61,
+16.7 ms. No cap: 60 (vsync at the monitor's refresh rate).
+**Still broken / not tested:** Values above the refresh rate cannot be
+reached while vsync is on (there is no option to turn vsync off yet).
+**Next:** W4, shotguns.

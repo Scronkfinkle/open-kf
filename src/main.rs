@@ -60,6 +60,8 @@ struct Args {
     god: bool,
     /// Test: extra weapons to carry ("all" or class names, comma-separated).
     give: Option<String>,
+    /// Cap the frame rate (frames per second).
+    fps: Option<f64>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -105,6 +107,14 @@ fn parse_args() -> Result<Args, String> {
                 };
                 args.zed_at = Some([x, y, z]);
             }
+            "--fps" => {
+                let n = it.next().ok_or("--fps needs a number")?;
+                let v: f64 = n.parse().map_err(|_| format!("bad --fps value: {n}"))?;
+                if !(1.0..=1000.0).contains(&v) {
+                    return Err(format!("--fps must be between 1 and 1000: {n}"));
+                }
+                args.fps = Some(v);
+            }
             "--autowalk" => {
                 let n = it.next().ok_or("--autowalk needs seconds")?;
                 args.autowalk = Some(n.parse().map_err(|_| format!("bad --autowalk value: {n}"))?);
@@ -124,7 +134,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -177,6 +187,9 @@ fn main() -> AppExit {
     if args.god {
         runlog::kv("god_mode", "on=true source=command_line");
     }
+    if let Some(fps) = args.fps {
+        runlog::kv("frame_limit", &format!("fps={fps}"));
+    }
     let walk_settings = walk::WalkSettings {
         start_walking: args.walk,
         autowalk: args.autowalk,
@@ -226,10 +239,36 @@ fn main() -> AppExit {
         })
         .add_systems(Startup, setup)
         .add_systems(Update, (log_frame_stats, quit_after_frame_limit))
+        .add_systems(Last, limit_frame_rate)
         .run();
 
     runlog::kv("shutdown", &format!("exit={exit:?}"));
     exit
+}
+
+/// `--fps N`: at the end of each frame, wait until the next frame is due
+/// (sleep, then spin the last millisecond for precision). With vsync (the
+/// default) the monitor's refresh rate is still the upper limit.
+fn limit_frame_rate(args: Res<Args>, mut next: Local<Option<std::time::Instant>>) {
+    let Some(fps) = args.fps else {
+        return;
+    };
+    let frame = std::time::Duration::from_secs_f64(1.0 / fps);
+    let now = std::time::Instant::now();
+    let due = next.unwrap_or(now);
+    if due > now {
+        let wait = due - now;
+        if wait > std::time::Duration::from_millis(2) {
+            std::thread::sleep(wait - std::time::Duration::from_millis(1));
+        }
+        while std::time::Instant::now() < due {
+            std::hint::spin_loop();
+        }
+    }
+    // Keep a steady pace; after a slow frame, start again from now
+    // instead of rushing to catch up.
+    let after = std::time::Instant::now();
+    *next = Some(if after > due + frame { after + frame } else { due + frame });
 }
 
 fn setup() {
