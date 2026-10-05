@@ -6,6 +6,7 @@ mod collision;
 mod coords;
 mod decals;
 mod fireball;
+mod firing;
 mod gore;
 mod map;
 mod nav;
@@ -14,6 +15,7 @@ mod pawn_collision;
 mod ragdoll;
 mod record;
 mod runlog;
+mod scope;
 mod screenshot;
 mod skinned;
 mod walk;
@@ -212,7 +214,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins(bullet_fx::BulletFxPlugin)
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(scripted)

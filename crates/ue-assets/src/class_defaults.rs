@@ -73,6 +73,20 @@ impl<'a> ClassDefaults<'a> {
         self.get_at(class, prop, 0)
     }
 
+    /// Whether `class` is `name` or inherits from it (UnrealScript IsA).
+    pub fn is_a(&self, class: &ObjectHandle, name: &str) -> bool {
+        let mut current = Some(self.class_info(class));
+        for _ in 0..32 {
+            let Some(info) = current else { return false };
+            let own = info.handle.package.pkg.object_name(crate::package::ObjectRef::Export(info.handle.export));
+            if own.eq_ignore_ascii_case(name) {
+                return true;
+            }
+            current = info.super_class.as_ref().map(|s| self.class_info(s));
+        }
+        false
+    }
+
     /// Default value of element `index` of a fixed-size array property
     /// (e.g. `FireModeClass[1]`), searching up the class chain.
     pub fn get_at(&self, class: &ObjectHandle, prop: &str, index: u32) -> Option<(Value, Rc<LoadedPackage>)> {

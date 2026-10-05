@@ -2033,3 +2033,83 @@ backstab x2 (W5). Non-melee alt fires do nothing. One shot per click for
 pistols etc. is not checked with a real mouse (scripted input cannot
 hold a button). Not play-tested by you.
 **Next:** W2 bullet guns, unless you want W5 melee first.
+
+## 2026-10-04 Class defaults reader: pick the fullest property list
+
+**Changed:** `crates/ue-assets/src/properties.rs` `find_class_defaults`:
+of all byte offsets that read as a property list to the end, the one
+with the most properties wins (was: the first).
+**Why:** The Bullpup started with 10 rounds: BullpupAmmo's defaults were
+read from a false start (byte 66) where a bogus "Range" value swallowed
+MaxAmmo and InitialAmount (real start: byte 93).
+**Tested how:** `kfpkg defaults` for all 1798 classes in KFMod, KFChar
+and Engine before and after (`work/defaults_check/`), diffed;
+`cargo test --release`; `--give all`.
+**Result:** 37 classes changed, each gaining properties, none losing:
+e.g. BullpupAmmo 4 -> 6 (InitialAmount 160), M14EBRAmmo 2 -> 7,
+MKb42Ammo, AA12Ammo, M7A3MFire (RecoilRate 0.085 and vertical recoil 500
+were missing), ZEDMKIIWeapon 23 -> 44 (MeshRef found). 48 of 48
+weapons now load. Tests 49/49.
+**Still broken / not tested:** Classes outside those three packages not
+diffed. "Most properties" is a heuristic, not the real layout.
+**Next:** W2.
+
+## 2026-10-04 Weapons step W2: bullet guns
+
+**Changed:** New `src/firing.rs` (KF spread, recoil kick and recoil
+buffer, `apply_recoil`, 4 unit tests). `weapon.rs`: FireMode gains the
+firing animations, high-ROF, fire-while-reloading, spread and recoil
+values; weapon reload values (ReloadAnim/Rate, ReloadRate, bHoldToReload),
+bModeZeroCanDryFire, toggle-on-alt list, select / put-down / idle names,
+rates and times; state split from animation (`set_action`, `play`,
+`play_firing`, `play_fire_end`, `interrupt_reload`, `allow_reload`,
+`start_reload`); input rewritten (StartFire / ModeDoFire / StopFire,
+NextFireTime carry-over, toggle, dry fire, reload timer, switch timers,
+DownDelay); scripted `fire_down` / `fire_up`; logs `gun_shot`,
+`weapon_anim`, `weapon_anims_missing`, `reload_*`, `fire_mode_toggle`.
+`walk.rs`: shots scale the velocity. `combat.rs`: HUD [AUTO]/[SEMI].
+`class_defaults.rs`: `is_a`. DESIGN, README.
+**Why:** Step W2 of the weapons plan.
+**Tested how:** `cargo test --release`; scripted runs: AK47 at a
+Fleshpound (hold fire 1.7 s, toggle, semi shot, reload); 9mm and M4
+(hold, aimed hold); Lever Action (3 shots, reload, fire mid-reload,
+reload, aim mid-reload, full reload); Bullpup + 9mm while walking on
+KF-Farm; switch timings; the melee test from last step again.
+**Result:** Tests 49/49. AK47 spread 0.015 -> +0.02 per shot -> 0.12
+cap, semi 0.0128; recoil 255-505 up, right only. M4: 25 shots in 1.80 s
+(0.075 each), fire_loop / fire_iron_loop, aimed spread 0.004; camera
+pitch +0.35 rad over the burst. AK47 reload 3.0 s (animation 3.03 s),
+14 -> 30. Lever Action: a round per 0.667 s, fire at 8 rounds and aim
+both interrupt. Walking 188 drops after each 9mm shot and recovers.
+Switch: 0.317 s down + 0.33 s up (was over 1 s each); 0.071 s
+DownDelay after a shot. Melee results unchanged.
+**Still broken / not tested:** Nothing play-tested by you; recoil feel
+and animations not looked at by eye. Holding the button through a
+reload and the Kriss / Lever Action animation gaps follow the data
+(see DESIGN). No crouch bonus (no crouching). A click during the
+cooldown of a semi gun is kept until it can fire (my choice).
+**Next:** W3, pistols: penetration, dual pistols.
+
+## 2026-10-04 3D scopes (Crossbow, M99)
+
+**Changed:** New `src/scope.rs` (render image 512 x 512, scope sky and
+world cameras, reticle quad, lens material, `ScopeRequest`).
+`weapon.rs`: `WeaponScope` from bHasScope / lenseMaterialID /
+scopePortalFOV and the reticle textures named in UpdateScopeMode; while
+aiming, the lens part shows the scope image; logs `weapon_scope`,
+`weapon_scope_lens_uv`, `scope_portal`. `skinned.rs`: parts record their
+material slot. `main.rs`: plugin. DESIGN, README, test-views.
+**Why:** You saw scopes not rendering (iron sights fine).
+**Tested how:** Screenshots aiming the Crossbow, M99, FN FAL ACOG and
+M14 EBR before; Crossbow and M99 after, and the M99 turned toward the
+ambulance (test-views entry). `cargo test --release`.
+**Result:** Before: the Crossbow and M99 lenses were solid grey (the
+fallback texture CBLens). After: live view with reticle, portal FOV 12 /
+13.33, not mirrored. The ACOG already worked (masked lens material); the
+M14 has no scope (peep sight). Lens UVs 0-1. Tests 49/49.
+**Still broken / not tested:** How the reticle combines with the view is
+my reading of the Combiner (drawn over by alpha), not checked against
+KF; the M99's reticle shows light blue and a pale ring, which may be
+wrong for that reason. Texture-scope and high-detail settings not done.
+Not play-tested by you.
+**Next:** W3, pistols.

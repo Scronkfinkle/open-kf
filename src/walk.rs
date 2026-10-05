@@ -312,7 +312,7 @@ fn walk(
     mut q: Query<(&mut Transform, &FlyCamera, &mut Walker)>,
     frames: Res<bevy::diagnostic::FrameCount>,
     names: Query<&Name>,
-    effects: Option<Res<crate::weapon::WeaponEffects>>,
+    mut effects: Option<ResMut<crate::weapon::WeaponEffects>>,
     mut bob: ResMut<ViewBob>,
     zeds: Query<&crate::zed::Zed>,
     mut pinned: Option<ResMut<crate::combat::PlayerPinned>>,
@@ -331,7 +331,11 @@ fn walk(
         zeds.iter().filter_map(|z| z.blocking_cylinder().map(|c| (z.id, c))).unzip();
     // KFHumanPawn.ModifyVelocity: GroundSpeed x the carried-weight factor,
     // plus the held weapon's bonus (knife +40). The health factor is not done.
-    let ground_speed = effects.map_or(kf::GROUND_SPEED, |e| kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus);
+    let ground_speed = effects
+        .as_ref()
+        .map_or(kf::GROUND_SPEED, |e| kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus);
+    // KFFire.ModeDoFire: a shot scales the walking velocity (on the ground).
+    let fire_scale = effects.as_mut().and_then(|e| e.fire_velocity_scale.take());
     let dt = time.delta_secs().min(0.1);
     let steps = (dt * 120.0).ceil().max(1.0) as usize;
     let h = dt / steps as f32;
@@ -341,6 +345,12 @@ fn walk(
         half_height: kf::HALF_HEIGHT * SCALE,
     };
     for (mut t, cam, mut w) in &mut q {
+        if let Some(s) = fire_scale
+            && w.on_ground
+        {
+            w.velocity.x *= s;
+            w.velocity.z *= s;
+        }
         // First step after entering walk mode: settle onto the floor below
         // (the fly camera can leave the cylinder partly sunk into the
         // ground, e.g. at spawn). Cast down from half a height up.

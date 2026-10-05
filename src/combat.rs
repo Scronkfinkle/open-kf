@@ -100,6 +100,8 @@ impl Default for PlayerHealth {
 pub struct AmmoDisplay {
     pub weapon: &'static str,
     pub ammo: Option<(u32, u32)>,
+    /// "AUTO" / "SEMI" for weapons that switch on alt fire.
+    pub fire_mode: Option<&'static str>,
 }
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
@@ -202,7 +204,8 @@ fn update_hud(
         return;
     };
     let rounds = ammo.ammo.map_or(String::new(), |(mag, spare)| format!(" {mag} / {spare}"));
-    let ammo = format!("    {}{rounds}", ammo.weapon.to_uppercase());
+    let mode = ammo.fire_mode.map_or(String::new(), |m| format!(" [{m}]"));
+    let ammo = format!("    {}{rounds}{mode}", ammo.weapon.to_uppercase());
     **t = format!(
         "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
         health.health.max(0.0),

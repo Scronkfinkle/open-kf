@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W2 implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1545,8 +1545,8 @@ damage, hits, penetrations) and adds unit tests for the rules.
 - **W9, ZED guns.**
 
 **W1 findings (done).**
-- 47 of 48 load (`--give all`, 6.3 s). The ZED Gun MKII fails: its class
-  defaults only partly parse and no mesh package for it is in the install.
+- 47 of 48 loaded at first (`--give all`, 6.3 s); the ZED Gun MKII's
+  defaults only partly parsed. Fixed in W2 (defaults reader): 48 of 48.
 - Inventory order is Pawn.AddInventory's: inside a group, falling
   `Priority` (melee: Axe, Machete, Knife). Number keys follow
   Pawn.SwitchWeapon: the first weapon of that group after the one in hand,
@@ -1577,6 +1577,70 @@ damage, hits, penetrations) and adds unit tests for the rules.
 - Still to do in W5: KFMeleeFire.Timer hits the traced zed plus every
   other zed within 1.1 x range in the cone (damage x cosine), doubles
   damage on backstabs, and the Chainsaw's held fire.
+
+**W2 bullet guns (done).** Rules copied, with where they come from:
+- Spread (`firing.rs`): KFFire.GetSpread from Default.Spread, + MaxSpread / 6
+  per shot within 0.5 s of the last, up to MaxSpread; aiming x 0.5;
+  semi auto x 0.85 if bAccuracyBonusForSemiAuto. Direction:
+  InstantFire.DoFireEffect, aim + VRand() x FRand() x Spread.
+- Recoil (`firing.rs`): KFFire.HandleRecoil (RandRange(max / 2, max) up
+  and sideways, sideways sign random unless bRecoilRightOnly; + speed x
+  RecoilVelocityScale; + HealthMax / Health x 5), spread over RecoilRate
+  by KFPlayerController.RecoilHandler. Kicks within the window add up;
+  the view does not return. Frame-rate dependent, as in KF.
+- Fire rate: NextFireTime += FireRate (the remainder carries over).
+- Full / semi auto: bWaitForRelease; middle mouse toggles it on the
+  weapons whose AltFire calls DoToggle (AK47, Bullpup, FN FAL, M4, MAC10,
+  MKb42, SCAR; AA12 and KSG in W4). Not on the M4 203 (empty AltFire).
+- Animations: KFFire.PlayFiring (FireAnim on the first shot of a press,
+  then FireLoopAnim; aimed variants), KFHighROFFire's FireLoop state
+  (loop animation while held in full auto), FireEndAnim on release
+  (Weapon.StopFire) and after FireAnim (Weapon.AnimEnd).
+- Reloads (KFWeapon.Tick): done after ReloadRate (the animation is cut to
+  idle then); bHoldToReload adds one round per ReloadRate; firing with
+  2+ rounds in (WinchesterFire / KFShotgunFire.AllowFire), aiming or
+  switching interrupt it; other reloads cannot be interrupted and block
+  switching and aiming. A click on an empty magazine reloads if
+  bModeZeroCanDryFire.
+- Shots slow you: velocity x 0.1 (FireRate > 0.25) or x 0.5, on the
+  ground (KFFire.ModeDoFire).
+- Switching (Weapon.BringUp / PutDown / KFWeapon.Timer): SelectAnim and
+  PutDownAnim at 1.36x, ready after BringUpTime 0.33 s, gone after
+  PutDownTime 0.33 s, plus DownDelay right after a shot. Before this,
+  switches waited for the whole animation at 1x (about 3x too slow).
+- Class defaults reader fix: it took the first byte offset that parsed;
+  for 37 of 1798 classes that was a false start that swallowed real
+  values (BullpupAmmo, M14EBRAmmo, MKb42Ammo, AA12Ammo, M7A3MFire's
+  recoil, ZEDMKIIWeapon's MeshRef...). Now the offset with the most
+  properties wins; all 37 gained properties, none lost. The ZED Gun MKII
+  now loads (48 of 48).
+- Data quirks seen: the Lever Action's select animation is named
+  "Select " (trailing space), so like KF (exact name match, I believe)
+  it draws with no select animation; the Kriss has no Fire or Fire_Iron,
+  so semi-auto shots show no animation; many weapons lack FireEnd.
+
+**3D scopes (done 2026-10-04, after W2, on request).** `src/scope.rs`.
+- Only the Crossbow and M99 have bHasScope. No ini sets KFScopeDetail,
+  so KF uses KF_ModelScope: Crossbow.RenderTexture draws the world from
+  the eye along the view (DrawPortal) into a 512 x 512 ScriptedTexture at
+  scopePortalFOV (Crossbow 12, M99 13.33), Combiner (reticle x view,
+  CO_Multiply, AO_Use_Mask), on Skins[lenseMaterialID] (2) while aiming;
+  the player view zooms to PlayerIronSightFOV (32 / 30) as for iron
+  sights.
+- Here: a sky-zone camera and a world camera render into an image; a
+  reticle quad (CommandoCross / Scope.MilDot) in front of the world
+  camera is drawn over it by its alpha; the lens part's material is
+  swapped for an unlit one showing the image. The reticle textures are
+  transparent inside and black at the lines and edge, so I draw them
+  over the view; a literal multiply would make the lens black. My
+  reading of the Combiner, not checked against the original.
+- Lens UVs cover 0-1, so the whole 12 degree image fills the lens, which
+  takes about 11 degrees of the 32 degree view: about 1:1 with the
+  surroundings, the zoom coming from the view itself (the texture scope
+  mode prints "Zoom: 2.50", roughly 90 / 32). Checked by screenshots:
+  not mirrored, right way up.
+- Not done: KF_TextureScope and KF_ModelScopeHigh (other settings);
+  the FN FAL ACOG needs nothing (its lens is a masked material).
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

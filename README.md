@@ -51,9 +51,9 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | 1 2 3 4 5 | weapon slots: melee, pistols, primary, specials, equipment; press again to cycle within a slot (KF's rules) |
 | Mouse wheel | next / previous weapon |
 | Left click (mouse captured) | fire |
-| Middle click (mouse captured) | alt fire (KF's key): melee heavy attacks (other alt fires not done yet) |
-| R | reload (9mm) |
-| Right click (mouse captured) | iron sights on / off (9mm) |
+| Middle click (mouse captured) | alt fire (KF's key): melee heavy attacks; full / semi auto switch on rifles (HUD shows [AUTO] / [SEMI]) |
+| Right click (mouse captured) | iron sights on / off; on the Crossbow and M99 the 3D scope |
+| R | reload |
 | Z | spawn a zed in front of you (more spawn side by side); the HUD shows which |
 | N | change what Z spawns (all ten specimens) |
 | H | spawn a Gorefast in front of you (G is kept for KF's grenade) |
@@ -148,6 +148,17 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   and KF's rule that one fire mode waits for the other. Pistols, the Lever
   Action, M14, shotguns and launchers fire once per click
   (bWaitForRelease); rifles and SMGs keep firing while held.
+- Bullet guns (W2, 2026-10-04): KF's spread (growing during a burst,
+  halved when aiming), recoil that kicks the view up, exact fire rates,
+  full / semi switch on middle click, firing / loop / end animations,
+  reloads timed by ReloadRate (the Lever Action loads round by round and
+  firing interrupts it), dry-click reloads, shots slowing you, and KF's
+  switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
+  logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
+  ("guns feel good").
+- 3D scopes (2026-10-04): the Crossbow and M99 lenses show a live zoomed
+  view with the reticle while aiming, as KF's default scope setting does.
+  Checked by screenshots. Not play-tested by you.
   Guns deal KF's DamageMax (the 9mm now 35 every shot; it rolled 25-35
   before). Checked by unit tests, logs and a screenshot of the AK47. Not
   play-tested by you.
@@ -277,14 +288,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - No sound.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons and
-  plain bullet guns deal damage, with the 9mm's rules (no recoil,
-  penetration, auto/semi toggle, per-weapon reload styles yet). Melee hits
+  bullet guns deal damage. Pistol penetration and dual pistols are W3;
+  no crouching, so no crouch accuracy bonus. Melee hits
   one zed per swing, with no backstab bonus (KF hits every zed in the
   cone and doubles damage from behind; step W5). Alt fires other than
   melee (medic darts, M203 grenade, ...) do nothing yet. Shotguns,
   launchers, the crossbow, M99, flamethrower, husk gun, syringe, welder and
-  ZED gun play their fire animation and use ammo but do nothing. The ZED
-  Gun MKII does not load. No DLC weapons. No trader.
+  ZED guns play their fire animation and use ammo but do nothing. No DLC
+  weapons. No trader.
 - Frame rate not measured with the monitor on (during testing the monitor was
   off, which throttles to 1 fps).
 - Exit crash: about half of all runs end in a segmentation fault or abort

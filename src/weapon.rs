@@ -46,6 +46,20 @@ pub const BASE_WEAPONS: [&str; 48] = [
     "FlameThrower", "Syringe", "Welder", "ZEDGun", "ZEDMKIIWeapon",
 ];
 
+/// Weapons whose AltFire calls DoToggle (full / semi auto), from their
+/// scripts. Exact classes: the M4 203 extends the M4 but overrides AltFire.
+const TOGGLE_ON_ALT_FIRE: [&str; 9] = [
+    "AA12AutoShotgun",
+    "AK47AssaultRifle",
+    "Bullpup",
+    "FNFAL_ACOG_AssaultRifle",
+    "KSGShotgun",
+    "M4AssaultRifle",
+    "MAC10MP",
+    "MKb42AssaultRifle",
+    "SCARMK17AssaultRifle",
+];
+
 /// KFHumanPawn MaxCarryWeight and WeightSpeedModifier.
 const MAX_CARRY_WEIGHT: f32 = 15.0;
 const WEIGHT_SPEED_MODIFIER: f32 = 0.13;
@@ -79,6 +93,13 @@ impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptedInput>()
             .init_resource::<WeaponLoadout>()
+            .init_resource::<crate::firing::Recoil>()
+            .add_systems(
+                Update,
+                crate::firing::apply_recoil
+                    .after(crate::camera::look)
+                    .before(crate::camera::follow_sky),
+            )
             .add_systems(PostStartup, load_weapons.after(crate::camera::spawn_camera))
             .add_systems(
                 Update,
@@ -89,7 +110,8 @@ impl Plugin for WeaponPlugin {
     }
 }
 
-/// Scripted input for tests: at frame N do an action ("fire", "1" to "5" =
+/// Scripted input for tests: at frame N do an action ("fire", "fire_down" /
+/// "fire_up" = hold / release, the same for "altfire", "1" to "5" =
 /// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = toggle iron sights, "zed" = spawn a Clot, "zed_drop" =
 /// spawn one 200 units up, "gorefast" = spawn a Gorefast,
 /// "gorefast_far" = one 900 units away, "cycle_zed" = press N,
@@ -105,6 +127,9 @@ pub struct WeaponEffects {
     /// GroundSpeed multiplier from the carried weight (KFHumanPawn
     /// ModifyVelocity WeightMod); 1 when carrying nothing.
     pub weight_speed_mult: f32,
+    /// A shot this frame scales the horizontal velocity (KFFire.ModeDoFire:
+    /// x 0.1, or x 0.5 for FireRate <= 0.25); walking applies and clears it.
+    pub fire_velocity_scale: Option<f32>,
 }
 
 impl Default for WeaponEffects {
@@ -112,6 +137,7 @@ impl Default for WeaponEffects {
         WeaponEffects {
             ground_speed_bonus: 0.0,
             weight_speed_mult: 1.0,
+            fire_velocity_scale: None,
         }
     }
 }
@@ -141,9 +167,50 @@ struct WeaponDef {
     bob_damping: f32,
     /// Magazine and spare rounds, for weapons that use ammo.
     ammo: Option<Ammo>,
+    /// Reloading (KFWeapon): ReloadAnim at ReloadAnimRate; the magazine is
+    /// filled ReloadRate seconds after the start, or with bHoldToReload one
+    /// round every ReloadRate seconds.
+    reload_anim: String,
+    reload_anim_rate: f32,
+    reload_rate: f32,
+    hold_to_reload: bool,
+    /// Switching (Weapon.BringUp / PutDown): SelectAnim and PutDownAnim at
+    /// their rates; ready BringUpTime after the select starts, gone
+    /// PutDownTime after the put-down starts. IdleAnim for PlayIdle.
+    select_anim: String,
+    select_anim_rate: f32,
+    bring_up_time: f32,
+    put_down_anim: String,
+    put_down_anim_rate: f32,
+    put_down_time: f32,
+    idle_anim: String,
+    /// bModeZeroCanDryFire: clicking with an empty magazine starts a reload.
+    can_dry_fire: bool,
+    /// Alt fire switches full / semi auto (the class's AltFire calls DoToggle).
+    toggles_on_alt: bool,
     /// First-person firing effects (KFFire.InitEffects).
     fx: FireFx,
+    /// The 3D scope (bHasScope), if any.
+    scope: Option<WeaponScope>,
 }
+
+/// A scoped weapon's lens (Crossbow / M99SniperRifle): the model part that
+/// shows the scope view, its zoom and reticle.
+struct WeaponScope {
+    /// Index into `entities` / `model.parts` of the lens part
+    /// (Skins[lenseMaterialID]).
+    lens_part: usize,
+    /// scopePortalFOV, degrees.
+    portal_fov: f32,
+    /// The Combiner's Material1, set in UpdateScopeMode.
+    reticle: Option<Handle<Image>>,
+}
+
+/// UpdateScopeMode's reticle texture for each scoped class (KF_ModelScope).
+const SCOPE_RETICLES: [(&str, &str); 2] = [
+    ("Crossbow", "KillingFloorWeapons.Xbow.CommandoCross"),
+    ("M99SniperRifle", "KF_Weapons5_Scopes_Trip_T.Scope.MilDot"),
+];
 
 /// The fire mode's first-person effects: FlashEmitterClass on the weapon's
 /// FlashBoneName, ShellEjectClass on ShellEjectBoneName.
@@ -170,9 +237,8 @@ struct IronSights {
     zoom_time: f32,
     /// Seconds for the quick zoom out when reloading or switching (FastZoomOutTime).
     fast_zoom_out_time: f32,
-    /// Idle and fire animations while aiming (IdleAimAnim, FireAimedAnim).
+    /// Idle animation while aiming (IdleAimAnim).
     idle_anim: String,
-    fire_anim: String,
 }
 
 /// One fire mode (a WeaponFire class): what it does, its animations and timing.
@@ -184,10 +250,30 @@ struct FireMode {
     /// FireAnims (one per shot, in turn) or FireAnim.
     anims: Vec<String>,
     anim_rate: f32,
+    /// KFFire.PlayFiring / PlayFireEnd animations (lowercase; "none" when
+    /// unset): FireAimedAnim, FireLoopAnim, FireLoopAimedAnim, FireEndAnim,
+    /// FireEndAimedAnim, with FireLoopAnimRate and FireEndAnimRate.
+    aimed_anim: String,
+    loop_anim: String,
+    loop_aimed_anim: String,
+    end_anim: String,
+    end_aimed_anim: String,
+    loop_anim_rate: f32,
+    end_anim_rate: f32,
     /// Seconds between shots (FireRate).
     rate: f32,
     /// bWaitForRelease: one shot per click.
     wait_for_release: bool,
+    /// KFHighROFFire: in full auto the loop animation runs while held
+    /// (state FireLoop) instead of one animation per shot.
+    high_rof: bool,
+    /// WinchesterFire / KFShotgunFire.AllowFire: may fire during a reload
+    /// once 2 rounds are in (which interrupts a one-by-one reload).
+    fire_while_reloading: bool,
+    /// !bFiringDoesntAffectMovement: shots slow the player (KFFire.ModeDoFire).
+    slows_movement: bool,
+    spread: crate::firing::SpreadParams,
+    recoil: crate::firing::RecoilParams,
     combat: CombatStats,
 }
 
@@ -198,8 +284,20 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         class: "None".to_string(),
         anims: vec!["Fire".to_string()],
         anim_rate: 1.0,
+        aimed_anim: "none".into(),
+        loop_anim: "none".into(),
+        loop_aimed_anim: "none".into(),
+        end_anim: "none".into(),
+        end_aimed_anim: "none".into(),
+        loop_anim_rate: 1.0,
+        end_anim_rate: 1.0,
         rate: 0.5,
         wait_for_release: false,
+        high_rof: false,
+        fire_while_reloading: false,
+        slows_movement: false,
+        spread: Default::default(),
+        recoil: Default::default(),
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -270,7 +368,35 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     }
     mode.anim_rate = ffloat("FireAnimRate", 1.0);
     mode.rate = ffloat("FireRate", 0.5);
-    mode.wait_for_release = matches!(fget("bWaitForRelease"), Some((Value::Bool(true), _)));
+    let fbool = |p: &str| matches!(fget(p), Some((Value::Bool(true), _)));
+    let fname = |p: &str| match fget(p) {
+        Some((Value::Name(n), np)) => np.pkg.name(n).to_ascii_lowercase(),
+        _ => "none".to_string(),
+    };
+    mode.wait_for_release = fbool("bWaitForRelease");
+    mode.aimed_anim = fname("FireAimedAnim");
+    mode.loop_anim = fname("FireLoopAnim");
+    mode.loop_aimed_anim = fname("FireLoopAimedAnim");
+    mode.end_anim = fname("FireEndAnim");
+    mode.end_aimed_anim = fname("FireEndAimedAnim");
+    mode.loop_anim_rate = ffloat("FireLoopAnimRate", 1.0);
+    mode.end_anim_rate = ffloat("FireEndAnimRate", 1.0);
+    mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire");
+    mode.fire_while_reloading = defaults.is_a(fm_class, "WinchesterFire") || defaults.is_a(fm_class, "KFShotgunFire");
+    // Only KFFire.ModeDoFire slows the player (shotguns: W4).
+    mode.slows_movement = defaults.is_a(fm_class, "KFFire") && !fbool("bFiringDoesntAffectMovement");
+    mode.spread = crate::firing::SpreadParams {
+        spread: mode.combat.spread,
+        max_spread: ffloat("MaxSpread", 0.0),
+        semi_auto_bonus: fbool("bAccuracyBonusForSemiAuto"),
+    };
+    mode.recoil = crate::firing::RecoilParams {
+        rate: ffloat("RecoilRate", 0.09),
+        max_vertical: ffloat("maxVerticalRecoilAngle", 0.0),
+        max_horizontal: ffloat("maxHorizontalRecoilAngle", 0.0),
+        right_only: fbool("bRecoilRightOnly"),
+        velocity_scale: ffloat("RecoilVelocityScale", 0.0),
+    };
     mode
 }
 
@@ -307,12 +433,14 @@ struct Ammo {
     capacity: u32,
 }
 
+/// The weapon's state (KFWeapon ClientState and bIsReloading). Which
+/// animation plays is separate: e.g. a reload continues after its animation
+/// has gone back to idle.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Action {
     Select,
+    /// Ready to fire (WS_ReadyToFire), whatever animation is playing.
     Idle,
-    /// A shot or swing of fire mode 0 (primary) or 1 (alt fire).
-    Fire { mode: usize },
     Reload,
     PutDown { next: usize },
 }
@@ -323,6 +451,8 @@ struct Weapons {
     current: usize,
     action: Action,
     sequence: Option<usize>,
+    /// Name of the playing animation (lowercase).
+    anim: String,
     /// Current time in the sequence, in frames.
     frame: f32,
     /// Frames per second for the current sequence.
@@ -331,6 +461,18 @@ struct Weapons {
     /// Seconds until each fire mode may fire again (NextFireTime).
     fire_cooldown: [f32; 2],
     fire_count: usize,
+    /// bIsFiring per mode: the button is down and StartFire succeeded.
+    firing: [bool; 2],
+    /// Shots since the button was pressed (WeaponFire.FireCount).
+    shots_this_press: [u32; 2],
+    /// KFFire burst tracking for the spread.
+    spread_state: [crate::firing::SpreadState; 2],
+    /// Seconds since the reload started or the last round went in.
+    reload_timer: f32,
+    /// Seconds left of the bring-up or put-down (Weapon's Timer), and
+    /// whether the put-down is still waiting out DownDelay.
+    switch_timer: f32,
+    down_delayed: bool,
     /// Melee swings waiting for their damage moment: (seconds left,
     /// stats, weapon name). KFMeleeFire.ModeDoFire sets a timer per swing.
     pending_swings: Vec<(f32, CombatStats, &'static str)>,
@@ -450,6 +592,23 @@ fn load_weapons(
                         def.iron
                     ),
                 );
+                // Animations the data names that the model lacks (KF's
+                // HasAnim checks skip them; listed to catch wrong names).
+                let mut wanted: Vec<String> =
+                    vec![def.reload_anim.clone(), def.select_anim.clone(), def.put_down_anim.clone(), def.idle_anim.clone()];
+                if let Some(iron) = &def.iron {
+                    wanted.push(iron.idle_anim.to_ascii_lowercase());
+                }
+                for m in def.modes.iter().filter(|m| m.kind != FireKind::None) {
+                    wanted.extend(m.anims.iter().map(|a| a.to_ascii_lowercase()));
+                    wanted.extend([&m.aimed_anim, &m.loop_anim, &m.loop_aimed_anim, &m.end_anim, &m.end_aimed_anim].map(|a| a.clone()));
+                }
+                let mut missing: Vec<String> =
+                    wanted.into_iter().filter(|a| a != "none" && def.model.sequence(a).is_none()).collect();
+                missing.dedup();
+                if !missing.is_empty() {
+                    runlog::kv("weapon_anims_missing", &format!("class={} anims={missing:?}", def.class));
+                }
                 let at = inventory_position(&slots(&defs), def.slot());
                 defs.insert(at, def);
             }
@@ -482,11 +641,18 @@ fn load_weapons(
         current,
         action: Action::Select,
         sequence: None,
+        anim: String::new(),
         frame: 0.0,
         play_rate: 30.0,
         looping: false,
         fire_cooldown: [0.0; 2],
         fire_count: 0,
+        firing: [false; 2],
+        shots_this_press: [0; 2],
+        spread_state: Default::default(),
+        reload_timer: 0.0,
+        switch_timer: 0.0,
+        down_delayed: false,
         pending_swings: Vec::new(),
         press_waiting: [false; 2],
         aiming: false,
@@ -497,13 +663,14 @@ fn load_weapons(
         tip: None,
         shell_frame: None,
     };
-    start_action(&mut w, Action::Select);
+    set_action(&mut w, Action::Select);
     commands.insert_resource(w);
     // KFHumanPawn.ModifyVelocity: the weight counts up to MaxCarryWeight.
     let encumbrance = weight.min(MAX_CARRY_WEIGHT) / MAX_CARRY_WEIGHT;
     commands.insert_resource(WeaponEffects {
         ground_speed_bonus: 0.0,
         weight_speed_mult: 1.0 - encumbrance * WEIGHT_SPEED_MODIFIER,
+        fire_velocity_scale: None,
     });
     runlog::kv("weapons_ready", &format!("seconds={:.2}", started.elapsed().as_secs_f64()));
 }
@@ -590,7 +757,6 @@ fn load_weapon(
     let mut ammo = None;
     let mut fx = FireFx::default();
     let mut shell_bone_name = None;
-    let mut fire_aimed_anim = None;
     if let Some(fm_class) = &primary_class {
         let fget = |p: &str| defaults.get(fm_class, p);
         let class_of = |p: &str| match fget(p) {
@@ -620,9 +786,6 @@ fn load_weapon(
                 spare: initial - mag,
                 capacity,
             });
-        }
-        if let Some((Value::Name(n), np)) = fget("FireAimedAnim") {
-            fire_aimed_anim = Some(np.pkg.name(n).to_string());
         }
     }
 
@@ -679,9 +842,42 @@ fn load_weapon(
         zoom_time: float("ZoomTime", 0.25),
         fast_zoom_out_time: float("FastZoomOutTime", 0.2),
         idle_anim: name("IdleAimAnim").unwrap_or_else(|| "Idle".into()),
-        fire_anim: fire_aimed_anim.unwrap_or_else(|| modes[0].anims[0].clone()),
     });
     fx.flash_bone = name("FlashBoneName").and_then(|n| model.find_bone(&n));
+    // KFWeapon.PostBeginPlay: no bHasScope, no scope.
+    let scope = if matches!(get("bHasScope"), Some((Value::Bool(true), _))) {
+        let lens_id = int("lenseMaterialID", 0).max(0) as usize;
+        let reticle = SCOPE_RETICLES
+            .iter()
+            .find(|(c, _)| class_name.eq_ignore_ascii_case(c))
+            .and_then(|(_, path)| set.find_object(path, Some("Texture")))
+            .and_then(|t| crate::skinned::decode_image(&t, images));
+        let lens_part = model.parts.iter().position(|p| p.material_index == lens_id);
+        // The lens's UV range: the scope image is mapped through it.
+        let (uv_lo, uv_hi) = model
+            .mesh
+            .triangles
+            .iter()
+            .filter(|t| t.material == lens_id)
+            .flat_map(|t| t.wedges.iter().map(|&wi| Vec2::from_array(model.mesh.wedges[wi].uv)))
+            .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), uv| (lo.min(uv), hi.max(uv)));
+        runlog::kv("weapon_scope_lens_uv", &format!("class={class_path} uv_min={uv_lo:?} uv_max={uv_hi:?}"));
+        runlog::kv(
+            "weapon_scope",
+            &format!(
+                "class={class_path} lense_material_id={lens_id} lens_part={lens_part:?} portal_fov={} reticle={}",
+                float("scopePortalFOV", 12.0),
+                reticle.is_some()
+            ),
+        );
+        lens_part.map(|lens_part| WeaponScope {
+            lens_part,
+            portal_fov: float("scopePortalFOV", 12.0),
+            reticle,
+        })
+    } else {
+        None
+    };
     fx.shell_bone = shell_bone_name.and_then(|n| model.find_bone(&n));
     Ok(WeaponDef {
         class: class_path.to_string(),
@@ -699,6 +895,20 @@ fn load_weapon(
         speed_bonus,
         bob_damping,
         ammo,
+        select_anim: name("SelectAnim").unwrap_or_else(|| "Select".into()).to_ascii_lowercase(),
+        select_anim_rate: float("SelectAnimRate", 1.3636),
+        bring_up_time: float("BringUpTime", 0.33),
+        put_down_anim: name("PutDownAnim").unwrap_or_else(|| "PutDown".into()).to_ascii_lowercase(),
+        put_down_anim_rate: float("PutDownAnimRate", 1.3636),
+        put_down_time: float("PutDownTime", 0.33),
+        idle_anim: name("IdleAnim").unwrap_or_else(|| "Idle".into()).to_ascii_lowercase(),
+        reload_anim: name("ReloadAnim").unwrap_or_else(|| "Reload".into()).to_ascii_lowercase(),
+        reload_anim_rate: float("ReloadAnimRate", 1.0),
+        reload_rate: float("ReloadRate", 1.0),
+        hold_to_reload: matches!(get("bHoldToReload"), Some((Value::Bool(true), _))),
+        can_dry_fire: matches!(get("bModeZeroCanDryFire"), Some((Value::Bool(true), _))),
+        scope,
+        toggles_on_alt: TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)),
         fx,
     })
 }
@@ -772,40 +982,138 @@ fn step_weapon(inv: &[Slot], from: usize, forward: bool) -> Option<usize> {
     (next != from).then_some(next)
 }
 
-/// Starts the animation for an action on the current weapon.
-fn start_action(w: &mut Weapons, action: Action) {
+/// Changes the weapon's state and plays its animation (Select, Idle,
+/// Reload, PutDown).
+fn set_action(w: &mut Weapons, action: Action) {
     w.action = action;
     let def = &w.defs[w.current];
-    let (name, rate_scale, looping) = match action {
-        Action::Select => ("select".to_string(), 1.0, false),
-        Action::Idle => match &def.iron {
-            Some(iron) if w.aiming => (iron.idle_anim.to_ascii_lowercase(), 1.0, true),
-            _ => ("idle".to_string(), 1.0, true),
-        },
-        Action::Reload => ("reload".to_string(), 1.0, false),
-        Action::PutDown { .. } => ("putdown".to_string(), 1.0, false),
-        Action::Fire { mode: 0 } if w.aiming && def.iron.is_some() => {
-            let iron = def.iron.as_ref().expect("checked");
-            (iron.fire_anim.to_ascii_lowercase(), def.modes[0].anim_rate, false)
+    let (name, rate) = match action {
+        Action::Select => {
+            w.switch_timer = def.bring_up_time;
+            (def.select_anim.clone(), def.select_anim_rate)
         }
-        Action::Fire { mode } => {
-            let m = &def.modes[mode];
-            let pick = m.anims[w.fire_count % m.anims.len()].to_ascii_lowercase();
-            (pick, m.anim_rate, false)
+        Action::Idle => return play_idle(w),
+        Action::Reload => (def.reload_anim.clone(), def.reload_anim_rate),
+        Action::PutDown { .. } => {
+            // Weapon.PutDown: wait DownDelay first if a mode fired just now
+            // (NextFireTime more than FireRate x (1 - MinReloadPct 0.5) away).
+            let delay = (0..2)
+                .map(|m| w.fire_cooldown[m] - def.modes[m].rate * 0.5)
+                .fold(0.0f32, f32::max);
+            if delay > 0.0 {
+                w.switch_timer = delay;
+                w.down_delayed = true;
+                runlog::kv("weapon_action", &format!("weapon={} action={action:?} down_delay={delay:.3}", def.class));
+                return;
+            }
+            w.switch_timer = def.put_down_time;
+            (def.put_down_anim.clone(), def.put_down_anim_rate)
         }
     };
-    w.sequence = def.model.sequence(&name);
+    play(w, &name, rate, false);
+    runlog::kv("weapon_action", &format!("weapon={} action={action:?} anim={name}", w.defs[w.current].class));
+}
+
+/// Whether the weapon in hand has this animation (Actor.HasAnim).
+fn has_anim(w: &Weapons, name: &str) -> bool {
+    w.defs[w.current].model.sequence(name).is_some()
+}
+
+/// Plays an animation on the weapon in hand (PlayAnim / LoopAnim) at
+/// `rate` x its own rate.
+fn play(w: &mut Weapons, name: &str, rate: f32, looping: bool) {
+    let def = &w.defs[w.current];
+    w.sequence = def.model.sequence(name);
+    w.anim = name.to_ascii_lowercase();
     w.frame = 0.0;
     w.looping = looping;
-    let base_rate = w.sequence.map_or(30.0, |s| def.model.rate(s));
-    w.play_rate = base_rate * rate_scale;
+    w.play_rate = w.sequence.map_or(30.0, |s| def.model.rate(s)) * rate;
+    if w.sequence.is_none() {
+        runlog::kv("weapon_anim_missing", &format!("weapon={} anim={name}", def.class));
+    } else if !looping || name != "idle" {
+        runlog::kv("weapon_anim", &format!("weapon={} anim={} rate={rate} looping={looping}", def.item_name, w.anim));
+    }
+}
+
+/// KFWeapon.PlayIdle: IdleAimAnim while aiming, else Idle, looping.
+fn play_idle(w: &mut Weapons) {
+    let name = match &w.defs[w.current].iron {
+        Some(iron) if w.aiming => iron.idle_anim.to_ascii_lowercase(),
+        _ => w.defs[w.current].idle_anim.clone(),
+    };
+    play(w, &name, 1.0, true);
+}
+
+/// KFFire.PlayFiring: the first shot after pressing plays FireAnim (aimed:
+/// FireAimedAnim); later shots of the same press FireLoopAnim (aimed:
+/// FireLoopAimedAnim, else FireAimedAnim), when the weapon has them.
+/// Melee modes cycle through FireAnims.
+fn play_firing(w: &mut Weapons, mode: usize) {
+    let m = w.defs[w.current].modes[mode].clone();
+    let fire = m.anims[w.fire_count % m.anims.len()].to_ascii_lowercase();
+    let later = w.shots_this_press[mode] > 0;
+    let (name, rate) = if later && w.aiming && has_anim(w, &m.loop_aimed_anim) {
+        (m.loop_aimed_anim, m.loop_anim_rate)
+    } else if w.aiming && has_anim(w, &m.aimed_anim) {
+        (m.aimed_anim, m.anim_rate)
+    } else if later && !w.aiming && has_anim(w, &m.loop_anim) {
+        (m.loop_anim, m.loop_anim_rate)
+    } else {
+        (fire, m.anim_rate)
+    };
+    play(w, &name, rate, false);
+}
+
+/// KFFire.PlayFireEnd (Weapon.StopFire on release): FireEndAimedAnim while
+/// aiming if there is one, else FireEndAnim, if the weapon has it.
+/// KFHighROFFire plays it only in full auto.
+fn play_fire_end(w: &mut Weapons, mode: usize) {
+    let m = &w.defs[w.current].modes[mode];
+    if m.high_rof && m.wait_for_release {
+        return;
+    }
+    let (aimed, end, rate) = (m.end_aimed_anim.clone(), m.end_anim.clone(), m.end_anim_rate);
+    if w.aiming && has_anim(w, &aimed) {
+        play(w, &aimed, rate, false);
+    } else if has_anim(w, &end) {
+        play(w, &end, rate, false);
+    }
+}
+
+/// KFWeapon.InterruptReload: only one-round-at-a-time reloads stop.
+fn interrupt_reload(w: &mut Weapons, reason: &str) -> bool {
+    if w.action == Action::Reload && w.defs[w.current].hold_to_reload {
+        runlog::kv("reload_interrupted", &format!("weapon={} reason={reason}", w.defs[w.current].item_name));
+        set_action(w, Action::Idle);
+        return true;
+    }
+    false
+}
+
+/// KFWeapon.AllowReload: not while firing, reloading or bringing the weapon
+/// up; the magazine not full; spare ammo; the next shot due within 0.1 s.
+fn allow_reload(w: &Weapons) -> bool {
+    w.defs[w.current].ammo.is_some_and(|a| a.mag < a.capacity && a.spare > 0)
+        && !w.firing.iter().any(|&f| f)
+        && w.action == Action::Idle
+        && w.fire_cooldown[0] <= 0.1
+}
+
+/// KFWeapon.ReloadMeNow.
+fn start_reload(w: &mut Weapons, reason: &str) {
+    zoom_out(w, true, "reload");
+    w.reload_timer = 0.0;
+    set_action(w, Action::Reload);
+    let def = &w.defs[w.current];
     runlog::kv(
-        "weapon_action",
+        "reload_start",
         &format!(
-            "weapon={} action={action:?} sequence={name} found={} rate={:.1}",
-            def.class,
-            w.sequence.is_some(),
-            w.play_rate
+            "weapon={} reason={reason} reload_rate={} hold_to_reload={} anim={} anim_seconds={:.2}",
+            def.item_name,
+            def.reload_rate,
+            def.hold_to_reload,
+            def.reload_anim,
+            w.sequence.map_or(0.0, |s| def.model.length(s) / w.play_rate.max(1e-3))
         ),
     );
 }
@@ -844,13 +1152,19 @@ fn weapon_input(
     mut shots: MessageWriter<ShotFired>,
     mut swings: MessageWriter<MeleeSwing>,
     mut ammo_display: ResMut<crate::combat::AmmoDisplay>,
+    mut recoil: ResMut<crate::firing::Recoil>,
+    health: Res<crate::combat::PlayerHealth>,
+    mut scripted_held: Local<[bool; 2]>,
 ) {
     let Some(mut w) = weapons else {
         return;
     };
     let scripted = |action: &str| script.0.iter().any(|(f, a)| *f == frames.0 && a == action);
+    // Time to each mode's NextFireTime; negative = overdue (kept, so the
+    // next shot comes FireRate after the last was due, as
+    // `NextFireTime += FireRate` does, and the average rate is exact).
     for cd in &mut w.fire_cooldown {
-        *cd = (*cd - time.delta_secs()).max(0.0);
+        *cd = (*cd - time.delta_secs()).max(-1.0);
     }
     // Weapon switching. Slot keys: Pawn.SwitchWeapon; mouse wheel:
     // KFHumanPawn.NextWeapon / PrevWeapon. While putting a weapon down, a
@@ -883,25 +1197,34 @@ fn weapon_input(
         match w.action {
             Action::PutDown { .. } => w.action = Action::PutDown { next },
             _ if next != w.current => {
-                zoom_out(&mut w, true, "switch");
-                w.pending_swings.clear();
-                start_action(&mut w, Action::PutDown { next });
+                // KFWeapon.PutDown: a one-round reload is interrupted; any
+                // other reload refuses the switch.
+                interrupt_reload(&mut w, "switch");
+                if w.action == Action::Reload {
+                    runlog::kv("switch_refused", &format!("weapon={} reason=reloading", w.defs[w.current].item_name));
+                } else {
+                    zoom_out(&mut w, true, "switch");
+                    w.pending_swings.clear();
+                    w.firing = [false; 2];
+                    set_action(&mut w, Action::PutDown { next });
+                }
             }
             _ => {}
         }
     }
     // Iron sights: right mouse toggles (KFWeapon.ToggleIronSights). Not while
-    // switching, reloading, or in the air.
+    // switching or in the air; a one-round reload is interrupted, any other
+    // reload refuses.
     if (grabbed_now(&cursor) && mouse.just_pressed(MouseButton::Right)) || scripted("aim") {
         let cur = w.current;
         let in_air = main_cam.single().is_ok_and(|(_, walker)| walker.is_some_and(|wk| !wk.on_ground));
-        let ready = matches!(w.action, Action::Idle | Action::Fire { .. });
         if w.aiming {
             zoom_out(&mut w, false, "toggle");
-        } else if let Some(iron) = &w.defs[cur].iron
-            && ready
-            && !in_air
-        {
+        } else if w.defs[cur].iron.is_some() && !in_air && {
+            interrupt_reload(&mut w, "aim");
+            w.action == Action::Idle
+        } {
+            let iron = w.defs[cur].iron.as_ref().expect("checked");
             w.zoom_time = iron.zoom_time;
             w.aiming = true;
             runlog::kv("iron_sights", &format!("weapon={} aiming=true reason=toggle", w.defs[cur].class));
@@ -918,33 +1241,59 @@ fn weapon_input(
         }
     }
     // Firing: left mouse = mode 0, middle mouse = mode 1 (KF's AltFire key).
-    // Weapon.ReadyToFire: a mode cannot start while the other is held, and
-    // StartFire makes it wait for the other's NextFireTime as well.
+    let now = time.elapsed_secs();
     let grabbed = grabbed_now(&cursor);
     let buttons = [(MouseButton::Left, "fire"), (MouseButton::Middle, "altfire")];
-    let held = buttons.map(|(b, name)| (grabbed && mouse.pressed(b)) || scripted(name));
-    let pressed = buttons.map(|(b, name)| (grabbed && mouse.just_pressed(b)) || scripted(name));
+    // Scripted "fire_down" / "fire_up" (and "altfire_...") hold a button.
+    let mut pressed_by_script = [false; 2];
+    for (i, (_, name)) in buttons.iter().enumerate() {
+        if scripted(&format!("{name}_down")) {
+            scripted_held[i] = true;
+            pressed_by_script[i] = true;
+        }
+        if scripted(&format!("{name}_up")) {
+            scripted_held[i] = false;
+        }
+    }
+    let held: [bool; 2] =
+        std::array::from_fn(|i| (grabbed && mouse.pressed(buttons[i].0)) || scripted(buttons[i].1) || scripted_held[i]);
+    let pressed: [bool; 2] = std::array::from_fn(|i| {
+        (grabbed && mouse.just_pressed(buttons[i].0)) || scripted(buttons[i].1) || pressed_by_script[i]
+    });
     for mode in 0..2 {
         let alt = 1 - mode;
         let cur = w.current;
+        // Weapon.StopFire on release: the fire end animation.
         if !held[mode] {
+            if w.firing[mode] {
+                w.firing[mode] = false;
+                if matches!(w.action, Action::Idle | Action::Reload) {
+                    play_fire_end(&mut w, mode);
+                }
+            }
             w.press_waiting[mode] = false;
             continue;
         }
         if pressed[mode] {
             w.press_waiting[mode] = true;
         }
-        // bWaitForRelease: one shot per click (a click made during the
-        // cooldown fires once ready if still held; not checked against KF).
-        let wants = if w.defs[cur].modes[mode].wait_for_release { w.press_waiting[mode] } else { true };
-        let ready = w.fire_cooldown[mode] <= 0.0
-            && w.fire_cooldown[alt] <= 0.0
-            && !held[alt]
-            && matches!(w.action, Action::Idle | Action::Fire { .. });
-        if !wants || !ready {
+        let ready_state = matches!(w.action, Action::Idle | Action::Reload);
+        // Rifles: alt fire switches full / semi auto (KFWeapon.DoToggle),
+        // if ReadyToFire(0).
+        if mode == 1 && w.defs[cur].toggles_on_alt {
+            if pressed[mode] {
+                let mag_ok = w.defs[cur].ammo.is_none_or(|a| a.mag >= 1);
+                if ready_state && w.action != Action::Reload && mag_ok && w.fire_cooldown[0] <= 0.0 && !w.firing[0] {
+                    let m = &mut w.defs[cur].modes[0];
+                    m.wait_for_release = !m.wait_for_release;
+                    let semi = m.wait_for_release;
+                    runlog::kv("fire_mode_toggle", &format!("weapon={} semi_auto={semi}", w.defs[cur].item_name));
+                } else {
+                    runlog::kv("fire_mode_toggle_refused", &format!("weapon={} action={:?}", w.defs[cur].item_name, w.action));
+                }
+            }
             continue;
         }
-        w.press_waiting[mode] = false;
         let fm = w.defs[cur].modes[mode].clone();
         if mode == 1 && fm.kind != FireKind::Melee {
             // Only melee alt attacks are done; other alt fires come with
@@ -957,13 +1306,59 @@ fn weapon_input(
             }
             continue;
         }
-        w.fire_cooldown[mode] = fm.rate;
-        // Ammo belongs to the primary mode (alt melee attacks use none).
-        let has_ammo = mode == 1 || w.defs[cur].ammo.is_none_or(|a| a.mag > 0);
-        if !has_ammo {
-            runlog::kv("dry_fire", &format!("weapon={}", w.defs[cur].class));
+        // KFFire.AllowFire: not while reloading (WinchesterFire and
+        // KFShotgunFire: unless 2+ rounds are in), not with an empty magazine.
+        let mag = w.defs[cur].ammo.map(|a| a.mag);
+        let reloading = w.action == Action::Reload;
+        let allow_fire = (!reloading || (fm.fire_while_reloading && mag.is_some_and(|m| m >= 2)))
+            && (mode == 1 || mag.is_none_or(|m| m >= 1));
+        if !w.firing[mode] {
+            // StartFire. bWaitForRelease modes need a fresh click (a click
+            // made while not ready is kept while the button stays down; not
+            // checked against KF). Weapon.ReadyToFire: not while the other
+            // mode fires, and after both modes' NextFireTime.
+            if fm.wait_for_release && !w.press_waiting[mode] {
+                continue;
+            }
+            // KFWeapon.Fire: a click on an empty magazine asks for a reload.
+            if mode == 0 && pressed[mode] && mag == Some(0) && !reloading && w.fire_cooldown[0] <= 0.0 {
+                runlog::kv("dry_fire", &format!("weapon={} auto_reload={}", w.defs[cur].item_name, w.defs[cur].can_dry_fire));
+                if w.defs[cur].can_dry_fire && allow_reload(&w) {
+                    start_reload(&mut w, "dry_fire");
+                }
+                continue;
+            }
+            if !ready_state || w.firing[alt] || w.fire_cooldown[mode] > 0.0 || w.fire_cooldown[alt] > 0.0 || !allow_fire {
+                continue;
+            }
+            w.firing[mode] = true;
+            w.press_waiting[mode] = false;
+            w.shots_this_press[mode] = 0;
+            // StartFire: NextFireTime = now (no PreFireTime).
+            w.fire_cooldown[mode] = 0.0;
+            // KFWeapon.StartFire interrupts a one-round reload.
+            interrupt_reload(&mut w, "fire");
+            // KFHighROFFire in full auto: state FireLoop loops the animation.
+            if fm.high_rof && !fm.wait_for_release {
+                let (name, rate) = if w.aiming && has_anim(&w, &fm.loop_aimed_anim) {
+                    (fm.loop_aimed_anim.clone(), fm.loop_anim_rate)
+                } else {
+                    (fm.loop_anim.clone(), fm.loop_anim_rate)
+                };
+                play(&mut w, &name, rate, true);
+            }
+        }
+        // ModeDoFire: once per press in semi auto, every FireRate in full auto.
+        if w.fire_cooldown[mode] > 0.0 || !allow_fire || (fm.wait_for_release && w.shots_this_press[mode] > 0) {
+            // KFHighROFFire.ModeTick: an empty magazine ends the loop.
+            if fm.high_rof && !fm.wait_for_release && !allow_fire && w.looping && w.firing[mode] {
+                w.firing[mode] = false;
+                play_fire_end(&mut w, mode);
+            }
             continue;
         }
+        // ModeDoFire: NextFireTime = max(NextFireTime + FireRate, now).
+        w.fire_cooldown[mode] = (w.fire_cooldown[mode] + fm.rate).max(0.0);
         if mode == 0
             && let Some(a) = w.defs[cur].ammo.as_mut()
         {
@@ -973,7 +1368,10 @@ fn weapon_input(
         if mode == 0 {
             w.fx_shots += 1;
         }
-        start_action(&mut w, Action::Fire { mode });
+        if !(fm.high_rof && !fm.wait_for_release) {
+            play_firing(&mut w, mode);
+        }
+        w.shots_this_press[mode] += 1;
         let stats = fm.combat;
         let item_name = w.defs[cur].item_name;
         match fm.kind {
@@ -992,13 +1390,20 @@ fn weapon_input(
                 &format!("weapon={item_name} fire_kind={:?} fire_class={}", fm.kind, fm.class),
             ),
             FireKind::Instant => {
-                if let Ok((cam, _)) = main_cam.single() {
-                    // InstantFire: random direction within the spread cone.
-                    // KFFire.DoTrace always deals DamageMax (DamageMin is unused).
-                    // KFFire.GetSpread halves the spread while aiming.
-                    let spread = if w.aiming { stats.spread * 0.5 } else { stats.spread };
-                    let (u, v) = (w.random() * 2.0 - 1.0, w.random() * 2.0 - 1.0);
-                    let dir = (*cam.forward() + *cam.right() * u * spread + *cam.up() * v * spread).normalize();
+                if let Ok((cam, walker)) = main_cam.single() {
+                    // KFFire.ModeDoFire: GetSpread, then InstantFire's
+                    // direction; KFFire.DoTrace deals DamageMax.
+                    let mut spread_state = w.spread_state[mode];
+                    let spread = crate::firing::kf_spread(fm.spread, &mut spread_state, now, w.aiming, fm.wait_for_release);
+                    w.spread_state[mode] = spread_state;
+                    let vrand = loop {
+                        let v = Vec3::new(w.random() * 2.0 - 1.0, w.random() * 2.0 - 1.0, w.random() * 2.0 - 1.0);
+                        if v.length_squared() > 1e-4 && v.length_squared() <= 1.0 {
+                            break v.normalize();
+                        }
+                    };
+                    let frand = w.random();
+                    let dir = crate::firing::spread_dir(*cam.forward(), spread, vrand, frand);
                     shots.write(ShotFired {
                         origin: cam.translation,
                         dir,
@@ -1007,6 +1412,33 @@ fn weapon_input(
                         weapon: item_name,
                         effect_start: w.tip.map(|t| t.0),
                     });
+                    // HandleRecoil; speed in Unreal units/s.
+                    let speed = walker.map_or(0.0, |wk| wk.velocity.length() / coords::SCALE);
+                    let r = [w.random(), w.random(), w.random()];
+                    let kick = crate::firing::recoil_kick(fm.recoil, speed, health.health, 100.0, r);
+                    recoil.add(kick, fm.recoil.rate, now);
+                    // ModeDoFire slows the player unless falling.
+                    let on_ground = walker.is_some_and(|wk| wk.on_ground);
+                    if fm.slows_movement && on_ground {
+                        let scale = if fm.rate > 0.25 { 0.1 } else { 0.5 };
+                        if let Some(e) = effects.as_mut() {
+                            e.fire_velocity_scale = Some(scale);
+                        }
+                    }
+                    runlog::kv(
+                        "gun_shot",
+                        &format!(
+                            "weapon={item_name} anim={} shot_in_press={} semi_auto={} aiming={} spread={spread:.4} burst={} recoil_pitch={:.0} recoil_yaw={:.0} speed_unreal={speed:.0} mag_left={}",
+                            w.anim,
+                            w.shots_this_press[mode],
+                            fm.wait_for_release,
+                            w.aiming,
+                            spread_state.shots_in_burst,
+                            kick.0,
+                            kick.1,
+                            w.defs[cur].ammo.map_or(0, |a| a.mag)
+                        ),
+                    );
                 }
             }
         }
@@ -1034,21 +1466,69 @@ fn weapon_input(
             });
         }
     }
-    // Reload from idle, or once the fire cooldown has passed (the fire
-    // animation itself can run longer than the fire rate).
-    let can_reload = w.defs[w.current].ammo.is_some_and(|a| a.mag < a.capacity && a.spare > 0);
-    if (keys.just_pressed(KeyCode::KeyR) || scripted("reload"))
-        && can_reload
-        && (w.action == Action::Idle || (matches!(w.action, Action::Fire { .. }) && w.fire_cooldown.iter().all(|&c| c <= 0.0)))
-    {
-        zoom_out(&mut w, true, "reload");
-        start_action(&mut w, Action::Reload);
+    // Reloading (KFWeapon.Tick): after ReloadRate the magazine is full and
+    // the weapon idles (ClientFinishReloading), even if the reload
+    // animation is still playing. One-round reloads add a round every
+    // ReloadRate until full.
+    // Weapon.Timer: the bring-up ends in idle; the put-down plays its
+    // animation after any DownDelay, then the next weapon comes up.
+    if matches!(w.action, Action::Select | Action::PutDown { .. }) {
+        w.switch_timer -= dt;
+        if w.switch_timer <= 0.0 {
+            match w.action {
+                Action::Select => set_action(&mut w, Action::Idle),
+                Action::PutDown { next } if w.down_delayed => {
+                    w.down_delayed = false;
+                    let (name, rate, time) = {
+                        let d = &w.defs[w.current];
+                        (d.put_down_anim.clone(), d.put_down_anim_rate, d.put_down_time)
+                    };
+                    play(&mut w, &name, rate, false);
+                    w.switch_timer = time;
+                    w.action = Action::PutDown { next };
+                }
+                Action::PutDown { next } => {
+                    w.current = next;
+                    set_action(&mut w, Action::Select);
+                }
+                _ => {}
+            }
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyR) || scripted("reload") {
+        if allow_reload(&w) {
+            start_reload(&mut w, "key");
+        } else {
+            runlog::kv("reload_refused", &format!("weapon={} action={:?} firing={:?}", w.defs[w.current].item_name, w.action, w.firing));
+        }
+    }
+    if w.action == Action::Reload {
+        w.reload_timer += dt;
+        let cur = w.current;
+        let (rate, hold, item_name) = (w.defs[cur].reload_rate, w.defs[cur].hold_to_reload, w.defs[cur].item_name);
+        if w.reload_timer >= rate
+            && let Some(a) = w.defs[cur].ammo.as_mut()
+        {
+            let n = if hold { 1.min(a.spare) } else { (a.capacity - a.mag).min(a.spare) };
+            a.mag += n;
+            a.spare -= n;
+            let full = a.mag >= a.capacity || a.spare == 0;
+            runlog::kv("reloaded", &format!("weapon={item_name} added={n} mag={} spare={} done={}", a.mag, a.spare, !hold || full));
+            if hold && !full {
+                w.reload_timer = 0.0;
+            } else {
+                set_action(&mut w, Action::Idle);
+            }
+        }
     }
     if let Some(e) = effects.as_mut() {
         e.ground_speed_bonus = w.defs[w.current].speed_bonus;
     }
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
+    ammo_display.fire_mode = w.defs[w.current]
+        .toggles_on_alt
+        .then(|| if w.defs[w.current].modes[0].wait_for_release { "SEMI" } else { "AUTO" });
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)] // Bevy system parameters
@@ -1063,6 +1543,9 @@ fn animate_weapon(
     bob: Res<crate::walk::ViewBob>,
     mut view_fov: ResMut<crate::camera::ViewFov>,
     mut log_timer: Local<f32>,
+    mut scope_request: ResMut<crate::scope::ScopeRequest>,
+    scope_view: Option<Res<crate::scope::ScopeView>>,
+    mut part_materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
     let Some(mut w) = weapons else {
         return;
@@ -1078,8 +1561,9 @@ fn animate_weapon(
         w.zoom = if w.aiming { (w.zoom + step).min(1.0) } else { (w.zoom - step).max(0.0) };
         if w.zoom == target {
             runlog::kv("iron_sights_zoom_done", &format!("aiming={}", w.aiming));
-            if w.action == Action::Idle {
-                start_action(&mut w, Action::Idle);
+            // Swap the idle for the aimed idle (or back) if idling.
+            if w.action == Action::Idle && w.looping && !w.firing.iter().any(|&f| f) {
+                play_idle(&mut w);
             }
         }
     }
@@ -1114,21 +1598,25 @@ fn animate_weapon(
             w.frame %= length.max(1e-3);
         } else {
             match w.action {
-                Action::PutDown { next } => {
-                    w.current = next;
-                    start_action(&mut w, Action::Select);
-                }
-                Action::Reload => {
-                    let cur = w.current;
-                    if let Some(a) = w.defs[cur].ammo.as_mut() {
-                        let n = (a.capacity - a.mag).min(a.spare);
-                        a.mag += n;
-                        a.spare -= n;
-                        runlog::kv("reloaded", &format!("mag={} spare={}", a.mag, a.spare));
+                // Switching runs on timers (weapon_input); hold the last frame.
+                Action::PutDown { .. } | Action::Select => w.frame = length,
+                // Weapon.AnimEnd: after FireAnim comes FireEndAnim if the
+                // weapon has it; otherwise idle unless a mode is firing
+                // (then the last frame holds until the next shot).
+                Action::Idle | Action::Reload => {
+                    let next_end = (0..2).find_map(|m| {
+                        let fm = &w.defs[w.current].modes[m];
+                        (w.anim == fm.anims[0].to_ascii_lowercase() && has_anim(&w, &fm.end_anim))
+                            .then(|| (fm.end_anim.clone(), fm.end_anim_rate))
+                    });
+                    if let Some((end, rate)) = next_end {
+                        play(&mut w, &end, rate, false);
+                    } else if !w.firing.iter().any(|&f| f) {
+                        play_idle(&mut w);
+                    } else {
+                        w.frame = length;
                     }
-                    start_action(&mut w, Action::Idle);
                 }
-                _ => start_action(&mut w, Action::Idle),
             }
         }
     }
@@ -1154,6 +1642,33 @@ fn animate_weapon(
         for &e in &def.entities {
             if let Ok(mut v) = visibility.get_mut(e) {
                 *v = if i == w.current { Visibility::Visible } else { Visibility::Hidden };
+            }
+        }
+    }
+
+    // 3D scope (Crossbow.RenderOverlays): while aiming, the lens shows the
+    // scope view; otherwise its own material (ScriptedTextureFallback).
+    let scope_on = w.aiming && w.defs[w.current].scope.is_some();
+    match &w.defs[w.current].scope {
+        Some(sc) if scope_on => {
+            scope_request.active = true;
+            scope_request.fov_deg = sc.portal_fov;
+            scope_request.reticle = sc.reticle.clone();
+        }
+        _ => scope_request.active = false,
+    }
+    if let Some(view) = scope_view.as_deref() {
+        for (i, def) in w.defs.iter().enumerate() {
+            let Some(sc) = &def.scope else { continue };
+            let wanted = if i == w.current && scope_on {
+                view.lens_material.clone()
+            } else {
+                def.model.parts[sc.lens_part].material.clone()
+            };
+            if let Ok(mut m) = part_materials.get_mut(def.entities[sc.lens_part])
+                && m.0 != wanted
+            {
+                m.0 = wanted;
             }
         }
     }

@@ -21,6 +21,8 @@ use ue_assets::texture::{decode_rgba, read_texture};
 pub struct SkinnedPart {
     pub mesh: Handle<Mesh>,
     pub material: Handle<StandardMaterial>,
+    /// The mesh material slot this part draws (Skins[index]).
+    pub material_index: usize,
     /// Point index of each vertex (vertex = one wedge).
     vertex_points: Vec<usize>,
     /// Triangle indices into this part's vertices, for normals.
@@ -246,6 +248,7 @@ impl SkinnedModel {
             parts.push(SkinnedPart {
                 mesh: meshes.add(bevy_mesh),
                 material,
+                material_index: mat_index,
                 vertex_points,
                 indices,
             });
