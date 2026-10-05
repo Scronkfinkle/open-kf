@@ -107,6 +107,8 @@ pub struct AmmoDisplay {
     pub ammo: Option<(u32, u32)>,
     /// "AUTO" / "SEMI" for weapons that switch on alt fire.
     pub fire_mode: Option<&'static str>,
+    /// Alt fire's own rounds (the M4 203's grenades).
+    pub alt_ammo: Option<u32>,
 }
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
@@ -209,7 +211,8 @@ fn update_hud(
         return;
     };
     let rounds = ammo.ammo.map_or(String::new(), |(mag, spare)| format!(" {mag} / {spare}"));
-    let mode = ammo.fire_mode.map_or(String::new(), |m| format!(" [{m}]"));
+    let mode = ammo.fire_mode.map_or(String::new(), |m| format!(" [{m}]"))
+        + &ammo.alt_ammo.map_or(String::new(), |n| format!(" [GRENADES {n}]"));
     let ammo = format!("    {}{rounds}{mode}", ammo.weapon.to_uppercase());
     **t = format!(
         "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
@@ -295,6 +298,11 @@ pub(crate) struct HitSource {
     pub point: Vec3,
     pub attacker: Vec3,
     pub melee: bool,
+    /// For explosive damage types: ZombieFleshPound.TakeDamage's
+    /// multiplier (1 for grenades and the LAW, 2 for the frag and pipe
+    /// bomb); None for everything else (x 0.5, or x 0.75 for a headshot by a
+    /// damage type with HeadShotDamageMult >= 1.5).
+    pub explosive: Option<f32>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -314,8 +322,16 @@ pub(crate) fn damage_zed(
     // KFMonster.TakeDamage: headshots, and every hit on a headless zed, are
     // multiplied by the damage type's HeadShotDamageMult.
     let mult = if headshot || z.decapitated { headshot_mult } else { 1.0 };
-    // ZombieFleshPound.TakeDamage: non-explosive damage x 0.5 (all our weapons).
-    let dealt = damage * mult * z.small_arms_scale;
+    // ZombieFleshPound.TakeDamage: explosives as listed (x 1, frag and pipe
+    // bomb x 2); anything else x 0.5, or x 0.75 for a headshot by a damage
+    // type with HeadShotDamageMult >= 1.5.
+    let fleshpound = match source.explosive {
+        _ if z.small_arms_scale >= 1.0 => 1.0,
+        Some(m) => m,
+        None if headshot && headshot_mult >= 1.5 => 0.75,
+        None => z.small_arms_scale,
+    };
+    let dealt = damage * mult * fleshpound;
     let mut total = dealt;
     let mut head_off = false;
     let mut explosion = 0.0;
@@ -439,6 +455,7 @@ fn resolve_shots(
                     point: hit,
                     attacker: shot.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE,
                     melee: false,
+                    explosive: None,
                 };
                 let damage = if penetrating { hit_damage.trunc() } else { hit_damage };
                 if penetrating {
@@ -534,7 +551,7 @@ fn resolve_swings(
                 "melee_hit",
                 &format!("weapon={} zed={} kind=traced backstab={backstab} damage={my_damage:.1} headshot={head}", swing.weapon, z.id),
             );
-            let source = HitSource { point: hit, attacker: player, melee: true };
+            let source = HitSource { point: hit, attacker: player, melee: true, explosive: None };
             damage_zed(&mut z, my_damage, head, swing.headshot_mult, swing.weapon, t, source, &mut kills);
         } else if let Some(t) = world_t {
             runlog::kv("melee_hit_world", &format!("weapon={} distance_unreal={:.0}", swing.weapon, t / SCALE));
@@ -572,7 +589,7 @@ fn resolve_swings(
                     "melee_hit",
                     &format!("weapon={} zed={} kind=wide angle_cos={diff:.2} damage={damage:.1} headshot={head}", swing.weapon, z.id),
                 );
-                let source = HitSource { point, attacker: player, melee: true };
+                let source = HitSource { point, attacker: player, melee: true, explosive: None };
                 damage_zed(&mut z, damage, head, swing.headshot_mult, swing.weapon, d.length(), source, &mut kills);
             }
         }
@@ -702,6 +719,7 @@ mod tests {
         point: Vec3::new(0.0, 0.0, -0.5),
         attacker: Vec3::new(0.0, 0.0, -4.0),
         melee: false,
+        explosive: None,
     };
 
     // The test Clot stands at the origin facing Unreal +X (Bevy -Z); Unreal

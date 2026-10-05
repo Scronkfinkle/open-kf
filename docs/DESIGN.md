@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W5 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W5 and W6a implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1736,6 +1736,36 @@ the old reading (`kfpkg materials`: 95 Combiners would differ).
 - Not done: FlipOver (a zed knocked down when the player moves over 300
   units/s: the player cannot), HitEffectClass sparks on walls, the
   bloody weapon skin, melee hit sounds.
+
+**W6 projectiles and explosions**, in three parts: W6a grenades and
+rockets (done), W6b frag and pipe bomb, W6c Crossbow and M99.
+
+W6a (`projectile.rs` PlayerExplosive):
+- M79GrenadeProjectile family (M79, M32, M4 203's M203): Speed 8000,
+  straight for StraightFlightTime 0.25 s, then falling (Tick); LAWProj:
+  Speed 2600, straight. A PanzerfaustTrail behind each.
+- ProcessTouch / HitWall: closer than sqrt(ArmDistSquared) (300; LAW 500)
+  to where the player is now, it is a dud: a touched zed takes
+  ImpactDamage (200) with the impact type's HeadShotDamageMult (2.0), and
+  the grenade drops and vanishes after 1 s. Otherwise Explode:
+  KFNadeLExplosion / LawExplosion 20 units out, KFScorchMark /
+  RocketMarkDirt, HurtRadius.
+- HurtRadius: each zed whose cylinder reaches DamageRadius takes Damage x
+  (1 - max(0, (distance - its radius) / DamageRadius)) x
+  KFMonster.GetExposureTo (head 0.4, root 0.3, feet 0.15 each, by line of
+  sight; feet approximated at the cylinder's bottom); no headshots
+  (bCheckForHeadShots false). The player: x KFPawn exposure (head, root),
+  halved (KFGameType.ReduceDamage, self damage), no push
+  (KFHumanPawn.TakeDamage zeroes a player's momentum).
+- ZombieFleshPound.TakeDamage now as in KF: listed explosive types x 1,
+  frag and pipe bomb x 2, others x 0.5 or x 0.75 for a headshot by a type
+  with HeadShotDamageMult >= 1.5 (was a flat x 0.5).
+- Ammo: M79Fire / M203Fire / LAWFire need only the ammo total
+  (AmmoAmount); the M4 203's grenades have their own count (M203Ammo, 6;
+  HUD [GRENADES n]); LAWFire fires only when aimed and zoomed in.
+- Not done: the grenade / rocket meshes, view shake, momentum on zeds
+  (MomentumTransfer is logged only), explosions setting off other
+  explosives, a dud's rest (it just stops).
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

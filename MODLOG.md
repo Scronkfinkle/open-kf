@@ -2250,3 +2250,27 @@ for 14-18 (halved by the Fleshpound), fire loop / idle on release; alt
 the player); FlipOver, wall sparks, bloody skins, sounds not done. Not
 play-tested by you.
 **Next:** W6, projectiles and explosions.
+
+## 2026-10-04 Weapons step W6a: grenades and rockets
+
+**Changed:** `projectile.rs`: `ExplosiveStats`, `PlayerExplosive`
+(flight, straight then falling, dud rule with impact damage, Explode:
+effect, decal, HurtRadius on zeds with exposure, self damage halved,
+no push). `weapon.rs`: grenade / rocket fire through the pellet path
+(`PelletFire.explosive`), `total_ammo_only` (M79Fire, M203Fire,
+LAWFire), `requires_aim` (LAW), `alt_ammo` (M4 203 grenades), HUD
+[GRENADES n]; dry fire skipped for total-ammo weapons. `combat.rs`:
+`HitSource.explosive`, ZombieFleshPound's full damage rule. `decals.rs`:
+KFScorchMark. `particles.rs`: KFNadeLExplosion. `zed.rs`: test action
+`zed_line_far`. `fireball.rs`: `axes_along` pub(crate). DESIGN, README.
+**Why:** Step W6a.
+**Tested how:** `cargo test --release`; M79 at a Clot 205 away (dud) and
+at `zed_line_far`; LAW aimed; M32; M4 203 alt fire.
+**Result:** Tests 51/51. Dud: 200 impact on the head (x 2) killed the
+Clot. M79 at three Clots: 328, 257, 171 at 51, 132, 231 units (350 x
+(1 - (d - 26) / 400)), all killed; M32 the same; M4 203 grenade killed
+all three, its rifle magazine untouched, the next rifle shot waited out
+the grenade's cooldown. LAW fired only when aimed.
+**Still broken / not tested:** Self damage not triggered in a run.
+Meshes, view shake and zed momentum not done. Not play-tested by you.
+**Next:** W6b, frag grenade (G) and pipe bombs.

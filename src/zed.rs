@@ -2470,6 +2470,12 @@ fn spawn_zeds(
                     wanted.push((ZedKind::Clot, d, 0.0, true));
                 }
             }
+            // The same farther away (explosives arm after 300-500 units).
+            "zed_line_far" => {
+                for d in [700.0, 800.0, 900.0] {
+                    wanted.push((ZedKind::Clot, d, 0.0, true));
+                }
+            }
             other => {
                 if let Some(k) = other.strip_prefix("spawn_").and_then(kind_named) {
                     wanted.push((k, 300.0, 0.0, false));

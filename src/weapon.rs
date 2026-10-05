@@ -124,7 +124,7 @@ impl Plugin for WeaponPlugin {
 /// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = toggle iron sights, "zed" = spawn a Clot, "zed_drop" =
 /// spawn one 200 units up, "gorefast" = spawn a Gorefast,
 /// "gorefast_far" = one 900 units away, "zed_line" = three Clots in a
-/// line ahead, "cycle_zed" = press N,
+/// line ahead ("zed_line_far": 700-900 away), "cycle_zed" = press N,
 /// "spawn_<kind>" = spawn that zed, "hurt_zeds" = 100 damage to every zed).
 #[derive(Resource, Default, Clone)]
 pub struct ScriptedInput(pub Vec<(u32, String)>);
@@ -196,6 +196,9 @@ struct WeaponDef {
     idle_anim: String,
     /// bModeZeroCanDryFire: clicking with an empty magazine starts a reload.
     can_dry_fire: bool,
+    /// Fire mode 1's own ammo when it uses another ammo class (the M4 203's
+    /// M203Ammo): rounds left and MaxAmmo.
+    alt_ammo: Option<(u32, u32)>,
     /// What alt fire toggles (the class's AltFire calls DoToggle), if anything.
     toggles_on_alt: Option<AltToggle>,
     /// KSGShotgun.bWideSpread (KSGFire: Spread x 2.05).
@@ -357,6 +360,11 @@ struct FireMode {
     last_anim: String,
     last_aimed_anim: String,
     last_rate: Option<f32>,
+    /// M79Fire / M203Fire / LAWFire.AllowFire: only the ammo total counts
+    /// (no magazine check, also while reloading).
+    total_ammo_only: bool,
+    /// LAWFire.AllowFire: only when aimed and fully zoomed in.
+    requires_aim: bool,
     /// When the last animation plays: BoomStickAltFire when the shot empties
     /// the gun (and more ammo is left), BoomStickFire when it is the very
     /// last ammo.
@@ -384,6 +392,8 @@ struct PelletFire {
     /// KickMomentum (Unreal, view axes) and ProjSpawnOffset.
     kick: Vec3,
     spawn_offset: Vec3,
+    /// A grenade or rocket instead of pellets.
+    explosive: Option<crate::projectile::ExplosiveStats>,
 }
 
 /// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
@@ -417,6 +427,8 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         last_aimed_anim: "none".into(),
         last_rate: None,
         last_rule: LastShot::Never,
+        total_ammo_only: false,
+        requires_aim: false,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -446,7 +458,12 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         _ => None,
     };
     let pellet_class = projectile_class.as_ref().filter(|p| {
-        defaults.is_a(fm_class, "KFShotgunFire") && (defaults.is_a(p, "ShotgunBullet") || defaults.is_a(p, "TrenchgunBullet"))
+        defaults.is_a(fm_class, "KFShotgunFire")
+            && (defaults.is_a(p, "ShotgunBullet")
+                || defaults.is_a(p, "TrenchgunBullet")
+                // Grenades and rockets (W6; the Husk gun's fireball is W7).
+                || defaults.is_a(p, "M79GrenadeProjectile")
+                || (defaults.is_a(p, "LAWProj") && !defaults.is_a(p, "HuskGunProjectile")))
     });
     mode.kind = if welds {
         FireKind::None
@@ -562,7 +579,45 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             Some((Value::Byte(b), _)) => b as u32,
             _ => d,
         };
+        let class_mult = |prop: &str| match pget(prop) {
+            Some((Value::Object(r), rp)) => set
+                .resolve(&rp, r)
+                .and_then(|dt| match defaults.get(&dt, "HeadShotDamageMult") {
+                    Some((Value::Float(m), _)) => Some(m),
+                    _ => None,
+                })
+                .unwrap_or(1.0),
+            _ => 1.0,
+        };
+        let damage_type = match pget("MyDamageType") {
+            Some((Value::Object(r), rp)) => set.resolve(&rp, r).map(|h| h.path()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let is_law = defaults.is_a(pc, "LAWProj");
+        let explosive = (defaults.is_a(pc, "M79GrenadeProjectile") || is_law).then(|| crate::projectile::ExplosiveStats {
+            speed: pfloat("Speed", 2000.0),
+            damage: pfloat("Damage", 0.0),
+            radius: pfloat("DamageRadius", 0.0),
+            momentum: pfloat("MomentumTransfer", 0.0),
+            impact_damage: pfloat("ImpactDamage", 0.0),
+            impact_headshot_mult: class_mult("ImpactDamageType"),
+            arm_dist: pfloat("ArmDistSquared", 0.0).sqrt(),
+            straight_time: (!is_law).then(|| pfloat("StraightFlightTime", 0.25)),
+            life_span: pfloat("LifeSpan", 10.0),
+            // ZombieFleshPound.TakeDamage: the frag and pipe bomb double,
+            // the other explosive types (all of these) count fully.
+            fleshpound_mult: if damage_type.ends_with("DamTypeFrag") || damage_type.ends_with("DamTypePipeBomb") { 2.0 } else { 1.0 },
+            // Explode: LAWProj spawns LawExplosion, the M79 family
+            // KFNadeLExplosion; ExplosionDecal RocketMarkDirt / KFScorchMark.
+            effect: if is_law { "KFMod.LawExplosion" } else { "KFMod.KFNadeLExplosion" },
+            decal: if is_law { crate::decals::DecalKind::RocketMark } else { crate::decals::DecalKind::NadeScorch },
+            trail: Some("ROEffects.PanzerfaustTrail"),
+        });
+        mode.total_ammo_only =
+            defaults.is_a(fm_class, "M79Fire") || defaults.is_a(fm_class, "M203Fire") || defaults.is_a(fm_class, "LAWFire");
+        mode.requires_aim = defaults.is_a(fm_class, "LAWFire");
         mode.pellets = Some(PelletFire {
+            explosive,
             stats: crate::projectile::ProjectileStats {
                 speed: pfloat("Speed", 3500.0),
                 damage: pfloat("Damage", 0.0),
@@ -1186,6 +1241,26 @@ fn load_weapon(
             TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)).then_some(AltToggle::FireMode)
         },
         wide_spread: false,
+        alt_ammo: {
+            let ammo_class_of = |c: Option<&ObjectHandle>| {
+                let c = c?;
+                match defaults.get(c, "AmmoClass") {
+                    Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
+                    _ => None,
+                }
+            };
+            let alt_class = mode_class(1);
+            match (ammo_class_of(primary_class.as_ref()), ammo_class_of(alt_class.as_ref())) {
+                (primary, Some(alt)) if primary.as_ref().is_none_or(|p| p.path() != alt.path()) => {
+                    let int = |p: &str| match defaults.get(&alt, p) {
+                        Some((Value::Int(i), _)) => i.max(0) as u32,
+                        _ => 0,
+                    };
+                    Some((int("InitialAmount"), int("MaxAmmo")))
+                }
+                _ => None,
+            }
+        },
         chop_slow_rate: if defaults.is_a(&class, "KFMeleeGun") { float("ChopSlowRate", 0.5) } else { 1.0 },
         boomstick_reload: defaults.is_a(&class, "BoomStick").then(|| float("ReloadCountDown", 2.5)),
         fx,
@@ -1655,8 +1730,17 @@ fn weapon_input(
             Some(pf) => pf.ammo_per_fire.max(1),
             None => u32::from(mode == 0),
         };
-        let allow_fire = (!reloading || (fm.fire_while_reloading && mag.is_some_and(|m| m >= 2)))
-            && mag.is_none_or(|m| m >= needs);
+        let total = w.defs[cur].ammo.map(|a| a.mag + a.spare);
+        let alt_pool = if mode == 1 { w.defs[cur].alt_ammo.map(|a| a.0) } else { None };
+        let aimed_in = w.aiming && w.zoom >= 1.0;
+        let allow_fire = if let Some(left) = alt_pool {
+            // M203Fire.AllowFire: AmmoAmount(1) >= AmmoPerFire.
+            left >= needs
+        } else if fm.total_ammo_only {
+            (!fm.requires_aim || aimed_in) && total.is_none_or(|t| t >= needs)
+        } else {
+            (!reloading || (fm.fire_while_reloading && mag.is_some_and(|m| m >= 2))) && mag.is_none_or(|m| m >= needs)
+        };
         if !w.firing[mode] {
             // StartFire. bWaitForRelease modes need a fresh click (a click
             // made while not ready is kept while the button stays down; not
@@ -1666,7 +1750,7 @@ fn weapon_input(
                 continue;
             }
             // KFWeapon.Fire: a click on an empty magazine asks for a reload.
-            if mode == 0 && pressed[mode] && mag == Some(0) && !reloading && w.fire_cooldown[0] <= 0.0 {
+            if mode == 0 && !fm.total_ammo_only && pressed[mode] && mag == Some(0) && !reloading && w.fire_cooldown[0] <= 0.0 {
                 runlog::kv("dry_fire", &format!("weapon={} auto_reload={}", w.defs[cur].item_name, w.defs[cur].can_dry_fire));
                 if w.defs[cur].can_dry_fire && allow_reload(&w) {
                     start_reload(&mut w, "dry_fire");
@@ -1705,10 +1789,20 @@ fn weapon_input(
         // BoomStick: bVeryLastShotAnim = AmmoAmount <= AmmoPerFire (before
         // the shot); the gun is emptied when the magazine reaches 0.
         let total_before = w.defs[cur].ammo.map_or(0, |a| a.mag + a.spare);
-        if needs > 0
-            && let Some(a) = w.defs[cur].ammo.as_mut()
-        {
-            a.mag -= needs.min(a.mag);
+        if needs > 0 {
+            if alt_pool.is_some() {
+                if let Some(a) = w.defs[cur].alt_ammo.as_mut() {
+                    a.0 -= needs.min(a.0);
+                }
+            } else if let Some(a) = w.defs[cur].ammo.as_mut() {
+                // Total-only fire takes from the spare rounds once the
+                // magazine is empty (my choice for the HUD; KF counts one total).
+                let from_mag = needs.min(a.mag);
+                a.mag -= from_mag;
+                if fm.total_ammo_only {
+                    a.spare -= (needs - from_mag).min(a.spare);
+                }
+            }
         }
         let emptied = w.defs[cur].ammo.is_some_and(|a| a.mag == 0);
         let very_last = total_before <= needs;
@@ -1800,7 +1894,8 @@ fn weapon_input(
                             dir,
                             stats: pf.stats,
                             weapon: item_name,
-                            tracer_start: tip,
+                            tracer_start: if pf.explosive.is_some() { None } else { tip },
+                            explosive: pf.explosive,
                         });
                     }
                     // AddVelocity(KickMomentum >> view rotation), not when falling.
@@ -1997,6 +2092,7 @@ fn weapon_input(
     }
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
+    ammo_display.alt_ammo = w.defs[w.current].alt_ammo.map(|a| a.0);
     ammo_display.fire_mode = match w.defs[w.current].toggles_on_alt {
         Some(AltToggle::FireMode) => Some(if w.defs[w.current].modes[0].wait_for_release { "SEMI" } else { "AUTO" }),
         Some(AltToggle::WideSpread) => Some(if w.defs[w.current].wide_spread { "WIDE" } else { "NARROW" }),

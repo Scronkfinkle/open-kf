@@ -157,6 +157,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Grenades and rockets (W6a, 2026-10-04): the M79, M32, the M4 203's
+  launcher (middle click, own grenade count) and the LAW (aim first) fire
+  grenades / rockets that fly, explode with KF's falloff and line-of-sight
+  rules, leave scorch marks, and are duds too close to you. The Fleshpound
+  takes KF's full damage from explosives. Checked by logged runs. Not
+  play-tested by you.
 - Melee (W5, 2026-10-04): a swing hits the zed you aim at and every
   other zed in its arc (less the further off-centre), doubles damage from
   behind, and slows you; the Chainsaw cuts continuously while held.
@@ -310,7 +316,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
   accuracy bonus. Alt fires other than melee, the rifle toggles and the shotguns
-  (medic darts, M203 grenade, flashlights) do nothing yet. Launchers, the
+  (medic darts, flashlights) do nothing yet. The frag, pipe bomb,
   crossbow, M99, flamethrower, husk gun, syringe, welder and ZED guns play
   their fire animation and use ammo but do nothing. The Trenchgun's fire
   damage is not done (W7). No DLC weapons. No trader.

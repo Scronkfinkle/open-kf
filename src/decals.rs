@@ -106,9 +106,12 @@ pub enum DecalKind {
     RocketMark,
     /// BulletHoleDirt (ROBulletHitEffect, default surface).
     BulletHole,
+    /// KFScorchMark (grenade explosions).
+    NadeScorch,
 }
 
-const DECAL_CLASSES: [(DecalKind, &str); 8] = [
+const DECAL_CLASSES: [(DecalKind, &str); 9] = [
+    (DecalKind::NadeScorch, "KFMod.KFScorchMark"),
     (DecalKind::BulletHole, "ROEffects.BulletHoleDirt"),
     (DecalKind::Scorch, "KFMod.FlameThrowerBurnMark"),
     (DecalKind::RocketMark, "ROEffects.RocketMarkDirt"),

@@ -171,7 +171,7 @@ fn load_model(
     }
 }
 
-fn axes_along(d: Vec3) -> Mat3 {
+pub(crate) fn axes_along(d: Vec3) -> Mat3 {
     let k = 65536.0 / std::f32::consts::TAU;
     coords::ue_rotation_matrix(ue_assets::properties::Rotator {
         pitch: (d.z.clamp(-1.0, 1.0).asin() * k) as i32,
