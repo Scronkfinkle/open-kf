@@ -23,6 +23,7 @@ mod walk;
 mod vomit;
 mod weapon;
 mod zed;
+mod zed_beam;
 
 use bevy::diagnostic::FrameCount;
 use bevy::prelude::*;
@@ -228,7 +229,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(scripted)

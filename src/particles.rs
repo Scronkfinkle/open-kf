@@ -31,7 +31,9 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 71] = [
+const EFFECT_CLASSES: [&str; 72] = [
+    // ZEDGunAltFire.ChargeEmitterClass.
+    "ROEffects.ChargeUp1stZEDGun",
     // ZED guns: bolt trails and impacts, the MKII's zap orb.
     "KFMod.ZEDProjectileTrail",
     "KFMod.ZEDProjectileImpact",

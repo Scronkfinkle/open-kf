@@ -141,6 +141,28 @@ pub struct SpawnPlayerProjectile {
     pub extra_speed: f32,
 }
 
+/// One frame of the ZED Gun's beam (ZEDGunAltFire.ModeTick), Unreal units.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct BeamZap {
+    pub start: Vec3,
+    pub dir: Vec3,
+    pub range: f32,
+    /// The frame time: SetZapped(dt) on the zed the beam touches.
+    pub dt: f32,
+    /// bDoHit (a FireRate tick): the splash zaps the zeds near the end.
+    pub do_hit: bool,
+    pub sphere_radius: f32,
+    pub sphere_amount: f32,
+}
+
+/// Where the beam is this frame, for drawing (Unreal units).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct BeamView {
+    pub active: bool,
+    pub start: Vec3,
+    pub end: Vec3,
+}
+
 /// A HealingProjectile's values (medic gun alt fire).
 #[derive(Clone, Copy, Debug)]
 pub struct DartStats {
@@ -381,6 +403,9 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SpawnPlayerProjectile>()
+            .add_message::<BeamZap>()
+            .init_resource::<BeamView>()
+            .add_systems(Update, beam_zap)
             .init_resource::<ProjectileModels>()
             .add_systems(PostStartup, load_models)
             .add_message::<BoltPickedUp>()
@@ -1146,6 +1171,58 @@ fn move_darts(
         });
         runlog::kv("dart_hit", &format!("id={} weapon={} hit={what} flight_unreal={:.0} healed=none", p.id, p.weapon, p.age * p.stats.speed));
         commands.entity(entity).despawn();
+    }
+}
+
+/// ZEDGunAltFire.ModeTick: trace TraceRange from the beam start; the zed
+/// it reaches first (before the level) gets SetZapped(dt); on a FireRate
+/// tick that hit something, every other living zed in sight within the
+/// splash radius of the end gets SetZapped(FireRate x 0.75).
+fn beam_zap(mut zaps: MessageReader<BeamZap>, spatial: SpatialQuery, mut zeds: Query<&mut Zed>, mut view: ResMut<BeamView>) {
+    view.active = false;
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    for m in zaps.read() {
+        let from = coords::pos(m.start.to_array());
+        let dir = coords::dir(m.dir.to_array()).normalize_or_zero();
+        let Ok(dir3) = Dir3::new(dir) else { continue };
+        let max = m.range * SCALE;
+        let world = spatial.cast_ray(from, dir3, max, true, &crate::collision::world_filter()).map(|h| h.distance);
+        let wall_t = world.unwrap_or(max);
+        let hit = zeds
+            .iter()
+            .filter(|z| z.health > 0.0)
+            .filter_map(|z| crate::combat::zed_hit(z, from, dir).filter(|&t| t <= wall_t).map(|t| (t, z.id)))
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let t = hit.map_or(wall_t, |h| h.0);
+        let end_b = from + dir * t;
+        if let Some((_, id)) = hit
+            && let Some(mut z) = zeds.iter_mut().find(|z| z.id == id)
+        {
+            z.set_zapped(m.dt);
+        }
+        let hit_something = hit.is_some() || world.is_some();
+        let mut splashed = 0;
+        if m.do_hit && hit_something && m.sphere_radius > 0.0 {
+            for mut z in zeds.iter_mut() {
+                let d = (z.centre - end_b).length() / SCALE;
+                if z.health > 0.0 && Some(z.id) != hit.map(|h| h.1) && d - z.radius <= m.sphere_radius && in_sight(&spatial, end_b, z.centre) {
+                    z.set_zapped(m.sphere_amount);
+                    splashed += 1;
+                }
+            }
+        }
+        if m.do_hit {
+            runlog::kv(
+                "beam_zap",
+                &format!(
+                    "hit={} distance_unreal={:.0} splash_radius={:.0} splashed={splashed}",
+                    hit.map_or(if world.is_some() { "level".to_string() } else { "nothing".to_string() }, |h| format!("zed={}", h.1)),
+                    t / SCALE,
+                    m.sphere_radius
+                ),
+            );
+        }
+        *view = BeamView { active: true, start: m.start, end: to_ue(end_b) / SCALE };
     }
 }
 

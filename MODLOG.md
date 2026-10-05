@@ -2557,3 +2557,27 @@ the zapped Scrake did 62.5 (x 1.25). Tests 57 + 21.
 **Still broken / not tested:** Not looked at (bolts, orb, impacts).
 Headshots and firing both modes at once not seen in a run. No sounds.
 **Next:** W9c, the ZED Gun (its zapping beam).
+
+## 2026-10-05 Weapons W9c: ZED Gun (stopped at working mechanics)
+
+**Changed:** `weapon.rs`: `BeamFire` / `BeamState` (hold, ammo per
+FireRate tick, recoil, Charge and ChargeDown animations, the charge glow;
+no per-frame retry log when a glow class is missing). `projectile.rs`:
+`BeamZap` message, `beam_zap` (trace, zap the zed touched, splash zap),
+`BeamView`. New `zed_beam.rs`: the beam drawn as a textured strip.
+`particles.rs`: ChargeUp1stZEDGun. DESIGN, README.
+**Why:** W9 of the weapons plan. You said the ZED guns are optional (not
+buyable normally), so I stopped at the mechanics.
+**Tested how:** `--give ZEDGun`: bolts at a Clot line, then a held beam;
+one screenshot mid-beam; `cargo test --release --workspace`; clippy.
+**Result:** Bolts 85 each. The beam zapped all three Clots of a line
+(the one it touched, then the others by the growing splash); ChargeDown
+on release; the beam texture loads.
+**Failures on the way:** the beam texture was not found at first (Skins
+is a packed array, and the skin is a FinalBlend, not a texture); the
+charge glow class was missing, which logged a retry every frame.
+**Still broken / not tested:** The screenshot shows the gun's sleeves
+plain white (KF fills that slot from the player's species) and its
+screen as scrolling lines; left as is. The beam strip itself not seen
+(the Clot was at the barrel in the shot). No sounds.
+**Next:** your call; the weapons plan (W1-W9) is done.

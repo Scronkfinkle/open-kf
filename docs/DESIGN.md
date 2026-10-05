@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W8, W9a and W9b implemented 2026-10-05)
+## Weapons (milestone 7, W1-W9 implemented 2026-10-05)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1962,8 +1962,8 @@ always the case for now; welding (WeldStrength, the screen showing
 doors. Before this the Welder played its fire animation and logged
 "not implemented".
 
-**W9 ZED guns**, in three parts: W9a zapping on zeds (done), W9b the ZED
-MKII, W9c the ZED Gun.
+**W9 ZED guns**, in three parts: W9a zapping on zeds, W9b the ZED MKII,
+W9c the ZED Gun (all done; the ZED guns are optional, see W9c).
 
 W9a (`zed.rs` set_zapped / zap_tick, `combat.rs` damage):
 - KFMonster.SetZapped(amount): already zapped: back to a full ZapDuration
@@ -2003,6 +2003,30 @@ W9b (the ZED MKII; `weapon.rs`, `projectile.rs` ExplosiveStats.zap):
 - Each projectile class's own trail, impact effect and burn mark
   (ExplosionEmitter, FlameTrailEmitterClass, ExplosionDecal), and the
   ZED_FX_Energy_Card model.
+
+W9c (the ZED Gun; `weapon.rs` BeamFire, `projectile.rs` beam_zap,
+`zed_beam.rs`). The ZED guns cannot be bought in normal KF play; you
+said they are optional, so W9c stops at working mechanics.
+- ZEDGunFire: bolts like the MKII's (Damage 85, every 0.2 s, 100-round
+  magazine).
+- ZEDGunAltFire (a beam while held): every FireRate (0.12 s) ModeDoFire
+  uses a round from the magazine, kicks the view (up to 100 up, no
+  movement term) and sets bDoHit; every frame (ModeTick) a TraceRange
+  (2500) trace from GetFirstPersonBeamFireStart (eye + ProjSpawnOffset)
+  zaps the zed it reaches by the frame time; on a bDoHit frame that hit
+  anything, every other zed in sight within 250 x ChargeUpTime /
+  MaxZedSphereChargeTime (3 s) of the end gets SetZapped(FireRate x
+  0.75). It starts with the Charge animation and the ChargeUp1stZEDGun
+  glow, and ends (release, empty magazine, reload) with ChargeDown.
+- The beam is drawn as a straight strip with ZEDBeamEffect's texture
+  (FinalBlend -> TexPanner -> Texture), additive, facing the camera. KF's
+  is an xEmitter beam that waves; the sparks and splash sphere are not
+  drawn. The strip width (12 units) is a guess.
+- Known problems, left as they are: the gun's sleeve slot (Skins[SleeveNum
+  2]) is empty in the mesh, and KF fills it from the player's species
+  (HandleSleeveSwapping), so the sleeves draw plain white; its screen (a
+  ScriptedTexture showing the threat display) draws as scrolling lines;
+  its laser threat indicator (WeaponTick) is not done.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

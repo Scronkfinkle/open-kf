@@ -329,6 +329,8 @@ struct FireMode {
     /// bModeExclusive: false lets the other mode fire at the same time
     /// (the ZED MKII).
     mode_exclusive: bool,
+    /// ZEDGunAltFire's zapping beam.
+    beam: Option<BeamFire>,
     /// HuskGunFire's charged release.
     charge: Option<ChargeFire>,
     /// The bullets' damage type burns (instant fire; W7).
@@ -426,6 +428,31 @@ struct PelletFire {
     /// alt fires and ZEDMKIIAltFire override it with ProjPerFire only.
     per_load: bool,
 }
+
+/// ZEDGunAltFire: a beam while held. Every FireRate (ModeDoFire) it uses a
+/// round and zaps the zeds near where it lands; every frame (ModeTick) the
+/// zed it touches is zapped by the frame time.
+#[derive(Clone, Debug)]
+struct BeamFire {
+    /// TraceRange; MaxZedSphereChargeTime (the splash grows to 250 units
+    /// over it); ProjSpawnOffset (GetFirstPersonBeamFireStart);
+    /// ChargeEmitterClass.
+    range: f32,
+    sphere_time: f32,
+    offset: Vec3,
+    effect: Option<String>,
+}
+
+/// A beam in progress: ChargeUpTime, UpTime, bDoHit.
+#[derive(Clone, Copy, Debug)]
+struct BeamState {
+    charge_up: f32,
+    up_time: f32,
+    do_hit: bool,
+}
+
+/// ZEDGunAltFire's splash: 250 x ChargeScale units.
+const BEAM_SPHERE_RADIUS: f32 = 250.0;
 
 /// Syringe / KFMedicGun healing charge: up to 500 (MaxAmmoCount), +10 every
 /// AmmoRegenRate seconds (Tick, whether held or not).
@@ -584,6 +611,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         charge: None,
         weld: false,
         mode_exclusive: true,
+        beam: None,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -701,6 +729,18 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     // KFHighROFFire's (loop FireLoopAnim while held, no PlayFiring).
     mode.weld = defaults.is_a(fm_class, "WeldFire");
     mode.mode_exclusive = !matches!(fget("bModeExclusive"), Some((Value::Bool(false), _)));
+    mode.beam = defaults.is_a(fm_class, "ZEDGunAltFire").then(|| BeamFire {
+        range: ffloat("TraceRange", 2500.0),
+        sphere_time: ffloat("MaxZedSphereChargeTime", 3.0),
+        offset: match fget("ProjSpawnOffset") {
+            Some((Value::Vector(v), _)) => Vec3::from_array(v),
+            _ => Vec3::new(25.0, 18.0, -14.5),
+        },
+        effect: match fget("ChargeEmitterClass") {
+            Some((Value::Object(r), rp)) => set.resolve(&rp, r).map(|h| h.path()),
+            _ => None,
+        },
+    });
     mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire") || mode.chainsaw || defaults.is_a(fm_class, "FlameBurstFire");
     mode.anim2 = fname("FireAnim2");
     mode.aimed_anim2 = fname("FireAimedAnim2");
@@ -1041,6 +1081,8 @@ struct Weapons {
     /// SyringeAltFire's InjectDelay timer: (seconds left, weapon index,
     /// mode), then the charge is used and the heal given.
     pending_inject: Option<(f32, usize, usize)>,
+    /// The ZED Gun's beam, while it is on.
+    beam: Option<BeamState>,
     /// SyringeFire.AttemptHeal's LastHealAttempt (the "no one to heal"
     /// message at most every HealAttemptDelay).
     last_heal_attempt: f32,
@@ -1263,6 +1305,7 @@ fn load_weapons(
         charge_hold: None,
         charge_fx: None,
         pending_inject: None,
+        beam: None,
         last_heal_attempt: -10.0,
         last_weld_fail: -10.0,
         quick_heal: QuickHeal::Off,
@@ -1909,7 +1952,7 @@ fn zoom_out(w: &mut Weapons, fast: bool, reason: &str) {
     runlog::kv("iron_sights", &format!("weapon={} aiming=false reason={reason}", w.defs[cur].class));
 }
 
-#[allow(clippy::too_many_arguments)] // Bevy system parameters
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
 fn weapon_input(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1929,11 +1972,12 @@ fn weapon_input(
     ),
     mut ammo_display: ResMut<crate::combat::AmmoDisplay>,
     mut recoil: ResMut<crate::firing::Recoil>,
-    (health, mut bolt_room, mut bolts_picked, mut heals): (
+    (health, mut bolt_room, mut bolts_picked, mut heals, mut beam_zaps): (
         Res<crate::combat::PlayerHealth>,
         ResMut<crate::projectile::BoltRoom>,
         MessageReader<crate::projectile::BoltPickedUp>,
         MessageWriter<crate::combat::GiveHealth>,
+        MessageWriter<crate::projectile::BeamZap>,
     ),
     mut scripted_held: Local<[bool; 2]>,
 ) {
@@ -2192,6 +2236,15 @@ fn weapon_input(
         let charge_release = if !held[mode] && mode == 0 { w.charge_hold.take() } else { None };
         // Weapon.StopFire on release: the fire end animation.
         if !held[mode] && charge_release.is_none() {
+            // ZEDGunAltFire: letting go ends the beam (StopFiring; the
+            // Timer then plays PlayFireEnd: ChargeDown).
+            if w.defs[cur].modes[mode].beam.is_some() && w.beam.take().is_some() {
+                w.firing[mode] = false;
+                play(&mut w, "ChargeDown", 1.0, false);
+                runlog::kv("beam_stop", &format!("weapon={} reason=released", w.defs[cur].item_name));
+                w.press_waiting[mode] = false;
+                continue;
+            }
             if w.firing[mode] {
                 w.firing[mode] = false;
                 if matches!(w.action, Action::Idle | Action::Reload) {
@@ -2235,6 +2288,73 @@ fn weapon_input(
         // KFDoorMover. Doors are not simulated, so there is never one: no
         // shot, no animation, only NoWeldTargetMessage (at most every
         // 0.5 s while held, FailTime). UnWeldFire fails silently.
+        if let Some(bf) = fm.beam.clone() {
+            // ZEDGunAltFire.AllowFire: not reloading, a round in the magazine.
+            let reloading = w.action == Action::Reload;
+            let mag_ok = !reloading && w.defs[cur].ammo.is_none_or(|a| a.mag >= 1);
+            if w.beam.is_none() {
+                let exclusive = fm.mode_exclusive || w.defs[cur].modes[alt].mode_exclusive;
+                let alt_busy = exclusive && (w.firing[alt] || w.fire_cooldown[alt] > 0.0);
+                if w.action != Action::Idle || alt_busy || w.fire_cooldown[mode] > 0.0 || !mag_ok {
+                    continue;
+                }
+                w.beam = Some(BeamState { charge_up: 0.0, up_time: 0.0, do_hit: false });
+                w.firing[mode] = true;
+                w.fire_cooldown[mode] = 0.0;
+            }
+            let dt = time.delta_secs();
+            let mut st = w.beam.expect("set above");
+            // ModeDoFire every FireRate: DoFireEffect sets bDoHit and UpTime.
+            if mag_ok && w.fire_cooldown[mode] <= 0.0 {
+                w.fire_cooldown[mode] += fm.rate;
+                st.do_hit = true;
+                st.up_time = fm.rate + 0.1;
+            }
+            // ModeTick.
+            if mag_ok && st.up_time > 0.0 {
+                st.up_time -= dt;
+                if st.charge_up == 0.0 {
+                    // PlayPreFire.
+                    play(&mut w, "Charge", 1.0, false);
+                    runlog::kv("beam_start", &format!("weapon={}", w.defs[cur].item_name));
+                }
+                st.charge_up += dt;
+                if st.do_hit {
+                    if let Some(a) = w.defs[cur].ammo.as_mut() {
+                        a.mag = a.mag.saturating_sub(1);
+                    }
+                    // ZEDGunAltFire.HandleRecoil: no movement term.
+                    let p = crate::firing::RecoilParams { right_only: false, velocity_scale: 0.0, ..fm.recoil };
+                    let r = [w.random(), w.random(), w.random()];
+                    let kick = crate::firing::recoil_kick(p, 0.0, health.health, 100.0, r);
+                    recoil.add(kick, fm.recoil.rate, now);
+                }
+                if let Ok((cam, _)) = main_cam.single() {
+                    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+                    let eye = to_ue(cam.translation) / coords::SCALE;
+                    let (x, y, z) = (to_ue(*cam.forward()), to_ue(*cam.right()), to_ue(*cam.up()));
+                    let scale = (st.charge_up / bf.sphere_time).min(1.0);
+                    beam_zaps.write(crate::projectile::BeamZap {
+                        start: eye + x * bf.offset.x + y * bf.offset.y + z * bf.offset.z,
+                        dir: x,
+                        range: bf.range,
+                        dt,
+                        do_hit: st.do_hit,
+                        sphere_radius: BEAM_SPHERE_RADIUS * scale,
+                        sphere_amount: fm.rate * 0.75,
+                    });
+                }
+                st.do_hit = false;
+                w.beam = Some(st);
+            } else {
+                // StopFiring, then the Timer: PlayFireEnd (ChargeDown), StopFire.
+                w.beam = None;
+                w.firing[mode] = false;
+                play(&mut w, "ChargeDown", 1.0, false);
+                runlog::kv("beam_stop", &format!("weapon={} reason=cannot_fire", w.defs[cur].item_name));
+            }
+            continue;
+        }
         if fm.weld {
             if mode == 0 && w.action == Action::Idle && now - w.last_weld_fail > 0.5 {
                 w.last_weld_fail = now;
@@ -3044,6 +3164,7 @@ fn weapon_fire_fx(
     library: Option<Res<crate::particles::EffectLibrary>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut effects: Query<(&mut crate::particles::ParticleEffect, &mut Visibility)>,
+    mut charge_fx_failed: Local<bool>,
 ) {
     let Some(mut w) = weapons else {
         return;
@@ -3075,9 +3196,14 @@ fn weapon_fire_fx(
     // on the 'tip' bone while charging. Its growth with the charge (Timer
     // changing emitter sizes) is not done.
     let tip = w.hand_frames.first().and_then(|h| h.0);
-    match (w.charge_hold.is_some(), w.charge_fx) {
+    match (w.charge_hold.is_some() || w.beam.is_some(), w.charge_fx) {
         (true, None) => {
-            let class = w.defs[current].modes[0].charge.as_ref().and_then(|c| c.effect.clone());
+            let modes = &w.defs[current].modes;
+            let class = modes[0]
+                .charge
+                .as_ref()
+                .and_then(|c| c.effect.clone())
+                .or_else(|| modes[1].beam.as_ref().and_then(|b| b.effect.clone()));
             if let (Some(class), Some(lib)) = (class, library.as_deref()) {
                 let options = crate::particles::SpawnOptions {
                     persistent: true,
@@ -3086,7 +3212,10 @@ fn weapon_fire_fx(
                 };
                 let (at, axes) = tip.unwrap_or((Vec3::ZERO, Mat3::IDENTITY));
                 w.charge_fx = crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, &class, at, axes, 11, options);
-                runlog::kv("charge_fx", &format!("class={class} spawned={}", w.charge_fx.is_some()));
+                if w.charge_fx.is_some() || !*charge_fx_failed {
+                    runlog::kv("charge_fx", &format!("class={class} spawned={}", w.charge_fx.is_some()));
+                }
+                *charge_fx_failed = w.charge_fx.is_none();
             }
         }
         (true, Some(e)) => {

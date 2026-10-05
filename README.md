@@ -159,6 +159,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- ZED Gun (W9c, 2026-10-05): bolts, and a held beam that zaps the zed
+  it touches and, growing over 3 s, the zeds around where it lands.
+  Checked by logged runs. Known problems: its sleeves draw white and its
+  screen is wrong (left as is; the ZED guns are optional). The beam is a
+  straight textured strip, not KF's wavy one; not looked at in use.
 - ZED MKII and zapping (W9a/b, 2026-10-05): energy bolts (50 damage, full
   auto); middle click fires an orb (15 rounds) that zaps every zed within
   300 units: half speed, more damage taken, no runs, rages, pounces or
