@@ -41,6 +41,32 @@ pub struct MeshActor {
     pub unlit: bool,
 }
 
+/// A placed Projector (KFBloodSplatter or plain): a texture projected onto
+/// the level. Own value, else class default.
+#[derive(Debug, Clone)]
+pub struct ProjectorInfo {
+    pub name: String,
+    pub class: String,
+    pub location: [f32; 3],
+    pub rotation: Rotator,
+    /// ProjTexture, a reference in the map package (None if not set there).
+    pub texture: Option<ObjectRef>,
+    pub draw_scale: f32,
+    pub draw_scale_3d: [f32; 3],
+    /// Degrees; 0 = orthographic.
+    pub fov: i32,
+    pub max_trace_distance: i32,
+    /// EProjectorBlending: 0 None, 1 Modulate, 2 AlphaBlend, 3 Add.
+    pub material_blending: u8,
+    pub frame_buffer_blending: u8,
+    pub gradient: bool,
+    pub project_bsp: bool,
+    pub project_static_mesh: bool,
+    pub project_terrain: bool,
+    /// 0 = no limit.
+    pub cull_distance: f32,
+}
+
 /// A KFGlassMover: a pane of breakable glass.
 #[derive(Debug, Clone)]
 pub struct GlassInfo {
@@ -144,6 +170,8 @@ pub struct LevelContents {
     pub path_nodes: Vec<[f32; 3]>,
     /// KFUseTriggers (only with class defaults).
     pub use_triggers: Vec<UseTriggerInfo>,
+    /// Placed Projectors (only with class defaults).
+    pub projectors: Vec<ProjectorInfo>,
 }
 
 fn vector(props: &PropertyList, pkg: &Package, name: &str, default: [f32; 3]) -> [f32; 3] {
@@ -314,6 +342,35 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                 directional_open: v.bool("bDirectionalOpen"),
                 message: v.string("Message"),
                 always_show_message: v.bool("bAlwaysShowMessage"),
+            });
+        }
+        if let Some((lp, d)) = defaults
+            && d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "Projector"))
+        {
+            let v = Effective { lp, d, export: i, props: &props };
+            out.projectors.push(ProjectorInfo {
+                name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                class: class.to_string(),
+                location: vector(&props, pkg, "Location", [0.0; 3]),
+                rotation: v.rotator("Rotation"),
+                texture: match props.get(pkg, "ProjTexture") {
+                    Some(Value::Object(r)) if *r != ObjectRef::Null => Some(*r),
+                    _ => None,
+                },
+                draw_scale: v.float("DrawScale", 1.0),
+                draw_scale_3d: match v.value("DrawScale3D") {
+                    Some((Value::Vector(s), _)) => s,
+                    _ => [1.0; 3],
+                },
+                fov: v.int("FOV", 0),
+                max_trace_distance: v.int("MaxTraceDistance", 1000),
+                material_blending: v.byte("MaterialBlendingOp", 0),
+                frame_buffer_blending: v.byte("FrameBufferBlendingOp", 1),
+                gradient: v.bool("bGradient"),
+                project_bsp: v.bool("bProjectBSP"),
+                project_static_mesh: v.bool("bProjectStaticMesh"),
+                project_terrain: v.bool("bProjectTerrain"),
+                cull_distance: v.float("CullDistance", 0.0),
             });
         }
         if class == "PathNode" {

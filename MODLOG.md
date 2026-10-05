@@ -2961,3 +2961,32 @@ or the grey-brown one (the orange came from a different layer being on
 top); cylinder StaticMeshActor111 is opaque/masked so not reordered; not
 checked in play by you.
 **Next:** you check the sky and the fires; then M6, map decals.
+
+## 2026-10-05 Map fixes M6: decals placed in maps
+
+**Changed:** `ue-assets/level.rs`: `ProjectorInfo`, read for every placed
+Projector (KFBloodSplatter included). `map.rs`: hands them to
+`decals.rs` (`MapProjectors`). `decals.rs`: the projection pulled out into
+`project()` (shared with the blood decals), now with a widening volume for
+FOV and a surface filter (BSP / meshes / terrain); `load_map_decals`
+resolves ProjTexture by blend (modulate, alpha blend, add);
+`spawn_map_decals` builds them once, with bGradient fade and CullDistance.
+Two unit tests. DESIGN (plan first), audit, README.
+**Why:** your report of missing decals on London; the audit's M6.
+**Tested how:** load logs on KF-WestLondon, KF-BioticsLab, KF-Hellride,
+KF-Bedlam; one screenshot on KF-WestLondon; tests, clippy.
+**Result:** KF-WestLondon built 71 of 72 (68 blood, 3 light);
+KF-BioticsLab 49 (35 light); KF-Hellride 145 of 149; KF-Bedlam 64 (26
+PB_None blood). No texture failed. Screenshot: blood splats on the road
+by the ambulance. Tests 96 pass; clippy 1 warning, the old one in
+`boss.rs`.
+**Failures on the way:** the screenshot camera ended up inside a vehicle;
+the road was visible through its window, so I left it.
+**Still broken / not tested:** empty ones (KF-WestLondon Projector2, a
+scorch on a mesh, z -1067; 4 KF-Hellride splats) probably sit on meshes
+without collision (our surfaces are collision triangles). Guesses: the
+wide FOV shape, PB_None drawn as modulate, linear gradient. Light
+patterns are added as-is (KF multiplies them by the surface texture).
+TexRotator projections (fans) do not turn. Not looked at by you.
+**Next:** your call: baked lighting, or back to the game loop (G3, D5,
+T1-T3).

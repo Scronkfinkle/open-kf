@@ -13,6 +13,8 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use ue_assets::class_defaults::ClassDefaults;
+use ue_assets::level::ProjectorInfo;
+use ue_assets::material::resolve;
 use ue_assets::package::ObjectRef;
 use ue_assets::package_set::{ObjectHandle, PackageSet};
 use ue_assets::properties::{Rotator, Value};
@@ -38,8 +40,17 @@ const LIFT: f32 = 0.4;
 pub struct DecalSurfaces {
     /// Triangles, Bevy space.
     triangles: Vec<[Vec3; 3]>,
+    /// Per triangle, the bit of its source (see `SURF_BSP`...).
+    kinds: Vec<u8>,
     grid: HashMap<IVec3, Vec<u32>>,
 }
+
+/// Surface sources, as bits: `DecalSurfaces::new` takes the soups in this
+/// order.
+pub const SURF_BSP: u8 = 1;
+pub const SURF_MESHES: u8 = 2;
+pub const SURF_TERRAIN: u8 = 4;
+pub const SURF_ALL: u8 = 7;
 
 fn cell(p: Vec3) -> IVec3 {
     (p / CELL).floor().as_ivec3()
@@ -48,7 +59,7 @@ fn cell(p: Vec3) -> IVec3 {
 impl DecalSurfaces {
     pub fn new(soups: &[&TriSoup]) -> Self {
         let mut s = DecalSurfaces::default();
-        for soup in soups {
+        for (k, soup) in soups.iter().enumerate() {
             for t in &soup.triangles {
                 let tri = t.map(|i| soup.vertices[i as usize]);
                 let id = s.triangles.len() as u32;
@@ -62,14 +73,16 @@ impl DecalSurfaces {
                     }
                 }
                 s.triangles.push(tri);
+                s.kinds.push(1 << k);
             }
         }
         runlog::kv("decal_surfaces", &format!("triangles={} cells={}", s.triangles.len(), s.grid.len()));
         s
     }
 
-    /// Triangles whose cells overlap the box `lo..hi` (Bevy space).
-    fn near(&self, lo: Vec3, hi: Vec3) -> Vec<[Vec3; 3]> {
+    /// Triangles whose cells overlap the box `lo..hi` (Bevy space), from
+    /// the sources in `mask`.
+    fn near(&self, lo: Vec3, hi: Vec3, mask: u8) -> Vec<[Vec3; 3]> {
         let (a, b) = (cell(lo), cell(hi));
         let mut ids: Vec<u32> = Vec::new();
         for x in a.x..=b.x {
@@ -83,7 +96,7 @@ impl DecalSurfaces {
         }
         ids.sort_unstable();
         ids.dedup();
-        ids.into_iter().map(|i| self.triangles[i as usize]).collect()
+        ids.into_iter().filter(|&i| self.kinds[i as usize] & mask != 0).map(|i| self.triangles[i as usize]).collect()
     }
 }
 
@@ -167,14 +180,40 @@ struct Decal {
     vertices: usize,
 }
 
+/// The map's placed Projectors, from the map loader.
+#[derive(Resource, Default)]
+pub struct MapProjectors(pub Vec<ProjectorInfo>);
+
+/// How a map decal is drawn (FrameBufferBlendingOp).
+#[derive(Clone)]
+enum MapDecalMaterial {
+    /// PB_Modulate (and PB_None, see DESIGN.md M6): 2x modulate.
+    Modulate(Handle<ModulateMaterial>),
+    /// PB_AlphaBlend / PB_Add.
+    Standard(Handle<StandardMaterial>, bool),
+}
+
+/// A map Projector with its material, waiting for the level surfaces.
+struct MapDecal {
+    info: ProjectorInfo,
+    material: MapDecalMaterial,
+    /// The texture's pixel size.
+    px: Vec2,
+}
+
+#[derive(Resource, Default)]
+struct PendingMapDecals(Vec<MapDecal>);
+
 pub struct DecalPlugin;
 
 impl Plugin for DecalPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SpawnDecal>()
             .init_resource::<DecalLibrary>()
-            .add_systems(PostStartup, load_decals)
-            .add_systems(Update, ragdoll_streaks)
+            .init_resource::<MapProjectors>()
+            .init_resource::<PendingMapDecals>()
+            .add_systems(PostStartup, (load_decals, load_map_decals))
+            .add_systems(Update, (ragdoll_streaks, spawn_map_decals))
             .add_systems(PostUpdate, (spawn_decals, fade_decals));
     }
 }
@@ -244,6 +283,139 @@ fn load_decals(
     }
 }
 
+/// Resolves each placed Projector's ProjTexture to a material.
+fn load_map_decals(
+    request: Res<MapRequest>,
+    projectors: Res<MapProjectors>,
+    mut pending: ResMut<PendingMapDecals>,
+    mut images: ResMut<Assets<Image>>,
+    mut modulate: ResMut<Assets<ModulateMaterial>>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
+) {
+    if projectors.0.is_empty() {
+        return;
+    }
+    let set = PackageSet::new(&request.install_root);
+    let path = request.install_root.join("Maps").join(format!("{}.rom", request.map));
+    let Ok(map) = set.load_path(&path) else { return };
+    let from = ObjectHandle { package: map, export: 0 };
+    // Per (texture, blend).
+    let mut cache: HashMap<(String, u8), Option<(MapDecalMaterial, Vec2)>> = HashMap::new();
+    for info in &projectors.0 {
+        let Some(rf) = info.texture else {
+            runlog::kv("map_decal", &format!("name={} skipped=\"no ProjTexture\"", info.name));
+            continue;
+        };
+        let fb = info.frame_buffer_blending;
+        let key = (from.package.pkg.object_path(rf), fb);
+        let loaded = cache
+            .entry(key)
+            .or_insert_with(|| {
+                let h = resolve(&set, &from, rf).texture?;
+                let mip = read_texture(&h.package.pkg, h.export).ok()?.mips.first().map(|m| Vec2::new(m.width as f32, m.height as f32))?;
+                let material = match fb {
+                    2 | 3 => {
+                        let add = fb == 3;
+                        let image = particles::decode(&h, add, false, &mut images)?;
+                        MapDecalMaterial::Standard(
+                            standard.add(StandardMaterial {
+                                base_color_texture: Some(image),
+                                unlit: true,
+                                alpha_mode: if add { AlphaMode::Add } else { AlphaMode::Blend },
+                                cull_mode: None,
+                                double_sided: true,
+                                ..default()
+                            }),
+                            add,
+                        )
+                    }
+                    _ => MapDecalMaterial::Modulate(modulate.add(ModulateMaterial {
+                        texture: particles::decode(&h, true, true, &mut images)?,
+                    })),
+                };
+                Some((material, mip))
+            })
+            .clone();
+        let Some((material, px)) = loaded else {
+            runlog::kv("map_decal", &format!("name={} skipped=\"texture not loaded\" texture={}", info.name, from.package.pkg.object_path(rf)));
+            continue;
+        };
+        pending.0.push(MapDecal { info: info.clone(), material, px });
+    }
+}
+
+/// Builds the map's decals once the level surfaces exist.
+fn spawn_map_decals(mut commands: Commands, mut pending: ResMut<PendingMapDecals>, surfaces: Option<Res<DecalSurfaces>>, mut meshes: ResMut<Assets<Mesh>>) {
+    let Some(surfaces) = surfaces else { return };
+    if pending.0.is_empty() {
+        return;
+    }
+    let (mut built, mut empty) = (0, 0);
+    let mut per_blend = [0usize; 4];
+    for d in std::mem::take(&mut pending.0) {
+        let i = &d.info;
+        let axes = coords::ue_rotation_matrix(i.rotation);
+        let scale = i.draw_scale;
+        let half = d.px * 0.5 * Vec2::new(scale * i.draw_scale_3d[1], scale * i.draw_scale_3d[2]).abs();
+        let origin = Vec3::from_array(i.location);
+        let surfaces_mask = [(i.project_bsp, SURF_BSP), (i.project_static_mesh, SURF_MESHES), (i.project_terrain, SURF_TERRAIN)]
+            .iter()
+            .filter(|(on, _)| *on)
+            .fold(0, |m, (_, b)| m | b);
+        let base = coords::pos(i.location);
+        let p = project(
+            &surfaces,
+            &Projection {
+                origin,
+                x: axes.col(0),
+                y: axes.col(1),
+                z: axes.col(2),
+                half,
+                depth: i.max_trace_distance as f32,
+                // FOV in degrees: the guess in DESIGN.md M6.
+                spread: (i.fov.max(0) as f32 * 0.5).to_radians().tan(),
+                mirror: if scale < 0.0 { -1.0 } else { 1.0 },
+                surfaces: surfaces_mask,
+            },
+            base,
+        );
+        if p.indices.is_empty() {
+            empty += 1;
+            runlog::kv("map_decal", &format!("name={} class={} empty=true at_unreal=({:.0}, {:.0}, {:.0})", i.name, i.class, origin.x, origin.y, origin.z));
+            continue;
+        }
+        built += 1;
+        per_blend[i.frame_buffer_blending.min(3) as usize] += 1;
+        // bGradient: fades out with depth (assumed linear).
+        let fade: Vec<f32> = p.depth.iter().map(|t| if i.gradient { 1.0 - t } else { 1.0 }).collect();
+        let colors: Vec<[f32; 4]> = match &d.material {
+            MapDecalMaterial::Standard(_, true) => fade.iter().map(|f| [*f, *f, *f, 1.0]).collect(),
+            _ => fade.iter().map(|f| [1.0, 1.0, 1.0, *f]).collect(),
+        };
+        let n = p.positions.len();
+        let mesh = meshes.add(
+            Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, p.positions)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n])
+                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, p.uvs)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+                .with_inserted_indices(Indices::U32(p.indices)),
+        );
+        let mut e = commands.spawn((Mesh3d(mesh), Transform::from_translation(base), bevy::light::NotShadowCaster, Name::new(i.name.clone())));
+        match d.material {
+            MapDecalMaterial::Modulate(m) => e.insert(MeshMaterial3d(m)),
+            MapDecalMaterial::Standard(m, _) => e.insert(MeshMaterial3d(m)),
+        };
+        if i.cull_distance > 0.0 {
+            e.insert(bevy::camera::visibility::VisibilityRange::abrupt(0.0, i.cull_distance * SCALE));
+        }
+    }
+    runlog::kv(
+        "map_decals",
+        &format!("built={built} empty={empty} modulate={} none={} alpha_blend={} add={}", per_blend[1], per_blend[0], per_blend[2], per_blend[3]),
+    );
+}
+
 fn find_class(set: &PackageSet, path: &str) -> Option<ObjectHandle> {
     let (pkg_name, class_name) = path.split_once('.')?;
     let lp = set.load(pkg_name)?;
@@ -275,6 +447,93 @@ fn clip(poly: &[Vec3], n: Vec3, d: f32) -> Vec<Vec3> {
         }
         if (da < 0.0) != (db < 0.0) {
             out.push(a + (b - a) * (da / (da - db)));
+        }
+    }
+    out
+}
+
+/// A projector's volume (Unreal units). X is the projection direction, Y
+/// the texture's U, Z its V. With `spread` 0 it is a box; otherwise each
+/// side widens by `spread` units per unit of depth (a frustum).
+struct Projection {
+    origin: Vec3,
+    x: Vec3,
+    y: Vec3,
+    z: Vec3,
+    /// Half the texture's size at the origin.
+    half: Vec2,
+    depth: f32,
+    spread: f32,
+    /// -1 mirrors the texture (a negative DrawScale).
+    mirror: f32,
+    surfaces: u8,
+}
+
+/// Projected geometry: positions relative to `base` (Bevy space), UVs,
+/// depth along the projection as 0..1, triangle indices.
+#[derive(Default)]
+struct Projected {
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    depth: Vec<f32>,
+    indices: Vec<u32>,
+    surfaces: usize,
+}
+
+/// The level triangles inside the projector's volume, clipped to it and
+/// textured by their position in it.
+fn project(surfaces: &DecalSurfaces, p: &Projection, base: Vec3) -> Projected {
+    let far = p.half + Vec2::splat(p.depth * p.spread);
+    let corners: Vec<Vec3> = [(0.0, p.half), (p.depth, far)]
+        .iter()
+        .flat_map(|&(dx, h)| [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sy, sz)| p.origin + p.x * dx + p.y * (sy * h.x) + p.z * (sz * h.y)))
+        .map(|c| coords::pos(c.to_array()))
+        .collect();
+    let (lo, hi) = corners.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), c| (lo.min(*c), hi.max(*c)));
+    let mut out = Projected::default();
+    for tri in surfaces.near(lo, hi, p.surfaces) {
+        // Into the projector's frame (Unreal units).
+        let local: Vec<Vec3> = tri
+            .iter()
+            .map(|c| {
+                let r = to_ue(*c) - p.origin;
+                Vec3::new(r.dot(p.x), r.dot(p.y), r.dot(p.z))
+            })
+            .collect();
+        // Skip surfaces seen edge-on (both sides accepted: collision
+        // winding is not reliable).
+        let n = (local[1] - local[0]).cross(local[2] - local[0]).normalize_or_zero();
+        if n.x.abs() < 0.1 {
+            continue;
+        }
+        let mut poly = local;
+        for (pn, d) in [
+            (Vec3::NEG_X, 0.0),
+            (Vec3::X, p.depth),
+            (Vec3::new(-p.spread, 1.0, 0.0), p.half.x),
+            (Vec3::new(-p.spread, -1.0, 0.0), p.half.x),
+            (Vec3::new(-p.spread, 0.0, 1.0), p.half.y),
+            (Vec3::new(-p.spread, 0.0, -1.0), p.half.y),
+        ] {
+            poly = clip(&poly, pn, d);
+            if poly.len() < 3 {
+                break;
+            }
+        }
+        if poly.len() < 3 {
+            continue;
+        }
+        out.surfaces += 1;
+        let first = out.positions.len() as u32;
+        for c in &poly {
+            let world = p.origin + p.x * (c.x - LIFT) + p.y * c.y + p.z * c.z;
+            out.positions.push((coords::pos(world.to_array()) - base).to_array());
+            let h = p.half + Vec2::splat(c.x * p.spread);
+            out.uvs.push([0.5 + c.y / (2.0 * h.x) * p.mirror, 0.5 - c.z / (2.0 * h.y)]);
+            out.depth.push((c.x / p.depth.max(1.0)).clamp(0.0, 1.0));
+        }
+        for k in 1..poly.len() as u32 - 1 {
+            out.indices.extend([first, first + k, first + k + 1]);
         }
     }
     out
@@ -350,57 +609,22 @@ fn spawn_decals(
         // SetLocation(Location - Vector(Rotation) * PushBack).
         let origin = at - x * class.push_back;
         let half = px * scale.abs() * 0.5;
-        // The box in Bevy space, for the triangle lookup.
-        let corners: Vec<Vec3> = [0.0, class.depth]
-            .iter()
-            .flat_map(|&dx| [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sy, sz)| origin + x * dx + y * (sy * half.x) + z * (sz * half.y)))
-            .map(|p| coords::pos(p.to_array()))
-            .collect();
-        let (lo, hi) = corners.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
-        let (mut positions, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new());
-        let mut tris_used = 0;
-        for tri in surfaces.near(lo, hi) {
-            // Into the projector's frame (Unreal units).
-            let local: Vec<Vec3> = tri.iter().map(|p| {
-                let r = to_ue(*p) - origin;
-                Vec3::new(r.dot(x), r.dot(y), r.dot(z))
-            }).collect();
-            // Skip surfaces seen edge-on (both sides accepted: collision
-            // winding is not reliable).
-            let n = (local[1] - local[0]).cross(local[2] - local[0]).normalize_or_zero();
-            if n.x.abs() < 0.1 {
-                continue;
-            }
-            let mut poly = local;
-            for (pn, d) in [
-                (Vec3::NEG_X, 0.0),
-                (Vec3::X, class.depth),
-                (Vec3::Y, half.x),
-                (Vec3::NEG_Y, half.x),
-                (Vec3::Z, half.y),
-                (Vec3::NEG_Z, half.y),
-            ] {
-                poly = clip(&poly, pn, d);
-                if poly.len() < 3 {
-                    break;
-                }
-            }
-            if poly.len() < 3 {
-                continue;
-            }
-            tris_used += 1;
-            let base = positions.len() as u32;
-            for p in &poly {
-                let world = origin + x * (p.x - LIFT) + y * p.y + z * p.z;
-                positions.push(coords::pos(world.to_array()).to_array());
-                let u = 0.5 + p.y / (2.0 * half.x) * scale.signum();
-                let v = 0.5 - p.z / (2.0 * half.y);
-                uvs.push([u, v]);
-            }
-            for k in 1..poly.len() as u32 - 1 {
-                indices.extend([base, base + k, base + k + 1]);
-            }
-        }
+        let projected = project(
+            &surfaces,
+            &Projection {
+                origin,
+                x,
+                y,
+                z,
+                half,
+                depth: class.depth,
+                spread: 0.0,
+                mirror: scale.signum(),
+                surfaces: SURF_ALL,
+            },
+            Vec3::ZERO,
+        );
+        let Projected { positions, uvs, indices, surfaces: tris_used, .. } = projected;
         runlog::kv(
             "decal_spawned",
             &format!(
@@ -535,5 +759,57 @@ fn fade_decals(mut commands: Commands, time: Res<Time>, mut decals: Query<(Entit
         if let Some(mut mesh) = meshes.get_mut(&d.mesh) {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32, 1.0, 1.0, alpha]; d.vertices]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2000 x 2000 floor at Unreal z = 0, as BSP.
+    fn floor() -> DecalSurfaces {
+        let c = |x: f32, y: f32| coords::pos([x, y, 0.0]);
+        let soup = TriSoup {
+            vertices: vec![c(-1000.0, -1000.0), c(1000.0, -1000.0), c(1000.0, 1000.0), c(-1000.0, 1000.0)],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        };
+        DecalSurfaces::new(&[&soup, &TriSoup::default(), &TriSoup::default()])
+    }
+
+    /// Width (Unreal units) of what lands on the floor from 100 up, looking down.
+    fn width(s: &DecalSurfaces, spread: f32, mask: u8) -> f32 {
+        let p = project(
+            s,
+            &Projection {
+                origin: Vec3::new(0.0, 0.0, 100.0),
+                x: Vec3::NEG_Z,
+                y: Vec3::Y,
+                z: Vec3::X,
+                half: Vec2::splat(50.0),
+                depth: 200.0,
+                spread,
+                mirror: 1.0,
+                surfaces: mask,
+            },
+            Vec3::ZERO,
+        );
+        let ys: Vec<f32> = p.positions.iter().map(|v| to_ue(Vec3::from_array(*v)).y).collect();
+        ys.iter().cloned().fold(f32::MIN, f32::max) - ys.iter().cloned().fold(f32::MAX, f32::min)
+    }
+
+    #[test]
+    fn box_keeps_size_and_frustum_widens() {
+        let s = floor();
+        assert!((width(&s, 0.0, SURF_ALL) - 100.0).abs() < 0.5);
+        // 45 degrees each side, 100 deep: 50 + 100 each side.
+        assert!((width(&s, 1.0, SURF_ALL) - 300.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn surface_mask_filters() {
+        let s = floor();
+        // Nothing lands: the floor is BSP.
+        assert_eq!(width(&s, 0.0, SURF_MESHES | SURF_TERRAIN), f32::MIN - f32::MAX);
+        assert!(width(&s, 0.0, SURF_BSP) > 0.0);
     }
 }

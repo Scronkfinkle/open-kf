@@ -163,7 +163,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   placed in maps now run (37 on KF-WestLondon, 42 on KF-Manor); the sky
   no longer changes colour as you turn (it is drawn unlit; KF's baked
   lighting is not read yet). Checked by logs and screenshots; the fires
-  not looked at closely.
+  not looked at closely. You: "good enough for now".
+- Map decals (M6, 2026-10-05): blood splats, scorch marks and light
+  patterns placed in maps are drawn (KF-WestLondon 71 of 72, KF-Hellride
+  145 of 149, KF-BioticsLab 49, KF-Bedlam 64). Checked by logs and one
+  screenshot of blood on the KF-WestLondon road; light patterns not looked
+  at.
 - Jump pads throw the player too (M4, 2026-10-05): checked on the
   KF-WestLondon fence pad, you land on its target.
 - Distance fog (M2, 2026-10-05): each zone's fog is drawn and, as in KF,
@@ -436,7 +441,9 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   map data (`Engine.BlackTexture`).
 - No baked lighting: everything is lit by one fixed sun plus ambient light, so
   maps look flatter and brighter than in the game (the sky is drawn unlit).
-- Decals placed in maps (blood splatters, scorch marks) are not drawn yet.
+- Map decals only land on solid surfaces (a mesh without collision gets
+  none), light patterns are not multiplied by the surface's texture, and
+  wide-angle projector shapes are a guess.
 - Animated or complex materials (panners, shaders, combiners) show their base
   texture only, without animation or blending tricks.
 - Broken doors never come back (no waves yet). Breakable windows and scripted

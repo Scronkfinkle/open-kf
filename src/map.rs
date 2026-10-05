@@ -460,6 +460,7 @@ fn load_map(
     let class_defaults = ClassDefaults::new(&set);
     let contents = read_level_with(&lp, &class_defaults);
     door_setup.triggers = contents.use_triggers.clone();
+    commands.insert_resource(crate::decals::MapProjectors(contents.projectors.clone()));
     log_map_features(&lp.pkg);
     commands.insert_resource(crate::pain::load(&lp, &class_defaults));
     if game_options.mode == crate::game::GameMode::Waves {

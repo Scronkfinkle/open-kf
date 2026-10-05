@@ -2394,7 +2394,7 @@ action `kill_near_zeds` (zeds within 500 of the player die).
 Not in this milestone: pickups lying in the map (SetupPickups), dropped
 weapons, perks, multiplayer, voice lines and sounds.
 
-## Map fixes (milestone 10, planned 2026-10-05; M1-M5 implemented)
+## Map fixes (milestone 10, planned 2026-10-05; M1-M6 implemented)
 
 Goal: the map features the audit (`docs/map-audit.md`) found missing that
 change what zeds and the player do, so map gaps stop looking like AI
@@ -2475,9 +2475,47 @@ errors. You asked for these before the rest of the game loop.
   `sky_layer_order`). Assumption: KF drew them back to front the same
   way; not checked against the game. Baked lighting itself (StaticMeshInstance vertex
   colours, BSP light maps) is a later rendering task.
-- **M6, decals placed in maps (planned).** Projector actors (blood
-  splatters, scorch marks, KF-WestLondon 68 + 4) with their own
-  ProjTexture, DrawScale, FOV, MaxTraceDistance.
+- **M6, decals placed in maps (implemented 2026-10-05).** Projector actors: 1176
+  KFBloodSplatter (blood) and 322 plain Projector (light patterns, writing,
+  leaves) over the 35 maps; KF-WestLondon 68 + 4. All are static
+  (bStatic; KFBloodSplatter abandons its projector at start), so each is
+  built once at load with the blood decals' projection (`decals.rs`: level
+  triangles clipped to the projector's volume, textured by position in it).
+  What a Projector sets, and what we do with it:
+  - Location, Rotation (X = projection direction, Y = texture U, Z = V),
+    ProjTexture (resolved like map materials: shaders, combiners -> their
+    texture).
+  - Size: the texture's pixel size x DrawScale x DrawScale3D (Y, Z); depth
+    MaxTraceDistance (default 1000).
+  - FOV (degrees). 0 or 1 (most of them): a box. Larger (light patterns
+    20-90): a frustum. **Guess** (the engine's projector code is native and
+    not in the SDK): the texture is its normal size at Location and the
+    volume widens by FOV/2 each side with distance.
+  - FrameBufferBlendingOp: Modulate (default; blood) -> our 2x modulate
+    decal material; Add (light patterns) -> additive; AlphaBlend ->
+    alpha blend. PB_None (67 KFBloodSplatters on a few maps, on the same
+    grey-background opaque textures) -> treated as Modulate. **Guess**:
+    drawn opaque they would be grey squares, which no mapper would ship.
+  - MaterialBlendingOp Modulate (light patterns: the light is multiplied by
+    the surface's own texture): not simulated, the light pattern is added
+    as-is (brighter on dark surfaces than KF).
+  - bGradient (most light patterns): fades to nothing with depth.
+    **Assumed** linear over MaxTraceDistance (KF uses a GRADIENT_Fade
+    texture).
+  - bProjectBSP / bProjectStaticMesh / bProjectTerrain: which surfaces.
+    Our surfaces are collision triangles, so static meshes with simplified
+    collision show the decal on their collision shape (may float or clip).
+  - bProjectOnBackfaces: not checked (collision winding is unreliable);
+    both sides take the decal, edge-on surfaces do not.
+  - CullDistance: drawn only within it (Bevy VisibilityRange).
+  Log: `map_decals` (built, empty, per blend) and one `map_decal` line
+  per projector that lands on nothing or has no texture. Code:
+  `decals::project` (shared with the blood decals), `load_map_decals`,
+  `spawn_map_decals`; `level::ProjectorInfo`. The projected UVs are
+  interpolated straight across each triangle, so a wide frustum hitting
+  a surface at a slant is slightly warped (KF divides per pixel).
+  Test: KF-WestLondon load log; screenshot of a blood splat; you look at
+  KF-Hospital or another light-pattern map.
 - Later (needs an event system): plain movers, lifts, scripted triggers.
 
 ## Later milestones (rough order, to be planned in detail when reached)

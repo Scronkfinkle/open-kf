@@ -31,6 +31,7 @@ inside static meshes.
 | LavaVolume (pain volumes), ZoneInfo.KillZ | 13 / 42 | 1-2 burn a second; falling below KillZ kills | M3 |
 
 | Emitter (placed) | 34 / 988 | fires, smoke, ambient effects | M5: loaded from the map and running |
+| Projector, KFBloodSplatter | 22 / 322, 29 / 1176 | placed decals: blood, scorch marks, light patterns | M6: built at load; only on solid surfaces |
 
 ## Not simulated, by how much it matters
 
@@ -41,10 +42,6 @@ inside static meshes.
 | KFTraderDoor, ShopVolume, WeaponLocker | 34 maps | trader rooms open between waves | not simulated | trader milestone (T2) |
 
 **Medium**
-
-| Class | Maps / count | In KF | Ours | Effect |
-| --- | --- | --- | --- | --- |
-| Projector, KFBloodSplatter | 22 / 322, 29 / 1176 | placed decals: blood, scorch marks, light patterns | not drawn | M6 |
 
 | Class | Maps / count | In KF | Ours | Effect |
 | --- | --- | --- | --- | --- |
