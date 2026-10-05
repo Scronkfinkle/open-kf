@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W7 and W8a implemented 2026-10-04)
+## Weapons (milestone 7, W1-W7, W8a and W8b implemented 2026-10-05)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1934,6 +1934,23 @@ GiveHealth / add_health):
   every 0.2 s; FireRate + 0.5 s after the injection, back to the last
   weapon. With the Syringe already in hand it injects at once.
 - Not done: the HUD's on-screen messages (only logged), sounds.
+
+W8b (`projectile.rs` PlayerDart, `weapon.rs` medic HealCharge):
+- KFMedicGun (MP7M, MP5M, M7A3M, KrissM) keeps HealAmmoCharge like the
+  Syringe: 500 at most, +10 every AmmoRegenRate (0.3 s; MP5M and KrissM
+  0.2 s). HUD: [DARTS %].
+- Alt fire (MP7MAltFire / M7A3MAltFire, KFShotgunFire): AllowFire: not
+  reloading, HealAmmoCharge >= AmmoPerFire (250), so two darts from full.
+  DoFireEffect spawns ProjPerFire (1) darts, not ProjPerFire x Load as the
+  shotgun rule does. Recoil up to 1500 up.
+- HealingProjectile: Speed 10000, straight (its native ballistics for the
+  first 0.1 s not reproduced), LifeSpan 10. It heals only a player it
+  touches (HealBoostAmount: MP7M 20, MP5M / M7A3M 30, KrissM 40); a zed
+  or the level makes it Explode: a ROBulletHitEffect, no damage (its
+  HurtRadius is empty). Alone, darts only fly and burst. The MP7_Dart
+  model is drawn.
+- Not done: the alt fire's own muzzle flash (MuzzleFlash1stKar; the
+  primary's flash plays), sounds.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

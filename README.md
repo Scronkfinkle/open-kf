@@ -159,6 +159,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Medic gun darts (W8b, 2026-10-05): middle click on the MP7M, MP5M,
+  M7A3M or KrissM fires a healing dart (250 of a 500 charge that
+  refills); with no teammates they only fly and burst, and never hurt
+  zeds, as in KF. Checked by a logged run (MP7M). Not play-tested by you.
 - Syringe and healing (W8a, 2026-10-04): middle click with the Syringe
   (or Q from any weapon) heals you 50, paid out at 10 health a second
   (less if it would go over 100; each hit you take cuts what is still to

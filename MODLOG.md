@@ -2481,3 +2481,25 @@ the 9mm still in hand. It now waits for the Syringe.
 **Still broken / not tested:** No on-screen message text (logged only).
 No sounds. Not looked at by eye.
 **Next:** W8b, medic gun darts.
+
+## 2026-10-05 Weapons W8b: medic gun darts
+
+**Changed:** `projectile.rs`: `DartStats`, `PlayerDart`, `move_darts`
+(straight flight, bullet-hit effect on a zed or wall), dart models.
+`weapon.rs`: medic guns get a `HealCharge` (not the Syringe's fire
+modes) feeding the alt fire; HealingProjectile counts as a working
+projectile; one dart per shot. `combat.rs`: HUD [DARTS %]. DESIGN,
+README.
+**Why:** W8 of the weapons plan.
+**Tested how:** `--give MP7MMedicGun`: three alt fires at a Clot, a
+primary shot, an alt fire 10 s later; `cargo test --release
+--workspace`; clippy.
+**Result:** Two darts (250 each) burst on the Clot with no damage; the
+third was refused; after the charge refilled (250 in 7.5 s) the next
+dart fired. Tests 55 + 21.
+**Failure on the way:** the first run fired 250 darts per click (the
+shotgun rule ProjPerFire x Load, with Load = the 250 charge).
+**Still broken / not tested:** The MP5M, M7A3M and KrissM not run (same
+classes and code path). The alt fire uses the primary's muzzle flash.
+Not looked at by eye.
+**Next:** W8c, Welder animations.

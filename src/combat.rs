@@ -141,6 +141,8 @@ pub struct AmmoDisplay {
     pub frags: Option<u32>,
     /// The Syringe's charge, percent (KF's charge bar).
     pub syringe: Option<u32>,
+    /// A medic gun's dart charge, percent.
+    pub heal: Option<u32>,
 }
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
@@ -245,7 +247,8 @@ fn update_hud(
     };
     let rounds = ammo.ammo.map_or(String::new(), |(mag, spare)| format!(" {mag} / {spare}"));
     let mode = ammo.fire_mode.map_or(String::new(), |m| format!(" [{m}]"))
-        + &ammo.alt_ammo.map_or(String::new(), |n| format!(" [GRENADES {n}]"));
+        + &ammo.alt_ammo.map_or(String::new(), |n| format!(" [GRENADES {n}]"))
+        + &ammo.heal.map_or(String::new(), |p| format!(" [DARTS {p}%]"));
     let frags = ammo.frags.map_or(String::new(), |n| format!("    FRAGS {n}"))
         + &ammo.syringe.map_or(String::new(), |p| format!("    SYRINGE {p}%"));
     let ammo = format!("    {}{rounds}{mode}{frags}", ammo.weapon.to_uppercase());

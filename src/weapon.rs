@@ -415,6 +415,8 @@ struct PelletFire {
     thrown: Option<crate::projectile::ThrownStats>,
     /// Flamethrower flames (FlameTendril) instead.
     flame: Option<crate::projectile::FlameStats>,
+    /// Medic darts (HealingProjectile) instead.
+    dart: Option<crate::projectile::DartStats>,
 }
 
 /// Syringe / KFMedicGun healing charge: up to 500 (MaxAmmoCount), +10 every
@@ -431,6 +433,9 @@ struct HealCharge {
     /// SyringeAltFire).
     cost: [u32; 2],
     inject_delay: [f32; 2],
+    /// The Syringe (its own fire modes); otherwise a KFMedicGun, whose
+    /// charge feeds the alt fire's darts (HealAmmoCharge).
+    syringe: bool,
 }
 
 /// Syringe / KFMedicGun MaxAmmoCount.
@@ -606,6 +611,8 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
                 // Grenades, rockets and the Husk Gun's fireball (a LAWProj).
                 || defaults.is_a(p, "M79GrenadeProjectile")
                 || defaults.is_a(p, "LAWProj")
+                // Medic darts (W8b).
+                || defaults.is_a(p, "HealingProjectile")
                 || defaults.is_a(p, "CrossbowArrow")
                 || defaults.is_a(p, "M99Bullet"))
     });
@@ -856,7 +863,14 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             radius: pfloat("DamageRadius", 150.0),
             life_span: pfloat("LifeSpan", 5.0),
         });
+        let dart = defaults.is_a(pc, "HealingProjectile").then(|| crate::projectile::DartStats {
+            class: projectile_path,
+            speed: pfloat("Speed", 10000.0),
+            life_span: pfloat("LifeSpan", 10.0),
+            heal: pfloat("HealBoostAmount", 20.0),
+        });
         mode.pellets = Some(PelletFire {
+            dart,
             flame,
             thrown,
             explosive,
@@ -1526,7 +1540,8 @@ fn load_weapon(
         wide_spread: false,
         gone: false,
         toss: name("TossAnim").map(|a| (a.to_ascii_lowercase(), float("TossTime", 0.366), float("TossSpawnTime", 0.2))),
-        heal_charge: defaults.is_a(&class, "Syringe").then(|| {
+        heal_charge: (defaults.is_a(&class, "Syringe") || defaults.is_a(&class, "KFMedicGun")).then(|| {
+            let syringe = defaults.is_a(&class, "Syringe");
             let mode_float = |i: u32, p: &str, d: f32| match mode_class(i).and_then(|c| defaults.get(&c, p)) {
                 Some((Value::Float(f), _)) => f,
                 Some((Value::Int(n), _)) => n as f32,
@@ -1536,8 +1551,10 @@ fn load_weapon(
                 charge: HEAL_CHARGE_MAX,
                 regen_rate: float("AmmoRegenRate", 0.3),
                 next_regen: 0.0,
-                // Syringe.PostBeginPlay: NumPlayers == 1.
-                boost: 50.0,
+                // Syringe.PostBeginPlay: 50 with one player; medic guns:
+                // HealBoostAmount (their darts' own value is what heals).
+                boost: if syringe { 50.0 } else { float("HealBoostAmount", 20.0) },
+                syringe,
                 cost: [mode_float(0, "AmmoPerFire", 250.0) as u32, mode_float(1, "AmmoPerFire", 500.0) as u32],
                 inject_delay: [mode_float(0, "InjectDelay", 0.36), mode_float(1, "InjectDelay", 0.1)],
             }
@@ -1964,7 +1981,7 @@ fn weapon_input(
     // KFPawn.QuickHeal (Q): hurt, a Syringe charged to 95% or more: bring
     // it out (or, if it is in hand, inject now).
     let mut force_alt = false;
-    let syringe = w.defs.iter().position(|d| d.heal_charge.is_some());
+    let syringe = w.defs.iter().position(|d| d.heal_charge.is_some_and(|h| h.syringe));
     if keys.just_pressed(KeyCode::KeyQ) || scripted("quickheal") {
         let charge = syringe.and_then(|i| w.defs[i].heal_charge).map_or(0, |h| h.charge);
         if health.health >= crate::combat::PLAYER_HEALTH_MAX {
@@ -2189,7 +2206,7 @@ fn weapon_input(
             continue;
         }
         let fm = w.defs[cur].modes[mode].clone();
-        if let Some(h) = w.defs[cur].heal_charge {
+        if let Some(h) = w.defs[cur].heal_charge.filter(|h| h.syringe) {
             syringe_fire(&mut w, mode, pressed[mode], h, health.health, now);
             continue;
         }
@@ -2215,9 +2232,15 @@ fn weapon_input(
             None => u32::from(mode == 0),
         };
         let total = w.defs[cur].ammo.map(|a| a.mag + a.spare);
-        let alt_pool = if mode == 1 { w.defs[cur].alt_ammo.map(|a| a.0) } else { None };
+        // The alt fire's own pool: the M4 203's grenades, or a medic gun's
+        // HealAmmoCharge.
+        let medic_charge = w.defs[cur].heal_charge.filter(|h| !h.syringe);
+        let alt_pool = if mode == 1 { w.defs[cur].alt_ammo.map(|a| a.0).or(medic_charge.map(|h| h.charge)) } else { None };
         let aimed_in = w.aiming && w.zoom >= 1.0;
-        let allow_fire = if let Some(left) = alt_pool {
+        let allow_fire = if let (Some(left), Some(_)) = (alt_pool, medic_charge) {
+            // MP7MAltFire.AllowFire: not while reloading; HealAmmoCharge >= AmmoPerFire.
+            !reloading && left >= needs
+        } else if let Some(left) = alt_pool {
             // M203Fire.AllowFire: AmmoAmount(1) >= AmmoPerFire.
             left >= needs
         } else if fm.total_ammo_only {
@@ -2300,7 +2323,9 @@ fn weapon_input(
         };
         if needs > 0 {
             if alt_pool.is_some() {
-                if let Some(a) = w.defs[cur].alt_ammo.as_mut() {
+                if let Some(h) = w.defs[cur].heal_charge.as_mut().filter(|h| !h.syringe) {
+                    h.charge -= needs.min(h.charge);
+                } else if let Some(a) = w.defs[cur].alt_ammo.as_mut() {
                     a.0 -= needs.min(a.0);
                 }
             } else if let Some(a) = w.defs[cur].ammo.as_mut() {
@@ -2405,7 +2430,9 @@ fn weapon_input(
                     }
                     // KSGFire: wide spread x 2.05.
                     let spread = if w.defs[cur].wide_spread { pf.spread * 2.05 } else { pf.spread };
-                    let count = (pf.per_fire * pf.ammo_per_fire.max(1)).max(1);
+                    // KFShotgunFire: ProjPerFire x Load; MP7MAltFire /
+                    // M7A3MAltFire: ProjPerFire only (Load is the 250 charge).
+                    let count = if pf.dart.is_some() { pf.per_fire.max(1) } else { (pf.per_fire * pf.ammo_per_fire.max(1)).max(1) };
                     let tip = w.hand_frames.get(hand).and_then(|h| h.0).map(|t| t.0);
                     for _ in 0..count {
                         // SS_Random: X >> R, R = Spread x (FRand() - 0.5) each.
@@ -2421,10 +2448,15 @@ fn weapon_input(
                             dir,
                             stats: pf.stats,
                             weapon: item_name,
-                            tracer_start: if pf.explosive.is_some() || pf.thrown.is_some() || pf.flame.is_some() { None } else { tip },
+                            tracer_start: if pf.explosive.is_some() || pf.thrown.is_some() || pf.flame.is_some() || pf.dart.is_some() {
+                                None
+                            } else {
+                                tip
+                            },
                             explosive: pf.explosive,
                             thrown: pf.thrown,
                             flame: pf.flame,
+                            dart: pf.dart,
                             extra_speed: 0.0,
                         });
                     }
@@ -2587,6 +2619,7 @@ fn weapon_input(
                     explosive: pf.explosive,
                     thrown: pf.thrown,
                     flame: pf.flame,
+                    dart: pf.dart,
                     extra_speed: 0.0,
                 });
             }
@@ -2670,6 +2703,7 @@ fn weapon_input(
                                     explosive: None,
                                     thrown: Some(t),
                                     flame: None,
+                                    dart: None,
                                     extra_speed: pawn_speed,
                                 });
                             }
@@ -2741,7 +2775,8 @@ fn weapon_input(
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
     ammo_display.alt_ammo = w.defs[w.current].alt_ammo.map(|a| a.0);
-    ammo_display.syringe = w.defs.iter().find_map(|d| d.heal_charge).map(|h| h.charge * 100 / HEAL_CHARGE_MAX);
+    ammo_display.syringe = w.defs.iter().find_map(|d| d.heal_charge.filter(|h| h.syringe)).map(|h| h.charge * 100 / HEAL_CHARGE_MAX);
+    ammo_display.heal = w.defs[w.current].heal_charge.filter(|h| !h.syringe).map(|h| h.charge * 100 / HEAL_CHARGE_MAX);
     // CrossbowArrow pickups: room for one more bolt?
     if let Some(d) = w.defs.iter().find(|d| d.class.eq_ignore_ascii_case("KFMod.Crossbow")) {
         bolt_room.0 = d.ammo.is_some_and(|a| a.mag + a.spare < a.max_total);

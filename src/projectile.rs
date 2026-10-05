@@ -132,8 +132,36 @@ pub struct SpawnPlayerProjectile {
     pub thrown: Option<ThrownStats>,
     /// A Flamethrower flame instead (`stats` gives only its damage type).
     pub flame: Option<FlameStats>,
+    /// A medic dart instead.
+    pub dart: Option<DartStats>,
     /// Added to the velocity (FragFire: the player's forward speed).
     pub extra_speed: f32,
+}
+
+/// A HealingProjectile's values (medic gun alt fire).
+#[derive(Clone, Copy, Debug)]
+pub struct DartStats {
+    /// The class (for its model, KF_pickups2_Trip.MP7_Dart).
+    pub class: &'static str,
+    pub speed: f32,
+    pub life_span: f32,
+    /// HealBoostAmount: what it gives a teammate it touches (none here).
+    pub heal: f32,
+}
+
+/// A dart in flight. HealingProjectile flies straight at Speed (its
+/// native "true ballistics" for the first 0.1 s are not reproduced;
+/// after them it is a plain PHYS_Projectile). It heals only a player it
+/// touches; a zed or the level makes it Explode: a ROBulletHitEffect and
+/// nothing else (its HurtRadius is empty), so it never hurts zeds.
+#[derive(Component)]
+struct PlayerDart {
+    pos: Vec3,
+    vel: Vec3,
+    stats: DartStats,
+    weapon: &'static str,
+    age: f32,
+    id: u32,
 }
 
 /// A FlameTendril's values (the Flamethrower).
@@ -215,7 +243,11 @@ struct PlayerProjectile {
 /// StaticMeshRef): grenades, the LAW rocket, the frag, the pipe bomb and
 /// nails. Pellets and the M99 bullet are tiny and fast (their tracers show
 /// them); the Crossbow bolt is a skeletal mesh (not drawn yet).
-const MODEL_CLASSES: [&str; 10] = [
+const MODEL_CLASSES: [&str; 14] = [
+    "KFMod.MP7MHealinglProjectile",
+    "KFMod.MP5MHealinglProjectile",
+    "KFMod.M7A3MHealinglProjectile",
+    "KFMod.KrissMHealingProjectile",
     "KFMod.HuskGunProjectile",
     "KFMod.HuskGunProjectile_Weak",
     "KFMod.HuskGunProjectile_Strong",
@@ -307,9 +339,10 @@ struct BodyScale(f32);
 /// velocity (at rest: as it was).
 #[allow(clippy::type_complexity)] // Bevy system parameters
 fn sync_bodies(
-    mut pellets: Query<(&PlayerProjectile, &BodyScale, &mut Transform), (Without<PlayerExplosive>, Without<PlayerThrown>)>,
-    mut explosives: Query<(&PlayerExplosive, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerThrown>)>,
-    mut thrown: Query<(&PlayerThrown, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerExplosive>)>,
+    mut pellets: Query<(&PlayerProjectile, &BodyScale, &mut Transform), (Without<PlayerExplosive>, Without<PlayerThrown>, Without<PlayerDart>)>,
+    mut darts: Query<(&PlayerDart, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerExplosive>, Without<PlayerThrown>)>,
+    mut explosives: Query<(&PlayerExplosive, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerThrown>, Without<PlayerDart>)>,
+    mut thrown: Query<(&PlayerThrown, &BodyScale, &mut Transform), (Without<PlayerProjectile>, Without<PlayerExplosive>, Without<PlayerDart>)>,
 ) {
     let update = |t: &mut Transform, pos: Vec3, vel: Vec3, scale: f32| {
         if vel.length_squared() > 1.0 {
@@ -322,6 +355,9 @@ fn sync_bodies(
         update(&mut t, p.pos, p.vel, s.0);
     }
     for (p, s, mut t) in &mut explosives {
+        update(&mut t, p.pos, p.vel, s.0);
+    }
+    for (p, s, mut t) in &mut darts {
         update(&mut t, p.pos, p.vel, s.0);
     }
     for (p, s, mut t) in &mut thrown {
@@ -344,7 +380,7 @@ impl Plugin for ProjectilePlugin {
             .add_message::<BoltPickedUp>()
             .init_resource::<BoltRoom>()
             .add_systems(Update, pick_up_bolts)
-            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown, move_flames, kill_effects_after, sync_bodies).chain());
+            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown, move_flames, move_darts, kill_effects_after, sync_bodies).chain());
     }
 }
 
@@ -398,6 +434,15 @@ fn spawn_projectiles(
                 "thrown_spawned",
                 &format!("id={} weapon={} speed={:.0} damage={} radius={}", *next_id, s.weapon, t.speed + s.extra_speed, t.damage, t.radius),
             );
+            continue;
+        }
+        if let Some(d) = s.dart {
+            let dir = s.dir.normalize_or_zero();
+            let e = commands
+                .spawn(PlayerDart { pos: origin, vel: dir * d.speed, stats: d, weapon: s.weapon, age: 0.0, id: *next_id })
+                .id();
+            attach_model(&mut commands, &models, e, d.class, origin, dir);
+            runlog::kv("dart_fired", &format!("id={} weapon={} speed={} heal={}", *next_id, s.weapon, d.speed, d.heal));
             continue;
         }
         if let Some(fl) = s.flame {
@@ -1037,6 +1082,64 @@ fn flame_burst(
         }
     }
     (zeds_hit, self_damage)
+}
+
+/// Medic darts in flight: straight; a zed or the level ends them with the
+/// bullet-hit effect.
+fn move_darts(
+    mut commands: Commands,
+    time: Res<Time>,
+    spatial: SpatialQuery,
+    mut darts: Query<(Entity, &mut PlayerDart)>,
+    zeds: Query<&Zed>,
+    mut bullet_fx: MessageWriter<crate::bullet_fx::BulletFx>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    for (entity, mut p) in &mut darts {
+        p.age += dt;
+        if p.age >= p.stats.life_span {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let step = p.vel * dt;
+        let len = step.length();
+        let dir_ue = step / len.max(1e-6);
+        let from = coords::pos(p.pos.to_array());
+        let dir = coords::dir(dir_ue.to_array()).normalize_or_zero();
+        let Ok(dir3) = Dir3::new(dir) else { continue };
+        let world = spatial.cast_ray(from, dir3, len * SCALE, true, &crate::collision::world_filter());
+        let world_t = world.map_or(len * SCALE, |h| h.distance);
+        let zed = zeds
+            .iter()
+            .filter(|z| z.health > 0.0)
+            .filter_map(|z| crate::combat::zed_hit(z, from, dir).filter(|&t| t <= world_t).map(|t| (t, z.id)))
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let (t, normal, what) = match (zed, world) {
+            (Some((t, id)), _) => (t, -dir_ue, format!("zed={id}")),
+            (None, Some(h)) => {
+                let n = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
+                (h.distance, to_ue(n).normalize_or_zero(), "level".to_string())
+            }
+            (None, None) => {
+                p.pos += step;
+                continue;
+            }
+        };
+        let at = p.pos + dir_ue * (t / SCALE);
+        // Explode: ROBulletHitEffect at the spot, facing back along the dart.
+        bullet_fx.write(crate::bullet_fx::BulletFx {
+            shooter: crate::bullet_fx::Shooter::Player,
+            start: None,
+            hit: at + 2.0 * normal,
+            into: -normal,
+            impact: true,
+            tracer_speed: p.stats.speed,
+            min_distance: 0.0,
+        });
+        runlog::kv("dart_hit", &format!("id={} weapon={} hit={what} flight_unreal={:.0} healed=none", p.id, p.weapon, p.age * p.stats.speed));
+        commands.entity(entity).despawn();
+    }
 }
 
 /// Kills effects whose time is up (FuelFlame's Timer).
