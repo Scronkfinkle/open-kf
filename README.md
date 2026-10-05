@@ -232,6 +232,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   health a throw off a shut door (two doors in range hurt), one grenade
   broke a door welded to about 170, an M79 burst on a door did nothing.
   Not play-tested by you.
+- Doors come back at each wave end (D5, 2026-10-05): every broken door
+  reappears and is solid again, swinging shut; doors the map starts
+  welded are welded again; every door's health is refilled (welds on
+  unbroken doors are kept). As in KF, a door broken while open comes back
+  shut but cannot be welded until you open and close it once. Checked by
+  unit tests and a logged run on KF-Aperture (18 doors broken by a test
+  action, all 18 back at the wave end, its 2 start-welded doors welded
+  again). Not looked at on screen; not play-tested by you.
 - Ranged door attacks (D3b, 2026-10-05): Bloats, Husks, Sirens and the
   Patriarch attack a welded door they see on their path from where they
   stand: puke or burn (18 a shot), scream (5 a pulse) or a rocket (63 on

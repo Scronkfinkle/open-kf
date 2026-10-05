@@ -3318,3 +3318,36 @@ as a fraction (e.g. 10.81) where KF passes an int; god mode still
 lowers healthToGive and starts burns, where KFHumanPawn.TakeDamage
 returns first.
 **Next:** D5, doors respawn at wave end.
+
+## 2026-10-05 D5: doors come back at the wave end
+
+**Changed:** `door.rs`: `RespawnDoors` message and `respawn_doors`
+system; `Doors::respawn_door` (KFDoorMover.RespawnDoor with Mover.Reset
+in TriggerToggle: shown, collision back, DoClose, the 0.001 s snap to
+bShouldBeOpen's end, bStartSealed re-welded, Health = MaxWeld on every
+door); `Door::should_be_open` (bShouldBeOpen, set when an open or close
+is skipped on a sealed or hidden door); `door_layers` (collision layers,
+shared with the spawn); test action `break_doors`. `game.rs`:
+`do_wave_end` sends `RespawnDoors`. 5 unit tests. DESIGN.md D5 plan;
+README; handoff.
+**Why:** D5, next in the handoff's order.
+**Tested how:** read KFGameType.DoWaveEnd, KFDoorMover (RespawnDoor,
+GoBang, DoOpen/DoClose/DoOpenToKey/DoCloseToFirst), Mover (Reset,
+SetResetStatus, DoClose, TriggerToggle). Found the maps with bStartSealed
+doors (`kfpkg props` over all maps: KF-Aperture 2, KF-IceCave 14,
+KFO-FrightYard 24, KF-Steamland / KFO-Steamland 3, KFO-Transit 1).
+Logged run on KF-Aperture, waves, Short, `--god`: `break_doors` during
+wave 1, `kill_zeds` to its end.
+**Result:** 18 doors broken (`door_broken`), at the wave end
+`doors_respawn broken_back=18 health_reset=81`; each `door_respawned`
+key 0, closed, and KFDoorMover30 / 31 `sealed=true weld=120000` (their
+StartSealedWeldPrc of the 120000 MaxWeld), the rest unwelded. Unit tests:
+a door broken open glides shut over MoveTime and stays not-bClosed (the
+welder refuses it), unbroken doors keep their weld and heal, an open
+asked while hidden snaps open on respawn. Tests 114 pass; clippy clean.
+**Still broken / not tested:** not looked at on screen (door visible
+again, solid to the player and zeds): only the logs. The door-broken-open
+quirk is only unit-tested. The 63 TriggerControl doors on KF-Aperture
+are not simulated (as before), so `break_doors` skips them (no trigger).
+Not played by you.
+**Next:** T2b, the trader trail.

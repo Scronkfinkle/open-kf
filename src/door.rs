@@ -91,6 +91,9 @@ pub struct Door {
     path_node: Option<usize>,
     /// Broken (GoBang): bDoorIsDead.
     pub dead: bool,
+    /// bShouldBeOpen: what an open or close asked for while the door was
+    /// sealed or hidden (and so did not move). RespawnDoor uses it.
+    should_be_open: bool,
 }
 
 pub struct Trigger {
@@ -126,8 +129,9 @@ impl Plugin for DoorPlugin {
             .add_message::<WeldHit>()
             .add_message::<ZedDoorHit>()
             .add_message::<DoorBlast>()
+            .add_message::<RespawnDoors>()
             .add_systems(PostStartup, spawn_doors)
-            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, move_doors, door_path_costs).chain());
+            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, respawn_doors, move_doors, door_path_costs).chain());
     }
 }
 
@@ -200,6 +204,7 @@ impl Door {
             zed_hitting: false,
             path_node: None,
             dead: false,
+            should_be_open: false,
             info,
             root,
             collider,
@@ -308,6 +313,8 @@ impl Door {
         if !(self.sealed || self.hidden) {
             let back = if to_first { 0 } else { self.key_num.saturating_sub(1) };
             self.interpolate_to(back, self.info.move_time);
+        } else {
+            self.should_be_open = false;
         }
         self.phase = Phase::Closing;
         self.log("close", by);
@@ -335,6 +342,8 @@ impl Door {
                     }
                     if !(self.sealed || self.hidden) {
                         self.interpolate_to(to_key.unwrap_or(1), self.info.move_time);
+                    } else {
+                        self.should_be_open = true;
                     }
                     self.phase = Phase::Opening { delay: 0.0, to_key, started: true };
                 } else if !self.interpolating {
@@ -353,6 +362,16 @@ impl Door {
     }
 }
 
+/// A door's collision layers when it blocks (at the start, and when
+/// RespawnDoor turns collision back on).
+fn door_layers(info: &DoorInfo) -> CollisionLayers {
+    let mut layers = LayerMask::from(GameLayer::Door);
+    if info.blocks_traces {
+        layers |= GameLayer::DoorTraces;
+    }
+    CollisionLayers::new(layers, LayerMask::ALL)
+}
+
 fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: ResMut<Doors>) {
     let spawns = std::mem::take(&mut setup.doors);
     let mut colliders = 0usize;
@@ -361,15 +380,11 @@ fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: 
         let i = if trader { doors.trader.len() } else { doors.doors.len() };
         let collider = (!s.collision.triangles.is_empty()).then(|| {
             colliders += 1;
-            let mut layers = LayerMask::from(GameLayer::Door);
-            if s.info.blocks_traces {
-                layers |= GameLayer::DoorTraces;
-            }
             let (pos, rot) = key_pose(&s.info, s.info.key_num as usize);
             let mut e = commands.spawn((
                 RigidBody::Kinematic,
                 Collider::trimesh(s.collision.vertices, s.collision.triangles),
-                CollisionLayers::new(layers, LayerMask::ALL),
+                door_layers(&s.info),
                 Transform::from_translation(coords::pos(pos)).with_rotation(rotation_of(rot)),
                 Name::new(s.info.name.clone()),
             ));
@@ -996,7 +1011,16 @@ fn zed_door_hits(
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
     mut seed: Local<u32>,
+    (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
 ) {
+    // Test action "break_doors": every door with a trigger goes bang.
+    if script.0.iter().any(|(f, a)| *f == frames.0 && a == "break_doors") {
+        for i in 0..doors.doors.len() {
+            if doors.doors[i].trigger.is_some() {
+                go_bang(&mut doors, i, "test", &mut commands, library.as_deref(), &mut meshes, &mut visibility, &mut seed);
+            }
+        }
+    }
     // (door, damage, zed, frag, what) for every door hurt this frame.
     let mut damage: Vec<(usize, f32, Option<usize>, bool, String)> = Vec::new();
     for h in hits.read() {
@@ -1053,6 +1077,91 @@ fn zed_door_hits(
             go_bang(&mut doors, j, &by, &mut commands, library.as_deref(), &mut meshes, &mut visibility, &mut seed);
         }
     }
+}
+
+/// KFGameType.DoWaveEnd: every KFDoorMover runs RespawnDoor.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct RespawnDoors;
+
+impl Doors {
+    /// KFDoorMover.RespawnDoor for door `i`; true if it was broken and has
+    /// come back. Showing it and its collision is left to the caller.
+    fn respawn_door(&mut self, i: usize) -> bool {
+        let was_dead = self.doors[i].dead;
+        if was_dead {
+            let d = &mut self.doors[i];
+            d.hidden = false;
+            d.dead = false;
+            // Reset() in TriggerToggle: Mover.Reset's DoClose (KFDoorMover:
+            // skipped while sealed or hidden; neither is true here) and
+            // GotoState(InitialState, ''), which stops the latent code. The
+            // TriggerToggle part (instant close if bOpening or bDelaying)
+            // never runs: DoClose has just cleared both. bClosed is only set
+            // by the state code, so it is left as it was: a door broken
+            // while open comes back shut but not bClosed, and cannot be
+            // welded until it is opened and shut again (KF quirk, copied).
+            if d.sealed || d.hidden {
+                d.should_be_open = false;
+            } else {
+                d.interpolate_to(d.key_num.saturating_sub(1), d.info.move_time);
+            }
+            d.phase = Phase::Idle;
+            let last = d.info.num_keys.saturating_sub(1);
+            if d.should_be_open {
+                if d.key_num != last {
+                    d.interpolate_to(last, 0.001);
+                }
+            } else if d.key_num != 0 {
+                d.interpolate_to(0, 0.001);
+            }
+            if d.info.start_sealed {
+                d.sealed = true;
+                let amount = d.max_weld * d.info.start_sealed_weld_prc / 100.0;
+                if let Some(t) = d.trigger {
+                    self.triggers[t].weld_strength = 0.0;
+                    self.add_weld(t, amount, false);
+                }
+            }
+        }
+        // Every door, broken or not: Health = MaxWeld.
+        let d = &mut self.doors[i];
+        d.health = d.max_weld;
+        was_dead
+    }
+}
+
+/// DoWaveEnd's door respawn: broken doors come back (shown, solid).
+fn respawn_doors(
+    mut requests: MessageReader<RespawnDoors>,
+    mut doors: ResMut<Doors>,
+    mut commands: Commands,
+    mut visibility: Query<&mut Visibility>,
+) {
+    if requests.read().count() == 0 {
+        return;
+    }
+    let mut back = 0;
+    for i in 0..doors.doors.len() {
+        if !doors.respawn_door(i) {
+            continue;
+        }
+        back += 1;
+        let d = &doors.doors[i];
+        if let Some(c) = d.collider {
+            commands.entity(c).insert(door_layers(&d.info));
+        }
+        if let Ok(mut v) = visibility.get_mut(d.root) {
+            *v = Visibility::Inherited;
+        }
+        runlog::kv(
+            "door_respawned",
+            &format!(
+                "door={} key={} moving_to_key={} closed={} sealed={} weld={:.0} should_be_open={}",
+                d.info.name, d.prev_key_num, d.key_num, d.closed, d.sealed, d.weld, d.should_be_open
+            ),
+        );
+    }
+    runlog::kv("doors_respawn", &format!("broken_back={back} health_reset={}", doors.doors.len()));
 }
 
 /// KFDoorMover.PostBeginPlay finds its DoorPathNode: the first navigation
@@ -1336,5 +1445,80 @@ mod tests {
         doors.welder_damage(0, 10.0, false);
         let (broken, _) = doors.player_damage(0, 60.0, true);
         assert_eq!(broken, vec![0]);
+    }
+
+    /// What GoBang leaves behind (the drawing and collision are not here).
+    fn break_door(doors: &mut Doors, i: usize) {
+        let d = &mut doors.doors[i];
+        d.hidden = true;
+        d.dead = true;
+        d.sealed = false;
+    }
+
+    #[test]
+    fn respawn_brings_a_door_broken_shut_back_shut() {
+        let mut doors = test_doors(400.0);
+        doors.doors[0].health = 120.0;
+        break_door(&mut doors, 0);
+        assert!(doors.respawn_door(0));
+        let d = &doors.doors[0];
+        assert!(!d.hidden && !d.dead && d.closed && !d.sealed);
+        assert_eq!((d.key_num, d.health), (0, 400.0));
+        // Not broken: nothing but Health.
+        assert!(!doors.respawn_door(0));
+    }
+
+    #[test]
+    fn door_broken_open_glides_shut_but_is_not_closed() {
+        let mut doors = test_doors(400.0);
+        doors.doors[0].trigger("test");
+        run(&mut doors.doors[0], 1.1);
+        assert_eq!((doors.doors[0].key_num, doors.doors[0].closed), (1, false));
+        break_door(&mut doors, 0);
+        doors.respawn_door(0);
+        // DoClose: back to key 0 over MoveTime (1 s), not at once.
+        run(&mut doors.doors[0], 0.5);
+        assert!((doors.doors[0].rot[1] - 8192.0).abs() < 200.0, "yaw {}", doors.doors[0].rot[1]);
+        run(&mut doors.doors[0], 0.6);
+        assert_eq!(doors.doors[0].rot[1], 0.0);
+        // KF quirk: bClosed is still false, so the welder does nothing.
+        assert!(!doors.doors[0].closed);
+        assert_eq!(doors.welder_damage(0, 10.0, false), "nothing reason=not_closed");
+    }
+
+    #[test]
+    fn start_sealed_door_comes_back_welded() {
+        let mut doors = test_doors(400.0);
+        doors.doors[0].info.start_sealed = true;
+        doors.doors[0].info.start_sealed_weld_prc = 50.0;
+        break_door(&mut doors, 0);
+        doors.respawn_door(0);
+        let d = &doors.doors[0];
+        assert!(d.sealed);
+        assert_eq!((d.weld, doors.triggers[0].weld_strength), (200.0, 200.0));
+    }
+
+    #[test]
+    fn unbroken_door_keeps_its_weld_and_heals() {
+        let mut doors = test_doors(400.0);
+        doors.add_weld(0, 150.0, false);
+        doors.doors[0].health = 10.0;
+        assert!(!doors.respawn_door(0));
+        assert_eq!((doors.doors[0].weld, doors.doors[0].health), (150.0, 400.0));
+    }
+
+    #[test]
+    fn opened_while_hidden_comes_back_open_at_once() {
+        let mut doors = test_doors(400.0);
+        break_door(&mut doors, 0);
+        // An open that reaches a hidden door does not move it but sets
+        // bShouldBeOpen.
+        doors.doors[0].trigger("test");
+        run(&mut doors.doors[0], 0.1);
+        assert_eq!(doors.doors[0].rot[1], 0.0);
+        assert!(doors.doors[0].should_be_open);
+        doors.respawn_door(0);
+        run(&mut doors.doors[0], 0.02);
+        assert_eq!((doors.doors[0].key_num, doors.doors[0].rot[1]), (1, 16384.0));
     }
 }

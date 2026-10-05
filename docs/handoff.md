@@ -17,8 +17,7 @@ history is in `MODLOG.md`; the plans and rules are in `docs/DESIGN.md`
 ## What to do next (your order: waves -> trader -> door respawns)
 
 1. ~~T3b, armour~~ (done on the new machine, 2026-10-05; see MODLOG).
-2. **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back,
-   shut (or open if it was), bStartSealed doors re-welded.
+2. ~~D5, doors respawn at wave end~~ (done on the new machine, 2026-10-05).
 3. **T2b, the trail.** RedWhisp / TraderPathEffect along the path every
    TraderPathInterval, the HUD 3D arrow.
 4. **G3b, the grand entrance** (deferred until the trader core is in):

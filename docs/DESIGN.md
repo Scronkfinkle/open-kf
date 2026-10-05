@@ -2333,8 +2333,34 @@ KFGameLength=0) is Short.
   view switches to him in third person while he plays Entrance, and
   BossBattleSong ("KF_Abandon") starts; back to the player when the
   animation ends. Also the death view on him. Later.
-- **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
-  (or open if it was), bStartSealed doors re-welded.
+- **D5, doors respawn at wave end (done 2026-10-05).** KFDoorMover.RespawnDoor: back, shut
+  (or open if it was), bStartSealed doors re-welded. Plan (from
+  KFGameType.DoWaveEnd, KFDoorMover.RespawnDoor / DoOpen / DoClose /
+  DoOpenToKey / DoCloseToFirst, Mover.Reset and TriggerToggle.Reset):
+  - When: DoWaveEnd (also after the boss wave), every KFDoorMover
+    (KFTraderDoor is a plain Mover: not included). `game.rs` sends a
+    `RespawnDoors` message from `do_wave_end`; `door.rs` handles it.
+  - Every door: Health = MaxWeld (a damaged but unbroken door is healed;
+    its weld is left as it is).
+  - A broken door (bDoorIsDead) only: shown again, collision back,
+    no longer dead; then Reset(): Mover.Reset runs DoClose (one key back
+    over MoveTime, KeyFrameReached carries it down to key 0) and leaves
+    the state's latent code stopped. bClosed is not touched (only the
+    state code sets it), so a door broken while open comes back closed
+    but not bClosed and cannot be welded until opened and shut again
+    (KF quirk, copied). Then, if bShouldBeOpen, InterpolateTo(last key,
+    0.001); else if KeyNum != 0, InterpolateTo(0, 0.001). Then
+    bStartSealed doors: bSealed, trigger weld 0, AddWeld(MaxWeld x
+    StartSealedWeldPrc / 100).
+  - bShouldBeOpen (new `Door::should_be_open`): set true by DoOpen /
+    DoOpenToKey and false by DoClose / DoCloseToFirst only when they are
+    skipped because the door is sealed or hidden. Our use and touch code
+    (like KFUseTrigger) does not trigger sealed or hidden doors, so in
+    practice it stays false and doors come back shut.
+  - Logs `door_respawned` (door, key, closed, sealed, weld) and
+    `doors_respawn` (count broken, count healed).
+  - Test action `break_doors` (every door with a trigger goes bang) to
+    check without waiting for zeds.
 - **T1, dosh (done 2026-10-05).** Starting cash, kill rewards, team pot, death penalty, HUD.
   From KFGameType (ScoreKill, ScoreKillAssists, RewardSurvivingPlayers,
   the StartingCash table) for GameDifficulty 2 (KillingFloor.ini):

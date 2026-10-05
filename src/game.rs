@@ -465,7 +465,7 @@ pub fn wave_timer(
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
     (player, mut doors, mut kill_stuck, player_zone): (PlayerQuery, ResMut<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
-    mut boss_died: MessageWriter<BossDied>,
+    (mut boss_died, mut respawn_doors): (MessageWriter<BossDied>, MessageWriter<crate::door::RespawnDoors>),
     mut shops: ResMut<crate::trader::Shops>,
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
@@ -573,7 +573,7 @@ pub fn wave_timer(
                 // Everyone spawned and all dead (or he never found a
                 // volume in 60 s: the wave ends without him).
                 if num_monsters <= 0 {
-                    do_wave_end(g);
+                    do_wave_end(g, &mut respawn_doors);
                 }
             } else {
                 add_boss(g, data, &ctx, &mut spawns);
@@ -593,7 +593,7 @@ pub fn wave_timer(
                     runlog::kv("zed_cleanup", &format!("id={} unseen_seconds={:.0} left={num_monsters}", z.id, z.unseen_for(now).min(9999.0)));
                 }
                 if num_monsters <= 0 {
-                    do_wave_end(g);
+                    do_wave_end(g, &mut respawn_doors);
                 }
             } else if now > g.next_monster_time && num_monsters + g.next_squad.len() as i32 <= g.max_monsters {
                 add_squad(g, data, num_monsters, &ctx, &mut spawns);
@@ -962,9 +962,9 @@ fn add_boss_buddy_squad(g: &mut WaveGame, data: &mut GameData, ctx: &SpawnCtx, s
 }
 
 /// DoWaveEnd: WaveTimeElapsed reset only after the first wave, the
-/// countdown to TimeBetweenWaves, WaveNum + 1. Door respawns (D5) and the
-/// team's dosh (T1) come later.
-fn do_wave_end(g: &mut WaveGame) {
+/// countdown to TimeBetweenWaves, WaveNum + 1, every door's RespawnDoor
+/// (door.rs). The team's dosh is paid in dosh.rs.
+fn do_wave_end(g: &mut WaveGame, respawn: &mut MessageWriter<crate::door::RespawnDoors>) {
     if g.wave_num < 1 {
         g.wave_time_elapsed = 0.0;
     }
@@ -974,6 +974,7 @@ fn do_wave_end(g: &mut WaveGame) {
     g.wave_num += 1;
     // RewardSurvivingPlayers (dosh.rs).
     g.waves_ended += 1;
+    respawn.write(crate::door::RespawnDoors);
 }
 
 #[cfg(test)]
