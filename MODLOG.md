@@ -2538,3 +2538,22 @@ zapped, the lost run speed after a zap, test action `zap_zeds`.
 blocked specials (Siren, Crawler, Fleshpound, Scrake, Patriarch) are
 coded from the scripts but not run.
 **Next:** W9b, the ZED MKII.
+
+## 2026-10-05 Weapons W9b: ZED MKII
+
+**Changed:** `weapon.rs`: ZED bolts and the zap orb read as explosives
+with their own effects; bolts deal Damage on touch with no blast; one
+projectile per shot for alt fires that override DoFireEffect
+(`per_load`); `bModeExclusive`; ZED fires refuse during reloads.
+`projectile.rs`: `ExplosiveStats.zap`, `blast` zaps (or does nothing for
+radius 0), ZED models. `particles.rs`: ZED trails and impacts. DESIGN,
+README.
+**Why:** W9 of the weapons plan.
+**Tested how:** `--give ZEDMKIIWeapon`: bursts and an alt fire at a
+Scrake; alt fire then bolts; `cargo test --release --workspace`; clippy.
+**Result:** Bolts every 0.125 s, 50 each; the orb (15 rounds, mag 24 ->
+9) zapped the Scrake (1.5 >= 1.25) for 4 s, next threshold 2.5; bolts on
+the zapped Scrake did 62.5 (x 1.25). Tests 57 + 21.
+**Still broken / not tested:** Not looked at (bolts, orb, impacts).
+Headshots and firing both modes at once not seen in a run. No sounds.
+**Next:** W9c, the ZED Gun (its zapping beam).

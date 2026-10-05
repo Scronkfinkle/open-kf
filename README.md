@@ -159,6 +159,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- ZED MKII and zapping (W9a/b, 2026-10-05): energy bolts (50 damage, full
+  auto); middle click fires an orb (15 rounds) that zaps every zed within
+  300 units: half speed, more damage taken, no runs, rages, pounces or
+  screams for 4 s, harder to zap next time. Checked by unit tests and
+  logged runs on a Scrake and a Gorefast. Not play-tested by you.
 - Welder (W8c, 2026-10-05): as in KF away from a door: clicking only
   gives the "near a weldable door" message (logged; no on-screen text
   yet). There are no doors yet, so nothing to weld.

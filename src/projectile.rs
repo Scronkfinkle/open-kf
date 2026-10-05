@@ -93,6 +93,9 @@ pub struct ExplosiveStats {
     pub impact_on_touch: Option<f32>,
     /// The blast's damage type burns (DamTypeHuskGun).
     pub fire: Option<crate::combat::FireType>,
+    /// ZEDMKIISecondaryProjectile.HurtRadius: zaps (SetZapped(ZapAmount))
+    /// every living zed in the radius instead of hurting anything.
+    pub zap: Option<f32>,
     /// The blast hurts the player (HuskGunProjectile.HurtRadius skips the
     /// Instigator; the LAW's and M79's do not).
     pub hurts_self: bool,
@@ -243,7 +246,10 @@ struct PlayerProjectile {
 /// StaticMeshRef): grenades, the LAW rocket, the frag, the pipe bomb and
 /// nails. Pellets and the M99 bullet are tiny and fast (their tracers show
 /// them); the Crossbow bolt is a skeletal mesh (not drawn yet).
-const MODEL_CLASSES: [&str; 14] = [
+const MODEL_CLASSES: [&str; 17] = [
+    "KFMod.ZEDGunProjectile",
+    "KFMod.ZEDMKIIPrimaryProjectile",
+    "KFMod.ZEDMKIISecondaryProjectile",
     "KFMod.MP7MHealinglProjectile",
     "KFMod.MP5MHealinglProjectile",
     "KFMod.M7A3MHealinglProjectile",
@@ -871,6 +877,7 @@ fn move_explosives(
                 fleshpound_mult: p.stats.fleshpound_mult,
                 fire: p.stats.fire,
                 hurts_self: p.stats.hurts_self,
+                zap: p.stats.zap,
                 weapon: p.weapon,
                 id: p.id,
             },
@@ -1175,6 +1182,7 @@ struct Blast {
     /// A burning damage type (the Husk Gun's).
     fire: Option<crate::combat::FireType>,
     hurts_self: bool,
+    zap: Option<f32>,
     weapon: &'static str,
     id: u32,
 }
@@ -1210,6 +1218,22 @@ fn blast(
     });
     let at_bevy = coords::pos(at.to_array());
     let (mut zeds_hit, mut zeds_killed) = (0, 0);
+    // ZED gun bolts: no HurtRadius.
+    if b.radius <= 0.0 {
+        return (0, 0, 0.0);
+    }
+    // ZEDMKIISecondaryProjectile.HurtRadius (CollidingActors: no line of
+    // sight): SetZapped on every living zed, nothing else.
+    if let Some(amount) = b.zap {
+        for mut z in zeds.iter_mut() {
+            let dist = (to_ue(z.centre) / SCALE - at).length();
+            if z.health > 0.0 && dist - z.radius <= b.radius {
+                z.set_zapped(amount);
+                zeds_hit += 1;
+            }
+        }
+        return (zeds_hit, 0, 0.0);
+    }
     for mut z in zeds.iter_mut() {
         if z.health <= 0.0 {
             continue;
@@ -1451,6 +1475,7 @@ fn move_thrown(
                 fleshpound_mult: Some(p.stats.fleshpound_mult),
                 fire: None,
                 hurts_self: true,
+                zap: None,
                 weapon: p.weapon,
                 id: p.id,
             },

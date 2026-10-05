@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W8 and W9a implemented 2026-10-05)
+## Weapons (milestone 7, W1-W8, W9a and W9b implemented 2026-10-05)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1986,6 +1986,23 @@ W9a (`zed.rs` set_zapped / zap_tick, `combat.rs` damage):
 - Test action `zap_zeds` (SetZapped(10) on every zed).
 - Not done: the zapped overlay material (ZED_overlay_Hit_Shdr), the
   zapped hit effect, the worse aim of zapped zeds.
+
+W9b (the ZED MKII; `weapon.rs`, `projectile.rs` ExplosiveStats.zap):
+- ZEDMKIIFire: full auto every 0.125 s from a 30-round magazine
+  (ZEDMKIIAmmo 120 / 240). ZEDMKIIPrimaryProjectile (a LAWProj, Speed
+  1500, straight, never a dud): ProcessTouch deals Damage 50 (x 1.5 on a
+  headshot, then DamTypeZEDGunMKII's x 1.1) and explodes with no
+  HurtRadius (BlowUp only makes noise). Fleshpound: small-arms rule.
+- ZEDMKIIAltFire: needs 15 rounds in the magazine (AmmoPerFire), one orb
+  (DoFireEffect spawns ProjPerFire, not x Load), FireRate 0.75, Alt_Fire
+  animation, recoil up to 1500. ZEDMKIISecondaryProjectile (Speed 1000):
+  its HurtRadius SetZaps every living zed within 300 (no line of sight)
+  with ZapAmount 1.5 and damages nothing.
+- Both modes have bModeExclusive false: each fires while the other does.
+  ZED fire modes never fire while reloading (their AllowFire).
+- Each projectile class's own trail, impact effect and burn mark
+  (ExplosionEmitter, FlameTrailEmitterClass, ExplosionDecal), and the
+  ZED_FX_Energy_Card model.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

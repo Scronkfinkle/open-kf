@@ -31,7 +31,14 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 65] = [
+const EFFECT_CLASSES: [&str; 71] = [
+    // ZED guns: bolt trails and impacts, the MKII's zap orb.
+    "KFMod.ZEDProjectileTrail",
+    "KFMod.ZEDProjectileImpact",
+    "KFMod.ZEDMKIIPrimaryProjectileTrail",
+    "KFMod.ZEDMKIIPrimaryProjectileImpact",
+    "KFMod.ZEDMKIISecondaryProjectileTrail",
+    "KFMod.ZEDMKIISecondaryProjectileExplosion",
     // Husk Gun: the charge glow (HuskGunFire.ChargeEmitterClass), fireball
     // trails and explosions by charge (HuskGunProjectile _Weak / _Strong).
     "ROEffects.ChargeUp1stHusk",

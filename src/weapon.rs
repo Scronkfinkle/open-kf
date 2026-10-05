@@ -326,6 +326,9 @@ struct FireMode {
     kind: FireKind,
     /// WeldFire / UnWeldFire: needs a weldable door in front (none yet).
     weld: bool,
+    /// bModeExclusive: false lets the other mode fire at the same time
+    /// (the ZED MKII).
+    mode_exclusive: bool,
     /// HuskGunFire's charged release.
     charge: Option<ChargeFire>,
     /// The bullets' damage type burns (instant fire; W7).
@@ -419,6 +422,9 @@ struct PelletFire {
     flame: Option<crate::projectile::FlameStats>,
     /// Medic darts (HealingProjectile) instead.
     dart: Option<crate::projectile::DartStats>,
+    /// KFShotgunFire.DoFireEffect spawns ProjPerFire x Load; the medic
+    /// alt fires and ZEDMKIIAltFire override it with ProjPerFire only.
+    per_load: bool,
 }
 
 /// Syringe / KFMedicGun healing charge: up to 500 (MaxAmmoCount), +10 every
@@ -577,6 +583,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         fire: None,
         charge: None,
         weld: false,
+        mode_exclusive: true,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -693,11 +700,14 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     // ChainsawFire's and FlameBurstFire's FireLoop states work like
     // KFHighROFFire's (loop FireLoopAnim while held, no PlayFiring).
     mode.weld = defaults.is_a(fm_class, "WeldFire");
+    mode.mode_exclusive = !matches!(fget("bModeExclusive"), Some((Value::Bool(false), _)));
     mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire") || mode.chainsaw || defaults.is_a(fm_class, "FlameBurstFire");
     mode.anim2 = fname("FireAnim2");
     mode.aimed_anim2 = fname("FireAimedAnim2");
     mode.penetrations = if PENETRATING_FIRE.iter().any(|c| defaults.is_a(fm_class, c)) { 5 } else { 1 };
-    mode.fire_while_reloading = defaults.is_a(fm_class, "WinchesterFire") || defaults.is_a(fm_class, "KFShotgunFire");
+    // ZEDGunFire / ZEDMKIIFire / ZEDMKIIAltFire.AllowFire: never while reloading.
+    let zed_fire = ["ZEDGunFire", "ZEDMKIIFire", "ZEDMKIIAltFire"].iter().any(|c| defaults.is_a(fm_class, c));
+    mode.fire_while_reloading = !zed_fire && (defaults.is_a(fm_class, "WinchesterFire") || defaults.is_a(fm_class, "KFShotgunFire"));
     // KFFire.ModeDoFire and KFShotgunFire.ModeDoFire slow the player.
     mode.slows_movement = (defaults.is_a(fm_class, "KFFire") || defaults.is_a(fm_class, "KFShotgunFire"))
         && !fbool("bFiringDoesntAffectMovement");
@@ -760,6 +770,11 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         // HuskGunProjectile (a LAWProj): impact damage on every touch, a
         // burning blast that spares the player, its own effects.
         let is_husk = defaults.is_a(pc, "HuskGunProjectile");
+        // ZED gun bolts (LAWProj subclasses): ProcessTouch deals Damage
+        // (x HeadShotDamageMult on a headshot) with MyDamageType; BlowUp
+        // hurts nothing. The MKII's alt orb zaps instead (W9).
+        let is_zed_bolt = defaults.is_a(pc, "ZEDGunProjectile") || defaults.is_a(pc, "ZEDMKIIPrimaryProjectile");
+        let is_zed_orb = defaults.is_a(pc, "ZEDMKIISecondaryProjectile");
         let fire = match pget("MyDamageType") {
             Some((Value::Object(r), rp)) => set.resolve(&rp, r).and_then(|dt| fire_type(defaults, &dt)),
             _ => None,
@@ -767,27 +782,28 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         let explosive = (defaults.is_a(pc, "M79GrenadeProjectile") || is_law).then(|| crate::projectile::ExplosiveStats {
             class: projectile_path,
             speed: pfloat("Speed", 2000.0),
-            damage: pfloat("Damage", 0.0),
-            radius: pfloat("DamageRadius", 0.0),
+            damage: if is_zed_bolt { 0.0 } else { pfloat("Damage", 0.0) },
+            radius: if is_zed_bolt { 0.0 } else { pfloat("DamageRadius", 0.0) },
             momentum: pfloat("MomentumTransfer", 0.0),
-            impact_damage: pfloat("ImpactDamage", 0.0),
-            impact_headshot_mult: class_mult("ImpactDamageType"),
+            impact_damage: if is_zed_bolt { pfloat("Damage", 0.0) } else { pfloat("ImpactDamage", 0.0) },
+            impact_headshot_mult: if is_zed_bolt { dt_mult } else { class_mult("ImpactDamageType") },
+            zap: is_zed_orb.then(|| pfloat("ZapAmount", 1.5)),
             arm_dist: pfloat("ArmDistSquared", 0.0).sqrt(),
             straight_time: (!is_law).then(|| pfloat("StraightFlightTime", 0.25)),
             life_span: pfloat("LifeSpan", 10.0),
             // ZombieFleshPound.TakeDamage: the frag and pipe bomb double,
             // the other explosive types (all of these) count fully.
             // DamTypeHuskGun is not in its list.
-            fleshpound_mult: if is_husk {
+            fleshpound_mult: if is_husk || is_zed_bolt || is_zed_orb {
                 None
             } else if damage_type.ends_with("DamTypeFrag") || damage_type.ends_with("DamTypePipeBomb") {
                 Some(2.0)
             } else {
                 Some(1.0)
             },
-            impact_on_touch: is_husk.then(|| pfloat("HeadShotDamageMult", 1.5)),
+            impact_on_touch: (is_husk || is_zed_bolt).then(|| pfloat("HeadShotDamageMult", 1.5)),
             fire,
-            hurts_self: !is_husk,
+            hurts_self: !(is_husk || is_zed_bolt || is_zed_orb),
             // Explode: LAWProj spawns LawExplosion, the M79 family
             // KFNadeLExplosion; ExplosionDecal RocketMarkDirt / KFScorchMark.
             effect: if is_law { "KFMod.LawExplosion" } else { "KFMod.KFNadeLExplosion" },
@@ -795,7 +811,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             trail: Some("ROEffects.PanzerfaustTrail"),
         });
         let explosive = match explosive {
-            Some(x) if is_husk => Some(husk_projectile(set, defaults, pc, x)),
+            Some(x) if is_husk || is_zed_bolt || is_zed_orb => Some(husk_projectile(set, defaults, pc, x)),
             x => x,
         };
         // HuskGunFire.GetDesiredProjectileClass: Weak / ProjectileClass /
@@ -873,7 +889,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             life_span: pfloat("LifeSpan", 10.0),
             heal: pfloat("HealBoostAmount", 20.0),
         });
+        let per_load = !["MP7MAltFire", "M7A3MAltFire", "ZEDMKIIAltFire"].iter().any(|c| defaults.is_a(fm_class, c));
         mode.pellets = Some(PelletFire {
+            per_load,
             dart,
             flame,
             thrown,
@@ -2282,7 +2300,11 @@ fn weapon_input(
                 }
                 continue;
             }
-            if !ready_state || w.firing[alt] || w.fire_cooldown[mode] > 0.0 || w.fire_cooldown[alt] > 0.0 || !allow_fire {
+            // Weapon.ReadyToFire: the other mode blocks only if either is
+            // bModeExclusive.
+            let exclusive = fm.mode_exclusive || w.defs[cur].modes[alt].mode_exclusive;
+            let alt_busy = exclusive && (w.firing[alt] || w.fire_cooldown[alt] > 0.0);
+            if !ready_state || alt_busy || w.fire_cooldown[mode] > 0.0 || !allow_fire {
                 continue;
             }
             w.firing[mode] = true;
@@ -2450,7 +2472,7 @@ fn weapon_input(
                     let spread = if w.defs[cur].wide_spread { pf.spread * 2.05 } else { pf.spread };
                     // KFShotgunFire: ProjPerFire x Load; MP7MAltFire /
                     // M7A3MAltFire: ProjPerFire only (Load is the 250 charge).
-                    let count = if pf.dart.is_some() { pf.per_fire.max(1) } else { (pf.per_fire * pf.ammo_per_fire.max(1)).max(1) };
+                    let count = if pf.per_load { (pf.per_fire * pf.ammo_per_fire.max(1)).max(1) } else { pf.per_fire.max(1) };
                     let tip = w.hand_frames.get(hand).and_then(|h| h.0).map(|t| t.0);
                     for _ in 0..count {
                         // SS_Random: X >> R, R = Spread x (FRand() - 0.5) each.
@@ -3141,6 +3163,7 @@ mod tests {
             impact_on_touch: Some(1.5),
             fire: Some(crate::combat::FireType::HuskGun),
             hurts_self: false,
+            zap: None,
             arm_dist: 0.0,
             straight_time: None,
             life_span: 10.0,
