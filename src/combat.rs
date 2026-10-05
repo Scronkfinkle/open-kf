@@ -149,6 +149,12 @@ pub struct AmmoDisplay {
     pub syringe: Option<u32>,
     /// A medic gun's dart charge, percent.
     pub heal: Option<u32>,
+    /// For KF's HUD (hud.rs): the weapon class ("KFMod.Shotgun"), its
+    /// MagCapacity, bHoldToReload, and the Welder's fuel in percent.
+    pub class: String,
+    pub capacity: u32,
+    pub hold_to_reload: bool,
+    pub weld_percent: Option<u32>,
 }
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
@@ -210,7 +216,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<BileBurn>()
             .init_resource::<Burning>()
             .add_systems(Startup, spawn_hud)
-            .add_systems(Update, toggle_god)
+            .add_systems(Update, (toggle_god, toggle_debug_line))
             .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage, give_health, add_health, update_hud).chain());
     }
 }
@@ -218,15 +224,16 @@ impl Plugin for CombatPlugin {
 fn spawn_hud(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
+        // Our debug line (KF's HUD is hud.rs): small, at the top, F3 hides it.
         TextFont {
-            font_size: bevy::text::FontSize::Px(28.0),
+            font_size: bevy::text::FontSize::Px(16.0),
             ..default()
         },
         TextColor(Color::srgb(0.9, 0.85, 0.75)),
         Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(20.0),
-            left: Val::Px(24.0),
+            top: Val::Px(6.0),
+            left: Val::Percent(22.0),
             ..default()
         },
         HudText,
@@ -234,6 +241,16 @@ fn spawn_hud(mut commands: Commands) {
 }
 
 /// F1 switches god mode on and off.
+/// F3 shows or hides the debug line.
+fn toggle_debug_line(keys: Res<ButtonInput<KeyCode>>, mut line: Query<&mut Visibility, With<HudText>>) {
+    if keys.just_pressed(KeyCode::F3)
+        && let Ok(mut v) = line.single_mut()
+    {
+        *v = if *v == Visibility::Hidden { Visibility::Inherited } else { Visibility::Hidden };
+        runlog::kv("debug_line", &format!("shown={}", *v != Visibility::Hidden));
+    }
+}
+
 fn toggle_god(keys: Res<ButtonInput<KeyCode>>, mut health: ResMut<PlayerHealth>) {
     if keys.just_pressed(KeyCode::F1) {
         health.god = !health.god;

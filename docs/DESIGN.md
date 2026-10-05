@@ -2885,6 +2885,72 @@ result in the map file; we read and draw that.
 Test: screenshots at fixed views before and after each step, and you
 compare one view with the real game.
 
+## KF's HUD (milestone 12, planned 2026-10-05)
+
+Replace our one-line text HUD with KF's own (HUDKillingFloor), drawn
+from the game's textures, fonts and layout. Reference: the two real-game
+screenshots in `references/` (1280 x 960, KF-WestLondon spawn, first
+countdown), compared at `--window 1280x960`.
+
+**What the data gives.** Every widget's texture, texture rectangle,
+TextureScale, PosX / PosY, pivot and colours decode from the class
+defaults (`kfpkg defaults KFMod.HUDKillingFloor`), as do the digit sets
+(DigitsSmall / DigitsBig: KillingFloorHUD.Generic.HUD, 11 rectangles) and
+the font names. KF's own settings (System/defuser.ini) have HudScale 1
+and HudCanvasScale 1.
+
+**What is native (not in the scripts), so worked out and checked
+against the screenshots:** DrawSpriteWidget and DrawNumericWidget. The
+script's own sizing (DrawHudPassA's weight box: texels x TextureScale x
+HudCanvasScale x ResScale x HudScale, ResScaleX = width / 640, ResScaleY
+= height / 480) and position (PosX x width, PosY x height with
+HudCanvasScale 1) are assumed for both. First check: the health box
+should be at x 19, 90 x 45 px at 1280 x 960; the screenshot shows about
+20 and 88 x 45.
+
+**Drawing.** A 2D layer in screen pixels (Bevy UI image nodes or an
+orthographic camera of textured quads, decided in H1): one quad per
+widget, texture rectangle as UVs, tint as colour, RenderStyle 5 (alpha)
+blending. Over the arrow (T2b-2) and everything else.
+
+Steps:
+- **H1, the bottom bar from widgets and digits (done 2026-10-05).** Health, armour, weight
+  box and icon (its "1/15" text needs fonts: H2), grenades, the ammo
+  boxes by weapon (clips, bullets in clip, the per-weapon icons and
+  special cases in DrawHudPassA: LAW, crossbow, M79, Husk Gun, pipe
+  bombs, flamethrower, shotguns, ZED gun; the secondary ammo; the
+  flashlight box), syringe, welder and medic gun charge, cash (pound
+  icon and DigitsBig). KFHUDAlpha 200 on the tints (SetHUDAlpha). Our
+  text HUD moves to a small debug line at the top, toggled with F3
+  (on until H3 is done, then off by default).
+  As built: the sizing rule above matched the screenshot box for box
+  (health box x 19-109 vs about 20-108). Images are stretched to their
+  box (Bevy keeps proportions by default; that made the weight box,
+  128 x 64 drawn 1.5 times wide, too narrow). The flashlight box shows
+  for bTorchEnabled weapons with battery 100 and the light off (we have
+  no flashlight yet). Not done: the quick-syringe popup, the bile
+  colour on the health digits. On wide windows the boxes stretch
+  sideways (ResScaleX and ResScaleY differ); not compared with KF.
+- **H2, fonts and text.** A reader for UE2 Font objects (ROFontsTwo,
+  ROFonts, KFFonts: glyph rectangles on textures; the byte layout is
+  worked out with `kfpkg raw` and checked by drawing known strings),
+  then the texts: the weight "1/15" (LoadSmallFontStatic(5), scaled
+  width / 1024), the weapon name under the cash (DrawWeaponName), and
+  "Trader: 36m" under the arrow (DrawTraderDistance, colour 255,50,50).
+- **H3, the top-right circle.** Trader time: Hud_Bio_Clock_Circle with
+  the countdown (mm:ss). Waves: Hud_Bio_Circle with the zeds left and
+  "Wave 1/4" (DrawKFHUDTextElements). Then our debug line goes off by
+  default.
+- **H4, messages (later).** "NEXT WAVE INBOUND" and the other wave and
+  trader messages (KFMainMessages / WaitingMessage, KFFonts), the end
+  of game text.
+- Not planned: hints, chat, the voice meter, other players' names and
+  bars, perk icons and stars (no perks yet), the weapon-select bar.
+
+Logs: `hud_loaded` (widgets, textures found or missing, fonts), and on
+F3 or a test action `hud_dump` (each drawn widget's pixel box) so the
+layout can be checked against the screenshots by numbers.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

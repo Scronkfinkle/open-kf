@@ -3429,3 +3429,41 @@ real game. KF's "Trader: 36m" text under the arrow is still our plain
 HUD line. Not played by you.
 **Next:** your call: G3b (the Patriarch's entrance), or the lighting
 leftovers.
+
+## 2026-10-05 H1: KF's HUD, the bottom bar
+
+**Changed:** DESIGN.md: new milestone 12, "KF's HUD" (H1-H4). New
+`src/hud.rs`: reads HUDKillingFloor's SpriteWidgets, NumericWidgets,
+DigitsSmall / DigitsBig and KFHUDAlpha from the class defaults, loads
+their textures, and draws each frame through a pool of Bevy UI image
+nodes: DrawHudPassA's bottom bar (health with UpdateHud's colours,
+armour, weight box and icon, grenades, per-weapon ammo boxes from its
+IsA checks, secondary ammo, flashlight box, syringe, welder, MP7M / MP5M
+charge) and the cash. Test action `hud_dump` logs every quad's pixel box
+and the weapon. `combat.rs`: `AmmoDisplay` gains class, capacity,
+hold-to-reload and welder fuel; our old text HUD is a small debug line
+at the top, F3 toggles it. `weapon.rs`: fills those fields; alt ammo is
+only reported when the weapon really has a second ammo (the 9mm had
+reported an empty one). `main.rs`: registers the plugin. 2 unit tests.
+**Why:** you asked for KF's HUD now that there is a good reference.
+**Tested how:** compared with your screenshots at `--window 1280x960`
+from the matched view (`--camera -3110,1313,-3768,-3.72,0`): side-by-side
+crops of both bottom corners; `hud_dump` while cycling all weapons
+given with `--give`; a widescreen screenshot.
+**Result:** `hud_loaded sprites=34 numerics=12 textures=20
+missing_textures=[] absent=[]`. Health box at (19, 898)-(109, 942); in
+the screenshot about 20-108. First shot: two differences: the weight
+box drawn 88 px wide instead of 135 (Bevy kept the texture's proportions;
+now stretched) and a wrong secondary-ammo box for the 9mm where KF shows
+the flashlight box (fixed both). After that the corners match the
+screenshot: 100 / 0 boxes, flashlight 100, 15, 7, 3, the pound sign and
+250. Per weapon: Shotgun (shells + flashlight), MP7M (charge box),
+Flamethrower, Crossbow (arrowhead), Husk Gun, M4 203 (grenade box), LAW,
+Welder, Syringe, Knife (no ammo boxes), 9mm, as DrawHudPassA. Tests 121
+pass; clippy clean.
+**Still broken / not tested:** texts need KF's fonts (H2): the weight
+"1/15", weapon name, "Trader: Nm". The wave circle (H3), messages (H4).
+The quick-syringe popup and the bile colour are not done. Wide windows
+stretch the boxes as KF's formula says; not compared with the real game
+at 16:9. Not played by you.
+**Next:** H2, KF's fonts.

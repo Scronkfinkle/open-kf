@@ -219,7 +219,17 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   native code). The arrow (T2b-2): KF's red 3D arrow in the top-left
   corner points at the shop at all times; its size is fitted to your
   real-game screenshot (matches it within a few pixels at 1280 x 960).
-  `--window 1280x960` sets the window size for such comparisons. Checked by
+  `--window 1280x960` sets the window size for such comparisons.
+- KF's HUD, part 1 (H1, 2026-10-05): the bottom bar drawn with KF's own
+  textures, digits and layout: health, armour, weight box, grenades,
+  the ammo boxes for each kind of weapon (clips and rounds, single
+  counts with the LAW / crossbow / Husk / M79 icons, the shotgun's
+  shells, the M4's grenades, the flashlight box), syringe, welder and
+  medic gun charge, and the cash. Matches the real game's screenshot at
+  1280 x 960. Not yet: the weight text "1/15", the weapon name, the
+  "Trader: Nm" text, the top-right wave circle (need KF's fonts: H2,
+  H3). Our old text line is now a small debug line at the top (F3 hides
+  it). Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.

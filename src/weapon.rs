@@ -3089,8 +3089,15 @@ fn weapon_input(
         e.ground_speed_bonus = w.defs[w.current].speed_bonus;
     }
     ammo_display.weapon = w.defs[w.current].item_name;
+    if ammo_display.class != w.defs[w.current].class {
+        ammo_display.class = w.defs[w.current].class.clone();
+    }
+    ammo_display.capacity = w.defs[w.current].ammo.map_or(0, |a| a.capacity);
+    ammo_display.hold_to_reload = w.defs[w.current].hold_to_reload;
+    ammo_display.weld_percent = w.defs[w.current].weld_fuel.map(|f| 100 * f.amount / f.max.max(1));
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
-    ammo_display.alt_ammo = w.defs[w.current].alt_ammo.map(|a| a.0);
+    // Only a real second ammo (bHasSecondaryAmmo: a maximum above 0).
+    ammo_display.alt_ammo = w.defs[w.current].alt_ammo.filter(|a| a.1 > 0).map(|a| a.0);
     ammo_display.syringe = w.defs.iter().find_map(|d| d.heal_charge.filter(|h| h.syringe)).map(|h| h.charge * 100 / HEAL_CHARGE_MAX);
     ammo_display.heal = w.defs[w.current].heal_charge.filter(|h| !h.syringe).map(|h| h.charge * 100 / HEAL_CHARGE_MAX);
     // CrossbowArrow pickups: room for one more bolt?
