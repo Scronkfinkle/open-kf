@@ -200,6 +200,9 @@ struct WeaponDef {
     toggles_on_alt: Option<AltToggle>,
     /// KSGShotgun.bWideSpread (KSGFire: Spread x 2.05).
     wide_spread: bool,
+    /// KFMeleeGun.ChopSlowRate: each melee attack scales the walking
+    /// velocity by this (KFMeleeFire.ModeDoFire), 1 for other weapons.
+    chop_slow_rate: f32,
     /// BoomStick: ReloadCountDown (both barrels reload by themselves this
     /// long after the last one is fired).
     boomstick_reload: Option<f32>,
@@ -343,6 +346,10 @@ struct FireMode {
     slows_movement: bool,
     spread: crate::firing::SpreadParams,
     recoil: crate::firing::RecoilParams,
+    /// ChainsawFire: hits at every shot (no swing delay, no wide hits) for
+    /// MeleeDamage + Rand(maxAdditionalDamage).
+    chainsaw: bool,
+    extra_damage: u32,
     /// Pellet / nail fire (KFShotgunFire), when kind is Pellets.
     pellets: Option<PelletFire>,
     /// BoomStick fire modes: FireLastAnim / FireLastAimedAnim and
@@ -403,6 +410,8 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         slows_movement: false,
         spread: Default::default(),
         recoil: Default::default(),
+        chainsaw: false,
+        extra_damage: 0,
         pellets: None,
         last_anim: "none".into(),
         last_aimed_anim: "none".into(),
@@ -500,7 +509,13 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     mode.end_aimed_anim = fname("FireEndAimedAnim");
     mode.loop_anim_rate = ffloat("FireLoopAnimRate", 1.0);
     mode.end_anim_rate = ffloat("FireEndAnimRate", 1.0);
-    mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire");
+    mode.chainsaw = defaults.is_a(fm_class, "ChainsawFire");
+    mode.extra_damage = match fget("maxAdditionalDamage") {
+        Some((Value::Int(i), _)) => i.max(0) as u32,
+        _ => 0,
+    };
+    // ChainsawFire's FireLoop state works like KFHighROFFire's.
+    mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire") || mode.chainsaw;
     mode.anim2 = fname("FireAnim2");
     mode.aimed_anim2 = fname("FireAimedAnim2");
     mode.penetrations = if PENETRATING_FIRE.iter().any(|c| defaults.is_a(fm_class, c)) { 5 } else { 1 };
@@ -1171,6 +1186,7 @@ fn load_weapon(
             TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)).then_some(AltToggle::FireMode)
         },
         wide_spread: false,
+        chop_slow_rate: if defaults.is_a(&class, "KFMeleeGun") { float("ChopSlowRate", 0.5) } else { 1.0 },
         boomstick_reload: defaults.is_a(&class, "BoomStick").then(|| float("ReloadCountDown", 2.5)),
         fx,
     })
@@ -1729,11 +1745,27 @@ fn weapon_input(
         let item_name = w.defs[cur].item_name;
         match fm.kind {
             FireKind::Melee => {
+                let mut stats = stats;
+                if fm.chainsaw {
+                    // ChainsawFire.ModeDoFire / DoFireEffect: damage now,
+                    // MeleeDamage + Rand(maxAdditionalDamage), traced only.
+                    stats.damage_delay = 0.0;
+                    stats.damage_min += (w.random() * fm.extra_damage as f32).floor().min(fm.extra_damage.saturating_sub(1) as f32);
+                    stats.min_dot = 0.0;
+                }
+                // KFMeleeFire.ModeDoFire: velocity x ChopSlowRate on the ground.
+                let chop = w.defs[cur].chop_slow_rate;
+                if chop < 1.0
+                    && main_cam.single().is_ok_and(|(_, wk)| wk.is_some_and(|wk| wk.on_ground))
+                    && let Some(e) = effects.as_mut()
+                {
+                    e.fire_velocity_scale = Some(chop);
+                }
                 runlog::kv(
                     "melee_swing",
                     &format!(
-                        "weapon={item_name} mode={mode} class={} damage={} range={} delay={} min_dot={}",
-                        fm.class, stats.damage_max, stats.range, stats.damage_delay, stats.min_dot
+                        "weapon={item_name} mode={mode} class={} damage={} range={} delay={} min_dot={} chop_slow={chop}",
+                        fm.class, stats.damage_min, stats.range, stats.damage_delay, stats.min_dot
                     ),
                 );
                 w.pending_swings.push((stats.damage_delay, stats, item_name));

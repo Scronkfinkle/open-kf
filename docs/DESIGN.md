@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W4 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W5 implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1716,6 +1716,26 @@ the old reading (`kfpkg materials`: 95 Combiners would differ).
   to the wall or to the zed it will stop in (zeds as they are then).
 - Not done: the pellet meshes, Trenchgun fire damage (W7), the Shotgun /
   Combat Shotgun / Nailgun flashlight alt fire.
+
+**W5 melee (done).** `combat.rs` resolve_swings.
+- KFMeleeFire.Timer: a trace from the eye along the view, weaponRange
+  long, stopped by the level, hits the first zed; from behind (direction
+  player -> zed along the zed's facing) the damage is doubled. If
+  WideDamageMinHitAngle > 0, every other living zed in sight within
+  weaponRange x 1.1 (+ its radius) of the player, with view . direction >
+  WideDamageMinHitAngle, takes damage x that cosine at 0.7 of its height;
+  after a backstab the wide hits are doubled too (KF quirk, kept).
+  KFMonster.TakeDamage checks melee headshots with HeadShotCheckScale
+  1.25 (was 1.0 here). Before W5 the swing hit only the nearest zed.
+- KFMeleeFire.ModeDoFire: velocity x ChopSlowRate (KFMeleeGun 0.5,
+  Machete 0.35, Axe 0.2) on the ground.
+- Chainsaw (ChainsawFire): held fire is a FireLoop (looping Fire
+  animation, FireEndAnim Idle on release); every FireRate 0.1 s it hits
+  at once for MeleeDamage + Rand(maxAdditionalDamage) (14-18), traced
+  zed only. Its alt fire is a normal swing (270).
+- Not done: FlipOver (a zed knocked down when the player moves over 300
+  units/s: the player cannot), HitEffectClass sparks on walls, the
+  bloody weapon skin, melee hit sounds.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

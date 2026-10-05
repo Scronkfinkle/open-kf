@@ -157,6 +157,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Melee (W5, 2026-10-04): a swing hits the zed you aim at and every
+  other zed in its arc (less the further off-centre), doubles damage from
+  behind, and slows you; the Chainsaw cuts continuously while held.
+  Checked by logged runs. Backstabs not tested in a run (zeds always
+  faced the player). Not play-tested by you.
 - Shotguns (W4, 2026-10-04): pellets fly as projectiles with tracers,
   pass through zeds losing damage as in KF, kick you back; the Hunting
   Shotgun fires one or both barrels and reloads itself; the HSG-1
@@ -304,9 +309,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
-  accuracy bonus. Melee hits one zed per swing, with no backstab bonus
-  (KF hits every zed in the cone and doubles damage from behind; step
-  W5). Alt fires other than melee, the rifle toggles and the shotguns
+  accuracy bonus. Alt fires other than melee, the rifle toggles and the shotguns
   (medic darts, M203 grenade, flashlights) do nothing yet. Launchers, the
   crossbow, M99, flamethrower, husk gun, syringe, welder and ZED guns play
   their fire animation and use ammo but do nothing. The Trenchgun's fire

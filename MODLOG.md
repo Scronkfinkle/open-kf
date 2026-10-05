@@ -2227,3 +2227,26 @@ not switched).
 **Still broken / not tested:** Whether UE2 really ignores input alpha
 in Combiners is my reading, not checked against the engine.
 **Next:** W5.
+
+## 2026-10-04 Weapons step W5: melee
+
+**Changed:** `combat.rs`: `resolve_swings` rewritten after
+KFMeleeFire.Timer (traced zed stopped by walls, backstab x 2, wide hits
+in sight within range x 1.1 at x cosine, melee headshot scale 1.25);
+`MeleeSwing.min_dot` 0 = no wide hits. `weapon.rs`: ChainsawFire
+(FireLoop like KFHighROFFire, damage at once, + Rand(maxAdditionalDamage),
+no wide hits), ChopSlowRate. `zed.rs`: `yaw` and `dir_of` pub(crate).
+Fixed: projectile and melee hits passed the hit distance converted twice
+(logs showed 525 instead of ~22). DESIGN, README.
+**Why:** Step W5.
+**Tested how:** `cargo test --release`; Axe on three side-by-side Clots
+and on a queue of three (`zed_line`); Chainsaw held on a Fleshpound and
+its alt attack; Knife on a Clot.
+**Result:** Tests 51/51. Axe swing: front Clot 175 (headshot) and the
+one behind it 173 (x 0.99), both killed. Chainsaw: a hit every 0.1 s
+for 14-18 (halved by the Fleshpound), fire loop / idle on release; alt
+270. Knife: 19, headshot 23.8, distance 22.
+**Still broken / not tested:** Backstabs not seen in a run (zeds face
+the player); FlipOver, wall sparks, bloody skins, sounds not done. Not
+play-tested by you.
+**Next:** W6, projectiles and explosions.

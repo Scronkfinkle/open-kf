@@ -227,7 +227,7 @@ fn move_projectiles(
                 ),
             );
             let source = crate::combat::HitSource { point, attacker, melee: false };
-            crate::combat::damage_zed(&mut z, damage, head, p.stats.damage_type_headshot_mult, p.weapon, t / SCALE, source, &mut kills);
+            crate::combat::damage_zed(&mut z, damage, head, p.stats.damage_type_headshot_mult, p.weapon, t, source, &mut kills);
             p.damage *= p.stats.pen_damage_reduction;
             if p.damage / p.stats.damage <= p.stats.pen_damage_reduction / p.stats.max_penetrations.max(1e-3) {
                 stopped = true;

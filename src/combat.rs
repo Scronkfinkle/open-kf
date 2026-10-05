@@ -33,7 +33,9 @@ pub struct MeleeSwing {
     pub dir: Vec3,
     pub damage: f32,
     pub range: f32,
-    /// WideDamageMinHitAngle: cosine of the cone for off-centre hits.
+    /// WideDamageMinHitAngle: cosine of the cone for off-centre hits;
+    /// 0 = no wide hits (also the Chainsaw's held fire, whose DoFireEffect
+    /// has none).
     pub min_dot: f32,
     pub headshot_mult: f32,
     pub weapon: &'static str,
@@ -480,38 +482,102 @@ fn resolve_shots(
     }
 }
 
-fn resolve_swings(mut swings: MessageReader<MeleeSwing>, mut zeds: Query<&mut Zed>, mut kills: ResMut<KillCount>) {
+/// KFMeleeFire.Timer (and ChainsawFire.DoFireEffect): a trace from the eye
+/// along the view, weaponRange long, stopped by the level; the zed it hits
+/// takes the damage, doubled from behind (backstab: the direction from the
+/// player to the zed points the way the zed faces). Then, if
+/// WideDamageMinHitAngle > 0, every other living zed in sight within
+/// weaponRange x 1.1 (plus its radius) whose direction from the player is
+/// within the cone takes damage x that cosine, at 0.7 of its height. The
+/// wide hits use the doubled damage after a backstab (KF quirk, kept).
+/// KFMonster.TakeDamage checks melee headshots with a 1.25 x larger head.
+fn resolve_swings(
+    mut swings: MessageReader<MeleeSwing>,
+    mut zeds: Query<&mut Zed>,
+    mut kills: ResMut<KillCount>,
+    spatial: SpatialQuery,
+) {
     for swing in swings.read() {
-        // KFMeleeFire: a direct hit along the view, else any zed in range
-        // within the cone (dot >= WideDamageMinHitAngle). Nearest wins.
-        let mut best: Option<(f32, bool, Mut<Zed>)> = None;
-        for z in &mut zeds {
+        let player = swing.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE;
+        let range = swing.range * SCALE;
+        let Ok(dir3) = Dir3::new(swing.dir) else { continue };
+        let world_t = spatial
+            .cast_ray(swing.origin, dir3, range, true, &crate::collision::world_filter())
+            .map(|h| h.distance);
+        let limit = world_t.unwrap_or(range);
+        // The traced zed: nearest cylinder entry before the wall.
+        let mut main: Option<(f32, usize)> = None;
+        for z in &zeds {
             if z.health <= 0.0 {
                 continue;
             }
-            let reach = (swing.range + z.radius) * SCALE;
-            let direct = zed_hit(&z, swing.origin, swing.dir).filter(|&t| t <= swing.range * SCALE);
-            let to = z.centre - swing.origin;
-            let dist = to.length();
-            let wide = dist <= reach && to.normalize_or_zero().dot(swing.dir) >= swing.min_dot;
-            let d = direct.unwrap_or(dist);
-            if (direct.is_some() || wide) && best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
-                best = Some((d, direct.is_some(), z));
+            if let Some(t) = zed_hit(z, swing.origin, swing.dir)
+                && t <= limit
+                && main.is_none_or(|(bt, _)| t < bt)
+            {
+                main = Some((t, z.id));
             }
         }
-        match best {
-            Some((d, direct, mut z)) => {
-                let hit = swing.origin + swing.dir * d;
-                z.last_hit = Some((hit, swing.dir));
-                let head = direct && is_headshot(&z, hit, swing.dir, 1.0);
-                let source = HitSource {
-                    point: hit,
-                    attacker: swing.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE,
-                    melee: true,
-                };
-                damage_zed(&mut z, swing.damage, head, swing.headshot_mult, swing.weapon, d, source, &mut kills);
+        let mut my_damage = swing.damage;
+        if let Some((t, id)) = main
+            && let Some(mut z) = zeds.iter_mut().find(|z| z.id == id)
+        {
+            let to = (z.centre - player).normalize_or_zero();
+            let backstab = to.dot(crate::zed::dir_of(z.yaw)) > 0.0;
+            if backstab {
+                my_damage *= 2.0;
             }
-            None => runlog::kv("miss", &format!("weapon={} melee=true", swing.weapon)),
+            let hit = swing.origin + swing.dir * t;
+            z.last_hit = Some((hit, swing.dir));
+            let head = is_headshot(&z, hit, swing.dir, 1.25);
+            runlog::kv(
+                "melee_hit",
+                &format!("weapon={} zed={} kind=traced backstab={backstab} damage={my_damage:.1} headshot={head}", swing.weapon, z.id),
+            );
+            let source = HitSource { point: hit, attacker: player, melee: true };
+            damage_zed(&mut z, my_damage, head, swing.headshot_mult, swing.weapon, t, source, &mut kills);
+        } else if let Some(t) = world_t {
+            runlog::kv("melee_hit_world", &format!("weapon={} distance_unreal={:.0}", swing.weapon, t / SCALE));
+        }
+        let mut wide_hits = 0;
+        if swing.min_dot > 0.0 {
+            for mut z in &mut zeds {
+                if z.health <= 0.0 || main.is_some_and(|(_, id)| id == z.id) {
+                    continue;
+                }
+                let d = z.centre - player;
+                let reach = swing.range * 1.1 * SCALE;
+                if d.length_squared() > reach * reach + (z.radius * SCALE).powi(2) {
+                    continue;
+                }
+                // VisibleCollidingActors: in sight from the eye.
+                let to_eye = z.centre - swing.origin;
+                if let Ok(d3) = Dir3::new(to_eye)
+                    && spatial
+                        .cast_ray(swing.origin, d3, to_eye.length(), true, &crate::collision::world_filter())
+                        .is_some()
+                {
+                    continue;
+                }
+                let diff = swing.dir.dot(d.normalize_or_zero());
+                if diff <= swing.min_dot {
+                    continue;
+                }
+                let point = z.centre + Vec3::Y * z.half_height * 0.7 * SCALE;
+                z.last_hit = Some((point, swing.dir));
+                let head = is_headshot(&z, point, swing.dir, 1.25);
+                let damage = my_damage * diff;
+                wide_hits += 1;
+                runlog::kv(
+                    "melee_hit",
+                    &format!("weapon={} zed={} kind=wide angle_cos={diff:.2} damage={damage:.1} headshot={head}", swing.weapon, z.id),
+                );
+                let source = HitSource { point, attacker: player, melee: true };
+                damage_zed(&mut z, damage, head, swing.headshot_mult, swing.weapon, d.length(), source, &mut kills);
+            }
+        }
+        if main.is_none() && wide_hits == 0 {
+            runlog::kv("miss", &format!("weapon={} melee=true", swing.weapon));
         }
     }
 }

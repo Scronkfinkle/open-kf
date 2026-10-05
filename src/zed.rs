@@ -444,7 +444,7 @@ pub struct Zed {
     cloak_dirty: bool,
 
     /// Facing, Unreal rotation units.
-    yaw: f32,
+    pub(crate) yaw: f32,
     state: ZedState,
     vertical_speed: f32,
     sequence: Option<usize>,
@@ -1876,7 +1876,7 @@ fn yaw_of(dir: Vec3) -> f32 {
 }
 
 /// Horizontal Bevy direction of an Unreal yaw.
-fn dir_of(yaw: f32) -> Vec3 {
+pub(crate) fn dir_of(yaw: f32) -> Vec3 {
     let a = yaw * std::f32::consts::TAU / 65536.0;
     coords::dir([a.cos(), a.sin(), 0.0])
 }
