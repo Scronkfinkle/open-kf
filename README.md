@@ -216,7 +216,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   until the next trader time, as in KF). Checked by logs and a
   screenshot on KF-WestLondon, and looked at by you in the game (it
   looks right); the smoke's settings are partly guessed (KF draws it in
-  native code). No HUD arrow yet (T2b-2). Checked by
+  native code). The arrow (T2b-2): KF's red 3D arrow in the top-left
+  corner points at the shop at all times; its size is fitted to your
+  real-game screenshot (matches it within a few pixels at 1280 x 960).
+  `--window 1280x960` sets the window size for such comparisons. Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.

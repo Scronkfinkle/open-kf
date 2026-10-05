@@ -3391,3 +3391,41 @@ Tests 117 pass; clippy clean.
 compared side by side with the real game, but you looked at it in our
 game and said it looks great. The HUD arrow (T2b-2) is not done.
 **Next:** T2b-2, the HUD arrow; or G3b.
+
+## 2026-10-05 T2b-2: the arrow to the trader; `--window`
+
+**Changed:** new `src/trader_arrow.rs`: KFShopDirectionPointer
+(DebugObjects.Arrows.debugarrow1, its own texture, unlit, DrawScale
+0.25) on its own camera (order 3, after the overlay) and render layer,
+so it draws over everything; placed along the ray through the screen
+point (width / 18, width / 18), turned toward the current shop (level
+unless the shop is over 50 units above or below); hidden without a
+current shop, with the buy menu open, or outside wave mode. Logs
+`trader_arrow_ready`, `trader_arrow`. 2 unit tests. `main.rs`:
+`--window WxH` (window size at scale factor 1, not resizable) for
+comparisons with KF screenshots; the plugin registered.
+**Why:** T2b-2, the second half of T2b.
+**Tested how:** read HUDKillingFloor.DrawKFHUDTextElements and the
+pointer's defaults. Screenshots, then your two real-game screenshots
+(references/, 1280 x 960, KF-WestLondon spawn, first countdown).
+Ours at `--window 1280x960`, `--camera -3110,1313,-3768,-3.72,0` (the
+view turned until the lamppost sat at the same pixel as yours, x 465),
+red pixels of the arrow measured with ImageMagick.
+**Result:** first build: the arrow covered a quarter of the screen and
+ran off its edge (you saw the same). KF's numbers (10 units along the
+ray, DrawScale 0.25) give that size in our renderer, checked by hand
+(6.5 units side-on at 10 units = 673 px at our focal length; measured
+678). So the native ScreenToWorld (not in the scripts) must scale
+differently; I could not find how, so the distance is fitted: real
+arrow x 13-122, y 50-89, 1920 px; ours at 3x / 4x / 5x still too big;
+7.5x: x 12-123, y 47-91, 2052 px; 8x: 16-120, 48-90, 1814 px; kept 7.75x:
+x 14-121, y 48-90, 1934 px. Side by side the shapes and angle match. The
+centre matched at every distance, so the placement formula is right.
+In the normal widescreen window it sits small in the corner. Tests 119
+pass; clippy clean.
+**Still broken / not tested:** the 7.75 is fitted from one view; other
+screen shapes and zoomed (iron sights) views are not compared with the
+real game. KF's "Trader: 36m" text under the arrow is still our plain
+HUD line. Not played by you.
+**Next:** your call: G3b (the Patriarch's entrance), or the lighting
+leftovers.

@@ -13,6 +13,7 @@ mod firing;
 mod dosh;
 mod game;
 mod trader;
+mod trader_arrow;
 mod trader_path;
 mod glass;
 mod zvolume;
@@ -77,6 +78,10 @@ struct Args {
     give: Option<String>,
     /// Cap the frame rate (frames per second).
     fps: Option<f64>,
+    /// `--window WxH`: ask for a window of this many pixels (scale factor
+    /// 1), e.g. 1280x960 to compare with KF screenshots. The window
+    /// manager may still resize it; the screenshot log has the real size.
+    window: Option<(u32, u32)>,
     /// `--mode waves|debug` and `--length short|normal|long`.
     game: game::GameOptions,
 }
@@ -87,6 +92,11 @@ fn parse_args() -> Result<Args, String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--map" => args.map = Some(it.next().ok_or("--map needs a name")?),
+            "--window" => {
+                let n = it.next().ok_or("--window needs WxH")?;
+                let (w, h) = n.split_once('x').ok_or(format!("bad --window value: {n}"))?;
+                args.window = Some((w.parse().map_err(|_| format!("bad --window width: {n}"))?, h.parse().map_err(|_| format!("bad --window height: {n}"))?));
+            }
             "--frames" => {
                 let n = it.next().ok_or("--frames needs a number")?;
                 args.frames = Some(n.parse().map_err(|_| format!("bad --frames value: {n}"))?);
@@ -167,7 +177,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--mode waves|debug] [--length short|normal|long] [--wave N]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -230,15 +240,24 @@ fn main() -> AppExit {
         autowalk: args.autowalk,
     };
 
+    let window_size = args.window;
     let mut app = App::new();
     if let Some(c) = camera_override {
         app.insert_resource(c);
     }
     let exit = app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "kf-rs".into(),
-                ..default()
+            primary_window: Some(match window_size {
+                Some((w, h)) => Window {
+                    title: "kf-rs".into(),
+                    resolution: bevy::window::WindowResolution::new(w, h).with_scale_factor_override(1.0),
+                    resizable: false,
+                    ..default()
+                },
+                None => Window {
+                    title: "kf-rs".into(),
+                    ..default()
+                },
             }),
             ..default()
         }))
@@ -263,7 +282,7 @@ fn main() -> AppExit {
             fireball::FireballPlugin,
         ))
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
-        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin))
+        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)

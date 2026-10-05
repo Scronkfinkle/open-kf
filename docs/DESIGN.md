@@ -2472,11 +2472,36 @@ KFGameLength=0) is Short.
         without it, the sprites are visible grey squares).
       - Logs `trader_path` (on / off, reason), `trader_whisp`
         (spawned, route, way points, or why not), `trader_whisp_end`.
-    - **T2b-2, the arrow.** KFShopDirectionPointer
+    - **T2b-2, the arrow (done 2026-10-05).** KFShopDirectionPointer
       (DebugObjects.Arrows.debugarrow1, DrawScale 0.25) drawn in the
       top-left corner over the view, pointing at the shop (level unless
       the shop is more than 50 units above or below), whenever the
-      match has begun and there is a current shop (waves too). Later.
+      match has begun and there is a current shop (waves too). Plan
+      (HUDKillingFloor.DrawKFHUDTextElements, KFShopDirectionPointer):
+      - Not drawn without a current shop, while the buy menu is open
+        (bShopping), or outside wave mode.
+      - Place: Pos = ScreenToWorld(SizeX / 18, SizeX / 18) x 10 x
+        (DefaultFOV / FovAngle) + the view location: 10 units along the
+        ray through the screen point (SizeX / 18, SizeX / 18), both
+        coordinates from the width (KF's code), further when zoomed so
+        it keeps its size. The ray is taken from our camera's own
+        projection. **As built:** with those numbers the arrow came out
+        about 7.75 times too big against a real-game screenshot
+        (ScreenToWorld is native; its scale is unknown), so the
+        distance is multiplied by a fitted 7.75 (`ARROW_DISTANCE_FIT`,
+        measured at 1280 x 960 from the same spot and view: real x
+        13-122, y 50-89; ours x 14-121, y 48-90). The place on screen
+        matched without fitting.
+      - Turn: rotator(shop - pawn), made level unless the shop's
+        Location is more than 50 units above or below the pawn's.
+      - Drawn after the Z buffer is cleared (C.DrawActor(None, False,
+        True)): on top of everything, through walls and the weapon. Its
+        own camera (order 3, after the vision overlay: the arrow is not
+        tinted; assumed order) and render layer. Unlit (Effects
+        bUnlit), DrawScale 0.25, the mesh's own texture
+        (KillingFloorHUD.Generic.debuggarrow1, opaque).
+      - Logs `trader_arrow_ready` (mesh, bounds) and `trader_arrow`
+        every 2 s (shown, yaw, pitch, distance).
 - **T3, buying.** A simple keyboard buy menu (text list on screen):
   weapons, sell, ammo (clip / fill), grenades, armour; all the
   server-side rules above. Armour itself (absorbing damage) needs reading
