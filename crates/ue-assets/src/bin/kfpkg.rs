@@ -91,6 +91,7 @@ fn main() -> ExitCode {
         ["scanprops"] => scan_props(&install),
         ["scripts"] => scripts(&install),
         ["textures"] => scan_textures(&install),
+        ["materials"] => scan_materials(&install),
         ["texture", file, name] => export_texture(&install, file, name),
         ["meshes"] => scan_meshes(&install),
         ["level", map] => level(&install, map),
@@ -1629,4 +1630,30 @@ fn scan_anims(install: &Install) -> Result<bool, String> {
         total - failed
     );
     Ok(failed == 0)
+}
+
+/// Resolves every Shader in every package as skinned meshes do and lists
+/// the ones whose Opacity texture replaced the Diffuse one (reflex-sight
+/// rule in material.rs, used for weapons and characters only).
+fn scan_materials(install: &Install) -> Result<bool, String> {
+    let set = ue_assets::package_set::PackageSet::new(&install.root);
+    let (mut shaders, mut opacity_rule) = (0usize, 0usize);
+    for (_, path) in package_files(install)? {
+        let rel = path.strip_prefix(&install.root).unwrap_or(&path).display().to_string();
+        let Ok(lp) = set.load_path(&path) else { continue };
+        for i in 0..lp.pkg.exports.len() {
+            if lp.pkg.export_class_name(i) != "Shader" {
+                continue;
+            }
+            shaders += 1;
+            let h = ue_assets::package_set::ObjectHandle { package: lp.clone(), export: i };
+            let m = ue_assets::material::resolve_skinned(&set, &h, ObjectRef::Export(i));
+            if m.chain.iter().any(|c| c == "OpacityTexture") {
+                opacity_rule += 1;
+                println!("opacity_rule file=\"{rel}\" shader={} texture={:?}", h.path(), m.texture.map(|t| t.path()));
+            }
+        }
+    }
+    println!("shaders={shaders} opacity_rule={opacity_rule}");
+    Ok(true)
 }

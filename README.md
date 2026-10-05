@@ -162,6 +162,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   replace the single pistol (keeping its ammo). Every base weapon now has
   its muzzle flash and shell effects. Checked by unit tests and logs;
   flashes not checked by eye on every gun.
+- Reflex sights (SCAR, M4, Bullpup, 2026-10-04): clear glass with the red
+  reticle instead of an opaque speckled disc. Checked by screenshot (M4).
 - 3D scopes (2026-10-04): the Crossbow and M99 lenses show a live zoomed
   view with the reticle while aiming, as KF's default scope setting does.
   Checked by screenshots. Not play-tested by you.

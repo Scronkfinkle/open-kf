@@ -1669,6 +1669,18 @@ damage, hits, penetrations) and adds unit tests for the rules.
   drops bogus values (often a leading "User" of type 0) or adds real
   ones.
 
+**Reflex sights (after W3, on request).** The SCAR, M4 and Bullpup lens
+is `Shader Rifles.reflex_sight_A_unlit`: Diffuse and SelfIllumination a
+Combiner (CombineOperation 6) of a panning glass-speckle texture and the
+reticle `Reflexsight_A`; Opacity the reticle. The resolver took the
+speckle and drew it opaque. Rule (`material::resolve_skinned`, skinned
+meshes only): when the Opacity texture is an input of the Diffuse
+Combiner, use it for colour and alpha, alpha-blended; the speckle layer
+is dropped. `kfpkg materials` lists where the rule applies: 39 of 1023
+Shaders in all packages, many of them level materials whose Opacity is a
+plain mask (puddles, oil, water), hence skinned meshes only. Skinned
+meshes now draw Translucent as alpha blend (was opaque).
+
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),
 the trader and buying (W1's `--give` stands in), third-person weapon

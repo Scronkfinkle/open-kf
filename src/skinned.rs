@@ -12,7 +12,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 
-use ue_assets::material::{Blend, resolve};
+use ue_assets::material::{Blend, resolve_skinned};
 use ue_assets::package::ObjectRef;
 use ue_assets::package_set::{LoadedPackage, ObjectHandle, PackageSet};
 use ue_assets::skeletal::{MeshAnimation, SkeletalMesh, Track, read_mesh_animation, read_skeletal_mesh};
@@ -219,7 +219,7 @@ impl SkinnedModel {
                     mesh_h.package.clone(),
                 ),
             };
-            let simple = resolve(set, &ObjectHandle { package: from, export: 0 }, rf);
+            let simple = resolve_skinned(set, &ObjectHandle { package: from, export: 0 }, rf);
             crate::runlog::kv(
                 "skinned_material",
                 &format!(
@@ -238,7 +238,8 @@ impl SkinnedModel {
                 reflectance: 0.1,
                 alpha_mode: match simple.blend {
                     Blend::Masked => AlphaMode::Mask(0.5),
-                Blend::Additive => AlphaMode::Add,
+                    Blend::Additive => AlphaMode::Add,
+                    Blend::Translucent => AlphaMode::Blend,
                     _ => AlphaMode::Opaque,
                 },
                 cull_mode: None,

@@ -30,6 +30,10 @@ pub struct SimpleMaterial {
     pub two_sided: bool,
     /// Classes passed through, e.g. ["Shader", "TexPanner", "Texture"], for logging.
     pub chain: Vec<String>,
+    /// Apply the reflex-sight rule (see the Shader case); set by
+    /// `resolve_skinned`. Off for level materials, where Opacity is often a
+    /// plain mask (puddles, oil, water) that must not become the colour.
+    pub opacity_from_combiner: bool,
 }
 
 const MAX_DEPTH: usize = 8;
@@ -44,11 +48,47 @@ fn first_array_object(raw: &[u8], skip: usize) -> Option<ObjectRef> {
 
 /// Follows a material reference found in `handle`'s package.
 pub fn resolve(set: &PackageSet, from: &ObjectHandle, rf: ObjectRef) -> SimpleMaterial {
-    let mut out = SimpleMaterial::default();
+    resolve_with(set, from, rf, false)
+}
+
+/// `resolve` for skinned meshes (weapons, characters): also applies the
+/// reflex-sight rule.
+pub fn resolve_skinned(set: &PackageSet, from: &ObjectHandle, rf: ObjectRef) -> SimpleMaterial {
+    resolve_with(set, from, rf, true)
+}
+
+fn resolve_with(set: &PackageSet, from: &ObjectHandle, rf: ObjectRef, opacity_from_combiner: bool) -> SimpleMaterial {
+    let mut out = SimpleMaterial {
+        opacity_from_combiner,
+        ..Default::default()
+    };
     if let Some(h) = set.resolve(&from.package, rf) {
         walk(set, &h, &mut out, 0);
     }
     out
+}
+
+fn same(a: &ObjectHandle, b: &ObjectHandle) -> bool {
+    a.export == b.export && a.package.name == b.package.name
+}
+
+/// The textures a Combiner's Material1 and Material2 lead to.
+fn combiner_inputs(set: &PackageSet, combiner: &ObjectHandle) -> Vec<ObjectHandle> {
+    let Ok(props) = read_export_properties(&combiner.package.pkg, combiner.export) else {
+        return Vec::new();
+    };
+    ["Material1", "Material2"]
+        .iter()
+        .filter_map(|name| match props.get(&combiner.package.pkg, name) {
+            Some(Value::Object(rf)) => set.resolve(&combiner.package, *rf),
+            _ => None,
+        })
+        .filter_map(|h| {
+            let mut m = SimpleMaterial::default();
+            walk(set, &h, &mut m, 0);
+            m.texture
+        })
+        .collect()
 }
 
 fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usize) {
@@ -74,6 +114,23 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             return true;
         }
         false
+    };
+
+    // The texture an object property leads to (through any modifiers).
+    let object = |props: &crate::properties::PropertyList, name: &str| -> Option<ObjectHandle> {
+        match props.get(pkg, name) {
+            Some(Value::Object(rf)) if *rf != ObjectRef::Null => {
+                let h2 = set.resolve(&h.package, *rf)?;
+                if name == "Opacity" {
+                    let mut m = SimpleMaterial::default();
+                    walk(set, &h2, &mut m, depth + 1);
+                    m.texture
+                } else {
+                    Some(h2)
+                }
+            }
+            _ => None,
+        }
     };
 
     match class.as_str() {
@@ -109,6 +166,22 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
                 out.blend = b;
             } else if has_opacity {
                 out.blend = Blend::Masked;
+            }
+            // A Diffuse Combiner that has the Opacity texture as an input
+            // (weapon reflex sights: reflection speckle + reticle, Opacity =
+            // the reticle): the reticle is what shows, so take the Opacity
+            // texture for colour and alpha, blended. The speckle layer is
+            // dropped (approximation).
+            if out.opacity_from_combiner
+                && blend.is_none()
+                && let Some(opacity) = object(&props, "Opacity")
+                && let Some(diffuse) = object(&props, "Diffuse")
+                && diffuse.class_name() == "Combiner"
+                && combiner_inputs(set, &diffuse).iter().any(|t| same(t, &opacity))
+            {
+                out.texture = Some(opacity);
+                out.blend = Blend::Translucent;
+                out.chain.push("OpacityTexture".into());
             }
         }
         "FinalBlend" => {

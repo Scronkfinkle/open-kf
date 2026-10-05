@@ -2143,3 +2143,22 @@ the Handcannon's; the other guns' flashes are not checked by eye. The
 duals' ammo merge is my reading of GiveTo. The M4's tip bone X axis
 points sideways, so its flash may point the wrong way (not checked).
 **Next:** W4, shotguns.
+
+## 2026-10-04 Reflex sights (SCAR, M4, Bullpup)
+
+**Changed:** `crates/ue-assets/src/material.rs`: `resolve_skinned`; for
+skinned meshes, a Shader whose Opacity texture feeds its Diffuse
+Combiner takes that texture for colour and alpha, blended.
+`skinned.rs`: uses it; Translucent -> alpha blend. `kfpkg materials`:
+lists Shaders the rule touches. DESIGN, README.
+**Why:** You saw the SCAR, M4 and Bullpup sights drawn wrong; they
+showed an opaque speckle disc (screenshot of the SCAR).
+**Tested how:** Screenshots aiming the SCAR and M4 before, M4 after;
+`kfpkg materials`; `cargo test --release`.
+**Result:** M4 sight: clear, red dot in the centre. The rule matches 39
+of 1023 Shaders across all packages; kept off for level materials (many
+use a plain mask as Opacity). Tests 50/50.
+**Still broken / not tested:** The glass speckle layer (panning, added)
+is dropped. SCAR and Bullpup not looked at after the fix (same material
+as the M4). Shotgun tracers: shotguns do not fire pellets yet (W4).
+**Next:** W4, shotguns.
