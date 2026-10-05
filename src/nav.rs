@@ -454,9 +454,9 @@ pub struct Router {
     blocked_way: Option<usize>,
     route_len: usize,
     /// The last point reached, and links (from, to) this zed failed to walk
-    /// with how many times (our addition, not KF's: zeds cannot jump yet,
-    /// so some links the editor made are impossible for them; after two
-    /// failures a link is left out of this zed's routes).
+    /// with how many times (our addition, not KF's: some links the editor
+    /// made are impossible for our zeds, e.g. jumps they cannot clear;
+    /// after two failures a link is left out of this zed's routes).
     from_point: Option<usize>,
     failed_links: Vec<((usize, usize), u32)>,
     /// Progress check (our addition): where the zed was a second ago, and

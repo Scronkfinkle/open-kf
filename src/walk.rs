@@ -352,6 +352,7 @@ fn walk(
     mut pushes: MessageReader<PlayerPush>,
     mut kicks: MessageReader<PlayerAddVelocity>,
     mut last_log: Local<f32>,
+    mut glass: (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassBump>),
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
     // Colliders become queryable a frame or two after they are spawned;
@@ -496,11 +497,21 @@ fn walk(
                 }
                 let (moved, blocked) = mover.ground_move(w.center, step);
                 let wanted = (hv * h).length();
-                if let Some(b) = blocked
+                if let Some(b) = &blocked
                     && wanted > 0.0
                     && (moved - w.center).length() < 0.5 * wanted
                 {
                     last_block = Some((names.get(b.entity).map_or("unnamed".into(), |n| n.to_string()), b.normal));
+                }
+                // KFGlassMover.Bump by the player (glass.rs decides).
+                if let Some(b) = &blocked
+                    && let Ok(g) = glass.0.get(b.entity)
+                {
+                    glass.1.write(crate::glass::GlassBump {
+                        pane: g.0,
+                        speed: hv.length() / SCALE,
+                        melee: None,
+                    });
                 }
                 // Like Unreal: velocity becomes the movement actually made
                 // (so walking into a wall shows speed 0, not 200).

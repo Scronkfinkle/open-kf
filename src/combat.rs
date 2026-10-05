@@ -506,6 +506,7 @@ fn resolve_shots(
     spatial: SpatialQuery,
     mut zeds: Query<&mut Zed>,
     mut kills: ResMut<KillCount>,
+    (glass, mut glass_damage): (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassDamage>),
 ) {
     for shot in shots.read() {
         let max = TRACE_RANGE * SCALE;
@@ -578,6 +579,11 @@ fn resolve_shots(
                 // the level and non-pawn actors. KF quirk, kept: a shot that
                 // hits a zed, or hits nothing, draws neither.
                 if let Some(h) = world_hit {
+                    // KFFire.DoTrace: a non-pawn actor hit takes the damage
+                    // (a glass pane).
+                    if let Ok(g) = glass.get(h.entity) {
+                        glass_damage.write(crate::glass::GlassDamage { pane: g.0, damage: shot.damage, by: shot.weapon });
+                    }
                     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
                     let n = if h.normal.dot(shot.dir) > 0.0 { -h.normal } else { h.normal };
                     let n = to_ue(n);
@@ -612,14 +618,15 @@ fn resolve_swings(
     mut zeds: Query<&mut Zed>,
     mut kills: ResMut<KillCount>,
     spatial: SpatialQuery,
+    (glass, mut glass_damage): (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassDamage>),
 ) {
     for swing in swings.read() {
         let player = swing.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE;
         let range = swing.range * SCALE;
         let Ok(dir3) = Dir3::new(swing.dir) else { continue };
-        let world_t = spatial
-            .cast_ray(swing.origin, dir3, range, true, &crate::collision::world_filter())
-            .map(|h| h.distance);
+        let world = spatial.cast_ray(swing.origin, dir3, range, true, &crate::collision::world_filter());
+        let world_t = world.map(|h| h.distance);
+        let world_glass = world.and_then(|h| glass.get(h.entity).ok()).map(|g| g.0);
         let limit = world_t.unwrap_or(range);
         // The traced zed: nearest cylinder entry before the wall.
         let mut main: Option<(f32, usize)> = None;
@@ -654,6 +661,10 @@ fn resolve_swings(
             damage_zed(&mut z, my_damage, head, swing.headshot_mult, swing.weapon, t, source, &mut kills);
         } else if let Some(t) = world_t {
             runlog::kv("melee_hit_world", &format!("weapon={} distance_unreal={:.0}", swing.weapon, t / SCALE));
+            // KFMeleeFire.Timer: the traced actor takes the damage (a pane).
+            if let Some(pane) = world_glass {
+                glass_damage.write(crate::glass::GlassDamage { pane, damage: swing.damage, by: swing.weapon });
+            }
         }
         let mut wide_hits = 0;
         if swing.min_dot > 0.0 {

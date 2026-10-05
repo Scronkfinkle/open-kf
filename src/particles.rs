@@ -31,7 +31,10 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 75] = [
+const EFFECT_CLASSES: [&str; 77] = [
+    // KFGlassMover GlassBits / BreakGlassBits (glass.rs).
+    "KFMod.WindowGlassEmitter",
+    "KFMod.BreakWindowGlassEmitter",
     // KFDoorMover Wood / MetalDoorExplodeEffectClass (door.rs GoBang).
     "KFMod.KFDoorExplodeWood",
     "KFMod.KFDoorExplodeMetal",

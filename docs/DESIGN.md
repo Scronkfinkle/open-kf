@@ -2301,10 +2301,9 @@ KFGameLength=0) is Short.
   player (MeleeDamage, ScreamDamage, SpinDam; whole numbers, at least 1).
   Hidden speed and the damage scaling apply in debug mode too (your
   call: they are KF zed rules, not wave rules).
-- **Retro and map audit (after G2b, your request).** List every actor
-  class the KF maps use and whether we simulate it (jump pads, teleporters,
-  ladders, movers, physics volumes, triggers, ...), so map gaps are not
-  mistaken for AI errors; a short retro of the milestone so far.
+- **Retro and map audit (done 2026-10-05).** `docs/map-audit.md` (every
+  placed class that matters, KF behaviour, ours, priority) and
+  `docs/retro-2026-10-05.md`; maps log `map_features` at load.
 - **G3, the Patriarch wave.** Boss spawn rules, his helper squads when he
   runs off to heal (FinalSquads), the win.
 - **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
@@ -2394,6 +2393,46 @@ action `kill_near_zeds` (zeds within 500 of the player die).
 
 Not in this milestone: pickups lying in the map (SetupPickups), dropped
 weapons, perks, multiplayer, voice lines and sounds.
+
+## Map fixes (milestone 10, planned 2026-10-05; M1 implemented)
+
+Goal: the map features the audit (`docs/map-audit.md`) found missing that
+change what zeds and the player do, so map gaps stop looking like AI
+errors. You asked for these before the rest of the game loop.
+
+- **M1, glass windows (KFGlassMover, 691 in 12 maps).** Rules
+  (KFGlassMover.uc, checked 2026-10-05): Health 50 (maps set their own,
+  e.g. 5); blocks pawns, bullets and Karma; not path-colliding ("They do
+  not block paths"). TakeDamage from anything: Health -= damage; at 0
+  BreakWindow (no collision, hidden, BreakWindowGlassEmitter), and every
+  pane sharing its Tag (unless the Tag is empty or the class name) cracks
+  with Health 1 (ShatterOtherWindows); above 0 a WindowGlassEmitter
+  (ShardWindow). Health 1 at the start = cracked (Skins[0] =
+  ShaderCrackedGlass). Bump: the player does nothing to an uncracked pane;
+  anything moving at 10+ deals its speed as damage; a zed also plays
+  MeleeAnims[0] standing still (HandleBumpGlass, WaitForAnim) and deals its
+  MeleeDamage. The Siren's scream always shatters glass in its radius
+  (damage 100000). Event triggers on break are not simulated.
+  As built (`glass.rs`): panes are their own entities (hidden when
+  broken) with a static collider on the Door / DoorTraces layers (block
+  players, zeds, bodies, bullets; path checks ignore them). Damage from
+  instant-hit shots and melee traces that hit a pane (combat.rs), blasts
+  (`DoorBlast`, read by glass.rs too), player bumps (walk.rs) and zed bumps
+  (zed.rs: speed + MeleeDamage, MeleeAnims[0] full body, no damage to
+  the player). Pellet and arrow projectiles do not hurt panes yet.
+  Checked on KF-WestLondon: a 9mm shot broke KFGlassMover94 (35 vs Health
+  5) and the next shot went through; a Clot walking into it broke it
+  (speed 300, hidden); a grenade broke the 7 panes within 420. Found on
+  the way: a shot at the window's centre hits the wooden window bar of
+  the shop-front mesh first, as it should.
+- **M2, distance fog.** ZoneInfo bDistanceFog / DistanceFogEnd per zone;
+  the zone a point is in (BSP); KF's sight checks skip what is beyond the
+  fog (RateZombieVolume, PlayerCanSeePoint, KFMonster.Tick's hidden-speed
+  check); the fog drawn.
+- **M3, lava (LavaVolume, 13 maps).** Pain volumes: DamagePerSec (1-2) of
+  Burned while inside.
+- **M4, the player on jump pads, KF-Offices URL teleporters.**
+- Later (needs an event system): plain movers, lifts, scripted triggers.
 
 ## Later milestones (rough order, to be planned in detail when reached)
 

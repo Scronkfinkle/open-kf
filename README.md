@@ -159,6 +159,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Glass windows (M1, 2026-10-05): windows block you, zeds and bullets
+  until broken; a shot, a melee hit, a grenade or a zed walking into one
+  breaks it (glass burst; panes sharing a tag crack). Checked by logged
+  runs on KF-WestLondon. Not played; the glass effects and the cracked
+  look not looked at. Shotgun pellets and arrows pass the glass without
+  breaking it (not done yet).
 - Waves (G1, 2026-10-05): `--mode waves` plays KF's waves (default
   length Short: 4 waves and the Patriarch; `--length normal|long`). A 10 s
   countdown, waves of 20 / 32 / 35 / 42 zeds (Short) drawn from KF's squad

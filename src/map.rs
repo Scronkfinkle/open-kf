@@ -57,6 +57,63 @@ pub struct SkyInfo {
     pub camera_position: Option<Vec3>,
 }
 
+/// Map actor classes that change where pawns can go or what happens to
+/// them, and whether we simulate them (docs/map-audit.md). Logged at load
+/// so a misbehaving zed or player can be checked against the map first.
+const MAP_FEATURES: &[(&str, bool)] = &[
+    ("KFDoorMover", true),
+    ("KFUseTrigger", true),
+    ("ZombieVolume", true),
+    ("UTJumppad", true),
+    ("BlockingVolume", true),
+    ("KFZombieZoneVolume", true),
+    ("TerrainInfo", true),
+    ("KFGlassMover", true),
+    ("Mover", false),
+    ("ClientMover", false),
+    ("KFElevator", false),
+    ("KFTraderDoor", false),
+    ("ShopVolume", false),
+    ("KFTraderTeleporter", false),
+    ("Teleporter", false),
+    ("JumpSpot", false),
+    ("LavaVolume", false),
+    ("WaterVolume", false),
+    ("PhysicsVolume", false),
+    ("KFPhysicsVolume", false),
+    ("xKicker", false),
+    ("KFDecoTrampoline", false),
+    ("ScriptedTrigger", false),
+    ("Trigger", false),
+    ("KFProxyTrigger", false),
+    ("UseTrigger", false),
+    ("BlockingVolume_Toggleable", false),
+    ("KActor", false),
+    ("KFRandomItemSpawn", false),
+    ("KFAmmoPickup", false),
+    ("ZoneInfo", false),
+];
+
+fn log_map_features(pkg: &ue_assets::package::Package) {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for i in 0..pkg.exports.len() {
+        let class = pkg.export_class_name(i);
+        if let Some((name, _)) = MAP_FEATURES.iter().find(|(n, _)| *n == class) {
+            *counts.entry(name).or_default() += 1;
+        }
+    }
+    let list = |sim: bool| {
+        MAP_FEATURES
+            .iter()
+            .filter(|(n, s)| *s == sim && counts.contains_key(n))
+            .map(|(n, _)| format!("{n}:{}", counts[n]))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // ZoneInfo is listed for its distance fog, which KF's sight checks use.
+    runlog::kv("map_features", &format!("simulated=[{}] not_simulated=[{}]", list(true), list(false)));
+}
+
 /// Every map entity gets this, so they can be counted or removed later.
 #[derive(Component)]
 pub struct MapGeometry;
@@ -336,6 +393,7 @@ fn load_map(
     mut sky: ResMut<SkyInfo>,
     mut collision: ResMut<CollisionGeometry>,
     mut door_setup: ResMut<crate::door::DoorSetup>,
+    mut glass_setup: ResMut<crate::glass::GlassSetup>,
     game_options: Res<crate::game::GameOptions>,
     compressed: Option<Res<CompressedImageFormatSupport>>,
 ) {
@@ -354,6 +412,7 @@ fn load_map(
     let class_defaults = ClassDefaults::new(&set);
     let contents = read_level_with(&lp, &class_defaults);
     door_setup.triggers = contents.use_triggers.clone();
+    log_map_features(&lp.pkg);
     if game_options.mode == crate::game::GameMode::Waves {
         commands.insert_resource(crate::game::load_game_data(&set, &class_defaults, &lp, game_options.length));
     }
@@ -535,6 +594,11 @@ fn load_map(
     let mut mesh_parts = 0usize;
     let mut mirrored_actors = 0usize;
     let (mut skins_applied, mut invisible_parts) = (0usize, 0usize);
+    // KFGlassMover.ShatteredTexture (class default), for cracked panes.
+    glass_setup.cracked = set.load("KillingFloorLabTextures").and_then(|tlp| {
+        let export = (0..tlp.pkg.exports.len()).find(|&i| tlp.pkg.object_name(ObjectRef::Export(i)).eq_ignore_ascii_case("ShaderCrackedGlass"))?;
+        loader.material(&ObjectHandle { package: tlp, export }, ObjectRef::Export(export), false).map(|m| m.0)
+    });
     for actor in &contents.mesh_actors {
         // A negative scale on an odd number of axes mirrors the mesh, which
         // turns every triangle's winding around. Unreal compensates; Bevy
@@ -660,14 +724,59 @@ fn load_map(
             actors_spawned += 1;
             continue;
         }
+        // Breakable windows (glass.rs): own entity and collider, so a pane
+        // can block, crack and break.
+        if let Some(info) = &actor.glass {
+            let mut soup = crate::collision::TriSoup::default();
+            for part in parts.iter() {
+                if let Some(tris) = &part.collision {
+                    for t in tris.iter() {
+                        let [a, b, c] = t.map(|p| p * transform.scale);
+                        soup.push_triangle(a, b, c);
+                    }
+                }
+            }
+            let root = commands.spawn((transform, Visibility::default(), MapGeometry, Name::new(info.name.clone()))).id();
+            let mut first_part = None;
+            for part in parts.iter() {
+                let material = match actor.skins.get(part.section) {
+                    Some(&skin) if skin != ObjectRef::Null => {
+                        skins_applied += 1;
+                        loader.material(&ObjectHandle { package: lp.clone(), export: actor.export }, skin, false).map(|m| m.0)
+                    }
+                    _ => part.material.clone(),
+                };
+                let Some(material) = material else {
+                    invisible_parts += 1;
+                    continue;
+                };
+                let e = commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root))).id();
+                if part.section == 0 {
+                    first_part = Some(e);
+                }
+                entities += 1;
+            }
+            glass_setup.panes.push(crate::glass::GlassSpawn {
+                info: info.clone(),
+                root,
+                skin0: first_part,
+                location: actor.location,
+                rotation: transform.rotation,
+                translation: transform.translation,
+                collision: soup,
+            });
+            actors_spawned += 1;
+            continue;
+        }
         let in_sky = in_sky_bounds(actor.location);
         if in_sky {
             sky_actors += 1;
         }
-        // Movers (doors, breakable windows, scripted barriers) move during
+        // Movers (breakable windows, scripted barriers, lifts) move during
         // play, e.g. the KF-WestLondon street barrier that rises when the
-        // helicopter leaves. Movers are not simulated yet, so they do not
-        // block; otherwise such barriers would block forever.
+        // helicopter leaves. Apart from doors (door.rs, handled above) they
+        // are not simulated, so they do not block; otherwise such barriers
+        // would block forever. See docs/map-audit.md.
         let is_mover = actor.class.contains("Mover");
         if is_mover && actor.blocks_player {
             movers_not_blocking += 1;

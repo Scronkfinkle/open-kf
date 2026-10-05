@@ -326,7 +326,7 @@ struct IronSights {
 #[derive(Clone, Debug)]
 struct FireMode {
     kind: FireKind,
-    /// WeldFire / UnWeldFire: needs a weldable door in front (none yet).
+    /// WeldFire / UnWeldFire: needs a weldable door in view (door.rs).
     weld: bool,
     /// bModeExclusive: false lets the other mode fire at the same time
     /// (the ZED MKII).
@@ -649,7 +649,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
     combat.melee = melee_damage > 0.0;
     let has_projectile = matches!(fget("ProjectileClass"), Some((Value::Object(r), _)) if r != ObjectRef::Null);
     // WeldFire / UnWeldFire are melee classes that only work on doors
-    // (WeldFire.Timer looks for a KFDoorMover); doors are not done.
+    // (WeldFire.Timer looks for a KFDoorMover): `weld_fire` and door.rs.
     let welds = mode.class.contains("WeldFire");
     let projectile_class = match fget("ProjectileClass") {
         Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
@@ -1006,7 +1006,8 @@ enum FireKind {
     /// KFShotgunFire with pellets or nails (ShotgunBullet family,
     /// TrenchgunBullet): ProjPerFire projectiles in a spread (projectile.rs).
     Pellets,
-    /// Other BaseProjectileFire: spawns ProjectileClass (not done yet: W6).
+    /// Other BaseProjectileFire: spawns ProjectileClass (not implemented;
+    /// logged as fire_not_implemented).
     Projectile,
     /// No damage (NoFire, or a fire class not understood).
     None,

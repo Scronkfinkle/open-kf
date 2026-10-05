@@ -2823,3 +2823,48 @@ fewer left, one a second; the wave ended. Clot hits 3.9-4.2 (was about
 sight). Hidden speed is not applied to running / raging / charging
 speeds. Not played.
 **Next:** the retro and map audit, then G3 / D5 / trader.
+
+## 2026-10-05 Retro and map audit
+
+**Changed:** New `docs/map-audit.md` and `docs/retro-2026-10-05.md`.
+`map.rs`: `map_features` log at load (map classes we simulate / do not,
+with counts). Stale comments corrected (zed.rs module doc, nav.rs, the
+Welder, map.rs movers, weapon.rs Projectile). DESIGN.
+**Why:** You asked for a retro and a closer look at the maps, so map gaps
+(like the jump pads) are not mistaken for AI errors.
+**Tested how:** class counts over all 35 maps (`kfpkg exports`), class
+defaults and scripts for the gameplay ones, props of 5 maps for fog,
+teleporters, lava; a KF-WestLondon load for the new log line. Tests, clippy.
+**Result:** 257 classes. Biggest gaps: 691 glass windows in 12 maps (not
+blocking; KF zeds break them), distance fog in every sampled zone (KF's
+sight checks skip beyond it; ours do not), trader rooms, lava (13 maps),
+plain movers and the event system. KF-WestLondon logs simulated=[doors 16,
+triggers 19, volumes 35, jump pads 6, ...] not_simulated=[KFGlassMover:71
+Mover:3 KFTraderDoor:4 ...].
+**Still broken / not tested:** the gaps listed in the audit.
+**Next:** your call: glass and fog first (audit order), or carry on with
+G3 / D5 / the trader.
+
+## 2026-10-05 Map fixes M1: glass windows
+
+**Changed:** New `glass.rs` (KFGlassMover: panes, damage, break, crack,
+shards). `level.rs`: GlassInfo. `map.rs`: panes as own entities, the
+cracked material, `map_features` lists glass as simulated. `combat.rs`:
+shots and melee hitting a pane damage it. `walk.rs` / `zed.rs`: bumps
+(zeds swing MeleeAnims[0]). `particles.rs`: the two glass emitters.
+DESIGN (map-fixes plan M1-M4), map audit, README.
+**Why:** You asked to fix the maps first; glass was first in the audit.
+**Tested how:** KF-WestLondon runs at KFGlassMover94 (shots, a Clot
+outside, a grenade). Tests, clippy.
+**Result:** 71 panes, all with colliders, Health 5. Shot: broken by 35;
+next shot passed through to a wall 1140 away. Clot (hidden, speed 300):
+broke it on the bump. Grenade: 7 panes within 420 broken (195 at 146 ..
+6 at 410). Tests 72 + 21.
+**Failures on the way:** my first test shots hit the shop-front mesh's
+wooden window bar (I aimed at the window's centre), which looked like a
+collision bug; a screenshot showed the bar.
+**Still broken / not tested:** pellets / arrows do not break glass; the
+break event (TriggerEvent) not simulated; visuals not looked at; the
+debug log file is shared by every running copy (a second run overwrites
+it).
+**Next:** M2, distance fog.

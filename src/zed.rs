@@ -1,5 +1,6 @@
-//! Zeds (KF monsters): Clots that chase the player (straight line, no
-//! pathfinding yet) and play melee animations when close. No damage yet.
+//! Zeds (KF monsters): every base specimen and the Patriarch, hunting the
+//! player over the map's navigation points, attacking, taking damage, gore
+//! and ragdolls (see DESIGN.md: Zeds, Combat, All specimens, Patriarch).
 //!
 //! Mesh-to-world (UE2): point - MeshOrigin, scaled by MeshScale, rotated by
 //! the mesh's RotOrigin, scaled by DrawScale, plus PrePivot; then the actor's
@@ -120,7 +121,7 @@ struct ZedClass {
     /// Pawn.Intelligence (BRAINS_None 0 .. BRAINS_Human 3): from Mammal
     /// (2) up, a door-bashing zed leaves the door for a reachable enemy.
     intelligence: u8,
-    /// Death animation (no ragdolls yet) and the frame where the body is
+    /// Death animation and the frame where the body is
     /// lowest, where it stops (KnockDown ends standing back up).
     death: Option<usize>,
     death_hold_frame: f32,
@@ -2998,6 +2999,8 @@ struct ZedWorld<'w, 's> {
     door_blasts: MessageWriter<'w, crate::door::DoorBlast>,
     clear_zeds: MessageReader<'w, 's, crate::game::ClearZeds>,
     kill_stuck: MessageReader<'w, 's, crate::game::KillStuckZed>,
+    glass: Query<'w, 's, &'static crate::glass::GlassCollider>,
+    glass_bumps: MessageWriter<'w, crate::glass::GlassBump>,
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
@@ -3024,7 +3027,7 @@ fn think_and_move(
     mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
-    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck } = &mut world;
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps } = &mut world;
     let stuck: Vec<usize> = kill_stuck.read().map(|k| k.0).collect();
     let (doors, door_colliders) = (&*doors, &*door_colliders);
     let Some(classes) = classes else {
@@ -4034,6 +4037,23 @@ fn think_and_move(
                         t.translation = z.centre;
                         continue;
                     }
+                }
+                // KFGlassMover.Bump: the pane takes the zed's speed and its
+                // MeleeDamage; HandleBumpGlass: the zed stops and plays
+                // MeleeAnims[0] (WaitForAnim).
+                if let Some(h) = &wall
+                    && let Ok(g) = glass.get(h.entity)
+                {
+                    glass_bumps.write(crate::glass::GlassBump { pane: g.0, speed, melee: Some(z.melee_damage) });
+                    if let Some(&seq) = c.melee.first() {
+                        z.state = ZedState::Melee;
+                        z.sequence = None;
+                        start_anim(&mut z, Some(seq), false);
+                        z.attack = Some(Attack { seq, layered: false, hit_done: true, ranged: false, fx_fired: 0, shots_fired: 0 });
+                    }
+                    runlog::kv("zed_bump_glass", &format!("id={} speed={speed:.0}", z.id));
+                    t.translation = z.centre;
+                    continue;
                 }
                 let progress = (moved - z.centre).with_y(0.0).length();
                 // Blocked by the level (not a pawn) while heading somewhere:

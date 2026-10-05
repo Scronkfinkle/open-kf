@@ -35,6 +35,17 @@ pub struct MeshActor {
     pub blocks_player: bool,
     /// Set for KFDoorMover actors: what the door needs to move.
     pub door: Option<DoorInfo>,
+    /// Set for KFGlassMover actors (breakable windows).
+    pub glass: Option<GlassInfo>,
+}
+
+/// A KFGlassMover: a pane of breakable glass.
+#[derive(Debug, Clone)]
+pub struct GlassInfo {
+    pub name: String,
+    /// Panes sharing a Tag crack together when one breaks.
+    pub tag: String,
+    pub health: i32,
 }
 
 /// A KFDoorMover's mover and door settings (own value, else class default).
@@ -357,6 +368,17 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             _ => 1.0,
         };
         let s3 = vector(&props, pkg, "DrawScale3D", [1.0; 3]);
+        let glass = match defaults {
+            Some((lp, d)) if d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "KFGlassMover")) => {
+                let v = Effective { lp, d, export: i, props: &props };
+                Some(GlassInfo {
+                    name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                    tag: v.name("Tag"),
+                    health: v.int("Health", 50),
+                })
+            }
+            _ => None,
+        };
         let door = match defaults {
             Some((lp, d)) if d.class_of(lp, i).is_some_and(|c| d.is_a(&c, "KFDoorMover")) => {
                 let v = Effective { lp, d, export: i, props: &props };
@@ -413,6 +435,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             skins: object_array(props.get(pkg, "Skins")),
             blocks_player,
             door,
+            glass,
         });
     }
 

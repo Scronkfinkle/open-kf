@@ -9,6 +9,7 @@ mod door;
 mod fireball;
 mod firing;
 mod game;
+mod glass;
 mod zvolume;
 mod gore;
 mod map;
@@ -252,7 +253,7 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, glass::GlassPlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)
