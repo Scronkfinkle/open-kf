@@ -39,6 +39,9 @@ pub struct MeshActor {
     pub glass: Option<GlassInfo>,
     /// bUnlit: drawn without lighting.
     pub unlit: bool,
+    /// The StaticMeshInstance export holding the baked vertex colours
+    /// (`lighting::read_mesh_instance_colors`), if any.
+    pub instance: Option<usize>,
 }
 
 /// A placed Projector (KFBloodSplatter or plain): a texture projected onto
@@ -496,6 +499,10 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             door,
             glass,
             unlit: matches!(effective("bUnlit"), Some(Value::Bool(true))),
+            instance: match props.get(pkg, "StaticMeshInstance") {
+                Some(Value::Object(ObjectRef::Export(e))) => Some(*e),
+                _ => None,
+            },
         });
     }
 

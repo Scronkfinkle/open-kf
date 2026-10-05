@@ -2518,6 +2518,93 @@ errors. You asked for these before the rest of the game loop.
   KF-Hospital or another light-pattern map.
 - Later (needs an event system): plain movers, lifts, scripted triggers.
 
+## Baked lighting (milestone 11, planned 2026-10-05; L1, L2 implemented)
+
+Why: everything is lit by one made-up sun plus ambient light, so maps look
+flat and too bright. KF lit its maps offline in the editor and stored the
+result in the map file; we read and draw that.
+
+**What a map stores (worked out from the KF-WestLondon data; checked by
+`kfpkg lighting <map>`):**
+
+- **Placed meshes.** Each lit StaticMeshActor points to a
+  StaticMeshInstance: one colour per mesh vertex (compact count, then B,
+  G, R, A). KF-WestLondon 1607 of 1607 and KF-Manor 1793 of 1793 have
+  exactly as many colours as the mesh has vertices. Mostly dark (most
+  under 32 of 255).
+- **BSP (the level's brush geometry).** The rest of the Model after the
+  part we read (`bsp.rs`), in order: Bounds (25-byte boxes), LeafHulls
+  (ints), Leaves (3 compact + 8 bytes), Lights (compact refs), RootOutside
+  and Linked (ints), then:
+  - Sections (render batches): vertices of 40 bytes (position, texture
+    UV, lightmap UV, normal), an int, material, an int, PolyFlags, and the
+    lightmap texture index (-1: none; unlit and sky surfaces).
+  - LightMaps (one per lit surface, 1049 on KF-WestLondon): 7 compact
+    numbers (sizes and offsets), a world-to-lightmap matrix, 3 vectors, the
+    lights with a shadow bit per texel, a compact and an int. Not needed
+    to draw: the vertices already carry lightmap UVs.
+  - LightMapTextures (12 on KF-WestLondon): the lightmaps they hold, two
+    mips of DXT3 (512 x 512 and 256 x 256), format, width, height.
+  The walk ends exactly at the Model's last byte. Each BSP node already
+  names its section and first vertex there (fields we skipped).
+- **Zone ambient**: ZoneInfo AmbientBrightness / Hue / Saturation
+  (KF-WestLondon 1-2: almost none).
+- **Terrain**: not looked at yet (L3).
+
+**How it is drawn:**
+
+- Placed meshes: the colours as vertex colours on an unlit material:
+  texture x colour x K.
+- BSP: Bevy's own lightmap support (the `Lightmap` component, UV_1): the
+  lit material's diffuse is multiplied by the lightmap; the sun and the
+  ambient light are told not to light lightmapped surfaces, so only the
+  lightmap counts. Its exposure is set so the result is texture x
+  lightmap x K, the same as the meshes.
+- K is a single brightness factor. **Not known**: UE2 may double light
+  ("overbright", K = 2) or not (K = 1). Start with 2; you compare with
+  the real game at the same spot.
+- Zeds, weapons and other moving things keep the sun and ambient until
+  L4.
+
+**Steps:**
+
+- **L1, BSP lightmaps (implemented).** `bsp::read_lighting`; `kfpkg
+  lighting <map>` checks it (all 35 maps read; every polygon's points
+  equal its section vertices) and writes the pages to `work/lighting/`.
+  Drawn per (material, page) with Bevy's `Lightmap`. Log `bsp_lightmaps`.
+  KF-Clandestine, KF-Forgotten and KF-Hell save every page empty (the
+  engine rebuilds them at load from the LightMaps entries: lights and
+  per-texel shadow bits); there the BSP keeps the old sun for now
+  (L1b, later: rebuild them the same way).
+- **L2, mesh vertex lighting (implemented).** Each lit actor gets its own
+  copy of its mesh parts with the colours (parts remember which mesh
+  vertex each of their vertices came from), drawn unlit. Actors without
+  colours keep the sun. Log `mesh_lighting` (KF-WestLondon: 1595 baked,
+  74 not, 0 mismatched).
+- **LV, KF's vision overlay (found 2026-10-05 from your screenshots).**
+  The orange look is not lighting: `HUDKillingFloor.DrawModOverlay` draws
+  KFX.SepiaShader over the whole screen every frame. That material comes
+  down to white (Grain2 x Grain2, x2 / x4, clamped) with OB_Modulate, so
+  the screen is multiplied by 2 x tint / 255. The tint is the player
+  zone's DistanceFogColor (KFOverlayColor if bNewKFColorCorrection),
+  brightened per channel to c + round(c (1 - c/255) - 2), eased toward a
+  new zone's colour each tick by round(|diff| x 0.1) + 0.0625, starting
+  from black (KF's fade-in). Zones without fog keep the current tint;
+  bNoKFColorCorrection zones are skipped; a KFSPLevelInfo with
+  bUseVisionOverlay false turns it off. Drawn by a third camera, last,
+  with a full-screen quad whose blend is 2 x source x screen (UE2's
+  modulate). The HUD text is not tinted. Log `vision_overlay` on each
+  target change. Measured on your matching screenshot (ZoneInfo4, x1.16,
+  1.04, 0.86): it accounts for most of the colour gap.
+- **L3, terrain lighting.** Find where KF keeps it; draw it.
+- **L4, moving things.** Zeds and weapons lit by the map's Light actors
+  near them plus zone ambient, as UE2 lights actors; the made-up sun goes.
+- Not planned: KF's dynamic lights (muzzle flashes lighting walls),
+  projected shadows of zeds, coronas.
+
+Test: screenshots at fixed views before and after each step, and you
+compare one view with the real game.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

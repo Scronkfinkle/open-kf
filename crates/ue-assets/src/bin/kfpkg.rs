@@ -52,6 +52,8 @@ const USAGE: &str = "usage:
   kfpkg scan
   kfpkg info <file>
   kfpkg exports <file> [CLASS]
+  kfpkg lighting <map>   (baked mesh colours vs mesh vertex counts)
+  kfpkg raw <file> <name> [FROM]   (hex dump of an export, after its properties)
   kfpkg props <file> [CLASS]
   kfpkg scanprops
   kfpkg scripts
@@ -108,6 +110,10 @@ fn main() -> ExitCode {
         ["emitter", class] => emitter(&install, class),
         ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
+        ["lighting", map] => lighting(&install, map, None),
+        ["lighting", map, at] => lighting(&install, map, Some(at)),
+        ["raw", file, name] => raw(&install, file, name, None),
+        ["raw", file, name, from] => raw(&install, file, name, from.parse().ok()),
         ["notifies", file, anim] => notifies(&install, file, anim),
         ["zones", map, zone] => zone_polygons(&install, map, zone.parse().map_err(|_| "bad zone").unwrap_or(0)),
         _ => {
@@ -1476,6 +1482,169 @@ fn notifies(install: &Install, file: &str, anim: &str) -> Result<bool, String> {
         for n in &s.notifies {
             println!("{} frames={} time={:.3} function={} object={} name={} effect={:?}", s.name, s.num_frames, n.time, n.function, n.object_class, n.name, n.effect);
         }
+    }
+    Ok(true)
+}
+
+/// Checks each StaticMeshActor's baked colours against its mesh.
+fn lighting(install: &Install, map: &str, probe: Option<&str>) -> Result<bool, String> {
+    use std::collections::BTreeMap;
+    use ue_assets::package_set::PackageSet;
+    use ue_assets::properties::{Value, read_export_properties};
+    let file = if map.contains('/') || map.contains('.') { map.to_string() } else { format!("Maps/{map}.rom") };
+    let set = PackageSet::new(&install.root);
+    let lp = set.load_path(&resolve_path(install, &file)).map_err(|e| e.to_string())?;
+    let pkg = &lp.pkg;
+    let (mut ok, mut none, mut unreadable) = (0, 0, 0);
+    let mut mismatched: Vec<String> = Vec::new();
+    let mut brightness: BTreeMap<u32, usize> = BTreeMap::new();
+    for i in 0..pkg.exports.len() {
+        let Ok(props) = read_export_properties(pkg, i) else { continue };
+        let (Some(Value::Object(inst)), Some(Value::Object(mesh))) = (props.get(pkg, "StaticMeshInstance"), props.get(pkg, "StaticMesh")) else {
+            continue;
+        };
+        let ObjectRef::Export(inst) = *inst else {
+            none += 1;
+            continue;
+        };
+        let Ok(colors) = ue_assets::lighting::read_mesh_instance_colors(pkg, inst) else {
+            unreadable += 1;
+            continue;
+        };
+        let Some(m) = set.resolve(&lp, *mesh) else { continue };
+        let Ok(sm) = ue_assets::static_mesh::read_static_mesh(&m.package.pkg, m.export) else { continue };
+        if colors.len() == sm.positions.len() {
+            ok += 1;
+            for c in &colors {
+                *brightness.entry((c[0].max(c[1]).max(c[2]) as u32) / 32 * 32).or_default() += 1;
+            }
+        } else {
+            mismatched.push(format!("{}:{}/{}", pkg.object_name(ObjectRef::Export(i)), colors.len(), sm.positions.len()));
+        }
+    }
+    println!("mesh actors with colours matching the mesh: {ok}; mismatched: {}; no instance: {none}; unreadable: {unreadable}", mismatched.len());
+    println!("mismatched (actor:colours/vertices): {}", mismatched.iter().take(20).cloned().collect::<Vec<_>>().join(" "));
+    println!("brightest channel, histogram by 32: {brightness:?}");
+    let contents = ue_assets::level::read_level(pkg);
+    if let Some(m) = contents.bsp_model
+        && let Ok(model) = ue_assets::bsp::read_model(pkg, m)
+    {
+        println!(
+            "bsp model {} : {} bytes, read up to {} (nodes {} surfs {} points {})",
+            pkg.object_name(ObjectRef::Export(m)),
+            pkg.export_data(m).len(),
+            model.tail,
+            model.nodes.len(),
+            model.surfs.len(),
+            model.points.len()
+        );
+        match ue_assets::bsp::read_lighting(pkg, m, &model) {
+            Err(e) => println!("bsp lighting: unreadable: {e}"),
+            Ok(l) => {
+                // Each node's points against its section's vertices.
+                let (mut same, mut differ, mut no_section, mut lit) = (0, 0, 0, 0);
+                for n in &model.nodes {
+                    let Some(sec) = usize::try_from(n.section).ok().and_then(|i| l.sections.get(i)) else {
+                        no_section += 1;
+                        continue;
+                    };
+                    let ok = (0..n.num_verts).all(|k| {
+                        let p = model.points[model.vert_points[n.vert_pool + k]];
+                        sec.vertices.get(n.first_vertex as usize + k).is_some_and(|v| (0..3).all(|a| (v.position[a] - p[a]).abs() < 0.01))
+                    });
+                    if ok { same += 1 } else { differ += 1 }
+                    if sec.lightmap_texture >= 0 {
+                        lit += 1;
+                    }
+                }
+                println!(
+                    "bsp lighting: sections={} lightmaps={} textures={} nodes: points_match={same} differ={differ} no_section={no_section} lit={lit}",
+                    l.sections.len(),
+                    l.lightmaps,
+                    l.textures.len()
+                );
+                std::fs::create_dir_all("work/lighting").map_err(|e| e.to_string())?;
+                let mut hist = [0usize; 8];
+                // Probe: polygons under an X,Y point (Unreal units), their
+                // lightmap page, UVs and the lightmap value at the polygon's
+                // centre.
+                if let Some(at) = probe {
+                    let v: Vec<f32> = at.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                    let (px, py) = (v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0));
+                    for (ni, n) in model.nodes.iter().enumerate() {
+                        let pts: Vec<[f32; 3]> = (0..n.num_verts).map(|k| model.points[model.vert_points[n.vert_pool + k]]).collect();
+                        if pts.len() < 3 || n.plane[2].abs() < 0.7 {
+                            continue;
+                        }
+                        // Point in polygon (XY), crossing count.
+                        let mut inside = false;
+                        for k in 0..pts.len() {
+                            let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
+                            if (a[1] > py) != (b[1] > py) && px < a[0] + (py - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+                                inside = !inside;
+                            }
+                        }
+                        if !inside {
+                            continue;
+                        }
+                        let sec = &l.sections[n.section as usize];
+                        let uvs: Vec<[f32; 2]> = (0..n.num_verts).map(|k| sec.vertices[n.first_vertex as usize + k].lightmap_uv).collect();
+                        let c = uvs.iter().fold([0.0f32; 2], |a, u| [a[0] + u[0] / uvs.len() as f32, a[1] + u[1] / uvs.len() as f32]);
+                        let sample = l.textures.get(sec.lightmap_texture.max(0) as usize).filter(|t| !t.mips.is_empty()).and_then(|t| {
+                            let mip = ue_assets::texture::Mip { width: t.width as usize, height: t.height as usize, data: t.mips[0].clone() };
+                            let rgba = decode_rgba(ue_assets::texture::TextureFormat::from_byte(t.format), &mip, None)?;
+                            let (x, y) = (((c[0] * t.width as f32) as usize).min(t.width as usize - 1), ((c[1] * t.height as f32) as usize).min(t.height as usize - 1));
+                            let i = (y * t.width as usize + x) * 4;
+                            Some([rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]])
+                        });
+                        println!(
+                            "probe node {ni}: z={:.0} surf={} lightmap_entry={} page={} uvs={:?} centre_sample={:?} surf_flags={:#x}",
+                            pts[0][2], n.surf, n.lightmap, sec.lightmap_texture, uvs, sample, model.surfs[n.surf].flags
+                        );
+                    }
+                }
+                println!("lightmap pages saved empty: {}", l.textures.iter().filter(|t| t.mips.is_empty()).count());
+                for (i, t) in l.textures.iter().enumerate() {
+                    if t.mips.is_empty() {
+                        continue;
+                    }
+                    let mip = ue_assets::texture::Mip { width: t.width as usize, height: t.height as usize, data: t.mips[0].clone() };
+                    let Some(rgba) = decode_rgba(ue_assets::texture::TextureFormat::from_byte(t.format), &mip, None) else {
+                        println!("lightmap {i}: format {} not decoded", t.format);
+                        continue;
+                    };
+                    for px in rgba.as_chunks::<4>().0.iter() {
+                        hist[(px[0].max(px[1]).max(px[2]) / 32) as usize] += 1;
+                    }
+                    let path = Path::new("work/lighting").join(format!("{map}-lightmap{i}.png"));
+                    let out = File::create(&path).map_err(|e| e.to_string())?;
+                    let mut enc = png::Encoder::new(std::io::BufWriter::new(out), t.width, t.height);
+                    enc.set_color(png::ColorType::Rgba);
+                    enc.set_depth(png::BitDepth::Eight);
+                    enc.write_header().and_then(|mut w| w.write_image_data(&rgba)).map_err(|e| e.to_string())?;
+                }
+                println!("lightmap texels, brightest channel by 32: {hist:?} (written to work/lighting)");
+            }
+        }
+    }
+    Ok(mismatched.is_empty() && unreadable == 0)
+}
+
+/// Hex dump of an export's data after its property list (or from byte FROM).
+fn raw(install: &Install, file: &str, name: &str, from: Option<usize>) -> Result<bool, String> {
+    let p = Package::open(&resolve(install, file)).map_err(|e| e.to_string())?;
+    let i = (0..p.exports.len())
+        .find(|&i| p.object_name(ObjectRef::Export(i)).eq_ignore_ascii_case(name))
+        .ok_or("export not found")?;
+    let data = p.export_data(i);
+    let start = match from {
+        Some(f) => f,
+        None => ue_assets::properties::read_export_properties(&p, i).map(|pr| pr.end).unwrap_or(0),
+    };
+    println!("{} {}: {} bytes, dump from {start}", p.export_class_name(i), name, data.len());
+    for (k, row) in data[start.min(data.len())..].chunks(16).enumerate() {
+        let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
+        println!("{:6}  {}", start + k * 16, hex.join(" "));
     }
     Ok(true)
 }

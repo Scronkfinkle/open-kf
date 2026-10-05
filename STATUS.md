@@ -1,5 +1,124 @@
 # STATUS
 
+**Mostly resolved 2026-10-05.** The orange cast was KF's vision overlay
+(`HUDKillingFloor.DrawModOverlay`, KFX.SepiaShader), not the lighting:
+the whole screen is multiplied by 2 x the zone's fog colour (brightened).
+Now drawn (`src/overlay.rs`). On your matching screenshot (precise.jpg)
+the per-channel ratios real/ours went from about (1.3, 1.1, 0.9) to
+about equal; left wall (1.08, 1.05, 1.07), far buildings (0.98, 0.97,
+1.0). Left: BSP and the scaffold tarp about 20% dark, the sky a little
+less orange (layer order), the phone booth glass, a brighter fire decal.
+The write-up below is the record of the investigation.
+
+## Goal
+kf-rs: a Rust/Bevy rewrite of the Killing Floor 1 engine. Current step:
+milestone 11, baked lighting (docs/DESIGN.md, "Baked lighting"). Make
+KF-WestLondon look like the real game.
+
+## Setup
+- Games and exact versions: Killing Floor (Steam, run under Proton) at
+  references/killing_floor. Display settings in System/KillingFloor.ini
+  [WinDrv.WindowsClient]: Brightness=0.8, Contrast=0.7, Gamma=0.8,
+  Bloom=False.
+- Agent / model: Claude Code (Opus).
+- Other tools and loaders: Bevy 0.19, our `kfpkg` tool.
+- Where things are: reference screenshots in
+  references/london_kf_screenshots/ (yours, from the real game; the
+  second, 20261005131359_1.jpg, is the spawn view). Ours in
+  work/screenshots/. Lightmap pages in work/lighting/.
+
+## What works (tested)
+- Reading the lighting: BSP lightmaps and per-vertex mesh colours read
+  on all 35 maps. `kfpkg lighting <map>` checks counts and positions.
+- The stored lightmap matches the stored shadow bits exactly. Checked on
+  the road surface at the spawn (record 111, moonlight `Sunlight0`).
+- Drawing: the level is lit only by its stored lighting. Light pools,
+  hard shadows and coloured lamps show up in the right places.
+- Mesh colour channel order fixed (R, G, B, A, not B, G, R, A). The
+  viaduct went from blue to warm, as in the real game.
+
+## What doesn't work yet
+- Overall look against the real game: same structure, wrong brightness
+  and colour (numbers below).
+- KF-Clandestine, KF-Forgotten, KF-Hell save their lightmap pages empty.
+  Their BSP keeps the old sun.
+- Zeds, weapons and hands are still lit by the made-up sun (L4).
+  Terrain is not lit yet (L3).
+
+## Which game owns the player
+Not applicable (a rewrite).
+
+## The current problem
+With the stored lighting drawn as texture x light x K (K = 2, UE2's
+assumed "overbright"), our spawn view is too dark and too grey. The real
+game is brighter in lit areas and clearly orange and saturated
+everywhere, the sky and the haze included.
+
+## Evidence
+Average colours of matching regions, spawn view (real vs ours):
+
+| Region | Real | Ours K=2, fog | Ours K=2, no fog | Ours K=4, fog |
+| --- | --- | --- | --- | --- |
+| Viaduct brick (mesh) | 126, 87, 54 | 93, 74, 54 | 90, 69, 47 | 116, 105, 91 |
+| Scaffold tarp (mesh) | 106, 81, 49 | 76, 65, 48 | 56, 44, 27 | 84, 74, 61 |
+| Right wall | 45, 35, 24 | 43, 37, 28 | 7, 5, 2 | 60, 49, 36 |
+| Road, right | 31, 27, 21 | 43, 39, 34 | 18, 18, 17 | 55, 48, 39 |
+| Pavement, near (BSP) | 69, 50, 34 | 38, 33, 26 | 14, 12, 10 | 53, 45, 34 |
+| Sky | 146, 104, 63 | 77, 68, 53 | 77, 68, 53 | 126, 115, 101 |
+
+- The real game's colours have about twice the red-to-blue ratio of
+  ours. Every fog colour in the map is a neutral brown, e.g. the spawn
+  zone ZoneInfo4 has DistanceFogColor (91, 80, 64), fog from -500 to
+  4500.
+- With fog off, our underlying light is very dark. Fog was lifting the
+  shadows.
+- The views are not exactly the same spot. Our camera is the first
+  PlayerStart; yours is wherever KF spawned you, close by.
+
+## What we've already tried
+- Tonemapping off. UE2 had none, and Bevy's default film curve darkens
+  and greys. Kept: slightly more contrast, colour cast unchanged.
+- Fog off, to measure the light underneath. It showed the light is far
+  too dark, but fog doesn't explain the orange.
+- K = 4 instead of 2. Brightness lands near the real game (best guess K
+  is about 3), but ours stays grey.
+- Checked the lightmap's alpha channel for a hidden intensity
+  multiplier. There isn't one: alpha only marks used and unused texels.
+- Worked out UE2's gamma ramp from the ini values, using a formula I
+  remember from UE2: 1.2 x^1.25 + 0.05. Not sure it's right; as
+  computed, it's equal on all channels and can't add an orange cast.
+
+## Ideas not tried yet
+- A side-by-side at exactly the same spot and view. For example, you
+  stand somewhere unmistakable (against the phone box, facing the
+  ambulance), and I put our camera there.
+- An in-game screenshot with fog off or lighting off, if KF's console
+  allows it. That would separate the fog, the lighting and the display
+  curve.
+- The sky's layer order. Before the sky fix, our sky showed orange at
+  some angles; the real sky is orange, so the layer on top may be the
+  wrong one. A wrong sky also changes how warm the frame looks.
+- Zone ambient. AmbientBrightness 1-2 with Hue 35 (orange) and
+  Saturation 100. Small, but it's orange and adds to every surface.
+- Whether UE2's fog is applied in gamma space. Bevy fogs in linear
+  space, which washes colours out differently.
+
+## Files that matter
+- src/lighting.rs: K (BRIGHTNESS), lightmap upload, lightmap material.
+- src/map.rs: where BSP and meshes get their lighting.
+- src/camera.rs: tonemapping off.
+- src/zones.rs: distance fog.
+- crates/ue-assets/src/bsp.rs, crates/ue-assets/src/lighting.rs:
+  readers.
+- crates/ue-assets/src/bin/kfpkg.rs: `kfpkg lighting <map> [X,Y]`.
+  The probe prints the polygon under a point, its lightmap page and
+  coordinates, and the lightmap value there.
+
+---
+
+# Previous STATUS (resolved 2026-10-03, kept as a record)
+
+
 **Resolved 2026-10-03.** Cause: the Clot's `chr_spine3` has a mass of
 3.14e-6 in the file (a placeholder), ~35,000x lighter than the ribcage. A
 nearly massless link between two heavy bodies cannot pass joint corrections

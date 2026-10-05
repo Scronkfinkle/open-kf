@@ -10,6 +10,17 @@
 //! - `Verts`: (point index, side index) pairs, a pool the nodes point into
 //! - shared side count, zone count, zones; then more data not read here
 //!   (polys reference, bounds, leaves, lightmaps, render sections)
+//!
+//! The rest (`read_lighting`, from `Model::tail`; worked out from the
+//! KF-WestLondon data, the walk ends exactly at the Model's last byte):
+//! - Bounds (25-byte boxes), LeafHulls (ints), Leaves (3 compact + 8 bytes),
+//!   Lights (compact refs), RootOutside and Linked (ints)
+//! - Sections: vertices (40 bytes: position, texture UV, lightmap UV,
+//!   normal), an int, material, node count, PolyFlags, lightmap texture
+//! - LightMaps: 7 compact, a matrix, 3 vectors, lights (ref, shadow bits,
+//!   7 ints), a compact and an int (skipped: the vertices carry the UVs)
+//! - LightMapTextures: compact + lightmap list, 8 bytes, an int, two mips
+//!   (int file offset, compact length, data), format, width, height, an int
 
 use crate::package::{ObjectRef, Package};
 use crate::properties::read_export_properties;
@@ -40,6 +51,12 @@ pub struct BspNode {
     /// Child nodes behind and in front (iBack, iFront; -1 = none).
     pub back: i32,
     pub front: i32,
+    /// Render section and first vertex in it (see `BspLighting`), -1 if
+    /// none.
+    pub section: i32,
+    pub first_vertex: i32,
+    /// LightMaps entry, -1 if none.
+    pub lightmap: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +85,9 @@ pub struct Model {
     /// The Polys object holding the source polygons (for brush models, the
     /// brush's shape in its own local space).
     pub polys: ObjectRef,
+    /// Byte offset where the unread rest of the Model starts (leaves,
+    /// lights, lightmaps, render sections).
+    pub tail: usize,
 }
 
 /// One polygon of a `Polys` object.
@@ -152,9 +172,9 @@ fn read_node(r: &mut Reader) -> Result<BspNode> {
     let zone = [r.u8()?, r.u8()?];
     let num_verts = r.u8()? as usize;
     let _leaf = [r.i32()?, r.i32()?];
-    let _section = r.i32()?;
-    let _first_vertex = r.i32()?;
-    let _lightmap = r.i32()?;
+    let section = r.i32()?;
+    let first_vertex = r.i32()?;
+    let lightmap = r.i32()?;
     if vert_pool < 0 || surf < 0 {
         return Err(invalid(r, format!("node has negative vertex pool {vert_pool} or surface {surf}")));
     }
@@ -166,6 +186,9 @@ fn read_node(r: &mut Reader) -> Result<BspNode> {
         zone,
         back,
         front,
+        section,
+        first_vertex,
+        lightmap,
     })
 }
 
@@ -238,6 +261,7 @@ pub fn read_model(pkg: &Package, export: usize) -> Result<Model> {
         num_zones: num_zones as usize,
         zone_actors,
         polys,
+        tail: r.pos(),
     };
     model.validate().map_err(|m| invalid(&r, m))?;
     Ok(model)
@@ -311,4 +335,139 @@ impl Model {
             dot(self.vectors[s.texture_v]) / height,
         ]
     }
+}
+
+/// A BSP render vertex.
+#[derive(Debug, Clone, Copy)]
+pub struct BspVertex {
+    pub position: [f32; 3],
+    pub uv: [f32; 2],
+    /// In the section's lightmap texture, 0..1.
+    pub lightmap_uv: [f32; 2],
+    pub normal: [f32; 3],
+}
+
+#[derive(Debug, Clone)]
+pub struct BspSection {
+    pub vertices: Vec<BspVertex>,
+    pub material: ObjectRef,
+    pub poly_flags: u32,
+    /// Index into `BspLighting::textures`, -1 = no lightmap.
+    pub lightmap_texture: i32,
+}
+
+/// A lightmap page. `format` is the Unreal texture format (7 = DXT3).
+#[derive(Debug, Clone)]
+pub struct LightmapTexture {
+    pub format: u8,
+    pub width: u32,
+    pub height: u32,
+    /// Mip data, largest first. Empty if the map saved the page empty.
+    pub mips: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BspLighting {
+    pub sections: Vec<BspSection>,
+    pub textures: Vec<LightmapTexture>,
+    /// Surface lightmaps (LightMaps entries) read past.
+    pub lightmaps: usize,
+}
+
+/// Reads the render sections and lightmap textures after `model.tail`.
+pub fn read_lighting(pkg: &Package, export: usize, model: &Model) -> Result<BspLighting> {
+    let mut r = Reader::new(pkg.export_data(export));
+    r.seek(model.tail)?;
+    let n = count(&mut r, 25, "bounds")?;
+    r.bytes(n * 25)?;
+    let n = count(&mut r, 4, "leaf hull")?;
+    r.bytes(n * 4)?;
+    let n = count(&mut r, 11, "leaf")?;
+    for _ in 0..n {
+        index(&mut r)?;
+        index(&mut r)?;
+        index(&mut r)?;
+        r.bytes(8)?;
+    }
+    let n = count(&mut r, 1, "light")?;
+    for _ in 0..n {
+        index(&mut r)?;
+    }
+    let _root_outside = r.i32()?;
+    let _linked = r.i32()?;
+
+    let n = count(&mut r, 17, "section")?;
+    let mut sections = Vec::with_capacity(n);
+    for _ in 0..n {
+        let nv = count(&mut r, 40, "section vertex")?;
+        let mut vertices = Vec::with_capacity(nv);
+        for _ in 0..nv {
+            let position = vec3(&mut r)?;
+            let uv = [r.f32()?, r.f32()?];
+            let lightmap_uv = [r.f32()?, r.f32()?];
+            let normal = vec3(&mut r)?;
+            vertices.push(BspVertex { position, uv, lightmap_uv, normal });
+        }
+        let _revision = r.i32()?;
+        let material = ObjectRef::from_raw(index(&mut r)?);
+        let _num_nodes = r.i32()?;
+        let poly_flags = r.u32()?;
+        let lightmap_texture = r.i32()?;
+        sections.push(BspSection { vertices, material, poly_flags, lightmap_texture });
+    }
+
+    let lightmaps = count(&mut r, 100, "lightmap")?;
+    for _ in 0..lightmaps {
+        for _ in 0..7 {
+            index(&mut r)?;
+        }
+        r.bytes(64 + 36)?;
+        let lights = count(&mut r, 29, "lightmap light")?;
+        for _ in 0..lights {
+            index(&mut r)?;
+            let bits = count(&mut r, 1, "shadow bit")?;
+            r.bytes(bits + 28)?;
+        }
+        index(&mut r)?;
+        r.i32()?;
+    }
+
+    let n = count(&mut r, 1, "lightmap texture")?;
+    let mut textures = Vec::with_capacity(n);
+    for _ in 0..n {
+        index(&mut r)?;
+        let held = count(&mut r, 4, "lightmap index")?;
+        r.bytes(held * 4 + 8)?;
+        r.i32()?;
+        let mut mips = Vec::new();
+        for _ in 0..2 {
+            let _end = r.i32()?;
+            let len = count(&mut r, 1, "lightmap mip")?;
+            mips.push(r.bytes(len)?.to_vec());
+        }
+        let format = r.u8()?;
+        let width = r.i32()?;
+        let height = r.i32()?;
+        r.i32()?;
+        // Some maps (KF-Clandestine, KF-Forgotten, KF-Hell) save the pages
+        // empty, with junk sizes: the engine rebuilds them from the
+        // LightMaps entries at load. Kept with no mips.
+        if mips.iter().all(|m| m.is_empty()) {
+            textures.push(LightmapTexture { format, width: 0, height: 0, mips: Vec::new() });
+            continue;
+        }
+        if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
+            return Err(invalid(&r, format!("implausible lightmap size {width} x {height}")));
+        }
+        textures.push(LightmapTexture { format, width: width as u32, height: height as u32, mips });
+    }
+    if r.remaining() != 0 {
+        return Err(invalid(&r, format!("{} bytes left after the lightmap textures", r.remaining())));
+    }
+    for (i, s) in sections.iter().enumerate() {
+        if s.lightmap_texture >= textures.len() as i32 {
+            return Err(invalid(&r, format!("section {i} lightmap texture {} >= {}", s.lightmap_texture, textures.len())));
+        }
+    }
+    Ok(BspLighting { sections, textures, lightmaps })
 }

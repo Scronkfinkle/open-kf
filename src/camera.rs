@@ -120,6 +120,9 @@ pub fn spawn_camera(
             ..default()
         },
         kf_projection(),
+        // UE2 had no tonemapping: colours go to the screen as computed
+        // (Bevy's default film curve darkened and greyed KF's lighting).
+        bevy::core_pipeline::tonemapping::Tonemapping::None,
         Transform::from_translation(position).with_rotation(rotation),
         FlyCamera { yaw, pitch, speed: 8.0 },
     ));
@@ -128,6 +131,7 @@ pub fn spawn_camera(
             Camera3d::default(),
             Camera { order: -1, ..default() },
             kf_projection(),
+            bevy::core_pipeline::tonemapping::Tonemapping::None,
             Transform::from_translation(sky_pos).with_rotation(rotation),
             RenderLayers::layer(SKY_LAYER),
             SkyCamera,

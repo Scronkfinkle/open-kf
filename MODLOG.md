@@ -3028,3 +3028,83 @@ gib looks solid in the screenshot (partly behind the gun). Tests pass;
 clippy only the old `boss.rs` warning.
 **Still broken / not tested:** SkyLine is the sky's city silhouette, now
 masked: not looked at. Other maps not checked. Not checked by you.
+
+## 2026-10-05 Baked lighting L1 + L2: BSP lightmaps, mesh vertex colours
+
+**Changed:** Plan in DESIGN ("Baked lighting", milestone 11).
+`ue-assets/bsp.rs`: nodes keep section / first vertex / lightmap;
+`read_lighting` reads the rest of the Model (sections with lightmap UVs,
+lightmap records skipped, lightmap textures). `ue-assets/lighting.rs`:
+`read_mesh_instance_colors`. `level.rs`: MeshActor.instance. `kfpkg
+lighting <map>` (checks, writes pages to work/lighting) and `kfpkg raw`
+(hex dump). `src/lighting.rs`: brightness K (2, a guess), lightmap
+upload, lightmapped material. `map.rs`: BSP drawn with Bevy lightmaps;
+meshes with baked colours drawn unlit with their own coloured copy; sun
+and ambient no longer light lightmapped surfaces. README.
+**Why:** you chose lighting next: maps looked flat and too bright.
+**Tested how:** `kfpkg lighting` on all 35 maps; KF-WestLondon load log;
+screenshots at the player start and in the tunnel (before and after);
+KF-Hell load; tests, clippy.
+**Result:** mesh colours = mesh vertex count on all 35 maps (e.g.
+KF-WestLondon 1607, KF-Manor 1793). BSP lighting reads on all 35; all
+polygons' points equal their section vertices. KF-WestLondon: 12 pages,
+1986 polygons lightmapped, 69 unlit, 1595 actors baked, 74 not.
+Screenshots: blue moonlight on the viaduct, light pooled at the
+ambulance, a dark tunnel; before, everything was evenly lit. Tests 96
+pass; clippy only the old `boss.rs` warning.
+**Failures on the way:** first guesses at the Model layout (fixed-size
+leaves, a lights array right after them) desynced; found the layout by
+walking it until it ended on the last byte. KF-Clandestine, KF-Forgotten,
+KF-Hell failed until I found their pages are saved empty.
+**Still broken / not tested:** brightness K (x2) and the tonemapping not
+compared with the game; those 3 maps' BSP keeps the sun; zeds, weapons,
+hands still sun-lit (L4); terrain (L3) not done. Not checked by you.
+**Next:** your comparison with the real game; then L3 / L4.
+
+## 2026-10-05 Lighting vs the real game: colour order fixed, tonemapping off; stuck on the colour cast
+
+**Changed:** `ue-assets/lighting.rs`: mesh colours are R, G, B, A (were read
+as B, G, R). `camera.rs`: tonemapping off on both cameras (UE2 had none).
+`kfpkg lighting <map> [X,Y]`: probe of the polygon under a point (page,
+UVs, lightmap value). STATUS.md written (the old ragdoll record kept
+below it).
+**Why:** your 4 real-game screenshots of KF-WestLondon.
+**Tested how:** average colours of 6 matching regions, real vs ours, at
+the spawn; experiments with fog off and K = 4 (both reverted); the probe
+and the moonlight's shadow bits against the stored page; tests, clippy.
+**Result:** the viaduct went from blue to warm, as in the real game. The
+stored lightmap matches its shadow bits exactly, so the data is right.
+Still off: ours is too dark at K = 2 (about K = 3 matches brightness) and
+grey where the game is orange and saturated (red-to-blue about half of
+the real game's). Table in STATUS.md.
+**Failures on the way:** two real attempts at the colour gap (tonemapping
+off, the fog analysis) did not explain it, so I stopped and wrote
+STATUS.md. I overwrote STATUS.md before looking at it; the old content is
+restored below the new one.
+**Still broken / not tested:** the colour cast; K; the sky layer order
+(the real sky is orange); the 3 maps with empty pages; L3, L4.
+**Next:** your call (STATUS.md "Ideas not tried yet").
+
+## 2026-10-05 Lighting LV: KF's vision overlay (the orange look)
+
+**Changed:** `src/overlay.rs`: a third camera (order 2, after the scene
+and the weapon) draws a full-screen quad blended as 2 x source x screen,
+the colour following HUDKillingFloor.DrawModOverlay (zone fog colour or
+KFOverlayColor, brightened, eased from black). `zones.rs` / `map.rs`:
+zones carry their overlay colour; KFSPLevelInfo.bUseVisionOverlay read.
+`weapon.rs`: the weapon camera's tonemapping off as well. DESIGN (LV),
+STATUS (marked mostly resolved), README.
+**Why:** your matching screenshot (precise.jpg): the whole frame, sky
+included, was more orange in the game; the scripts show KF draws
+KFX.SepiaShader over the view (it reduces to white, OB_Modulate).
+**Tested how:** same pose (`--camera " -2760,1772,-3768,-3.6652,-0.0652"`),
+7 region averages real vs ours; log `vision_overlay`; tests, clippy.
+**Result:** red/green/blue ratios real/ours now about equal (left wall
+1.08, 1.05, 1.07; far buildings 0.98, 0.97, 1.0; before about 1.3, 1.1,
+0.9). First try put the overlay at the weapon camera's order (1): the HUD
+was cut off and Bevy warned; moved to 2. Tests 96 pass; clippy only the
+old `boss.rs` warning.
+**Still broken / not tested:** BSP and tarp about 20% dark; sky slightly
+less orange; phone booth glass not drawn; a fire decal brighter in KF;
+the fade between zones not watched; not checked by you.
+**Next:** your notes: sky layer order, booth glass, fire decal.

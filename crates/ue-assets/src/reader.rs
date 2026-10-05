@@ -98,7 +98,7 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
+    pub fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         Ok(self.bytes(N)?.try_into().expect("slice length checked"))
     }
 

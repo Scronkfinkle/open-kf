@@ -8,6 +8,7 @@ pub mod emitter;
 pub mod install;
 pub mod karma;
 pub mod level;
+pub mod lighting;
 pub mod material;
 pub mod nav;
 pub mod package;

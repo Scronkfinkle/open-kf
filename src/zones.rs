@@ -20,6 +20,10 @@ pub struct ZoneFog {
     pub start: f32,
     pub end: f32,
     pub color: [u8; 4],
+    /// The vision overlay's colour in this zone (overlay.rs): the fog
+    /// colour, or KFOverlayColor with bNewKFColorCorrection; None with
+    /// bNoKFColorCorrection.
+    pub overlay: Option<[u8; 3]>,
 }
 
 /// The level's BSP (for point -> zone) and each zone's fog. Inserted by the
@@ -28,6 +32,8 @@ pub struct ZoneFog {
 pub struct Zones {
     pub bsp: Model,
     pub zones: Vec<ZoneFog>,
+    /// KFSPLevelInfo.bUseVisionOverlay (true without one).
+    pub vision_overlay: bool,
 }
 
 impl Zones {

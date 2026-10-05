@@ -69,7 +69,7 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 _ => level_info,
             };
             let Some(e) = export else {
-                return crate::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4] };
+                return crate::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], overlay: None };
             };
             let props = read_export_properties(pkg, e).ok();
             let value = |n: &str| props.as_ref().and_then(|p| defaults.actor_value(lp, e, p, n));
@@ -85,6 +85,20 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 color: match value("DistanceFogColor") {
                     Some(Value::Color(c)) => c,
                     _ => [128, 128, 128, 0],
+                },
+                overlay: {
+                    let flag = |n: &str| matches!(value(n), Some(Value::Bool(true)));
+                    let color = |n: &str| match value(n) {
+                        Some(Value::Color(c)) => [c[0], c[1], c[2]],
+                        _ => [128, 128, 128],
+                    };
+                    if flag("bNoKFColorCorrection") {
+                        None
+                    } else if flag("bNewKFColorCorrection") {
+                        Some(color("KFOverlayColor"))
+                    } else {
+                        Some(color("DistanceFogColor"))
+                    }
                 },
             }
         })
@@ -448,6 +462,8 @@ struct MeshBuilder {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
+    /// Lightmap UVs (UV_1); left empty when not used.
+    uvs1: Vec<[f32; 2]>,
     /// Per-vertex colour; left empty when not used.
     colors: Vec<[f32; 4]>,
     indices: Vec<u32>,
@@ -462,6 +478,9 @@ impl MeshBuilder {
             .with_inserted_indices(Indices::U32(self.indices));
         if !self.colors.is_empty() {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
+        }
+        if !self.uvs1.is_empty() {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.uvs1);
         }
         mesh
     }
@@ -577,8 +596,30 @@ fn load_map(
                             .join(" ")
                     ),
                 );
-                commands.insert_resource(crate::zones::Zones { bsp: model.clone(), zones: zone_fog });
-                let mut groups: HashMap<String, (Handle<StandardMaterial>, bool, MeshBuilder)> = HashMap::new();
+                // KFSPLevelInfo.bUseVisionOverlay (only KF-Crash has one).
+                let vision_overlay = (0..lp.pkg.exports.len())
+                    .filter(|&i| lp.pkg.export_class_name(i) == "KFSPLevelInfo")
+                    .filter_map(|i| read_export_properties(&lp.pkg, i).ok())
+                    .all(|p| !matches!(p.get(&lp.pkg, "bUseVisionOverlay"), Some(Value::Bool(false))));
+                commands.insert_resource(crate::zones::Zones { bsp: model.clone(), zones: zone_fog, vision_overlay });
+                // Baked lighting (lighting.rs): the render sections carry
+                // each polygon's lightmap UVs and page.
+                let bsp_lighting = match ue_assets::bsp::read_lighting(&lp.pkg, m, &model) {
+                    Ok(l) => Some(l),
+                    Err(e) => {
+                        runlog::kv("bsp_lighting_error", &format!("error=\"{e}\""));
+                        None
+                    }
+                };
+                let lightmap_pages: Vec<Option<Handle<Image>>> = bsp_lighting
+                    .as_ref()
+                    .map(|l| l.textures.iter().map(|t| crate::lighting::lightmap_image(t, loader.images)).collect())
+                    .unwrap_or_default();
+                let (mut lightmapped_polys, mut no_lightmap_polys, mut missing_page_polys) = (0usize, 0usize, 0usize);
+                let mut lightmapped_materials: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>> = HashMap::new();
+                // Per (material, flags, lightmap page): material, in sky, page, mesh.
+                type BspGroup = (Handle<StandardMaterial>, bool, Option<Handle<Image>>, MeshBuilder);
+                let mut groups: HashMap<String, BspGroup> = HashMap::new();
                 for (i, node) in model.nodes.iter().enumerate() {
                     let surf = &model.surfs[node.surf];
                     if surf.flags & (poly_flags::INVISIBLE | poly_flags::PORTAL | poly_flags::FAKE_BACKDROP) != 0
@@ -607,12 +648,54 @@ fn load_map(
                     // baked light we do not have; our one sun made it change
                     // colour with the view): drawn unlit.
                     let unlit = in_sky || surf.flags & poly_flags::UNLIT != 0;
-                    let mat = if unlit { loader.unlit(&mat) } else { mat };
-                    let key = format!("{:?}|{two_sided}|{in_sky}|{unlit}", surf.material);
+                    // The polygon's lightmap page and UVs, if it has one.
+                    // A page the map saved empty: keep the old sun lighting.
+                    let page_missing = !unlit
+                        && bsp_lighting
+                            .as_ref()
+                            .and_then(|l| l.sections.get(usize::try_from(node.section).ok()?))
+                            .and_then(|sec| lightmap_pages.get(usize::try_from(sec.lightmap_texture).ok()?))
+                            .is_some_and(|p| p.is_none());
+                    let lit = (!unlit)
+                        .then(|| {
+                            let sec = bsp_lighting.as_ref()?.sections.get(usize::try_from(node.section).ok()?)?;
+                            let page = lightmap_pages.get(usize::try_from(sec.lightmap_texture).ok()?)?.clone()?;
+                            let first = usize::try_from(node.first_vertex).ok()?;
+                            let uvs: Vec<[f32; 2]> = (0..node.num_verts).map(|k| sec.vertices.get(first + k).map(|v| v.lightmap_uv)).collect::<Option<_>>()?;
+                            Some((sec.lightmap_texture, page, uvs))
+                        })
+                        .flatten();
+                    let mat = match &lit {
+                        Some(_) => {
+                            lightmapped_polys += 1;
+                            lightmapped_materials
+                                .entry(mat.id())
+                                .or_insert_with(|| {
+                                    let m = loader.materials.get(&mat).cloned().unwrap_or_default();
+                                    loader.materials.add(crate::lighting::lightmapped(&m))
+                                })
+                                .clone()
+                        }
+                        None if page_missing => {
+                            missing_page_polys += 1;
+                            mat
+                        }
+                        // No lightmap (sky, PF_Unlit, see-through surfaces
+                        // UE2 does not lightmap): unlit.
+                        None => {
+                            no_lightmap_polys += 1;
+                            loader.unlit(&mat)
+                        }
+                    };
+                    let page = lit.as_ref().map(|l| l.0).unwrap_or(-1);
+                    let key = format!("{:?}|{two_sided}|{in_sky}|{unlit}|{page}|{page_missing}", surf.material);
                     let builder = &mut groups
                         .entry(key)
-                        .or_insert_with(|| (mat, in_sky, MeshBuilder::default()))
-                        .2;
+                        .or_insert_with(|| (mat, in_sky, lit.as_ref().map(|l| l.1.clone()), MeshBuilder::default()))
+                        .3;
+                    if let Some((_, _, uvs)) = &lit {
+                        builder.uvs1.extend_from_slice(uvs);
+                    }
                     let normal = coords::dir(model.vectors[surf.normal]).normalize_or_zero();
                     let ue_pts: Vec<[f32; 3]> = model.node_polygon(i).collect();
                     let pts: Vec<Vec3> = ue_pts.iter().map(|&p| coords::pos(p)).collect();
@@ -657,7 +740,18 @@ fn load_map(
                     let pts: Vec<Vec3> = model.node_polygon(i).map(coords::pos).collect();
                     collision.bsp.push_polygon(&pts);
                 }
-                for (_, (mat, in_sky, builder)) in groups {
+                runlog::kv(
+                    "bsp_lightmaps",
+                    &format!(
+                        "pages={} pages_decoded={} surface_lightmaps={} polygons_lightmapped={lightmapped_polys} polygons_unlit={no_lightmap_polys} polygons_page_saved_empty={missing_page_polys} brightness={} lightmap_exposure={:.1}",
+                        lightmap_pages.len(),
+                        lightmap_pages.iter().filter(|p| p.is_some()).count(),
+                        bsp_lighting.as_ref().map_or(0, |l| l.lightmaps),
+                        crate::lighting::BRIGHTNESS,
+                        crate::lighting::lightmap_exposure()
+                    ),
+                );
+                for (_, (mat, in_sky, page, builder)) in groups {
                     let mut e = commands.spawn((
                         Mesh3d(meshes.add(builder.build())),
                         MeshMaterial3d(mat),
@@ -666,6 +760,9 @@ fn load_map(
                     ));
                     if in_sky {
                         e.insert(RenderLayers::layer(SKY_LAYER));
+                    }
+                    if let Some(image) = page {
+                        e.insert(bevy::pbr::Lightmap { image, uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0), bicubic_sampling: false });
                     }
                     bsp_meshes += 1;
                 }
@@ -693,6 +790,8 @@ fn load_map(
         mesh: Handle<Mesh>,
         /// The mesh's own material; `None` means invisible.
         material: Option<Handle<StandardMaterial>>,
+        /// The mesh vertex each Bevy vertex came from (for baked colours).
+        source: std::rc::Rc<Vec<u16>>,
     }
     let mut mesh_cache: HashMap<String, Option<Vec<Part>>> = HashMap::new();
     let (mut actors_spawned, mut entities, mut actors_unresolved) = (0usize, 0usize, 0usize);
@@ -710,6 +809,36 @@ fn load_map(
         let export = (0..tlp.pkg.exports.len()).find(|&i| tlp.pkg.object_name(ObjectRef::Export(i)).eq_ignore_ascii_case("ShaderCrackedGlass"))?;
         loader.material(&ObjectHandle { package: tlp, export }, ObjectRef::Export(export), false).map(|m| m.0)
     });
+    // Baked vertex colours (lighting.rs): per actor, its own copy of each
+    // part's mesh with the colours, drawn unlit (texture x colour x K).
+    let (mut meshes_baked, mut meshes_not_baked, mut baked_mismatch) = (0usize, 0usize, 0usize);
+    let k_lin = crate::lighting::brightness_linear();
+    let mut baked = |actor: &ue_assets::level::MeshActor, parts: &[Part], meshes: &mut Assets<Mesh>| -> Option<Vec<Handle<Mesh>>> {
+        let colors = actor.instance.and_then(|e| ue_assets::lighting::read_mesh_instance_colors(&lp.pkg, e).ok());
+        let Some(colors) = colors.filter(|c| !c.is_empty()) else {
+            meshes_not_baked += 1;
+            return None;
+        };
+        let lin: Vec<[f32; 4]> = colors
+            .iter()
+            .map(|c| {
+                let l = Color::srgb_u8(c[0], c[1], c[2]).to_linear();
+                [l.red * k_lin, l.green * k_lin, l.blue * k_lin, 1.0]
+            })
+            .collect();
+        let mut out = Vec::new();
+        for part in parts {
+            let Some(cols) = part.source.iter().map(|&v| lin.get(v as usize).copied()).collect::<Option<Vec<_>>>() else {
+                baked_mismatch += 1;
+                return None;
+            };
+            let mut mesh = meshes.get(&part.mesh)?.clone();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, cols);
+            out.push(meshes.add(mesh));
+        }
+        meshes_baked += 1;
+        Some(out)
+    };
     for actor in &contents.mesh_actors {
         // A negative scale on an odd number of axes mirrors the mesh, which
         // turns every triangle's winding around. Unreal compensates; Bevy
@@ -729,6 +858,7 @@ fn load_map(
                 let mat = loader.material(&h, rf, false).map(|m| m.0);
                 let mut b = MeshBuilder::default();
                 let mut remap: HashMap<u16, u32> = HashMap::new();
+                let mut source: Vec<u16> = Vec::new();
                 let tris = &sm.indices[section.first_index..section.first_index + section.num_triangles * 3];
                 for tri in tris.as_chunks::<3>().0 {
                     // Kept in file order: measured on KF-WestLondon, reversing
@@ -746,6 +876,7 @@ fn load_map(
                             b.positions.push(coords::pos(sm.positions[v]).to_array());
                             b.normals.push(coords::dir(sm.normals[v]).normalize_or_zero().to_array());
                             b.uvs.push(sm.uvs.first().map_or([0.0, 0.0], |u| u[v]));
+                            source.push(vi);
                             (b.positions.len() - 1) as u32
                         });
                     }
@@ -779,6 +910,7 @@ fn load_map(
                     collision,
                     mesh: meshes.add(b.build()),
                     material: mat,
+                    source: std::rc::Rc::new(source),
                 });
             }
             Some(parts)
@@ -812,7 +944,8 @@ fn load_map(
                 }
             }
             let root = commands.spawn((transform, Visibility::default(), MapGeometry, Name::new(info.name.clone()))).id();
-            for part in parts.iter() {
+            let lit = if actor.unlit { None } else { baked(actor, parts, &mut meshes) };
+            for (pi, part) in parts.iter().enumerate() {
                 let material = match actor.skins.get(part.section) {
                     Some(&skin) if skin != ObjectRef::Null => {
                         skins_applied += 1;
@@ -824,7 +957,11 @@ fn load_map(
                     invisible_parts += 1;
                     continue;
                 };
-                commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root)));
+                let (mesh, material) = match &lit {
+                    Some(lit) => (lit[pi].clone(), loader.unlit(&material)),
+                    None => (part.mesh.clone(), material),
+                };
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root)));
                 entities += 1;
             }
             door_setup.doors.push(crate::door::DoorSpawn {
@@ -849,7 +986,8 @@ fn load_map(
             }
             let root = commands.spawn((transform, Visibility::default(), MapGeometry, Name::new(info.name.clone()))).id();
             let mut first_part = None;
-            for part in parts.iter() {
+            let lit = if actor.unlit { None } else { baked(actor, parts, &mut meshes) };
+            for (pi, part) in parts.iter().enumerate() {
                 let material = match actor.skins.get(part.section) {
                     Some(&skin) if skin != ObjectRef::Null => {
                         skins_applied += 1;
@@ -861,7 +999,11 @@ fn load_map(
                     invisible_parts += 1;
                     continue;
                 };
-                let e = commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root))).id();
+                let (mesh, material) = match &lit {
+                    Some(lit) => (lit[pi].clone(), loader.unlit(&material)),
+                    None => (part.mesh.clone(), material),
+                };
+                let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root))).id();
                 if part.section == 0 {
                     first_part = Some(e);
                 }
@@ -907,7 +1049,8 @@ fn load_map(
             package: lp.clone(),
             export: actor.export,
         };
-        for part in parts.iter() {
+        let lit = if in_sky || actor.unlit { None } else { baked(actor, parts, &mut meshes) };
+        for (pi, part) in parts.iter().enumerate() {
             // Skins[section] on the actor replaces the mesh's material.
             let material = match actor.skins.get(part.section) {
                 Some(&skin) if skin != ObjectRef::Null => {
@@ -920,8 +1063,10 @@ fn load_map(
                 invisible_parts += 1;
                 continue;
             };
-            // bUnlit actors and everything in the sky zone: unlit.
-            let mut material = if in_sky || actor.unlit { loader.unlit(&material) } else { material };
+            // bUnlit actors, everything in the sky zone, and meshes with
+            // baked colours (texture x colour): unlit.
+            let mut material = if in_sky || actor.unlit || lit.is_some() { loader.unlit(&material) } else { material };
+            let part_mesh = lit.as_ref().map_or_else(|| part.mesh.clone(), |l| l[pi].clone());
             // See-through sky layers (dome, fog shells) all sit within a few
             // hundred units of the sky camera; Bevy sorts transparent meshes
             // by depth along the view, so their order flipped as you looked
@@ -939,7 +1084,7 @@ fn load_map(
                 runlog::kv("sky_layer_order", &format!("actor={} distance_unreal={:.0}", lp.pkg.object_name(ObjectRef::Export(actor.export)), d / coords::SCALE));
             }
             let mut e = commands.spawn((
-                Mesh3d(part.mesh.clone()),
+                Mesh3d(part_mesh),
                 MeshMaterial3d(material),
                 transform,
                 MapGeometry,
@@ -955,6 +1100,10 @@ fn load_map(
         mesh_parts += parts.len();
     }
     let unique_ok = mesh_cache.values().filter(|p| p.is_some()).count();
+    runlog::kv(
+        "mesh_lighting",
+        &format!("actors_baked={meshes_baked} actors_not_baked={meshes_not_baked} colour_count_mismatch={baked_mismatch} brightness={}", crate::lighting::BRIGHTNESS),
+    );
     runlog::kv(
         "static_meshes_loaded",
         &format!(
@@ -1062,11 +1211,13 @@ fn load_map(
     commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
         brightness: 600.0,
-        affects_lightmapped_meshes: true,
+        // Lightmapped BSP takes its light from the lightmap only.
+        affects_lightmapped_meshes: false,
     });
     commands.spawn((
         DirectionalLight {
             illuminance: 4000.0,
+            affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 0.0).looking_to(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),

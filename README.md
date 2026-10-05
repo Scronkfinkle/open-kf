@@ -439,8 +439,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   person). Maps without a sky zone, such as KF-BioticsLab, show flat grey-blue.
   The black tunnel ceilings and walls on KF-WestLondon really are black in the
   map data (`Engine.BlackTexture`).
-- No baked lighting: everything is lit by one fixed sun plus ambient light, so
-  maps look flatter and brighter than in the game (the sky is drawn unlit).
+- Baked lighting (L1, L2, 2026-10-05): the level and its placed meshes
+  use KF's own stored lighting (lightmaps, vertex colours), with KF's
+  orange "vision overlay" (the zone-tinted full-screen filter) on top.
+  Compared with your real-game screenshot at the same spot: colours
+  match, the level floor about 20% darker than KF. KF-Clandestine,
+  KF-Forgotten and KF-Hell store no lightmap images, so their level
+  geometry keeps the old sun. Zeds, weapons and hands still use the sun
+  (L4).
 - Map decals only land on solid surfaces (a mesh without collision gets
   none), light patterns are not multiplied by the surface's texture, and
   wide-angle projector shapes are a guess.

@@ -1181,6 +1181,8 @@ fn load_weapons(
                 ..default()
             }),
             *main_t,
+            // As the main camera: UE2 had no tonemapping.
+            bevy::core_pipeline::tonemapping::Tonemapping::None,
             RenderLayers::layer(WEAPON_LAYER),
             WeaponCamera,
         ))
