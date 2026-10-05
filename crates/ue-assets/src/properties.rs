@@ -464,7 +464,14 @@ pub fn find_class_defaults(
     export: usize,
     property_names: &std::collections::HashSet<String>,
 ) -> Option<(PropertyList, usize)> {
+    // Every start offset whose properties read exactly to the end, with
+    // only known property names, is a candidate. The earliest is not always
+    // right: a false start can read as a few bogus properties that swallow
+    // the real ones (e.g. BullpupAmmo: from byte 66, a "Range" struct of 43
+    // bytes; the real list starts at 93). The candidate with the most
+    // properties wins; ties go to the earliest.
     let data = pkg.export_data(export);
+    let mut best: Option<(PropertyList, usize)> = None;
     for start in 0..data.len() {
         let mut r = Reader::new(data);
         if r.seek(start).is_err() {
@@ -480,11 +487,12 @@ pub fn find_class_defaults(
             .props
             .iter()
             .all(|p| property_names.contains(&pkg.name(p.name).to_ascii_lowercase()))
+            && best.as_ref().is_none_or(|(b, _)| list.props.len() > b.props.len())
         {
-            return Some((list, start));
+            best = Some((list, start));
         }
     }
-    None
+    best
 }
 
 #[cfg(test)]
