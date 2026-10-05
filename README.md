@@ -158,6 +158,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Flamethrower (W7b, 2026-10-04): hold to spray flames that arc a little,
+  burst after 0.4 s or on a zed or wall, and burn everything within 150
+  units, zeds and (close up) you; a 100-round tank, then reload. Checked
+  by logged runs (Clots, a Scrake, emptying and reloading). Not
+  play-tested by you; the flames not looked at.
 - Zeds catch fire (W7a, 2026-10-04): the Dragon's Breath Trenchgun sets
   zeds burning for 10 s with flames on them; each second's burn hurts
   more than the last, burning zeds walk 20% slower, and after 6 s they

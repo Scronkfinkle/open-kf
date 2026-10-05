@@ -120,8 +120,56 @@ pub struct SpawnPlayerProjectile {
     pub explosive: Option<ExplosiveStats>,
     /// A thrown frag or pipe bomb instead (`stats` unused).
     pub thrown: Option<ThrownStats>,
+    /// A Flamethrower flame instead (`stats` gives only its damage type).
+    pub flame: Option<FlameStats>,
     /// Added to the velocity (FragFire: the player's forward speed).
     pub extra_speed: f32,
+}
+
+/// A FlameTendril's values (the Flamethrower).
+#[derive(Clone, Copy, Debug)]
+pub struct FlameStats {
+    /// Speed; PostBeginPlay adds TossZ upward; PHYS_Falling.
+    pub speed: f32,
+    pub toss_z: f32,
+    /// Explode: HurtRadius(Damage, DamageRadius, DamTypeBurned, 0).
+    pub damage: f32,
+    pub radius: f32,
+    pub life_span: f32,
+}
+
+/// FlameTendril's Timer: every 0.2 s the speed is set back to Speed; on the
+/// second it explodes (no perk: TimerRunCount >= 2).
+const FLAME_TIMER: f32 = 0.2;
+const FLAME_TIMER_RUNS: u32 = 2;
+
+/// FlameTendril's trail (FlameThrowerFlameB; the HitFlame xEmitter trail,
+/// FlameThrowerFlame, is not drawn: xEmitters are not supported) and
+/// Explode's FuelFlame, which Kills itself on its first Timer (1 s: it
+/// has no Parent).
+const FLAME_TRAIL: &str = "KFMod.FlameThrowerFlameB";
+const FUEL_FLAME: &str = "KFMod.FuelFlame";
+const FUEL_FLAME_TIME: f32 = 1.0;
+
+#[derive(Component)]
+struct PlayerFlame {
+    pos: Vec3,
+    vel: Vec3,
+    stats: FlameStats,
+    fire: Option<crate::combat::FireType>,
+    weapon: &'static str,
+    timer: f32,
+    runs: u32,
+    age: f32,
+    trail: Option<Entity>,
+    id: u32,
+}
+
+/// An effect to Kill after a time (FuelFlame).
+#[derive(Component)]
+struct KillEffectAfter {
+    effect: Entity,
+    time: f32,
 }
 
 #[derive(Component)]
@@ -283,7 +331,7 @@ impl Plugin for ProjectilePlugin {
             .add_message::<BoltPickedUp>()
             .init_resource::<BoltRoom>()
             .add_systems(Update, pick_up_bolts)
-            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown, sync_bodies).chain());
+            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown, move_flames, kill_effects_after, sync_bodies).chain());
     }
 }
 
@@ -337,6 +385,27 @@ fn spawn_projectiles(
                 "thrown_spawned",
                 &format!("id={} weapon={} speed={:.0} damage={} radius={}", *next_id, s.weapon, t.speed + s.extra_speed, t.damage, t.radius),
             );
+            continue;
+        }
+        if let Some(fl) = s.flame {
+            // PostBeginPlay: Velocity = Speed x the aim, + TossZ upward.
+            let mut vel = s.dir.normalize_or_zero() * fl.speed;
+            vel.z += fl.toss_z;
+            let trail = library.as_deref().and_then(|lib| {
+                crate::particles::spawn_effect(&mut commands, lib, &mut meshes, FLAME_TRAIL, origin, crate::fireball::axes_along(vel), *next_id)
+            });
+            commands.spawn(PlayerFlame {
+                pos: origin,
+                vel,
+                stats: fl,
+                fire: s.stats.fire,
+                weapon: s.weapon,
+                timer: FLAME_TIMER,
+                runs: 0,
+                age: 0.0,
+                trail,
+                id: *next_id,
+            });
             continue;
         }
         if let Some(x) = s.explosive {
@@ -746,6 +815,214 @@ fn move_explosives(
     }
 }
 
+
+/// FlameTendril in flight: falling, its speed reset every 0.2 s, exploding
+/// on the second reset, on touching a zed (at its own location) or on
+/// hitting the level.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn move_flames(
+    mut commands: Commands,
+    time: Res<Time>,
+    spatial: SpatialQuery,
+    mut flames: Query<(Entity, &mut PlayerFlame)>,
+    mut zeds: Query<&mut Zed>,
+    mut kills: ResMut<crate::combat::KillCount>,
+    player: Query<(&Transform, Option<&crate::walk::Walker>), With<crate::camera::FlyCamera>>,
+    mut effects: Query<&mut crate::particles::ParticleEffect>,
+    library: Option<Res<crate::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut decals: MessageWriter<crate::decals::SpawnDecal>,
+    mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
+    mut rng: Local<u32>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    let player_ue = player.single().ok().map(|(t, w)| {
+        to_ue(w.map_or(t.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center)) / SCALE
+    });
+    for (entity, mut p) in &mut flames {
+        p.age += dt;
+        let mut burst: Option<(Vec3, Vec3, &str)> = None;
+        if p.age >= p.stats.life_span {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        p.timer -= dt;
+        if p.timer <= 0.0 {
+            p.timer += FLAME_TIMER;
+            p.runs += 1;
+            let speed = p.stats.speed;
+            p.vel = p.vel.normalize_or_zero() * speed;
+            if p.runs >= FLAME_TIMER_RUNS {
+                // Explode(Location, VRand()).
+                *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345 + p.id);
+                let mut r = || {
+                    *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    ((*rng >> 8) & 0xffff) as f32 / 65535.0 * 2.0 - 1.0
+                };
+                let v = Vec3::new(r(), r(), r()).normalize_or(Vec3::Z);
+                burst = Some((p.pos, v, "timer"));
+            }
+        }
+        if burst.is_none() {
+            p.vel.z -= GRAVITY * dt;
+            let step = p.vel * dt;
+            let len = step.length();
+            if len > 0.0 {
+                let dir_ue = step / len;
+                let from = coords::pos(p.pos.to_array());
+                let dir = coords::dir(dir_ue.to_array()).normalize_or_zero();
+                if let Ok(dir3) = Dir3::new(dir) {
+                    let world = spatial.cast_ray(from, dir3, len * SCALE, true, &crate::collision::world_filter());
+                    let world_t = world.map_or(len * SCALE, |h| h.distance);
+                    let touched = zeds
+                        .iter()
+                        .filter(|z| z.health > 0.0)
+                        .filter_map(|z| crate::combat::zed_hit(z, from, dir).filter(|&t| t <= world_t))
+                        .min_by(f32::total_cmp);
+                    burst = match (touched, world) {
+                        // ProcessTouch: Explode(Location, Location) where it touched.
+                        (Some(t), _) => {
+                            let at = p.pos + dir_ue * (t / SCALE);
+                            Some((at, at.normalize_or(Vec3::Z), "zed"))
+                        }
+                        // HitWall / Landed: Explode at the wall (ExploWallOut 0).
+                        (None, Some(h)) => {
+                            let n = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
+                            Some((p.pos + dir_ue * (h.distance / SCALE), to_ue(n).normalize_or_zero(), "level"))
+                        }
+                        (None, None) => {
+                            p.pos += step;
+                            None
+                        }
+                    };
+                }
+            }
+        }
+        if let Some(trail) = p.trail
+            && let Ok(mut fx) = effects.get_mut(trail)
+        {
+            fx.frame.0 = burst.map_or(p.pos, |b| b.0);
+            if burst.is_some() {
+                // Destroyed: FlameTrail.Kill(), left where it is.
+                fx.kill();
+            }
+        }
+        let Some((at, normal, hit)) = burst else { continue };
+        let (zeds_hit, self_damage) = flame_burst(
+            &mut commands,
+            &spatial,
+            &mut zeds,
+            &mut kills,
+            player_ue,
+            library.as_deref(),
+            &mut meshes,
+            &mut decals,
+            &mut player_damage,
+            &p,
+            at,
+            normal,
+        );
+        runlog::kv(
+            "flame_burst",
+            &format!(
+                "id={} weapon={} hit={hit} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} zeds_hit={zeds_hit} self_damage={self_damage}",
+                p.id, p.weapon, at.x, at.y, at.z, p.age
+            ),
+        );
+        commands.entity(entity).despawn();
+    }
+}
+
+/// FlameTendril.Explode: Projectile.HurtRadius (every zed whose cylinder
+/// reaches the radius and whose centre is in sight takes Damage x (1 -
+/// max(0, (distance - its radius) / radius)), no exposure, no push), the
+/// player too (own damage), the burn mark decal and a FuelFlame.
+/// Returns (zeds hit, the player's damage before ReduceDamage).
+#[allow(clippy::too_many_arguments)]
+fn flame_burst(
+    commands: &mut Commands,
+    spatial: &SpatialQuery,
+    zeds: &mut Query<&mut Zed>,
+    kills: &mut crate::combat::KillCount,
+    player_ue: Option<Vec3>,
+    library: Option<&crate::particles::EffectLibrary>,
+    meshes: &mut Assets<Mesh>,
+    decals: &mut MessageWriter<crate::decals::SpawnDecal>,
+    player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
+    p: &PlayerFlame,
+    at: Vec3,
+    normal: Vec3,
+) -> (u32, f32) {
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    let (damage, radius) = (p.stats.damage, p.stats.radius);
+    decals.write(crate::decals::SpawnDecal {
+        kind: crate::decals::DecalKind::Scorch,
+        at,
+        dir: -normal,
+        trace: false,
+    });
+    if let Some(lib) = library
+        && let Some(e) = crate::particles::spawn_effect(commands, lib, meshes, FUEL_FLAME, at, Mat3::IDENTITY, p.id)
+    {
+        commands.spawn(KillEffectAfter { effect: e, time: FUEL_FLAME_TIME });
+    }
+    let at_bevy = coords::pos(at.to_array());
+    let mut zeds_hit = 0;
+    for mut z in zeds.iter_mut() {
+        if z.health <= 0.0 {
+            continue;
+        }
+        let centre = to_ue(z.centre) / SCALE;
+        let d = centre - at;
+        let dist = d.length().max(1.0);
+        if dist - z.radius > radius || !in_sight(spatial, at_bevy, z.centre) {
+            continue;
+        }
+        let dirs = d / dist;
+        let scale = 1.0 - ((dist - z.radius) / radius).max(0.0);
+        let hit_ue = centre - 0.5 * (z.half_height + z.radius) * dirs;
+        let point = coords::pos(hit_ue.to_array());
+        let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
+        z.last_hit = Some((point, dir_b));
+        let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: None, fire: p.fire };
+        crate::combat::damage_zed(&mut z, scale * damage, false, 1.0, p.weapon, dist * SCALE, source, kills);
+        zeds_hit += 1;
+    }
+    let mut self_damage = 0.0;
+    if let Some(pl) = player_ue {
+        let dist = (pl - at).length().max(1.0);
+        if dist - PLAYER_RADIUS <= radius && in_sight(spatial, at_bevy, coords::pos(pl.to_array())) {
+            self_damage = ((1.0 - ((dist - PLAYER_RADIUS) / radius).max(0.0)) * damage).floor();
+            if self_damage > 0.0 {
+                player_damage.write(crate::combat::PlayerDamaged {
+                    amount: self_damage,
+                    zed_id: crate::combat::SELF_DAMAGE,
+                    kind: crate::combat::HurtKind::Fire,
+                });
+            }
+        }
+    }
+    (zeds_hit, self_damage)
+}
+
+/// Kills effects whose time is up (FuelFlame's Timer).
+fn kill_effects_after(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut timers: Query<(Entity, &mut KillEffectAfter)>,
+    mut effects: Query<&mut crate::particles::ParticleEffect>,
+) {
+    for (e, mut k) in &mut timers {
+        k.time -= time.delta_secs();
+        if k.time <= 0.0 {
+            if let Ok(mut fx) = effects.get_mut(k.effect) {
+                fx.kill();
+            }
+            commands.entity(e).despawn();
+        }
+    }
+}
 
 /// One explosion (Explode + HurtRadius), Unreal units.
 struct Blast {

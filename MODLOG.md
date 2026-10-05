@@ -2401,3 +2401,32 @@ test --release --workspace`.
 **Still broken / not tested:** Not checked in a run (the frag test
 landed out of range). Difficulty is fixed at Normal.
 **Next:** W7b, the Flamethrower.
+
+## 2026-10-04 Weapons W7b: Flamethrower
+
+**Changed:** `projectile.rs`: `FlameStats`, `PlayerFlame`, `move_flames`
+(falling flame, 0.2 s speed resets, bursts on the second, on a zed or on
+the level), `flame_burst` (Projectile.HurtRadius with DamTypeBurned, the
+player included, burn mark, FuelFlame), `kill_effects_after`.
+`weapon.rs`: FlameTendril values from the class defaults; FlameBurstFire
+loops its animation like KFHighROFFire; it is not "total ammo only" and
+does not fire while reloading; a misplaced doc comment fixed.
+`particles.rs`: FlameThrowerFlameB, FuelFlame. DESIGN, README.
+**Why:** W7 of the weapons plan.
+**Tested how:** `--give FlameThrower` runs: three Clots, a Scrake, and
+holding fire until empty then clicking; `cargo test --release
+--workspace`; clippy.
+**Result:** 100 flames in 6.93 s (0.07 s each), then the loop stops and
+a click starts the 4.14 s reload. Flames burst at 0.40-0.42 s in the
+air or on touch; Clots lit and killed; a Scrake lit (burn ticks 12 up to
+43). Close to a zed, flames hurt you too (3-5 before the reduction, 0-1
+after) and set you on fire for a few ticks. Tests 54 + 21 pass.
+**Failure on the way:** the first runs kept firing with an empty tank
+(FlameBurstFire is a CrossbowFire, so my Crossbow "ammo total only" rule
+caught it), and played the fire animation once per flame instead of
+looping it. Both fixed.
+**Still broken / not tested:** Not looked at by eye (flames, trail,
+burn marks). The second trail (an xEmitter) is not drawn; trails don't
+grow. No sound. The view climbs while firing (KF's recoil; my scripted
+test can't pull down, so later flames went high).
+**Next:** W7c, the Husk Gun.

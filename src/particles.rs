@@ -31,7 +31,10 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 56] = [
+const EFFECT_CLASSES: [&str; 58] = [
+    // Flamethrower flames (FlameTendril's trail, Explode's FuelFlame).
+    "KFMod.FlameThrowerFlameB",
+    "KFMod.FuelFlame",
     // Burning zeds (KFMonster.BurnEffect).
     "KFMod.KFMonsterFlame",
     // Frag explosions (Nade.Explode).

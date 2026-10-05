@@ -409,9 +409,10 @@ struct PelletFire {
     explosive: Option<crate::projectile::ExplosiveStats>,
     /// A thrown frag or pipe bomb instead.
     thrown: Option<crate::projectile::ThrownStats>,
+    /// Flamethrower flames (FlameTendril) instead.
+    flame: Option<crate::projectile::FlameStats>,
 }
 
-/// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
 /// Which burn rules a damage type follows, if it has bDealBurningDamage
 /// (KFMonster.TakeDamage / ZombieBloat / ZombieHusk tell them apart by class).
 fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<crate::combat::FireType> {
@@ -430,6 +431,7 @@ fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<crate::comba
     })
 }
 
+/// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
 fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&ObjectHandle>) -> FireMode {
     let mut mode = FireMode {
         kind: FireKind::None,
@@ -575,8 +577,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         Some((Value::Int(i), _)) => i.max(0) as u32,
         _ => 0,
     };
-    // ChainsawFire's FireLoop state works like KFHighROFFire's.
-    mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire") || mode.chainsaw;
+    // ChainsawFire's and FlameBurstFire's FireLoop states work like
+    // KFHighROFFire's (loop FireLoopAnim while held, no PlayFiring).
+    mode.high_rof = defaults.is_a(fm_class, "KFHighROFFire") || mode.chainsaw || defaults.is_a(fm_class, "FlameBurstFire");
     mode.anim2 = fname("FireAnim2");
     mode.aimed_anim2 = fname("FireAimedAnim2");
     mode.penetrations = if PENETRATING_FIRE.iter().any(|c| defaults.is_a(fm_class, c)) { 5 } else { 1 };
@@ -689,12 +692,28 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
                 crate::projectile::ThrownKind::Frag { fuse: pfloat("ExplodeTimer", 2.0) }
             },
         });
-        mode.total_ammo_only = ["M79Fire", "M203Fire", "LAWFire", "CrossbowFire", "M99Fire"]
-            .iter()
-            .any(|c| defaults.is_a(fm_class, c));
+        // FlameBurstFire (a CrossbowFire) overrides AllowFire: it needs a
+        // round in the magazine and never fires while reloading.
+        let flame_fire = defaults.is_a(fm_class, "FlameBurstFire");
+        mode.total_ammo_only = !flame_fire
+            && ["M79Fire", "M203Fire", "LAWFire", "CrossbowFire", "M99Fire"]
+                .iter()
+                .any(|c| defaults.is_a(fm_class, c));
+        if flame_fire {
+            mode.fire_while_reloading = false;
+        }
         mode.requires_aim = defaults.is_a(fm_class, "LAWFire");
         mode.spawn_delay = defaults.is_a(fm_class, "PipeBombFire").then(|| ffloat("ProjectileSpawnDelay", 1.1));
+        // FlameTendril: falls, bursts after two 0.2 s timers or on touch.
+        let flame = defaults.is_a(pc, "FlameTendril").then(|| crate::projectile::FlameStats {
+            speed: pfloat("Speed", 2300.0),
+            toss_z: pfloat("TossZ", 200.0),
+            damage: pfloat("Damage", 12.0),
+            radius: pfloat("DamageRadius", 150.0),
+            life_span: pfloat("LifeSpan", 5.0),
+        });
         mode.pellets = Some(PelletFire {
+            flame,
             thrown,
             explosive,
             stats: crate::projectile::ProjectileStats {
@@ -2039,9 +2058,10 @@ fn weapon_input(
                             dir,
                             stats: pf.stats,
                             weapon: item_name,
-                            tracer_start: if pf.explosive.is_some() || pf.thrown.is_some() { None } else { tip },
+                            tracer_start: if pf.explosive.is_some() || pf.thrown.is_some() || pf.flame.is_some() { None } else { tip },
                             explosive: pf.explosive,
                             thrown: pf.thrown,
+                            flame: pf.flame,
                             extra_speed: 0.0,
                         });
                     }
@@ -2203,6 +2223,7 @@ fn weapon_input(
                     tracer_start: None,
                     explosive: pf.explosive,
                     thrown: pf.thrown,
+                    flame: pf.flame,
                     extra_speed: 0.0,
                 });
             }
@@ -2285,6 +2306,7 @@ fn weapon_input(
                                     tracer_start: None,
                                     explosive: None,
                                     thrown: Some(t),
+                                    flame: None,
                                     extra_speed: pawn_speed,
                                 });
                             }

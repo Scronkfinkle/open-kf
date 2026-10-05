@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W6 and W7a implemented 2026-10-04)
+## Weapons (milestone 7, W1-W6, W7a and W7b implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1851,6 +1851,32 @@ W7a (`combat.rs` FireType / damage_zed, `zed.rs` burn_zeds):
   while crisped and burning", the burn sound (AmbientSound) are not done.
   Restoring speed after a burn uses the zed's normal speed; KF sets
   default.GroundSpeed, which also undoes the headless slow-down.
+
+W7b (`projectile.rs` PlayerFlame / flame_burst, the Flamethrower):
+- FlameBurstFire (a CrossbowFire / KFShotgunFire): holding fire enters
+  state FireLoop, which loops FireLoopAnim 'Fire' (no per-shot animation,
+  like KFHighROFFire) and fires a FlameTendril every FireRate 0.07 s; it
+  ends on release or an empty magazine (FireEndAnim 'Idle'). Its own
+  AllowFire needs a round in the 100-round magazine and never fires while
+  reloading (so it is not "total ammo only" like the Crossbow). Recoil is
+  KFShotgunFire's: 150-300 units up per flame (about 18 degrees a second
+  while held; you pull down against it).
+- FlameTendril: Speed 2300 along the aim plus TossZ 200 upward, falling.
+  Its Timer every 0.2 s sets the speed back to 2300 (keeping the
+  direction); on the second (0.4 s, no perk) it explodes in the air.
+  Touching a zed explodes it there; hitting the level explodes it at the
+  wall.
+- Explode: Projectile.HurtRadius(12, 150, DamTypeBurned, no push), the
+  engine's plain version: every zed whose cylinder reaches 150 units and
+  whose centre is in sight takes 12 x (1 - (distance - its radius) / 150)
+  (no exposure check), with the W7a burn rules (DamTypeBurned: 18 after x
+  1.5 lights a zed at once). The player is hit too when close (own
+  damage, x 0.25 at Normal; over 2 before the reduction sets the player on
+  fire). A FlameThrowerBurnMark decal and a FuelFlame (Killed after 1 s:
+  it has no Parent) at the spot.
+- Trail: FlameThrowerFlameB follows the flame and is Killed where it
+  bursts. Not done: the HitFlame xEmitter trail (FlameThrowerFlame; no
+  xEmitter support), the trails growing x 1.5 / x 1.8 per Timer, sounds.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),
