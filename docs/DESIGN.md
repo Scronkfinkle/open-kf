@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W7 implemented 2026-10-04)
+## Weapons (milestone 7, W1-W7 and W8a implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1907,6 +1907,33 @@ W7c (`weapon.rs` ChargeFire, `projectile.rs` Husk fields; the Husk Gun):
   _Medium / _Large; the EffectsSM.Ger_Tracer model at DrawScale 2.
 - Not done: the charge glow growing with the charge, the third-person
   charge light, the camera shake, sounds.
+
+**W8 medic and equipment**, in three parts: W8a Syringe, healing and
+quick heal (done), W8b medic gun darts, W8c Welder animations.
+
+W8a (`weapon.rs` HealCharge / syringe_fire / QuickHeal, `combat.rs`
+GiveHealth / add_health):
+- The Syringe's AmmoCharge: 500 at most, +10 every AmmoRegenRate (0.3 s)
+  in its Tick, held or not (empty to full in 15 s). HUD: SYRINGE %.
+- SyringeFire (left, 250 charge) heals the teammate in front of you
+  within 80 units; alone there is none, so it only gives the "You must be
+  near another player to heal them!" message (logged, at most every
+  0.5 s).
+- SyringeAltFire (alt, 500 charge): only below HealthMax with a full
+  charge; plays AltFire, FireRate 3.6; InjectDelay 0.1 s later it uses the
+  charge and calls GiveHealth(HealBoostAmount, 100). HealBoostAmount is
+  50 (Syringe.PostBeginPlay with one player).
+- KFPawn.GiveHealth: halves a burn on you; cuts the heal to what fits
+  under 100 counting healing still to come (so 50 at 76 health gives
+  24); adds it to healthToGive. AddHealth (Tick) pays it out: every
+  0.1 s or more, int(10 x elapsed) health. Every hit you take (and every
+  bile tick) takes 5 off healthToGive (KFPawn.TakeDamage).
+- QuickHeal (Q): refused at full health or under 95% charge; brings the
+  Syringe out; when it is ready (Syringe.Timer), fires the alt mode; if
+  that fails at full health or under 75% charge it gives up, else retries
+  every 0.2 s; FireRate + 0.5 s after the injection, back to the last
+  weapon. With the Syringe already in hand it injects at once.
+- Not done: the HUD's on-screen messages (only logged), sounds.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

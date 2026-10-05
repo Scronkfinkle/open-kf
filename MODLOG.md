@@ -2457,3 +2457,27 @@ lists working projectile classes still left the Husk Gun's out.
 burn marks). The glow does not grow with the charge; no camera shake or
 sounds. Headshot impacts not seen in a run.
 **Next:** W8, medic and equipment.
+
+## 2026-10-04 Weapons W8a: Syringe, healing, quick heal
+
+**Changed:** `combat.rs`: `GiveHealth` message, `PlayerHealth.to_give`,
+`give_health` (KFPawn.GiveHealth: burn halved, cap, healthToGive),
+`add_health` (10 per second), hits take 5 off healing to come, HUD shows
+the Syringe charge. `weapon.rs`: `HealCharge` (charge, regen, costs,
+inject delays), `syringe_fire` (no-target message; self heal with
+InjectDelay), `QuickHeal` on Q. README (Q key), DESIGN.
+**Why:** W8 of the weapons plan.
+**Tested how:** runs without god mode: a Clot hitting me, Q from the
+9mm, Q again while recharging, slot 5, left click, middle click while
+recharging and after; `cargo test --release --workspace`; clippy.
+**Result:** Q: Syringe out 0.35 s, AltFire, heal 0.1 s later (capped to
+24 at 76 health), back to the 9mm 4.1 s after the injection. Q refused
+at 130 charge (3.9 s after use: 10 per 0.3 s). Left click: the
+"near another player" message. Middle click refused at 270 charge; at
+full charge it healed 50 from 4 health. Tests 55 + 21.
+**Failure on the way:** the first Q run brought the Syringe out but never
+injected: the inject step ran on the same frame as the key press, with
+the 9mm still in hand. It now waits for the Syringe.
+**Still broken / not tested:** No on-screen message text (logged only).
+No sounds. Not looked at by eye.
+**Next:** W8b, medic gun darts.

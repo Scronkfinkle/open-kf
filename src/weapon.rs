@@ -208,6 +208,8 @@ struct WeaponDef {
     gone: bool,
     /// Frag: TossAnim, TossTime and TossSpawnTime (Frag.StartThrow).
     toss: Option<(String, f32, f32)>,
+    /// The Syringe's healing charge (AmmoCharge).
+    heal_charge: Option<HealCharge>,
     /// KFWeapon QuickPutDownTime / QuickBringUpTime (around a frag throw).
     quick_put_down_time: f32,
     quick_bring_up_time: f32,
@@ -413,6 +415,35 @@ struct PelletFire {
     thrown: Option<crate::projectile::ThrownStats>,
     /// Flamethrower flames (FlameTendril) instead.
     flame: Option<crate::projectile::FlameStats>,
+}
+
+/// Syringe / KFMedicGun healing charge: up to 500 (MaxAmmoCount), +10 every
+/// AmmoRegenRate seconds (Tick, whether held or not).
+#[derive(Clone, Copy, Debug)]
+struct HealCharge {
+    charge: u32,
+    regen_rate: f32,
+    /// RegenTimer (absolute time of the next +10).
+    next_regen: f32,
+    /// HealBoostAmount (Syringe.PostBeginPlay: 50 with one player).
+    boost: f32,
+    /// AmmoPerFire and InjectDelay of each mode (SyringeFire,
+    /// SyringeAltFire).
+    cost: [u32; 2],
+    inject_delay: [f32; 2],
+}
+
+/// Syringe / KFMedicGun MaxAmmoCount.
+const HEAL_CHARGE_MAX: u32 = 500;
+
+/// KFPawn.QuickHeal (Q) progress (KFPawn.bIsQuickHealing 1 and 2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum QuickHeal {
+    Off,
+    /// Bringing the Syringe out; when ready, inject (retried every 0.2 s).
+    Inject { back: usize, retry: f32 },
+    /// Injected; switch back to `back` after FireRate + 0.5 s.
+    Back { back: usize, timer: f32 },
 }
 
 /// HuskGunFire: bFireOnRelease with a charge (HoldTime up to MaxChargeTime)
@@ -971,6 +1002,13 @@ struct Weapons {
     /// ChargeEmitter effect.
     charge_hold: Option<f32>,
     charge_fx: Option<Entity>,
+    /// SyringeAltFire's InjectDelay timer: (seconds left, weapon index,
+    /// mode), then the charge is used and the heal given.
+    pending_inject: Option<(f32, usize, usize)>,
+    /// SyringeFire.AttemptHeal's LastHealAttempt (the "no one to heal"
+    /// message at most every HealAttemptDelay).
+    last_heal_attempt: f32,
+    quick_heal: QuickHeal,
     /// Seconds left of the bring-up or put-down (Weapon's Timer), and
     /// whether the put-down is still waiting out DownDelay.
     switch_timer: f32,
@@ -1186,6 +1224,9 @@ fn load_weapons(
         pending_spawn: None,
         charge_hold: None,
         charge_fx: None,
+        pending_inject: None,
+        last_heal_attempt: -10.0,
+        quick_heal: QuickHeal::Off,
         switch_timer: 0.0,
         down_delayed: false,
         pending_swings: Vec::new(),
@@ -1485,6 +1526,22 @@ fn load_weapon(
         wide_spread: false,
         gone: false,
         toss: name("TossAnim").map(|a| (a.to_ascii_lowercase(), float("TossTime", 0.366), float("TossSpawnTime", 0.2))),
+        heal_charge: defaults.is_a(&class, "Syringe").then(|| {
+            let mode_float = |i: u32, p: &str, d: f32| match mode_class(i).and_then(|c| defaults.get(&c, p)) {
+                Some((Value::Float(f), _)) => f,
+                Some((Value::Int(n), _)) => n as f32,
+                _ => d,
+            };
+            HealCharge {
+                charge: HEAL_CHARGE_MAX,
+                regen_rate: float("AmmoRegenRate", 0.3),
+                next_regen: 0.0,
+                // Syringe.PostBeginPlay: NumPlayers == 1.
+                boost: 50.0,
+                cost: [mode_float(0, "AmmoPerFire", 250.0) as u32, mode_float(1, "AmmoPerFire", 500.0) as u32],
+                inject_delay: [mode_float(0, "InjectDelay", 0.36), mode_float(1, "InjectDelay", 0.1)],
+            }
+        }),
         quick_put_down_time: float("QuickPutDownTime", 0.15),
         quick_bring_up_time: float("QuickBringUpTime", 0.15),
         alt_ammo: {
@@ -1701,6 +1758,44 @@ fn play_fire_end(w: &mut Weapons, mode: usize) {
     }
 }
 
+/// The Syringe's two modes while their button is held. SyringeFire (left)
+/// heals a teammate in front of you (GetHealee: within 80 units); alone
+/// there is none, so AttemptHeal only shows "You must be near another
+/// player to heal them!" (at most every HealAttemptDelay). SyringeAltFire
+/// (alt): with Health under HealthMax and a full charge, ModeDoFire plays
+/// AltFire and the heal follows InjectDelay later (`pending_inject`).
+fn syringe_fire(w: &mut Weapons, mode: usize, pressed: bool, h: HealCharge, health: f32, now: f32) {
+    let alt = 1 - mode;
+    let fm = &w.defs[w.current].modes[mode];
+    let ready = w.action == Action::Idle && w.fire_cooldown[mode] <= 0.0 && w.fire_cooldown[alt] <= 0.0 && !w.firing[alt];
+    if mode == 0 {
+        // bWaitForRelease: one attempt per click.
+        if pressed && ready && now - w.last_heal_attempt > 0.5 {
+            w.last_heal_attempt = now;
+            runlog::kv(
+                "syringe_no_target",
+                &format!("message=\"You must be near another player to heal them!\" charge={}", h.charge),
+            );
+        }
+        return;
+    }
+    if !ready {
+        return;
+    }
+    if health >= crate::combat::PLAYER_HEALTH_MAX || h.charge < h.cost[1] {
+        if pressed {
+            runlog::kv("syringe_refused", &format!("health={health:.0} charge={}", h.charge));
+        }
+        return;
+    }
+    let rate = fm.rate;
+    w.firing[mode] = true;
+    w.fire_cooldown[mode] = rate;
+    w.pending_inject = Some((h.inject_delay[1], w.current, 1));
+    play_firing(w, 1, false);
+    runlog::kv("syringe_self_heal", &format!("health={health:.0} charge={} inject_delay={} fire_rate={rate}", h.charge, h.inject_delay[1]));
+}
+
 /// KFWeapon.InterruptReload: only one-round-at-a-time reloads stop.
 fn interrupt_reload(w: &mut Weapons, reason: &str) -> bool {
     if w.action == Action::Reload && w.defs[w.current].hold_to_reload {
@@ -1792,10 +1887,11 @@ fn weapon_input(
     ),
     mut ammo_display: ResMut<crate::combat::AmmoDisplay>,
     mut recoil: ResMut<crate::firing::Recoil>,
-    (health, mut bolt_room, mut bolts_picked): (
+    (health, mut bolt_room, mut bolts_picked, mut heals): (
         Res<crate::combat::PlayerHealth>,
         ResMut<crate::projectile::BoltRoom>,
         MessageReader<crate::projectile::BoltPickedUp>,
+        MessageWriter<crate::combat::GiveHealth>,
     ),
     mut scripted_held: Local<[bool; 2]>,
 ) {
@@ -1808,6 +1904,35 @@ fn weapon_input(
     // `NextFireTime += FireRate` does, and the average rate is exact).
     for cd in &mut w.fire_cooldown {
         *cd = (*cd - time.delta_secs()).max(-1.0);
+    }
+    let now_s = time.elapsed_secs();
+    // Syringe.Tick: +10 charge every AmmoRegenRate while under the maximum.
+    for d in &mut w.defs {
+        if let Some(h) = d.heal_charge.as_mut()
+            && h.charge < HEAL_CHARGE_MAX
+            && h.next_regen < now_s
+        {
+            h.next_regen = now_s + h.regen_rate;
+            h.charge = (h.charge + 10).min(HEAL_CHARGE_MAX);
+        }
+    }
+    // SyringeAltFire.Timer (InjectDelay after the shot): use the charge,
+    // GiveHealth(HealBoostAmount, 100).
+    if let Some((t, wi, mode)) = w.pending_inject {
+        let t = t - time.delta_secs();
+        if t > 0.0 {
+            w.pending_inject = Some((t, wi, mode));
+        } else {
+            w.pending_inject = None;
+            if let Some(h) = w.defs[wi].heal_charge.as_mut() {
+                if h.cost[mode] <= h.charge {
+                    h.charge -= h.cost[mode];
+                }
+                let amount = h.boost;
+                heals.write(crate::combat::GiveHealth { amount, max: crate::combat::PLAYER_HEALTH_MAX, source: "syringe" });
+                runlog::kv("syringe_inject", &format!("heal={amount} charge_left={}", h.charge));
+            }
+        }
     }
     // Weapon switching. Slot keys: Pawn.SwitchWeapon; mouse wheel:
     // KFHumanPawn.NextWeapon / PrevWeapon. While putting a weapon down, a
@@ -1835,6 +1960,73 @@ fn weapon_input(
         choice = step_weapon(&slots(&w.defs), pending, true);
     } else if wheel < 0.0 || scripted("prev") {
         choice = step_weapon(&slots(&w.defs), pending, false);
+    }
+    // KFPawn.QuickHeal (Q): hurt, a Syringe charged to 95% or more: bring
+    // it out (or, if it is in hand, inject now).
+    let mut force_alt = false;
+    let syringe = w.defs.iter().position(|d| d.heal_charge.is_some());
+    if keys.just_pressed(KeyCode::KeyQ) || scripted("quickheal") {
+        let charge = syringe.and_then(|i| w.defs[i].heal_charge).map_or(0, |h| h.charge);
+        if health.health >= crate::combat::PLAYER_HEALTH_MAX {
+            runlog::kv("quick_heal_refused", "reason=full_health");
+        } else if let Some(si) = syringe {
+            if (charge as f32) < 0.95 * HEAL_CHARGE_MAX as f32 {
+                runlog::kv("quick_heal_refused", &format!("reason=charge charge={charge}"));
+            } else if w.current == si {
+                force_alt = true;
+                runlog::kv("quick_heal", "syringe_in_hand=true");
+            } else {
+                w.quick_heal = QuickHeal::Inject { back: w.current, retry: 0.0 };
+                choice = Some(si);
+                runlog::kv("quick_heal", &format!("syringe_in_hand=false back={}", w.defs[w.current].item_name));
+            }
+        }
+    }
+    // Syringe.Timer while quick healing: once the Syringe is ready, inject
+    // (HackClientStartFire); if that fails and you are full or the charge
+    // is under 75%, give up, else try again in 0.2 s. After FireRate +
+    // 0.5 s, SwitchToLastWeapon. A weapon change ends it.
+    let heading_to_syringe = |w: &Weapons, si: usize| w.current == si || matches!(w.action, Action::PutDown { next } if next == si);
+    match w.quick_heal {
+        QuickHeal::Off => {}
+        _ if choice.is_none() && syringe.is_none_or(|si| !heading_to_syringe(&w, si)) => {
+            w.quick_heal = QuickHeal::Off;
+        }
+        QuickHeal::Inject { back, retry } if w.action == Action::Idle && syringe == Some(w.current) => {
+            let si = syringe.expect("checked");
+            let retry = retry - time.delta_secs();
+            if retry <= 0.0 {
+                let h = w.defs[si].heal_charge.expect("syringe");
+                let can = health.health < crate::combat::PLAYER_HEALTH_MAX
+                    && h.charge >= h.cost[1]
+                    && w.fire_cooldown[0] <= 0.0
+                    && w.fire_cooldown[1] <= 0.0;
+                if can {
+                    force_alt = true;
+                    let rate = w.defs[si].modes[1].rate;
+                    w.quick_heal = QuickHeal::Back { back, timer: rate + 0.5 };
+                } else if health.health >= crate::combat::PLAYER_HEALTH_MAX || (h.charge as f32) < 0.75 * HEAL_CHARGE_MAX as f32 {
+                    w.quick_heal = QuickHeal::Back { back, timer: 0.2 };
+                } else {
+                    w.quick_heal = QuickHeal::Inject { back, retry: 0.2 };
+                }
+            } else {
+                w.quick_heal = QuickHeal::Inject { back, retry };
+            }
+        }
+        QuickHeal::Back { back, timer } if w.action == Action::Idle && syringe == Some(w.current) => {
+            let timer = timer - time.delta_secs();
+            if timer <= 0.0 {
+                w.quick_heal = QuickHeal::Off;
+                if back < w.defs.len() && !w.defs[back].gone && back != w.current {
+                    choice = Some(back);
+                }
+                runlog::kv("quick_heal_done", &format!("back={}", w.defs[back].item_name));
+            } else {
+                w.quick_heal = QuickHeal::Back { back, timer };
+            }
+        }
+        _ => {}
     }
     if let Some(next) = choice {
         match w.action {
@@ -1933,6 +2125,10 @@ fn weapon_input(
         (grabbed && mouse.just_pressed(buttons[i].0)) || scripted(buttons[i].1) || pressed_by_script[i]
     });
     let mut held = held;
+    if force_alt {
+        held[1] = true;
+        pressed[1] = true;
+    }
     // BoomStick.ClientStartFire: both barrels asked for with one loaded
     // fires the single barrel.
     if w.defs[w.current].boomstick_reload.is_some() && w.defs[w.current].ammo.is_some_and(|a| a.mag == 1) && held[1] {
@@ -1993,6 +2189,10 @@ fn weapon_input(
             continue;
         }
         let fm = w.defs[cur].modes[mode].clone();
+        if let Some(h) = w.defs[cur].heal_charge {
+            syringe_fire(&mut w, mode, pressed[mode], h, health.health, now);
+            continue;
+        }
         if mode == 1 && !matches!(fm.kind, FireKind::Melee | FireKind::Pellets) {
             // Only melee alt attacks are done; other alt fires come with
             // their weapon family (DESIGN "Weapons").
@@ -2541,6 +2741,7 @@ fn weapon_input(
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
     ammo_display.alt_ammo = w.defs[w.current].alt_ammo.map(|a| a.0);
+    ammo_display.syringe = w.defs.iter().find_map(|d| d.heal_charge).map(|h| h.charge * 100 / HEAL_CHARGE_MAX);
     // CrossbowArrow pickups: room for one more bolt?
     if let Some(d) = w.defs.iter().find(|d| d.class.eq_ignore_ascii_case("KFMod.Crossbow")) {
         bolt_room.0 = d.ammo.is_some_and(|a| a.mag + a.spare < a.max_total);

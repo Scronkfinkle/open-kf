@@ -58,6 +58,7 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | Z | spawn a zed in front of you (more spawn side by side); the HUD shows which |
 | N | change what Z spawns (all ten specimens) |
 | G | throw a frag grenade (HUD: FRAGS) |
+| Q | quick heal: bring out the Syringe, inject, switch back (HUD: SYRINGE %) |
 | H | spawn a Gorefast in front of you |
 | X | pause / resume zeds |
 | F1 | god mode on / off (HUD shows "(GOD)") |
@@ -158,6 +159,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Syringe and healing (W8a, 2026-10-04): middle click with the Syringe
+  (or Q from any weapon) heals you 50, paid out at 10 health a second
+  (less if it would go over 100; each hit you take cuts what is still to
+  come by 5); the charge refills in 15 s. Left click shows KF's "near
+  another player" message (no teammates). Checked by logged runs. Not
+  play-tested by you.
 - Husk Gun (W7c, 2026-10-04): hold to charge (up to 3 s), release to fire
   a fireball that grows with the charge (weak / medium / strong, more
   damage, up to 3x the blast radius, up to 10 fuel); a direct hit adds

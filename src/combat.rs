@@ -52,6 +52,17 @@ pub struct PlayerDamaged {
     pub kind: HurtKind,
 }
 
+/// KFPawn.GiveHealth(HealAmount, HealMax): the Syringe and medic darts.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct GiveHealth {
+    pub amount: f32,
+    pub max: f32,
+    pub source: &'static str,
+}
+
+/// Player health limit (HealthMax).
+pub const PLAYER_HEALTH_MAX: f32 = 100.0;
+
 /// Damage types with after-effects on the player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HurtKind {
@@ -104,11 +115,15 @@ pub struct PlayerHealth {
     pub deaths: u32,
     /// God mode (`--god` or F1): hits are still logged, but take no health.
     pub god: bool,
+    /// KFPawn healthToGive / lastHealTime: healing still to come, paid out
+    /// at 10 per second (AddHealth).
+    pub to_give: f32,
+    pub last_heal_time: f32,
 }
 
 impl Default for PlayerHealth {
     fn default() -> Self {
-        PlayerHealth { health: 100.0, deaths: 0, god: false }
+        PlayerHealth { health: 100.0, deaths: 0, god: false, to_give: 0.0, last_heal_time: 0.0 }
     }
 }
 
@@ -124,6 +139,8 @@ pub struct AmmoDisplay {
     pub alt_ammo: Option<u32>,
     /// Frags left (thrown with G).
     pub frags: Option<u32>,
+    /// The Syringe's charge, percent (KF's charge bar).
+    pub syringe: Option<u32>,
 }
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
@@ -177,6 +194,7 @@ impl Plugin for CombatPlugin {
         app.add_message::<ShotFired>()
             .add_message::<MeleeSwing>()
             .add_message::<PlayerDamaged>()
+            .add_message::<GiveHealth>()
             .init_resource::<PlayerHealth>()
             .init_resource::<AmmoDisplay>()
             .init_resource::<KillCount>()
@@ -185,7 +203,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<Burning>()
             .add_systems(Startup, spawn_hud)
             .add_systems(Update, toggle_god)
-            .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage, update_hud).chain());
+            .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage, give_health, add_health, update_hud).chain());
     }
 }
 
@@ -228,7 +246,8 @@ fn update_hud(
     let rounds = ammo.ammo.map_or(String::new(), |(mag, spare)| format!(" {mag} / {spare}"));
     let mode = ammo.fire_mode.map_or(String::new(), |m| format!(" [{m}]"))
         + &ammo.alt_ammo.map_or(String::new(), |n| format!(" [GRENADES {n}]"));
-    let frags = ammo.frags.map_or(String::new(), |n| format!("    FRAGS {n}"));
+    let frags = ammo.frags.map_or(String::new(), |n| format!("    FRAGS {n}"))
+        + &ammo.syringe.map_or(String::new(), |p| format!("    SYRINGE {p}%"));
     let ammo = format!("    {}{rounds}{mode}{frags}", ammo.weapon.to_uppercase());
     **t = format!(
         "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
@@ -712,6 +731,72 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
     });
 }
 
+/// KFPawn.GiveHealth: a heal halves a burn (BurnDown, an int, if over 1,
+/// and LastBurnDamage); it is cut to what fits under HealthMax (counting
+/// healing still to come; nothing if exactly full); then, if Health is
+/// under HealMax, it is added to healthToGive and the clock starts.
+fn give_health(
+    time: Res<Time>,
+    mut heals: MessageReader<GiveHealth>,
+    mut health: ResMut<PlayerHealth>,
+    mut burn: ResMut<Burning>,
+) {
+    for h in heals.read() {
+        if burn.burn_down > 0 {
+            if burn.burn_down > 1 {
+                burn.burn_down /= 2;
+            }
+            burn.last_damage = (burn.last_damage * 0.5).floor();
+        }
+        let mut amount = h.amount;
+        if amount + health.to_give + health.health > PLAYER_HEALTH_MAX {
+            amount = PLAYER_HEALTH_MAX - (health.health + health.to_give);
+            if amount == 0.0 {
+                runlog::kv("player_heal", &format!("source={} amount=0 given=false", h.source));
+                continue;
+            }
+        }
+        let given = health.health < h.max;
+        if given {
+            health.to_give += amount;
+            health.last_heal_time = time.elapsed_secs();
+        }
+        runlog::kv(
+            "player_heal",
+            &format!("source={} amount={amount} given={given} health={:.0} to_give={:.0}", h.source, health.health, health.to_give),
+        );
+    }
+}
+
+/// KFPawn.Tick -> AddHealth: every 0.1 s or more, int(10 x seconds since the
+/// last payment) health, up to HealthMax; full health drops what is left.
+/// Negative healthToGive (hits taken) is reset to 0.
+fn add_health(time: Res<Time>, mut health: ResMut<PlayerHealth>, mut log_timer: Local<f32>) {
+    let now = time.elapsed_secs();
+    if health.to_give > 0.0 && health.health > 0.0 {
+        if now - health.last_heal_time >= 0.1 {
+            if health.health < PLAYER_HEALTH_MAX {
+                let heal = (10.0 * (now - health.last_heal_time)).floor();
+                if heal > 0.0 {
+                    health.last_heal_time = now;
+                }
+                health.health = (health.health + heal).min(PLAYER_HEALTH_MAX);
+                health.to_give -= heal;
+            } else {
+                health.last_heal_time = now;
+                health.to_give = 0.0;
+            }
+            *log_timer += 1.0;
+            if *log_timer >= 5.0 || health.to_give <= 0.0 {
+                *log_timer = 0.0;
+                runlog::kv("player_healing", &format!("health={:.0} to_give={:.0}", health.health, health.to_give.max(0.0)));
+            }
+        }
+    } else if health.to_give < 0.0 {
+        health.to_give = 0.0;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_player_damage(
     mut hits: MessageReader<PlayerDamaged>,
@@ -730,6 +815,8 @@ fn apply_player_damage(
         if !health.god {
             health.health -= taken;
         }
+        // KFPawn.TakeDamage (and TakeBileDamage): healthToGive -= 5.
+        health.to_give -= 5.0;
         runlog::kv(
             "player_hit",
             &format!(
@@ -769,6 +856,7 @@ fn apply_player_damage(
             // Death: respawn at the player start with full health.
             health.deaths += 1;
             health.health = 100.0;
+            health.to_give = 0.0;
             pinned.release("player_died");
             if let Ok((mut t, walker)) = player.single_mut() {
                 t.translation = spawn.position;
