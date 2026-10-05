@@ -194,6 +194,7 @@ fn move_globs(
                 if let Some(amount) = hurt_radius(&spatial, p, end, DAMAGE) {
                     damage.write(crate::combat::PlayerDamaged {
                         amount,
+                        armor_stops: true,
                         zed_id: g.zed_id,
                         kind: crate::combat::HurtKind::Vomit,
                     });
@@ -217,6 +218,7 @@ fn move_globs(
             if let Some(amount) = hurt {
                 damage.write(crate::combat::PlayerDamaged {
                     amount,
+                    armor_stops: true,
                     zed_id: g.zed_id,
                     kind: crate::combat::HurtKind::Vomit,
                 });

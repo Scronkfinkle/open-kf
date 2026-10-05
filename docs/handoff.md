@@ -16,9 +16,7 @@ history is in `MODLOG.md`; the plans and rules are in `docs/DESIGN.md`
 
 ## What to do next (your order: waves -> trader -> door respawns)
 
-1. **T3b, armour.** Vest 300 for 100 points (partial when damaged, see
-   KFPawn.ServerBuyKevlar), ShieldStrength, KFPawn's absorption rules
-   (read first), HUD, a menu row.
+1. ~~T3b, armour~~ (done on the new machine, 2026-10-05; see MODLOG).
 2. **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back,
    shut (or open if it was), bStartSealed doors re-welded.
 3. **T2b, the trail.** RedWhisp / TraderPathEffect along the path every

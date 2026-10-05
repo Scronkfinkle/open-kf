@@ -112,7 +112,10 @@ fn pain_and_kill_z(
             zd.write(LevelDamageZed { zed: id, amount, cause });
         }
         None => {
-            pd.write(crate::combat::PlayerDamaged { amount, zed_id: crate::combat::LEVEL_DAMAGE, kind: crate::combat::HurtKind::Plain });
+            // FellOutOfWorld kills through Died(Gibbed), whose bArmorStops is
+            // false; pain volumes (Burned) go through the armour.
+            let armor_stops = cause != "fell_out_of_world";
+            pd.write(crate::combat::PlayerDamaged { amount, zed_id: crate::combat::LEVEL_DAMAGE, kind: crate::combat::HurtKind::Plain, armor_stops });
         }
     };
     // KillZ: FellOutOfWorld.

@@ -1116,6 +1116,7 @@ fn flame_burst(
             if self_damage > 0.0 {
                 player_damage.write(crate::combat::PlayerDamaged {
                     amount: self_damage,
+                    armor_stops: true,
                     zed_id: crate::combat::SELF_DAMAGE,
                     kind: crate::combat::HurtKind::Fire,
                 });
@@ -1378,6 +1379,7 @@ fn blast(
             if raw >= 1.0 {
                 player_damage.write(crate::combat::PlayerDamaged {
                     amount: raw,
+                    armor_stops: true,
                     zed_id: crate::combat::SELF_DAMAGE,
                     kind: crate::combat::HurtKind::Plain,
                 });

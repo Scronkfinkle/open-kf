@@ -2454,8 +2454,47 @@ KFGameLength=0) is Short.
       trader time.
     - Logs `shop_catalogue`, `shop_buy`, `shop_sell`, `shop_ammo`,
       `shop_refused` (reason), `buy_menu` (open / close).
-  - **T3b, armour.** Vest (300 for 100 points, partial), ShieldStrength
-    and KFPawn's absorption rules, the HUD.
+  - **T3b, armour (done 2026-10-05).** Vest (300 for 100 points, partial), ShieldStrength
+    and KFPawn's absorption rules, the HUD. Plan (from KFPawn.ShieldAbsorb,
+    KFPawn.ServerBuyKevlar, Pawn.TakeDamage, KFBuyMenuInvList,
+    HUDKillingFloor):
+    - State (`armour.rs`, resource `Armour`): ShieldStrength (a float,
+      0-100) and xPawn's SmallShieldStrength (float). Both 0 at the start
+      and after a death (a new pawn); no perks, so no starting armour.
+    - Which hits armour stops: Pawn.TakeDamage calls ShieldAbsorb only if
+      the damage type's bArmorStops and the damage (after ReduceDamage)
+      is over 0. bArmorStops is true (DamageType's default) for every KF
+      damage type except SirenScreamDamage, Fell, Crushed (and
+      DamTypePoundCrushed), Gibbed, Suicided, DamTypeTelefragged,
+      Drowned, Depressurized (scanned with `kfpkg defaults` over every
+      DamageType subclass). Ours: the Siren's scream and falling out of
+      the world (Gibbed) skip armour; zed hits, bile, fire, the Husk,
+      the Patriarch, pain volumes and your own explosives go through it.
+      `PlayerDamaged` gains `armor_stops`.
+    - ShieldAbsorb, copied line by line (int damage in, int out,
+      truncated): while ShieldStrength > SmallShieldStrength the vest
+      takes 0.75 x damage and you take 0.25 x damage; when the vest runs
+      out mid-hit you take the rest less what the vest had. The second
+      half (ShieldStrength >= 0.5 x damage) only runs once
+      SmallShieldStrength is above 0, which nothing in KF's solo game
+      sets: copied anyway, with a comment. No perk modifier
+      (GetBodyArmorDamageModifier) as perks are not in.
+    - God mode: KFHumanPawn.TakeDamage returns first, so armour is not
+      used up.
+    - Buying (ServerBuyKevlar): refused outside CanBuyNow or at 100.
+      Cost = 300 x (100 - ShieldStrength) / 100 (a float, taken off the
+      float Score); with enough dosh, ShieldStrength = 100. Short of
+      dosh: only if ShieldStrength > 0 (KF quirk: with no armour and
+      under 300 nothing happens), buy int(Score / 3) points for
+      int(3 x points). SmallShieldStrength is not touched.
+    - Menu: a "Combat armour" row at the end of "Yours" (KF adds the vest
+      after the weapons), showing int(ShieldStrength)/100 and the fill
+      price int((100 - ShieldStrength) x 3); Enter or F buys. Test
+      action `buy_vest`.
+    - HUD: "ARMOUR n" next to health (HUDKillingFloor draws
+      ArmorDigits = ShieldStrength always, as an int).
+    - Logs: `shop_vest` (bought, cost, armour), `shop_refused`
+      (request=vest), and `player_hit` gains armour before / after.
 
 **G1 as built (`game.rs`).** `load_game_data` (called by the map loader
 in wave mode) reads the length's WaveInfo array (WaveMask int,

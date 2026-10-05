@@ -50,6 +50,9 @@ pub struct PlayerDamaged {
     pub amount: f32,
     pub zed_id: usize,
     pub kind: HurtKind,
+    /// The damage type's bArmorStops: false only for the Siren's scream
+    /// and falling out of the world among ours (see armour.rs).
+    pub armor_stops: bool,
 }
 
 /// KFPawn.GiveHealth(HealAmount, HealMax): the Syringe and medic darts.
@@ -248,6 +251,7 @@ fn update_hud(
     dosh: Res<crate::dosh::Dosh>,
     note: Res<crate::trader::HudNote>,
     time: Res<Time>,
+    armour: Res<crate::armour::Armour>,
     mut text: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = text.single_mut() else {
@@ -261,9 +265,11 @@ fn update_hud(
         + &ammo.syringe.map_or(String::new(), |p| format!("    SYRINGE {p}%"));
     let ammo = format!("    {}{rounds}{mode}{frags}", ammo.weapon.to_uppercase());
     **t = format!(
-        "HEALTH {:.0}{}{ammo}    DOSH {}    KILLS {}    Z: {}{}",
+        "HEALTH {:.0}{}    ARMOUR {}{ammo}    DOSH {}    KILLS {}    Z: {}{}",
         health.health.max(0.0),
         if health.god { " (GOD)" } else { "" },
+        // HUDKillingFloor: ArmorDigits.Value (an int) = ShieldStrength.
+        armour.strength as i32,
         dosh.score as i32,
         kills.0,
         z_spawn.label.to_uppercase(),
@@ -735,6 +741,7 @@ fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter
         runlog::kv("player_bile", &format!("damage={amount} left={}", bile.count));
         out.write(PlayerDamaged {
             amount,
+            armor_stops: true,
             zed_id: bile.zed_id,
             kind: crate::combat::HurtKind::Plain,
         });
@@ -758,6 +765,7 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
     runlog::kv("player_burn", &format!("damage={} left={}", burn.last_damage, burn.burn_down));
     out.write(PlayerDamaged {
         amount: burn.last_damage,
+        armor_stops: true,
         zed_id: burn.zed_id,
         kind: HurtKind::Plain,
     });
@@ -839,11 +847,20 @@ fn apply_player_damage(
     mut bile: ResMut<BileBurn>,
     mut burn: ResMut<Burning>,
     time: Res<Time>,
+    mut armour: ResMut<crate::armour::Armour>,
 ) {
     for hit in hits.read() {
         // KFPawn.TakeDamage reads the burn from the damage before
         // ReduceDamage; the health loss is after it.
-        let taken = if hit.zed_id == SELF_DAMAGE { reduce_self_damage(hit.amount) } else { hit.amount };
+        let mut taken = if hit.zed_id == SELF_DAMAGE { reduce_self_damage(hit.amount) } else { hit.amount };
+        let armour_before = armour.strength;
+        let damage_in = taken;
+        // Pawn.TakeDamage: ShieldAbsorb after ReduceDamage, if the damage
+        // type's bArmorStops and the damage is over 0. God mode returns
+        // first in KFHumanPawn.TakeDamage, so the vest is not used up.
+        if !health.god && hit.armor_stops && taken > 0.0 && armour.strength > 0.0 {
+            taken = armour.absorb(taken);
+        }
         if !health.god {
             health.health -= taken;
         }
@@ -852,7 +869,7 @@ fn apply_player_damage(
         runlog::kv(
             "player_hit",
             &format!(
-                "zed={} damage={} kind={:?} health_left={:.0} god={}",
+                "zed={} damage={} damage_before_armour={damage_in} kind={:?} health_left={:.0} armour_before={armour_before:.2} armour={:.2} god={}",
                 match hit.zed_id {
                     SELF_DAMAGE => "self".to_string(),
                     LEVEL_DAMAGE => "level".to_string(),
@@ -861,6 +878,7 @@ fn apply_player_damage(
                 taken,
                 hit.kind,
                 health.health.max(0.0),
+                armour.strength,
                 health.god
             ),
         );
@@ -893,6 +911,8 @@ fn apply_player_damage(
             health.deaths += 1;
             health.health = 100.0;
             health.to_give = 0.0;
+            // A new pawn: no armour.
+            *armour = crate::armour::Armour::default();
             pinned.release("player_died");
             if let Ok((mut t, walker)) = player.single_mut() {
                 t.translation = spawn.position;

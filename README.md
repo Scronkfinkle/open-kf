@@ -205,8 +205,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   Buying (T3a): press E inside the open shop for a text menu (Up/Down,
   Left/Right perk list, Tab for your weapons, Enter buy/sell, C one
   magazine, F fill, Shift+C/F the second ammo, E closes); KF's prices,
-  weight limit (15), half-price second pistol, 75% resale. No armour yet,
-  no trail. Checked by
+  weight limit (15), half-price second pistol, 75% resale. Armour
+  (T3b): the "Combat armour" row at the end of your list (Enter or F)
+  buys the vest, 300 for 100 points, less when topping up; it takes 3/4
+  of each hit until it runs out (not the Siren's scream), shown as
+  "ARMOUR n" on the HUD; lost on death. Checked by logged runs on
+  KF-WestLondon; not play-tested by you. No trail. Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.

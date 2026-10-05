@@ -282,12 +282,16 @@ fn menu_input(
     (game, shops, cat, inv): (Res<crate::game::WaveGame>, Res<crate::trader::Shops>, Res<ShopCatalogue>, Res<ShopInventory>),
     (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     mut requests: MessageWriter<ShopRequest>,
+    mut vest: MessageWriter<crate::armour::BuyVest>,
 ) {
     // Scripted test actions this frame ("buy_menu", "menu_down", ...,
     // "buy:Shotgun", "sell:Shotgun", "ammo_fill:Shotgun", "ammo_clip:Shotgun").
     let actions: Vec<&str> = script.0.iter().filter(|(f, _)| *f == frames.0).map(|(_, a)| a.as_str()).collect();
     let act = |name: &str| actions.contains(&name);
     for a in &actions {
+        if *a == "buy_vest" {
+            vest.write(crate::armour::BuyVest);
+        }
         let class = |c: &str| if c.contains('.') { c.to_string() } else { format!("KFMod.{c}") };
         if let Some(c) = a.strip_prefix("buy:") {
             requests.write(ShopRequest::Buy(class(c)));
@@ -318,7 +322,8 @@ fn menu_input(
         menu.open = false;
         runlog::kv("buy_menu", &format!("open=false wave_running={wave_running} in_shop={in_shop}"));
     } else {
-        let rows = [sale_rows(&cat, &inv, menu.filter).len(), inv.owned.len()];
+        // "Yours" ends with the vest row (KFBuyMenuInvList adds it last).
+        let rows = [sale_rows(&cat, &inv, menu.filter).len(), inv.owned.len() + 1];
         let tab = menu.tab;
         let n = rows[tab];
         if keys.just_pressed(KeyCode::ArrowDown) || act("menu_down") {
@@ -348,7 +353,12 @@ fn menu_input(
                 }
             } else if let Some(o) = inv.owned.get(cursor) {
                 requests.write(ShopRequest::Sell(o.weapon.clone()));
+            } else if cursor == inv.owned.len() {
+                vest.write(crate::armour::BuyVest);
             }
+        }
+        if (keys.just_pressed(KeyCode::KeyF) || act("menu_fill")) && menu.tab == 1 && cursor == inv.owned.len() {
+            vest.write(crate::armour::BuyVest);
         }
         for (key, name, fill) in [(KeyCode::KeyF, "menu_fill", true), (KeyCode::KeyC, "menu_clip", false)] {
             if (keys.just_pressed(key) || act(name))
@@ -371,6 +381,7 @@ fn draw_menu(
     inv: Res<ShopInventory>,
     dosh: Res<crate::dosh::Dosh>,
     game: Res<crate::game::WaveGame>,
+    armour: Res<crate::armour::Armour>,
     mut text: Query<(&mut Text, &mut Node), With<MenuText>>,
 ) {
     let Ok((mut t, mut node)) = text.single_mut() else { return };
@@ -421,6 +432,10 @@ fn draw_menu(
         let sell = if o.sellable { format!("sell {}", o.sell_value) } else { String::new() };
         s += &format!("  {mark} {:<28} {:<10} {ammo}{alt}\n", o.name, sell);
     }
+    let mark = if menu.tab == 1 && menu.cursor[1] == inv.owned.len() { ">>" } else { "  " };
+    let (points, fill) = crate::armour::menu_row(&armour);
+    // BuyableVest.ItemName.
+    s += &format!("  {mark} {:<28} {:<10} armour {points}/100  fill {fill}\n", "Combat armour", "");
     **t = s;
 }
 

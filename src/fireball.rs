@@ -370,6 +370,7 @@ fn move_fireballs(
                     if dealt > 0.0 {
                         damage.write(crate::combat::PlayerDamaged {
                             amount: dealt,
+                            armor_stops: true,
                             zed_id: f.zed_id,
                             kind: spec.hurt,
                         });

@@ -3274,3 +3274,47 @@ real keys not tried by me; a weapon sold while reloading or mid-throw
 is swapped abruptly; armour (T3b), first aid, perks and their discounts
 are not in; the trader's GUI look is a text list. Not played by you.
 **Next:** T3b armour, or D5 door respawns, or T2b the trail.
+
+## 2026-10-05 T3b: armour (the Kevlar vest)
+
+**Changed:** new `src/armour.rs`: `Armour` (ShieldStrength and xPawn's
+SmallShieldStrength), `absorb` (KFPawn.ShieldAbsorb copied line by line,
+int in and out), `buy_kevlar` (KFPawn.ServerBuyKevlar), the `BuyVest`
+request and its system (CanBuyNow, logs `shop_vest` / `shop_refused
+request=vest`). `combat.rs`: `PlayerDamaged` gains `armor_stops` (the
+damage type's bArmorStops); `apply_player_damage` runs the vest after
+the self-damage reduction, not in god mode, and resets it on death;
+`player_hit` logs `damage_before_armour`, `armour_before`, `armour`; HUD
+"ARMOUR n". `zed.rs`: the Siren's scream skips armour; `pain.rs`:
+falling out of the world skips it (Gibbed); every other source keeps it.
+`buy_menu.rs`: a "Combat armour" row at the end of "Yours" (points/100,
+fill price), Enter or F buys; test action `buy_vest`. `main.rs`
+registers the plugin. DESIGN.md T3b plan; README; handoff.
+**Why:** T3b, next in the handoff's order.
+**Tested how:** read KFPawn.ShieldAbsorb / ServerBuyKevlar, Pawn.TakeDamage,
+KFBuyMenuInvList, HUDKillingFloor; scanned `kfpkg defaults` of every
+DamageType subclass for bArmorStops. 6 unit tests (absorb, breaking,
+buying incl. partial and the no-armour quirk, menu prices). Scripted runs
+on KF-WestLondon, waves, Short: wave 1 with `kill_zeds`, `warp_shop`,
+`buy_vest`, menu on the vest row, `next_wave`, wave 2 without god,
+`spawn_siren`. Screenshot of the menu.
+**Result:** before wave 1 (shop shut): refused `not_in_open_shop_time`.
+Trader time: `shop_vest bought=full cost=300.00 armour=100.00
+dosh_left=448.00`; buying again (action, menu Enter, menu F) refused
+`armour_full`. Wave 2: Husk fireball 24 -> you 6, vest 100 -> 82; claw
+11.28 -> you 2, vest 39.25 -> 31; the breaking hit 10.87 on 3.25 -> you 6
+(int(10) - 3.25), vest 0; Siren screams 1-5 left the vest unchanged.
+After the death, the next hit shows armour 0. Menu row "Combat armour
+armour 100/100 fill 0" and HUD "ARMOUR 100" in the screenshot. Tests
+109 pass (was 103); clippy clean.
+**Still broken / not tested:** the partial buy (some armour, short of
+dosh) is only unit-tested, not run in the game. Not played by you with
+real keys. No perks, so no perk armour discount or damage modifier, and
+no starting armour. The vest's name is taken from BuyableVest's default
+text, but `kfpkg defaults KFGui.BuyableVest` labels that value
+`WinWidth` (the KFGui property names come out wrong; not looked into).
+Found, not changed (separate steps): zed melee damage reaches the player
+as a fraction (e.g. 10.81) where KF passes an int; god mode still
+lowers healthToGive and starts burns, where KFHumanPawn.TakeDamage
+returns first.
+**Next:** D5, doors respawn at wave end.

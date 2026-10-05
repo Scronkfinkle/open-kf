@@ -974,6 +974,8 @@ fn scream_pulse(
     if amount > 0.0 {
         out.write(crate::combat::PlayerDamaged {
             amount,
+            // SirenScreamDamage: bArmorStops false.
+            armor_stops: false,
             zed_id: z.id,
             kind: crate::combat::HurtKind::Plain,
         });
@@ -1341,6 +1343,7 @@ fn boss_mg_shot(
         let amount = (crate::boss::MG_DAMAGE + (z.random() % 3) as f32).floor();
         player_damage.write(crate::combat::PlayerDamaged {
             amount,
+            armor_stops: true,
             zed_id: z.id,
             kind: crate::combat::HurtKind::Plain,
         });
@@ -3588,6 +3591,7 @@ fn think_and_move(
                         let amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
                         player_damage.write(crate::combat::PlayerDamaged {
                             amount,
+                            armor_stops: true,
                             zed_id: z.id,
                             kind: crate::combat::HurtKind::Plain,
                         });
@@ -3644,6 +3648,7 @@ fn think_and_move(
                     }
                     player_damage.write(crate::combat::PlayerDamaged {
                         amount,
+                        armor_stops: true,
                         zed_id: z.id,
                         kind: crate::combat::HurtKind::Plain,
                     });
@@ -4175,6 +4180,7 @@ fn think_and_move(
                 let amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
                 player_damage.write(crate::combat::PlayerDamaged {
                         amount,
+                        armor_stops: true,
                         zed_id: z.id,
                         kind: crate::combat::HurtKind::Plain,
                     });
