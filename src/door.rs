@@ -30,9 +30,7 @@ pub struct DoorSpawn {
     pub collision: TriSoup,
 }
 
-/// Marks a door's collider; the index is into `Doors::doors` (read by
-/// the Welder from D2 on).
-#[allow(dead_code)]
+/// Marks a door's collider; the index is into `Doors::doors`.
 #[derive(Component)]
 pub struct DoorCollider(pub usize);
 
@@ -70,9 +68,18 @@ pub struct Door {
     /// saved open, as in KF).
     pub closed: bool,
     phase: Phase,
-    // KFDoorMover state used from D2 on.
+    // KFDoorMover welding state (D2).
+    /// bSealed: welded (WeldStrength > 0, or bStartSealed).
     pub sealed: bool,
     pub hidden: bool,
+    /// WeldStrength, kept in step with the trigger's (SetWeldStrength).
+    pub weld: f32,
+    /// MaxWeld: the trigger's MaxWeldStrength (0 without a trigger).
+    pub max_weld: f32,
+    /// Health when not welded (MaxWeld at the start); damage to it is D3/D4.
+    pub health: f32,
+    /// bZedHittingDoor: welding counts less while set (set by zed hits, D3).
+    pub zed_hitting: bool,
 }
 
 pub struct Trigger {
@@ -83,6 +90,8 @@ pub struct Trigger {
     last_message: f32,
     /// vector(Rotation), for bDirectionalOpen.
     init_dir: [f32; 3],
+    /// KFUseTrigger.WeldStrength, shared by all its doors.
+    pub weld_strength: f32,
 }
 
 #[derive(Resource, Default)]
@@ -100,8 +109,10 @@ impl Plugin for DoorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DoorSetup>()
             .init_resource::<Doors>()
+            .init_resource::<WeldView>()
+            .add_message::<WeldHit>()
             .add_systems(PostStartup, spawn_doors)
-            .add_systems(Update, (use_and_touch, move_doors).chain());
+            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, move_doors).chain());
     }
 }
 
@@ -163,6 +174,10 @@ impl Door {
             phase: Phase::Idle,
             sealed: false,
             hidden: false,
+            weld: 0.0,
+            max_weld: 0.0,
+            health: 0.0,
+            zed_hitting: false,
             info,
             root,
             collider,
@@ -357,7 +372,30 @@ fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: 
             doors: members,
             last_attempt: i32::MIN / 2,
             last_message: f32::MIN,
+            weld_strength: 0.0,
         });
+    }
+    // KFDoorMover.PostBeginPlay: MaxWeld and Health from the trigger;
+    // bStartSealed doors start welded to StartSealedWeldPrc percent.
+    for i in 0..doors.doors.len() {
+        if let Some(t) = doors.doors[i].trigger {
+            let max = doors.triggers[t].info.max_weld_strength;
+            doors.doors[i].max_weld = max;
+            doors.doors[i].health = max;
+        }
+    }
+    let mut start_sealed = Vec::new();
+    for i in 0..doors.doors.len() {
+        if !doors.doors[i].info.start_sealed {
+            continue;
+        }
+        doors.doors[i].sealed = true;
+        if let Some(t) = doors.doors[i].trigger {
+            doors.triggers[t].weld_strength = 0.0;
+            let amount = doors.doors[i].max_weld * doors.doors[i].info.start_sealed_weld_prc / 100.0;
+            doors.add_weld(t, amount, false);
+        }
+        start_sealed.push(format!("{}:{:.0}", doors.doors[i].info.name, doors.doors[i].weld));
     }
     let mut states: std::collections::BTreeMap<String, usize> = Default::default();
     for d in &doors.doors {
@@ -375,10 +413,11 @@ fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: 
         "doors_loaded",
         &format!(
             "doors={} colliders={colliders} triggers={} triggers_without_doors={empty_triggers} states={states:?} \
-             without_trigger={} not_simulated=[{}] without_trigger_names=[{}]",
+             without_trigger={} start_sealed=[{}] not_simulated=[{}] without_trigger_names=[{}]",
             doors.doors.len(),
             doors.triggers.len(),
             no_trigger.len(),
+            start_sealed.join(" "),
             not_toggle.join(" "),
             no_trigger.join(" ")
         ),
@@ -506,7 +545,9 @@ fn use_and_touch(
     let doors = &mut *doors;
     // Player: KFPawn cylinder 20 x 50 (walk.rs).
     let player_at = (*mode == crate::walk::MoveMode::Walk).then(|| player.iter().next().map(|w| ue(w.center))).flatten();
-    let mut pawns: Vec<(usize, [f32; 3], f32, f32, Option<usize>)> = Vec::new();
+    // (touch key, position, radius, half-height, zed id), Unreal units.
+    type Pawn = (usize, [f32; 3], f32, f32, Option<usize>);
+    let mut pawns: Vec<Pawn> = Vec::new();
     if let Some(p) = player_at {
         pawns.push((0, p, 20.0, 50.0, None));
     }
@@ -563,6 +604,192 @@ fn move_doors(time: Res<Time>, mut doors: ResMut<Doors>, mut transforms: Query<&
         {
             t.translation = translation;
             t.rotation = rotation;
+        }
+    }
+}
+
+/// The door the Welder points at (WeldFire.GetDoor): what a trace from
+/// the eye along the view hits first, if that is a door. The Welder
+/// checks `distance` against its weaponRange.
+#[derive(Resource, Default)]
+pub struct WeldView {
+    pub door: Option<WeldDoor>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WeldDoor {
+    pub index: usize,
+    /// Unreal units from the eye.
+    pub distance: f32,
+    pub weld: f32,
+    pub max_weld: f32,
+    pub disallow_weld: bool,
+}
+
+/// WeldFire / UnWeldFire.Timer: DamagedelayMin after the fire, trace
+/// `range` from the eye and damage what is hit with DamTypeWelder or
+/// DamTypeUnWeld. Positions in Bevy space.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct WeldHit {
+    pub origin: Vec3,
+    pub dir: Vec3,
+    /// Unreal units.
+    pub range: f32,
+    pub damage: f32,
+    pub unweld: bool,
+}
+
+/// How far the aim trace looks (Unreal units); the Welder's own range
+/// (70) is checked by the weapon.
+const AIM_TRACE: f32 = 200.0;
+
+impl Doors {
+    /// KFDoorMover.SetWeldStrength on every door of trigger `t`.
+    fn set_weld(&mut self, t: usize) {
+        let w = self.triggers[t].weld_strength;
+        for &i in &self.triggers[t].doors {
+            let d = &mut self.doors[i];
+            d.weld = w;
+            d.sealed = w > 0.0;
+        }
+    }
+
+    /// KFUseTrigger.AddWeld: x CombatSealReduction while zeds hit the
+    /// door, capped at MaxWeldStrength.
+    fn add_weld(&mut self, t: usize, extra: f32, zombie_attacking: bool) -> f32 {
+        let trig = &mut self.triggers[t];
+        let mut extra = extra;
+        if zombie_attacking {
+            extra *= trig.info.combat_seal_reduction;
+        }
+        if trig.weld_strength + extra > trig.info.max_weld_strength {
+            extra = trig.info.max_weld_strength - trig.weld_strength;
+        }
+        if extra == 0.0 {
+            return 0.0;
+        }
+        trig.weld_strength += extra;
+        self.set_weld(t);
+        extra
+    }
+
+    /// KFUseTrigger.UnWeld: no floor at 0, so the strength can go below
+    /// zero (copied; the clamp is commented out in the script).
+    fn unweld(&mut self, t: usize, amount: f32, zombie_attacking: bool) -> f32 {
+        let mut amount = amount;
+        if zombie_attacking {
+            amount *= self.triggers[t].info.combat_seal_reduction;
+        }
+        if amount == 0.0 {
+            return 0.0;
+        }
+        self.triggers[t].weld_strength -= amount;
+        self.set_weld(t);
+        amount
+    }
+
+    /// KFDoorMover.TakeDamage from the player's Welder (DamTypeWelder or
+    /// DamTypeUnWeld). Returns what happened, for the log.
+    fn welder_damage(&mut self, i: usize, damage: f32, unweld: bool) -> String {
+        let d = &self.doors[i];
+        let Some(t) = d.trigger else {
+            return "ignored reason=no_trigger".into();
+        };
+        if d.hidden {
+            return "ignored reason=hidden".into();
+        }
+        let mut what = String::new();
+        // Unsealed doors lose Health to anything but the welder (D3/D4 break them).
+        if !d.sealed && unweld {
+            self.doors[i].health -= damage * 0.5;
+            what = format!("health={:.0} ", self.doors[i].health);
+        }
+        let d = &self.doors[i];
+        if d.closed && !unweld && !d.info.disallow_weld {
+            let zed = d.zed_hitting;
+            self.doors[i].sealed = true;
+            let added = self.add_weld(t, damage, zed);
+            what += &format!("welded added={added:.1}");
+        } else if d.sealed {
+            let zed = d.zed_hitting;
+            if unweld {
+                let removed = self.unweld(t, damage, zed);
+                what += &format!("unwelded removed={removed:.1}");
+            } else if !d.info.block_damaging_of_weld {
+                // DamageWeld (a sealed door that is not bClosed); breaking is D3.
+                self.triggers[t].weld_strength -= damage;
+                self.set_weld(t);
+                what += "weld_damaged";
+            }
+        } else {
+            what += if d.closed { "nothing reason=disallowed" } else { "nothing reason=not_closed" };
+        }
+        what
+    }
+}
+
+fn ray_door(spatial: &SpatialQuery, colliders: &Query<&DoorCollider>, origin: Vec3, dir: Vec3, range: f32) -> Option<(usize, f32, Vec3, Vec3)> {
+    let dir3 = Dir3::new(dir).ok()?;
+    let hit = spatial.cast_ray(origin, dir3, range * SCALE, true, &crate::collision::world_filter())?;
+    let c = colliders.get(hit.entity).ok()?;
+    let n = if hit.normal.dot(dir) > 0.0 { -hit.normal } else { hit.normal };
+    Some((c.0, hit.distance / SCALE, origin + dir * hit.distance, n))
+}
+
+fn aim_at_door(
+    spatial: SpatialQuery,
+    colliders: Query<&DoorCollider>,
+    cam: Query<&Transform, With<crate::camera::FlyCamera>>,
+    doors: Res<Doors>,
+    mut view: ResMut<WeldView>,
+) {
+    view.door = cam.single().ok().and_then(|t| {
+        let (i, distance, _, _) = ray_door(&spatial, &colliders, t.translation, *t.forward(), AIM_TRACE)?;
+        let d = &doors.doors[i];
+        Some(WeldDoor {
+            index: i,
+            distance,
+            weld: d.weld,
+            max_weld: d.max_weld,
+            disallow_weld: d.info.disallow_weld,
+        })
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn weld_hits(
+    mut hits: MessageReader<WeldHit>,
+    spatial: SpatialQuery,
+    colliders: Query<&DoorCollider>,
+    mut doors: ResMut<Doors>,
+    mut commands: Commands,
+    library: Option<Res<crate::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut seed: Local<u32>,
+) {
+    for h in hits.read() {
+        let mode = if h.unweld { "unweld" } else { "weld" };
+        let Some((i, distance, at, normal)) = ray_door(&spatial, &colliders, h.origin, h.dir, h.range) else {
+            runlog::kv("weld_hit", &format!("mode={mode} door=none"));
+            continue;
+        };
+        let what = doors.welder_damage(i, h.damage, h.unweld);
+        let d = &doors.doors[i];
+        let pct = if d.max_weld > 0.0 { d.weld / d.max_weld * 100.0 } else { 0.0 };
+        runlog::kv(
+            "weld_hit",
+            &format!(
+                "mode={mode} door={} distance={distance:.0} damage={} {what} weld={:.1} max={:.0} percent={pct:.0} sealed={}",
+                d.info.name, h.damage, d.weld, d.max_weld, d.sealed
+            ),
+        );
+        // KFWelderHitEffect: a WelderHitEmitter on the door, 0.15 x the
+        // player's CollisionHeight (50) below the hit, 4 units out.
+        if let Some(lib) = library.as_deref() {
+            let n = Vec3::new(-normal.z, normal.x, normal.y).normalize_or_zero();
+            let p = Vec3::from_array(ue(at)) - Vec3::Z * 0.15 * 50.0 + n * 4.0;
+            *seed = seed.wrapping_add(1);
+            crate::particles::spawn_effect(&mut commands, lib, &mut meshes, "KFMod.WelderHitEmitter", p, crate::fireball::axes_along(n), *seed);
         }
     }
 }
@@ -656,5 +883,77 @@ mod tests {
         run(&mut d, 1.1);
         assert_eq!(d.key_num, 0);
         assert_eq!(d.rot[1], 0.0);
+    }
+
+    fn test_doors(max_weld: f32) -> Doors {
+        let mut doors = Doors::default();
+        let mut d = test_door(2);
+        d.trigger = Some(0);
+        d.max_weld = max_weld;
+        d.health = max_weld;
+        doors.doors.push(d);
+        doors.triggers.push(Trigger {
+            info: UseTriggerInfo {
+                name: "TestTrigger".into(),
+                event: "T".into(),
+                location: [0.0; 3],
+                rotation: Rotator::default(),
+                radius: 128.0,
+                height: 80.0,
+                refire_delay: 1,
+                max_weld_strength: max_weld,
+                combat_seal_reduction: 0.5,
+                directional_open: false,
+                message: String::new(),
+                always_show_message: false,
+            },
+            doors: vec![0],
+            last_attempt: 0,
+            last_message: 0.0,
+            init_dir: [1.0, 0.0, 0.0],
+            weld_strength: 0.0,
+        });
+        doors
+    }
+
+    #[test]
+    fn welding_seals_caps_and_halves_under_attack() {
+        let mut doors = test_doors(25.0);
+        doors.welder_damage(0, 10.0, false);
+        assert!(doors.doors[0].sealed);
+        assert_eq!(doors.doors[0].weld, 10.0);
+        doors.doors[0].zed_hitting = true;
+        doors.welder_damage(0, 10.0, false);
+        assert_eq!(doors.doors[0].weld, 15.0); // x CombatSealReduction 0.5
+        doors.doors[0].zed_hitting = false;
+        doors.welder_damage(0, 10.0, false);
+        doors.welder_damage(0, 10.0, false);
+        assert_eq!(doors.doors[0].weld, 25.0); // MaxWeldStrength
+        // Sealed doors do not open.
+        doors.doors[0].trigger("test");
+        run(&mut doors.doors[0], 1.5);
+        assert_eq!(doors.doors[0].rot[1], 0.0);
+    }
+
+    #[test]
+    fn open_doors_cannot_be_welded() {
+        let mut doors = test_doors(400.0);
+        doors.doors[0].trigger("test");
+        run(&mut doors.doors[0], 1.5);
+        doors.welder_damage(0, 10.0, false);
+        assert!(!doors.doors[0].sealed);
+        assert_eq!(doors.doors[0].weld, 0.0);
+    }
+
+    #[test]
+    fn unwelding_goes_below_zero_as_in_kf() {
+        let mut doors = test_doors(400.0);
+        doors.welder_damage(0, 10.0, false);
+        doors.welder_damage(0, 15.0, true);
+        assert_eq!(doors.doors[0].weld, -5.0);
+        assert!(!doors.doors[0].sealed);
+        // The next weld starts from -5.
+        doors.welder_damage(0, 10.0, false);
+        assert_eq!(doors.doors[0].weld, 5.0);
     }
 }

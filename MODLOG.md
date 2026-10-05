@@ -2612,3 +2612,29 @@ the scripts say). Walkers pressing into a door or wall flicker into
 falling (existing bug, also on BSP walls). Event-driven doors
 (KF-Aperture) and other movers do not move. No sounds.
 **Next:** D2, welding (or the wall flicker fix first, your call).
+
+## 2026-10-05 Doors D2: welding
+
+**Changed:** `door.rs`: weld state on doors and triggers (WeldStrength,
+MaxWeld, sealed, Health), AddWeld / UnWeld / SetWeldStrength,
+KFDoorMover.TakeDamage for the welder, bStartSealed, `WeldView` (door in
+view) and `WeldHit` handling with the WelderHitEmitter. `weapon.rs`:
+Welder fuel (300, +40/s), `weld_fire` (AllowFire rules and messages,
+FireRate, delayed hit). `particles.rs`: preload WelderHitEmitter. DESIGN,
+README.
+**Why:** You asked for welders; D2 of the doors plan.
+**Tested how:** unit tests (seal, cap, combat halving, sealed doors stay
+shut, open doors not weldable, unweld below 0); KF-Manor run: Welder,
+weld 8 s, USE, unweld, USE; load logs on KF-IceCave and KF-Steamland
+(start-sealed doors). `cargo test --release --workspace`; clippy.
+**Result:** 10 per weld hit every 0.2 s, fuel 280, 268, ... out after
+about 5 s, then regen-limited; weld 270 of 400; USE gave "This door is
+welded shut"; unweld 15 per hit to 0, unsealed, USE opened it. IceCave's
+14 start-sealed doors at their percent (e.g. 160 of 400). Tests 63 + 21.
+**Failures on the way:** none. Corrected W8c's comment: the welder's door
+trace is 70 units, not 90.
+**Still broken / not tested:** No HUD weld bar or welder screen (log
+only). bDisallowWeld doors only covered by the code path, not a run.
+Sparks not looked at. Perk weld speed not applied. A zed between you and
+the door does not block the weld trace.
+**Next:** D3, zeds bash welded doors.

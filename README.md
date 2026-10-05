@@ -165,7 +165,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   KF. Zeds open a shut door by walking into its trigger. Checked by
   logged runs on KF-Manor (open, walk through, blocked when shut, a Clot
   opening it, a shot stopping at it) and load logs on six maps. Not
-  play-tested by you. Known gaps: no welding or bashing yet (D2, D3); a
+  play-tested by you. Known gaps: zeds do not bash welded doors yet (D3); a
   zed already standing in the trigger when you shut the door stays stuck
   behind it (the scripts say so; KF's engine side unknown); KF-Aperture's
   button-driven doors and other scripted movers do not move.
@@ -179,9 +179,15 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   300 units: half speed, more damage taken, no runs, rages, pounces or
   screams for 4 s, harder to zap next time. Checked by unit tests and
   logged runs on a Scrake and a Gorefast. Not play-tested by you.
-- Welder (W8c, 2026-10-05): as in KF away from a door: clicking only
-  gives the "near a weldable door" message (logged; no on-screen text
-  yet). There are no doors yet, so nothing to weld.
+- Welder (D2, 2026-10-05): look at a shut door within 70 units and
+  hold left click to weld it (10 per hit, 5 hits a second, 20 fuel each),
+  middle click to unweld (15 per hit, 15 fuel). Fuel: 300, refills 40 a
+  second. A welded door will not open for you or zeds; "This door is
+  welded shut" on USE. Doors that start welded on some maps (KF-IceCave)
+  do. The weld percent is only in the log (`weld_hit`); no HUD bar or
+  welder screen yet. Checked by unit tests and a logged run on KF-Manor
+  (weld to 270, USE refused, unweld to 0, USE opens). Not play-tested by
+  you; the welding sparks not looked at.
 - Medic gun darts (W8b, 2026-10-05): middle click on the MP7M, MP5M,
   M7A3M or KrissM fires a healing dart (250 of a 500 charge that
   refills); with no teammates they only fly and burst, and never hurt
@@ -371,7 +377,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   maps look flatter and brighter than in the game.
 - Animated or complex materials (panners, shaders, combiners) show their base
   texture only, without animation or blending tricks.
-- Doors cannot be welded or broken yet. Breakable windows and scripted
+- Zeds cannot break welded doors yet, so a welded door holds forever.
+  Breakable windows and scripted
   movers (lifts, barriers, KF-Aperture's button doors) do not move and do
   not block.
 - Pressing into a wall or door flickers between walking and falling (the

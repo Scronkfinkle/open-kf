@@ -2033,7 +2033,7 @@ perk chosen uses the plain values; perk bonuses come with the game loop),
 the trader and buying (W1's `--give` stands in), third-person weapon
 models, the flashlight, zed time.
 
-## Doors (milestone 8, planned 2026-10-05; D1 implemented 2026-10-05)
+## Doors (milestone 8, planned 2026-10-05; D1-D2 implemented 2026-10-05)
 
 Goal: KF's doors. They open and close with the USE key (E), zeds open the ones
 that are not welded, the Welder seals them, and zeds bash welded doors until
@@ -2074,7 +2074,9 @@ not part of this milestone and keep being drawn but not blocking.
   opens each door that is unlocked, unsealed and at key 0. The player
   entering gets the message "Press USE Key" (or the map's Message) at most
   every 0.6 s.
-- *Welding.* Welder WeldFire: `GetDoor` traces 90 units from the eye; a
+- *Welding.* Welder WeldFire: `GetDoor` traces 70 units from the eye
+  (the fire class's weaponRange, from KFMeleeFire; the Welder's own 90
+  is only used for its screen read-out); a
   door must be closed (`bClosed`) to weld. Each hit (FireRate 0.2) adds
   MeleeDamage 10 to the trigger's WeldStrength, shared by all its doors, up
   to MaxWeldStrength (KF 400, maps set 500 / 600). While zeds hit the door
@@ -2138,6 +2140,25 @@ What was learned:
 - Pressing into a wall makes the floor check touch the wall at distance
   0, so walkers flicker into falling. Happens on BSP walls too (not
   door-specific); left for its own fix.
+
+**D2 as built.** `door.rs` keeps `WeldView` (the door the view ray hits
+first, with its distance) and applies `WeldHit` messages as
+KFDoorMover.TakeDamage with the welder damage types, through the
+trigger's AddWeld / UnWeld. `weapon.rs` `weld_fire`: ReadyToFire,
+AllowFire (door within the mode's weaponRange 70; NoWeldTargetMessage /
+CantWeldTargetMessage at most every 0.5 s; unweld needs weld > 0; fuel >=
+AmmoPerFire), fuel, FireRate 0.2, the hit DamagedelayMin 0.1 later
+traced from the view at that moment, WelderHitEmitter on the door.
+Fuel (`WeldFuel`) regenerates in every frame, held or not (Welder.Tick).
+Quirks copied: UnWeld has no floor, so the strength can go below 0 and
+the next weld starts from there; a welder hit on a sealed door that is
+not bClosed damages the weld instead. Not copied: perks
+(GetWeldSpeedModifier; no perks yet), a zed between you and the door
+(KF's trace would hit the zed; ours sees through zeds), welder damage to
+zeds that step into the trace in the 0.1 s, the welder's screen.
+Noted for D3: Mover.BeginPlay sets the Timer only in net games, so in
+single player KFDoorMover.Timer never clears bZedHittingDoor; once a zed
+has hit a door, welding it stays halved.
 
 Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar

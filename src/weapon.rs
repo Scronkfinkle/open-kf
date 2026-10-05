@@ -210,6 +210,8 @@ struct WeaponDef {
     toss: Option<(String, f32, f32)>,
     /// The Syringe's healing charge (AmmoCharge).
     heal_charge: Option<HealCharge>,
+    /// The Welder's fuel.
+    weld_fuel: Option<WeldFuel>,
     /// KFWeapon QuickPutDownTime / QuickBringUpTime (around a frag throw).
     quick_put_down_time: f32,
     quick_bring_up_time: f32,
@@ -453,6 +455,19 @@ struct BeamState {
 
 /// ZEDGunAltFire's splash: 250 x ChargeScale units.
 const BEAM_SPHERE_RADIUS: f32 = 250.0;
+
+/// The Welder's fuel (WelderAmmo, both fire modes share it): MaxAmmo 300,
+/// refilled AmmoRegenRate (40) a second by Welder.Tick, whether held or
+/// not; whole units only, the fraction carried (AmmoRegenCount).
+#[derive(Clone, Copy, Debug)]
+struct WeldFuel {
+    amount: u32,
+    max: u32,
+    regen_rate: f32,
+    regen_count: f32,
+    /// AmmoPerFire: WeldFire 20, UnWeldFire 15.
+    cost: [u32; 2],
+}
 
 /// Syringe / KFMedicGun healing charge: up to 500 (MaxAmmoCount), +10 every
 /// AmmoRegenRate seconds (Tick, whether held or not).
@@ -1096,6 +1111,9 @@ struct Weapons {
     /// Melee swings waiting for their damage moment: (seconds left,
     /// stats, weapon name). KFMeleeFire.ModeDoFire sets a timer per swing.
     pending_swings: Vec<(f32, CombatStats, &'static str)>,
+    /// Welder hits waiting for WeldFire.Timer: (seconds left, damage,
+    /// range, unweld).
+    pending_welds: Vec<(f32, f32, f32, bool)>,
     /// Bound for bWaitForRelease modes: a press not yet turned into a shot.
     press_waiting: [bool; 2],
     /// Iron sights wanted (bAimingRifle) and the zoom blend, 0 = hip, 1 = aimed.
@@ -1312,6 +1330,7 @@ fn load_weapons(
         switch_timer: 0.0,
         down_delayed: false,
         pending_swings: Vec::new(),
+        pending_welds: Vec::new(),
         press_waiting: [false; 2],
         aiming: false,
         zoom: 0.0,
@@ -1585,7 +1604,21 @@ fn load_weapon(
         iron,
         speed_bonus,
         bob_damping,
-        ammo,
+        // The Welder's ammo is its fuel (weld_fuel), not a magazine.
+        ammo: if defaults.is_a(&class, "Welder") { None } else { ammo },
+        weld_fuel: defaults.is_a(&class, "Welder").then(|| {
+            let cost = |i: u32, d: u32| match mode_class(i).and_then(|c| defaults.get(&c, "AmmoPerFire")) {
+                Some((Value::Int(n), _)) => n.max(0) as u32,
+                _ => d,
+            };
+            WeldFuel {
+                amount: ammo.map_or(300, |a| a.initial),
+                max: ammo.map_or(300, |a| a.max_total),
+                regen_rate: float("AmmoRegenRate", 40.0),
+                regen_count: 0.0,
+                cost: [cost(0, 20), cost(1, 15)],
+            }
+        }),
         select_anim: name("SelectAnim").unwrap_or_else(|| "Select".into()).to_ascii_lowercase(),
         select_anim_rate: float("SelectAnimRate", 1.3636),
         bring_up_time: float("BringUpTime", 0.33),
@@ -1791,6 +1824,78 @@ fn play_idle(w: &mut Weapons) {
 /// FireAimedAnim); later shots of the same press FireLoopAnim (aimed:
 /// FireLoopAimedAnim, else FireAimedAnim), when the weapon has them.
 /// Melee modes cycle through FireAnims.
+/// WeldFire / UnWeldFire while the button is held (KFMeleeFire.ModeDoFire
+/// with WeldFire.AllowFire). `door` is the door in view (WeldFire.GetDoor
+/// traces the fire mode's weaponRange, 70, from the eye).
+fn weld_fire(w: &mut Weapons, mode: usize, fm: &FireMode, door: Option<crate::door::WeldDoor>, now: f32) {
+    let cur = w.current;
+    let Some(fuel) = w.defs[cur].weld_fuel else {
+        return;
+    };
+    let door = door.filter(|d| d.distance <= fm.combat.range);
+    // Weapon.ReadyToFire: ready, the other mode not firing (bModeExclusive),
+    // NextFireTime passed. AllowFire runs only then.
+    let alt = 1 - mode;
+    let exclusive = fm.mode_exclusive || w.defs[cur].modes[alt].mode_exclusive;
+    if w.action != Action::Idle || (exclusive && (w.firing[alt] || w.fire_cooldown[alt] > 0.0)) || w.fire_cooldown[mode] > 0.0 {
+        return;
+    }
+    let allow = match (mode, door) {
+        // NoWeldTargetMessage at most every 0.5 s (FailTime).
+        (0, None) => {
+            if now - w.last_weld_fail > 0.5 {
+                w.last_weld_fail = now;
+                runlog::kv("message", "text=\"You must be near a weldable door to use the welder.\"");
+            }
+            false
+        }
+        // CantWeldTargetMessage every AllowFire call in KF; rate-limited
+        // like the other here so the log stays readable.
+        (0, Some(d)) if d.disallow_weld => {
+            if now - w.last_weld_fail > 0.5 {
+                w.last_weld_fail = now;
+                runlog::kv("message", "text=\"You cannot weld this door.\"");
+            }
+            false
+        }
+        // UnWeldFire: a door with weld left; fails silently.
+        (1, None) => false,
+        (1, Some(d)) if d.weld <= 0.0 => false,
+        _ => fuel.amount >= fuel.cost[mode],
+    };
+    if !allow {
+        return;
+    }
+    if !w.firing[mode] {
+        w.firing[mode] = true;
+        w.shots_this_press[mode] = 0;
+        w.fire_cooldown[mode] = 0.0;
+    }
+    if let Some(f) = w.defs[cur].weld_fuel.as_mut() {
+        f.amount -= fuel.cost[mode];
+    }
+    w.fire_cooldown[mode] = (w.fire_cooldown[mode] + fm.rate).max(0.0);
+    // WeldFire.PlayFiring: FireLoopAnim after the first, if the mesh has it.
+    play_firing(w, mode, false);
+    w.shots_this_press[mode] += 1;
+    w.fire_count += 1;
+    w.pending_welds.push((fm.combat.damage_delay, fm.combat.damage_min, fm.combat.range, mode == 1));
+    runlog::kv(
+        "weld_fire",
+        &format!(
+            "mode={} door={} distance={:.0} screen_percent={:.0} fuel={} damage={} delay={}",
+            if mode == 1 { "unweld" } else { "weld" },
+            door.map_or(0, |d| d.index),
+            door.map_or(0.0, |d| d.distance),
+            // Welder.ScreenWeldPercent, shown on the welder's screen in KF.
+            door.map_or(0.0, |d| if d.max_weld > 0.0 { d.weld / d.max_weld * 100.0 } else { 0.0 }),
+            fuel.amount - fuel.cost[mode],
+            fm.combat.damage_min,
+            fm.combat.damage_delay
+        ),
+    );
+}
+
 fn play_firing(w: &mut Weapons, mode: usize, last: bool) {
     let mut m = w.defs[w.current].modes[mode].clone();
     // BoomStick: FireLastAnim / FireLastAimedAnim (fire and reload).
@@ -1979,6 +2084,7 @@ fn weapon_input(
         MessageWriter<crate::combat::GiveHealth>,
         MessageWriter<crate::projectile::BeamZap>,
     ),
+    (weld_view, mut weld_hits): (Res<crate::door::WeldView>, MessageWriter<crate::door::WeldHit>),
     mut scripted_held: Local<[bool; 2]>,
 ) {
     let Some(mut w) = weapons else {
@@ -2000,6 +2106,17 @@ fn weapon_input(
         {
             h.next_regen = now_s + h.regen_rate;
             h.charge = (h.charge + 10).min(HEAL_CHARGE_MAX);
+        }
+    }
+    // Welder.Tick: fuel back at AmmoRegenRate while under MaxAmmo.
+    for d in &mut w.defs {
+        if let Some(f) = d.weld_fuel.as_mut()
+            && f.amount < f.max
+        {
+            f.regen_count += time.delta_secs() * f.regen_rate;
+            let whole = f.regen_count.floor();
+            f.amount = (f.amount + whole as u32).min(f.max);
+            f.regen_count -= whole;
         }
     }
     // SyringeAltFire.Timer (InjectDelay after the shot): use the charge,
@@ -2284,10 +2401,6 @@ fn weapon_input(
             continue;
         }
         let fm = w.defs[cur].modes[mode].clone();
-        // WeldFire.AllowFire: GetDoor traces weaponRange (90) for a
-        // KFDoorMover. Doors are not simulated, so there is never one: no
-        // shot, no animation, only NoWeldTargetMessage (at most every
-        // 0.5 s while held, FailTime). UnWeldFire fails silently.
         if let Some(bf) = fm.beam.clone() {
             // ZEDGunAltFire.AllowFire: not reloading, a round in the magazine.
             let reloading = w.action == Action::Reload;
@@ -2356,10 +2469,7 @@ fn weapon_input(
             continue;
         }
         if fm.weld {
-            if mode == 0 && w.action == Action::Idle && now - w.last_weld_fail > 0.5 {
-                w.last_weld_fail = now;
-                runlog::kv("weld_no_target", "message=\"You must be near a weldable door to use the welder.\"");
-            }
+            weld_fire(&mut w, mode, &fm, weld_view.door, now);
             continue;
         }
         if let Some(h) = w.defs[cur].heal_charge.filter(|h| h.syringe) {
@@ -2733,6 +2843,27 @@ fn weapon_input(
                 min_dot: stats.min_dot,
                 headshot_mult: stats.headshot_mult,
                 weapon: name,
+            });
+        }
+    }
+    // WeldFire.Timer: the weld lands DamagedelayMin after the fire, traced
+    // from where the view is then.
+    let mut welds_landed = Vec::new();
+    w.pending_welds.retain_mut(|(t, damage, range, unweld)| {
+        *t -= dt;
+        if *t <= 0.0 {
+            welds_landed.push((*damage, *range, *unweld));
+        }
+        *t > 0.0
+    });
+    for (damage, range, unweld) in welds_landed {
+        if let Ok((cam, _)) = main_cam.single() {
+            weld_hits.write(crate::door::WeldHit {
+                origin: cam.translation,
+                dir: *cam.forward(),
+                range,
+                damage,
+                unweld,
             });
         }
     }
