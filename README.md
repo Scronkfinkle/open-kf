@@ -194,7 +194,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   seen for a while move at 300 (KF's hidden speed, also in debug mode);
   late in a wave, zeds nobody has seen for 8 s are removed. Zed damage is
   x 0.75 for one player, as in KF (also in debug mode: a Clot hits for
-  about 4). Checked by
+  about 4). The Patriarch wave (G3a): each time he is knocked down and
+  runs off to heal, 8 helpers spawn (KF's FinalSquads: Clots, then a
+  Crawler, then a Stalker join); when he dies the other zeds stop dead
+  and you win. Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.
@@ -423,8 +426,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
     zed movement code); a 30 s give-up (ours, not KF's) makes him heal
     where he is.
   - Missing: the Entrance animation and boss-wave intro, the radial attack
-    (needs 3 players), the zeds he summons on knockdown (needs the wave
-    system), the syringe prop in his hand, the death camera and victory
+    (needs 3 players), the syringe prop in his hand, the death camera and victory
     laugh, KF's refraction cloak shader (ours is a see-through stand-in),
     the commando "spotted" glow, voice lines and gun sounds, zed time.
   - Some timings are only unit-tested: the charge's 6 s limit, "over 700

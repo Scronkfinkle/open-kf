@@ -494,6 +494,11 @@ pub struct Zed {
     no_hit_reactions: bool,
     /// Patriarch: his own state (charge, ...).
     boss: Option<crate::boss::BossState>,
+    /// DoBossDeath: the controller went to state GameEnded and is gone.
+    /// The body stays (KFMonster.TurnOff does nothing), can still be shot,
+    /// but no longer thinks, moves or attacks, and is not a monster for
+    /// the wave count.
+    pub braindead: bool,
     /// Patriarch: the chaingun's MuzzleFlash3rdMG (mMuzzleFlash) on `tip`,
     /// and AddTraceHitFX calls not yet shown on it.
     mg_flash: Option<Entity>,
@@ -2451,6 +2456,7 @@ impl Zed {
             keeps_head: false,
             no_hit_reactions: false,
             boss: None,
+            braindead: false,
             mg_flash: None,
             mg_flash_shots: 0,
             cloaked: false,
@@ -2489,6 +2495,11 @@ impl Zed {
 
     pub fn is_dead(&self) -> bool {
         self.state == ZedState::Dead
+    }
+
+    /// Patriarch: knockdowns finished so far and SyringeCount.
+    pub fn boss_knockdowns(&self) -> Option<(u32, usize)> {
+        self.boss.map(|b| (b.knockdowns_done, b.syringes))
     }
 
     /// The collision cylinder, if it still blocks (corpses do not).
@@ -2838,6 +2849,7 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
                 boss: c.boss.is_some().then(|| crate::boss::BossState::new(c.health)),
+                braindead: false,
                 mg_flash: None,
                 mg_flash_shots: 0,
                 // ZombieStalker.PostBeginPlay: CloakStalker.
@@ -3003,6 +3015,7 @@ struct ZedWorld<'w, 's> {
     glass_bumps: MessageWriter<'w, crate::glass::GlassBump>,
     player_zone: Res<'w, crate::zones::PlayerZone>,
     level_damage: MessageReader<'w, 's, crate::pain::LevelDamageZed>,
+    boss_death: MessageReader<'w, 's, crate::game::BossDied>,
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
@@ -3029,7 +3042,8 @@ fn think_and_move(
     mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
-    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage } = &mut world;
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage, boss_death } = &mut world;
+    let boss_died = boss_death.read().count() > 0;
     let level_hits: Vec<(usize, f32, &'static str)> = level_damage.read().map(|d| (d.zed, d.amount, d.cause)).collect();
     let player_zone = **player_zone;
     let stuck: Vec<usize> = kill_stuck.read().map(|k| k.0).collect();
@@ -3048,6 +3062,8 @@ fn think_and_move(
     // Test action "kill_near_zeds": zeds within 500 units of the player die
     // (the ones that reached you), others live on (cleanup tests).
     let kill_near = script.0.iter().any(|(f, a)| *f == frames.0 && a == "kill_near_zeds");
+    // Test action "kill_boss": the Patriarch dies, others live (G3a tests).
+    let kill_boss = script.0.iter().any(|(f, a)| *f == frames.0 && a == "kill_boss");
     let Ok((pt, walker)) = player.single() else {
         return;
     };
@@ -3125,7 +3141,7 @@ fn think_and_move(
             }
             continue;
         }
-        if kill_all || (kill_near && (z.centre - target).length() / SCALE < 500.0 && !z.is_dead()) {
+        if kill_all || (kill_near && (z.centre - target).length() / SCALE < 500.0 && !z.is_dead()) || (kill_boss && z.boss.is_some()) {
             z.last_hit = None;
             z.kill();
             kills.0 += 1;
@@ -3156,6 +3172,22 @@ fn think_and_move(
             runlog::kv("zed_killed_stuck", &format!("id={}", z.id));
             continue;
         }
+        // DoBossDeath: the controller is gone mid-whatever; the body stands
+        // (our approximation: the attack is dropped and it idles).
+        if boss_died && !z.braindead {
+            z.braindead = true;
+            z.attack = None;
+            z.overlay = None;
+            z.door_bash = None;
+            if pinned.by == Some(z.id) {
+                pinned.release("boss_died");
+            }
+            if z.state != ZedState::Falling {
+                z.state = ZedState::Idle;
+            }
+            runlog::kv("zed_braindead", &format!("id={} reason=boss_died", z.id));
+        }
+        let ai = active.0 && !z.braindead;
         // KFMonster.Tick (standalone), when CanSpeedAdjust (head on, not
         // zapped): seen within the last 5 s of being drawn, else a sight
         // check from its eyes to the player's every second; unseen zeds
@@ -3312,7 +3344,7 @@ fn think_and_move(
         // Patriarch, a full-body action (chaingun, rocket, knockdown, heal):
         // `boss_busy` runs it.
         if z.state == ZedState::BossBusy {
-            if active.0 {
+            if ai {
                 let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
                 // ZombieBoss.DoorAttack: the rocket goes at the door
                 // (Controller.Target, its Location), not the player.
@@ -3326,7 +3358,7 @@ fn think_and_move(
             continue;
         }
         if z.state == ZedState::DoorBashing {
-            if active.0 {
+            if ai {
                 door_bashing(&mut z, c, dt, doors, &spatial, target, door_hits);
             }
             t.translation = z.centre;
@@ -3343,7 +3375,7 @@ fn think_and_move(
         let reach = z.melee_range + c.collision_radius + PLAYER_RADIUS;
         let old_state = z.state;
 
-        if active.0 && z.state != ZedState::Falling {
+        if ai && z.state != ZedState::Falling {
             // Where to head: the player when in reach or attacking, else the
             // hunting route's target (a navigation point, or the player when
             // it can be walked to directly).
@@ -4112,7 +4144,7 @@ fn think_and_move(
                     }
                 }
             }
-        } else if !active.0 && z.state != ZedState::Falling {
+        } else if !ai && z.state != ZedState::Falling {
             z.state = ZedState::Idle;
         }
         z.jump_cooldown = (z.jump_cooldown - dt).max(0.0);

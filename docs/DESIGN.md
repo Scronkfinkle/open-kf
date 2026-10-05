@@ -2304,8 +2304,35 @@ KFGameLength=0) is Short.
 - **Retro and map audit (done 2026-10-05).** `docs/map-audit.md` (every
   placed class that matters, KF behaviour, ours, priority) and
   `docs/retro-2026-10-05.md`; maps log `map_features` at load.
-- **G3, the Patriarch wave.** Boss spawn rules, his helper squads when he
-  runs off to heal (FinalSquads), the win.
+- **G3a, the Patriarch wave rules (done 2026-10-05).** From KFGameType (MatchInProgress
+  Timer, StartWaveBoss, AddBoss, AddBossBuddySquad, DoBossDeath) and
+  ZombieBoss (state KnockDown, Died):
+  - StartWaveBoss: TotalMaxMonsters 1, MaxMonsters 1, WaveEndTime = now
+    + 60. Each tick while TotalMaxMonsters > 0 and before WaveEndTime:
+    AddBoss. After that (or once he is spawned) the wave ends when
+    NumMonsters is 0, so if no volume takes him within 60 s the wave
+    ends empty and the game is won (a KF quirk, kept).
+  - AddBoss: FinalSquadNum = 0; if no LastZVol, FindSpawningVolume
+    (boss rating), then again ignoring the 5 s failed-spawn wait; none:
+    try next tick. SpawnInHere with bTryAllSpawns (every spawn point
+    tried, in random order with repeats, not 3) and 32 "at once".
+  - Helpers: at the end of his KnockDown animation, if FinalSquadNum ==
+    SyringeCount, AddBossBuddySquad: TotalZeds 8 for one player; up to
+    10 passes, each takes FinalSquads[FinalSquadNum] (KFMonstersCollection
+    defaults, 3 squads), trims it so the total stays at 8, finds a
+    volume (normal rating) and spawns ignoring MaxMonsters and
+    TotalMaxMonsters (999); then FinalSquadNum + 1. So at most one helper
+    group per syringe, the first knockdown uses squad 0.
+  - DoBossDeath: every other zed goes to state GameEnded (TurnOff: it
+    freezes in place, animation stopped, ignores damage, its controller
+    is destroyed), so it no longer counts as a monster; NumMonsters
+    drops to 0, the wave ends, WaveNum passes FinalWave and the next
+    tick ends the game won. Not done: the double-length zed time (no
+    zed time yet) and the death camera on him (G3b).
+- **G3b, the grand entrance.** MakeGrandEntry: once he is spawned the
+  view switches to him in third person while he plays Entrance, and
+  BossBattleSong ("KF_Abandon") starts; back to the player when the
+  animation ends. Also the death view on him. Later.
 - **D5, doors respawn at wave end.** KFDoorMover.RespawnDoor: back, shut
   (or open if it was), bStartSealed doors re-welded.
 - **T1, dosh.** Starting cash, kill rewards, team pot, death penalty, HUD.

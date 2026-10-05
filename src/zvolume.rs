@@ -360,6 +360,7 @@ pub fn rate(
     spatial: &SpatialQuery,
     v: &ZombieVolume,
     is_last: bool,
+    ignore_failed: bool,
     boss: bool,
     squad: &[String],
     zeds: &HashMap<String, ZedInfo>,
@@ -368,7 +369,7 @@ pub fn rate(
     now: f32,
     frand: f32,
 ) -> Result<f32, &'static str> {
-    if now - v.last_failed_spawn_time < 5.0 {
+    if !ignore_failed && now - v.last_failed_spawn_time < 5.0 {
         return Err("failed_recently");
     }
     for d in &v.room_doors {

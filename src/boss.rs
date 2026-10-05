@@ -357,6 +357,10 @@ pub struct BossState {
     /// 0 in KF, long before he spawns).
     pub since_charge: f32,
     pub since_force_charge: f32,
+    /// KnockDowns that ran to the end. KnockDown's Begin then calls
+    /// AddBossBuddySquad (if FinalSquadNum == SyringeCount); the wave code
+    /// watches this count.
+    pub knockdowns_done: u32,
 }
 
 /// What RangedAttack decided this frame (beyond melee).
@@ -413,6 +417,7 @@ impl BossState {
             mg_focal: bevy::math::Vec3::ZERO,
             since_charge: f32::MAX,
             since_force_charge: f32::MAX,
+            knockdowns_done: 0,
         }
     }
 }
@@ -535,6 +540,7 @@ impl BossState {
             return false;
         }
         self.knockdown = None;
+        self.knockdowns_done += 1;
         self.cloaked = true;
         self.escape = Some(Escape {
             seconds: 0.0,

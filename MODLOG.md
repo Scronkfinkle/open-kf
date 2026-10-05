@@ -3150,3 +3150,33 @@ the old `boss.rs` warning.
 **Still broken / not tested:** KF-Farm's terrain still uses the sun
 (L3); KF's fade-in from black at the start now only happens in zones
 that tint. Other maps not checked.
+
+## 2026-10-05 G3a: the Patriarch wave rules (helpers, his death, spawn)
+
+**Changed:** `game.rs`: AddBoss as in KF (volume search, then again
+ignoring the 5 s failed-spawn wait; every spawn point tried; 32 "at
+once"); StartWaveBoss's 60 s limit (no volume in 60 s: the wave ends
+without him); FinalSquads read from KFMonstersCollection (3 squads,
+logged as `game_final_squads`); AddBossBuddySquad (8 helpers for one
+player, at the end of each knockdown when FinalSquadNum == SyringeCount,
+ignoring the zed limits); DoBossDeath. `zed.rs`: zeds go `braindead` when
+he dies (no thinking, moving or attacking, still shootable, not counted),
+as KF's GameEnded controllers; test action `kill_boss`. `boss.rs`: counts
+finished knockdowns. `zvolume.rs`: the ignore-failed-time flag.
+SpawnInHere's limits are now parameters.
+**Why:** G3 in DESIGN.md. The boss wave spawned him and could be won, but
+had no helpers, and his death left the other zeds fighting (the wave
+could not end until you killed them all).
+**Tested how:** `--mode waves --length short --wave 5` on KF-WestLondon
+with scripted `hurt_zeds` and `kill_boss`; log lines `boss_spawned`,
+`boss_knockdown`, `boss_helpers`, `boss_killed`, `zed_braindead`,
+`wave_end`, `game_end`. Tests, clippy.
+**Result:** First knockdown: squad 0 (4 Clots), 8 spawned in 3 passes
+from two volumes. Second knockdown: squad 1 (3 Clots and a Crawler),
+8 in 5 passes. Kill him with 8 helpers alive: all 8 braindead, wave
+ends 0.1 s later, won 1 s after that. Tests 96 pass; clippy clean.
+**Still broken / not tested:** the 60 s no-volume path not exercised;
+braindead zeds drop their attack and idle (KF lets the animation play
+out with no controller); no zed time on his death (no zed time at all
+yet); the grand entrance and death camera are G3b. Not played by you.
+**Next:** G3b (entrance) or the trader (T1-T3), your call.

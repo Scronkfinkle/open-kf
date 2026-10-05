@@ -82,6 +82,8 @@ pub struct GameData {
     pub squads: Vec<Vec<String>>,
     /// The collection's special squad per wave (empty = none).
     pub special: Vec<Vec<String>>,
+    /// KFMonstersCollection FinalSquads: the Patriarch's helper squads.
+    pub final_squads: Vec<Vec<String>>,
     pub boss_class: String,
     /// KFLevelRules.WaveSpawnPeriod (the map's, else the class default 2).
     pub spawn_period: f32,
@@ -179,19 +181,28 @@ pub fn load_game_data(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
         runlog::kv("game_squads", &format!("standard=[{}]", strings.join(" ")));
         data.squads = strings.iter().map(|s| parse_squad(s, &letters)).collect();
     }
-    if let Some((v, from)) = defaults.get(&coll, special_prop) {
-        for p in struct_array(&from.pkg, &v) {
-            let classes = p.get(&from.pkg, "ZedClass").map(string_array).unwrap_or_default();
-            let counts = int_array(p.get(&from.pkg, "NumZeds"));
-            let mut squad = Vec::new();
-            for (c, n) in classes.iter().zip(counts.iter()) {
-                if !c.is_empty() {
-                    squad.extend(std::iter::repeat_n(c.clone(), (*n).max(0) as usize));
+    // SpecialSquad lists (ZedClass, NumZeds), as the squad's zed classes.
+    let special_squads = |prop: &str| -> Vec<Vec<String>> {
+        let Some((v, from)) = defaults.get(&coll, prop) else {
+            return Vec::new();
+        };
+        struct_array(&from.pkg, &v)
+            .iter()
+            .map(|p| {
+                let classes = p.get(&from.pkg, "ZedClass").map(string_array).unwrap_or_default();
+                let counts = int_array(p.get(&from.pkg, "NumZeds"));
+                let mut squad = Vec::new();
+                for (c, n) in classes.iter().zip(counts.iter()) {
+                    if !c.is_empty() {
+                        squad.extend(std::iter::repeat_n(c.clone(), (*n).max(0) as usize));
+                    }
                 }
-            }
-            data.special.push(squad);
-        }
-    }
+                squad
+            })
+            .collect()
+    };
+    data.special = special_squads(special_prop);
+    data.final_squads = special_squads("FinalSquads");
     data.boss_class = match defaults.get(&coll, "EndGameBossClass") {
         Some((Value::Str(s), _)) => s,
         _ => "KFChar.ZombieBoss_STANDARD".into(),
@@ -208,7 +219,7 @@ pub fn load_game_data(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
             data.spawn_period = *f;
         }
     }
-    let mut classes: Vec<String> = data.squads.iter().chain(data.special.iter()).flatten().cloned().collect();
+    let mut classes: Vec<String> = data.squads.iter().chain(data.special.iter()).chain(data.final_squads.iter()).flatten().cloned().collect();
     classes.push(data.boss_class.clone());
     classes.sort();
     classes.dedup();
@@ -228,6 +239,11 @@ pub fn load_game_data(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
             data.spawn_period,
             data.volumes.len()
         ),
+    );
+    let short = |c: &String| c.rsplit('.').next().unwrap_or(c).trim_end_matches("_STANDARD").to_string();
+    runlog::kv(
+        "game_final_squads",
+        &format!("{:?}", data.final_squads.iter().map(|s| s.iter().map(short).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>()),
     );
     data
 }
@@ -267,6 +283,14 @@ pub struct WaveGame {
     pub living: usize,
     rng: u32,
     deaths_at_start: Option<u32>,
+    /// FinalSquadNum: the next helper squad (one per syringe).
+    final_squad_num: usize,
+    /// WaveEndTime: the boss wave stops trying to spawn him after this.
+    wave_end_time: f32,
+    /// DoBossDeath has run.
+    boss_killed: bool,
+    /// The boss's finished knockdowns already answered.
+    boss_knockdowns_seen: u32,
 }
 
 impl Default for WaveGame {
@@ -290,6 +314,10 @@ impl Default for WaveGame {
             living: 0,
             rng: 0x2545_F491,
             deaths_at_start: None,
+            final_squad_num: 0,
+            wave_end_time: 0.0,
+            boss_killed: false,
+            boss_knockdowns_seen: 0,
         }
     }
 }
@@ -389,6 +417,10 @@ pub struct ClearZeds;
 
 /// The stuck-zed cleanup kills this zed (`Pawn.KilledBy(self)`: no kill
 /// credit, no dosh).
+/// DoBossDeath: every other zed's controller goes away (zed.rs).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct BossDied;
+
 #[derive(Message, Clone, Copy, Debug)]
 pub struct KillStuckZed(pub usize);
 
@@ -405,6 +437,7 @@ impl Plugin for GamePlugin {
             .add_message::<SpawnZedAt>()
             .add_message::<ClearZeds>()
             .add_message::<KillStuckZed>()
+            .add_message::<BossDied>()
             .add_systems(Update, wave_timer);
     }
 }
@@ -426,6 +459,7 @@ fn wave_timer(
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>),
     (player, doors, mut kill_stuck, player_zone): (PlayerQuery, Res<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
+    mut boss_died: MessageWriter<BossDied>,
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
         return;
@@ -494,7 +528,11 @@ fn wave_timer(
         }
         runlog::kv("game_start", &format!("mode=waves length={:?} final_wave={} countdown={}", options.length, g.final_wave, g.countdown));
     }
-    g.living = zeds.iter().filter(|z| !z.is_dead()).count();
+    // UpdateMonsterCount counts pawns that still have a controller.
+    g.living = zeds.iter().filter(|z| !z.is_dead() && !z.braindead).count();
+    if g.phase == Phase::BossWave {
+        boss_rules(g, data, &zeds, &ctx, &mut spawns, &mut boss_died);
+    }
     // UpdateMonsterCount: no living player ends the game (solo: no respawn).
     if matches!(g.phase, Phase::Countdown | Phase::Wave | Phase::BossWave) && health.deaths > g.deaths_at_start.unwrap_or(0) {
         g.phase = Phase::Lost;
@@ -516,19 +554,14 @@ fn wave_timer(
     match g.phase {
         Phase::Won | Phase::Lost => {}
         Phase::BossWave => {
-            // StartWaveBoss / AddBoss: a volume rated for the boss (G3 adds
-            // the rest of the boss's own rules).
-            if g.total_max_monsters > 0 {
-                g.next_squad = vec![data.boss_class.clone()];
-                if let Some(v) = find_volume(g, data, &ctx, true) {
-                    let n = spawn_in_here(g, data, v, &ctx, num_monsters, &mut spawns);
-                    if n > 0 {
-                        g.last_volume = Some(v);
-                        runlog::kv("boss_spawned", &format!("volume={}", data.volumes[v].name));
-                    }
+            if g.total_max_monsters <= 0 || now > g.wave_end_time {
+                // Everyone spawned and all dead (or he never found a
+                // volume in 60 s: the wave ends without him).
+                if num_monsters <= 0 {
+                    do_wave_end(g);
                 }
-            } else if num_monsters <= 0 {
-                do_wave_end(g);
+            } else {
+                add_boss(g, data, &ctx, &mut spawns);
             }
         }
         Phase::Wave => {
@@ -567,9 +600,11 @@ fn wave_timer(
             }
             if g.countdown <= 0 {
                 if g.wave_num == g.final_wave {
-                    // StartWaveBoss: TotalMaxMonsters 1.
+                    // StartWaveBoss: TotalMaxMonsters 1, MaxMonsters 1, 60 s.
                     g.phase = Phase::BossWave;
                     g.total_max_monsters = 1;
+                    g.max_monsters = 1;
+                    g.wave_end_time = now + 60.0;
                     runlog::kv("wave_start", &format!("wave=boss class={}", data.boss_class));
                 } else {
                     g.phase = Phase::Wave;
@@ -590,7 +625,7 @@ struct SpawnCtx<'a, 'w, 's> {
 
 /// FindSpawningVolume: the best-rated volume for the squad in
 /// `next_squad` (refused volumes skipped).
-fn find_volume(g: &mut WaveGame, data: &GameData, ctx: &SpawnCtx, boss: bool) -> Option<usize> {
+fn find_volume(g: &mut WaveGame, data: &GameData, ctx: &SpawnCtx, ignore_failed: bool, boss: bool) -> Option<usize> {
     let door_state = |name: &str| {
         ctx.doors
             .doors
@@ -602,7 +637,7 @@ fn find_volume(g: &mut WaveGame, data: &GameData, ctx: &SpawnCtx, boss: bool) ->
     let mut refused: std::collections::BTreeMap<&str, usize> = Default::default();
     for (i, v) in data.volumes.iter().enumerate() {
         let frand = g.frand();
-        match crate::zvolume::rate(ctx.spatial, v, g.last_spawning_volume == Some(i), boss, &g.next_squad, &data.zeds, &door_state, &ctx.player, ctx.now, frand) {
+        match crate::zvolume::rate(ctx.spatial, v, g.last_spawning_volume == Some(i), ignore_failed, boss, &g.next_squad, &data.zeds, &door_state, &ctx.player, ctx.now, frand) {
             Ok(score) => {
                 if best.is_none_or(|(_, b)| score > b) {
                     best = Some((i, score));
@@ -619,11 +654,12 @@ fn find_volume(g: &mut WaveGame, data: &GameData, ctx: &SpawnCtx, boss: bool) ->
 
 /// ZombieVolume.SpawnInHere: drop the squad's zeds this volume does not
 /// allow (they are lost, as in KF: the squad array is edited in place), then
-/// up to TotalMaxMonsters and MaxMonsters - NumMonsters zeds, each at one
-/// of 3 random spawn points the player cannot see. Native Spawn's fit test:
+/// up to `limits.total` (TotalMaxMonsters, lowered by each spawn) and
+/// `limits.at_once` zeds, each at one of 3 random spawn points the player
+/// cannot see (every point with bTryAllSpawns). Native Spawn's fit test:
 /// the zed's own cylinder must not overlap the level (raised so a taller
 /// zed stands where the 44-high tester stood). Returns how many spawned.
-fn spawn_in_here(g: &mut WaveGame, data: &mut GameData, v: usize, ctx: &SpawnCtx, num_monsters: i32, spawns: &mut MessageWriter<SpawnZedAt>) -> usize {
+fn spawn_in_here(g: &mut WaveGame, data: &mut GameData, v: usize, ctx: &SpawnCtx, limits: &mut Limits, spawns: &mut MessageWriter<SpawnZedAt>) -> usize {
     let vol = &data.volumes[v];
     let before = g.next_squad.len();
     g.next_squad.retain(|c| vol.allows(&data.zeds, c));
@@ -647,18 +683,18 @@ fn spawn_in_here(g: &mut WaveGame, data: &mut GameData, v: usize, ctx: &SpawnCtx
     if g.next_squad.is_empty() {
         return 0;
     }
-    let mut total = g.total_max_monsters;
-    let mut at_once_left = g.max_monsters - num_monsters;
+    let mut at_once_left = limits.at_once;
+    let tries = if limits.try_all { vol.spawn_pos.len() } else { 3 };
     let mut spawned = 0usize;
     let mut names = Vec::new();
     for i in 0..g.next_squad.len() {
-        if total <= 0 || at_once_left <= 0 {
+        if limits.total <= 0 || at_once_left <= 0 {
             continue;
         }
         let class = g.next_squad[i].clone();
         let info = data.zeds.get(&class.to_ascii_lowercase()).cloned().unwrap_or_default();
         let yaw = g.rand(65536) as f32;
-        for _ in 0..3 {
+        for _ in 0..tries {
             let k = g.rand(vol.spawn_pos.len());
             let p = vol.spawn_pos[k];
             if crate::zvolume::player_can_see_point(ctx.spatial, vol, p, &info, &ctx.player) {
@@ -674,14 +710,13 @@ fn spawn_in_here(g: &mut WaveGame, data: &mut GameData, v: usize, ctx: &SpawnCtx
                 continue;
             }
             spawns.write(SpawnZedAt { class: class.clone(), centre, yaw });
-            total -= 1;
+            limits.total -= 1;
             at_once_left -= 1;
             spawned += 1;
             names.push(class.rsplit('.').next().unwrap_or(&class).trim_end_matches("_STANDARD").to_string());
             break;
         }
     }
-    g.total_max_monsters = total;
     let vol = &mut data.volumes[v];
     if spawned > 0 {
         vol.last_spawn_time = ctx.now;
@@ -689,7 +724,7 @@ fn spawn_in_here(g: &mut WaveGame, data: &mut GameData, v: usize, ctx: &SpawnCtx
         let d = (vol.location - ctx.player.location).length();
         runlog::kv(
             "squad_spawned",
-            &format!("wave={} volume={} distance={d:.0} zeds=[{}] left_in_wave={}", g.wave_num + 1, vol.name, names.join(" "), g.total_max_monsters),
+            &format!("wave={} volume={} distance={d:.0} zeds=[{}] left_in_wave={}", g.wave_num + 1, vol.name, names.join(" "), limits.total),
         );
     } else {
         vol.last_failed_spawn_time = ctx.now;
@@ -714,7 +749,7 @@ fn add_squad(g: &mut WaveGame, data: &mut GameData, num_monsters: i32, ctx: &Spa
         } else {
             g.build_next_squad(data);
         }
-        g.last_volume = find_volume(g, data, ctx, false);
+        g.last_volume = find_volume(g, data, ctx, false, false);
         if g.last_volume.is_some() {
             g.last_spawning_volume = g.last_volume;
         }
@@ -725,18 +760,159 @@ fn add_squad(g: &mut WaveGame, data: &mut GameData, num_monsters: i32, ctx: &Spa
         g.next_squad.clear();
         return;
     };
-    let spawned = spawn_in_here(g, data, v, ctx, num_monsters, spawns);
+    let mut limits = Limits {
+        total: g.total_max_monsters,
+        at_once: g.max_monsters - num_monsters,
+        try_all: false,
+    };
+    let spawned = spawn_in_here(g, data, v, ctx, &mut limits, spawns);
+    g.total_max_monsters = limits.total;
     if spawned > 0 {
         let n = spawned.min(g.next_squad.len());
         g.next_squad.drain(..n);
     } else {
         // TryToSpawnInAnotherVolume.
         runlog::kv("squad_failed", &format!("volume={}", data.volumes[v].name));
-        g.last_volume = find_volume(g, data, ctx, false);
+        g.last_volume = find_volume(g, data, ctx, false, false);
         if g.last_volume.is_some() {
             g.last_spawning_volume = g.last_volume;
         }
     }
+}
+
+/// SpawnInHere's limits: TotalMaxMonsters (lowered as zeds spawn),
+/// MaxMonstersAtOnceLeft, bTryAllSpawns.
+struct Limits {
+    total: i32,
+    at_once: i32,
+    try_all: bool,
+}
+
+/// AddBoss: FinalSquadNum back to 0; the boss in LastZVol, else the best
+/// boss-rated volume, else the same ignoring the 5 s failed-spawn wait.
+/// SpawnInHere tries every spawn point, with 32 "at once" (not MaxMonsters
+/// - NumMonsters). On failure, TryToSpawnInAnotherVolume(true).
+fn add_boss(g: &mut WaveGame, data: &mut GameData, ctx: &SpawnCtx, spawns: &mut MessageWriter<SpawnZedAt>) {
+    g.final_squad_num = 0;
+    g.next_squad = vec![data.boss_class.clone()];
+    if g.last_volume.is_none() {
+        g.last_volume = find_volume(g, data, ctx, false, true);
+        if g.last_volume.is_none() {
+            g.last_volume = find_volume(g, data, ctx, true, true);
+        }
+        if g.last_volume.is_some() {
+            g.last_spawning_volume = g.last_volume;
+        }
+    }
+    let Some(v) = g.last_volume else {
+        runlog::kv("boss_no_volume", "retry=next_tick");
+        try_another_volume(g, data, ctx, true);
+        return;
+    };
+    let mut limits = Limits {
+        total: g.total_max_monsters,
+        at_once: MAX_ZOMBIES_ONCE,
+        try_all: true,
+    };
+    if spawn_in_here(g, data, v, ctx, &mut limits, spawns) > 0 {
+        g.total_max_monsters = limits.total;
+        runlog::kv("boss_spawned", &format!("volume={}", data.volumes[v].name));
+    } else {
+        runlog::kv("boss_spawn_failed", &format!("volume={}", data.volumes[v].name));
+        try_another_volume(g, data, ctx, true);
+    }
+}
+
+/// TryToSpawnInAnotherVolume.
+fn try_another_volume(g: &mut WaveGame, data: &GameData, ctx: &SpawnCtx, boss: bool) {
+    g.last_volume = find_volume(g, data, ctx, false, boss);
+    if g.last_volume.is_some() {
+        g.last_spawning_volume = g.last_volume;
+    }
+}
+
+/// The boss's own calls into the game, checked every frame: a finished
+/// KnockDown (AddBossBuddySquad when FinalSquadNum == SyringeCount) and
+/// his death (DoBossDeath).
+fn boss_rules(
+    g: &mut WaveGame,
+    data: &mut GameData,
+    zeds: &Query<&crate::zed::Zed>,
+    ctx: &SpawnCtx,
+    spawns: &mut MessageWriter<SpawnZedAt>,
+    boss_died: &mut MessageWriter<BossDied>,
+) {
+    for z in zeds.iter() {
+        let Some((knockdowns, syringes)) = z.boss_knockdowns() else { continue };
+        if z.is_dead() {
+            if !g.boss_killed {
+                g.boss_killed = true;
+                boss_died.write(BossDied);
+                runlog::kv("boss_killed", &format!("id={} other_zeds={}", z.id, g.living));
+            }
+            continue;
+        }
+        while g.boss_knockdowns_seen < knockdowns {
+            g.boss_knockdowns_seen += 1;
+            if g.final_squad_num == syringes {
+                add_boss_buddy_squad(g, data, ctx, spawns);
+            } else {
+                runlog::kv("boss_helpers", &format!("skipped=true final_squad_num={} syringes={syringes}", g.final_squad_num));
+            }
+        }
+    }
+}
+
+/// AddBossBuddySquad: 8 helpers for one player, from FinalSquads
+/// [FinalSquadNum], up to 10 passes, each in the best normal volume,
+/// ignoring MaxMonsters and the wave's TotalMaxMonsters; then the next
+/// squad number.
+fn add_boss_buddy_squad(g: &mut WaveGame, data: &mut GameData, ctx: &SpawnCtx, spawns: &mut MessageWriter<SpawnZedAt>) {
+    const TOTAL_ZEDS: usize = 8; // NumPlayers == 1
+    let squad_num = g.final_squad_num;
+    let mut total_spawned = 0usize;
+    let mut passes = 0;
+    let reason = 'passes: {
+        for _ in 0..10 {
+            passes += 1;
+            if total_spawned >= TOTAL_ZEDS {
+                break 'passes "enough";
+            }
+            g.next_squad = data.final_squads.get(squad_num).cloned().unwrap_or_default();
+            g.last_volume = find_volume(g, data, ctx, false, false);
+            if g.last_volume.is_none() {
+                g.last_volume = find_volume(g, data, ctx, false, false);
+            }
+            if g.last_volume.is_some() {
+                g.last_spawning_volume = g.last_volume;
+            }
+            // Trim from the front so the total stays at TOTAL_ZEDS.
+            if g.next_squad.len() + total_spawned > TOTAL_ZEDS {
+                let diff = g.next_squad.len() + total_spawned - TOTAL_ZEDS;
+                if g.next_squad.len() <= diff {
+                    break 'passes "trimmed_empty";
+                }
+                g.next_squad.drain(..diff);
+            }
+            // No volume: KF calls SpawnInHere on None, which does nothing.
+            let Some(v) = g.last_volume else { continue };
+            let mut limits = Limits {
+                total: 999,
+                at_once: 999,
+                try_all: false,
+            };
+            let n = spawn_in_here(g, data, v, ctx, &mut limits, spawns);
+            total_spawned += n;
+            let n = n.min(g.next_squad.len());
+            g.next_squad.drain(..n);
+        }
+        "passes_done"
+    };
+    g.final_squad_num += 1;
+    runlog::kv(
+        "boss_helpers",
+        &format!("squad={squad_num} spawned={total_spawned} passes={passes} end={reason} next_squad_num={}", g.final_squad_num),
+    );
 }
 
 /// DoWaveEnd: WaveTimeElapsed reset only after the first wave, the
