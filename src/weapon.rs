@@ -322,6 +322,8 @@ struct IronSights {
 #[derive(Clone, Debug)]
 struct FireMode {
     kind: FireKind,
+    /// HuskGunFire's charged release.
+    charge: Option<ChargeFire>,
     /// The bullets' damage type burns (instant fire; W7).
     fire: Option<crate::combat::FireType>,
     /// The class path, for logs ("None" if the weapon has no such mode).
@@ -413,6 +415,75 @@ struct PelletFire {
     flame: Option<crate::projectile::FlameStats>,
 }
 
+/// HuskGunFire: bFireOnRelease with a charge (HoldTime up to MaxChargeTime)
+/// that picks the projectile and scales it (PostSpawnProjectile).
+#[derive(Clone, Debug)]
+struct ChargeFire {
+    max_time: f32,
+    /// Under a third of MaxChargeTime, under two thirds, the rest.
+    weak: crate::projectile::ExplosiveStats,
+    medium: crate::projectile::ExplosiveStats,
+    strong: crate::projectile::ExplosiveStats,
+    /// ChargeEmitterClass, on the 'tip' bone while charging.
+    effect: Option<String>,
+}
+
+impl ChargeFire {
+    /// The projectile for a release after `hold` seconds:
+    /// GetDesiredProjectileClass, then PostSpawnProjectile's scaling
+    /// (ImpactDamage x HoldTime x 2.5, Damage x (1 + HoldTime / Max),
+    /// DamageRadius x (1 + HoldTime / (Max / 2)); at full charge x 7.5, x 2, x 3).
+    fn projectile(&self, hold: f32) -> crate::projectile::ExplosiveStats {
+        let mut x = if hold < self.max_time * 0.33 {
+            self.weak
+        } else if hold < self.max_time * 0.66 {
+            self.medium
+        } else {
+            self.strong
+        };
+        let h = hold.min(self.max_time);
+        x.impact_damage *= h * 2.5;
+        x.damage *= 1.0 + h / self.max_time;
+        x.radius *= 1.0 + h / (self.max_time / 2.0);
+        x
+    }
+
+    /// HuskGunFire.ModeDoFire: 1 + HoldTime / (Max / 9) rounds, 10 at full
+    /// charge (an int when used), at most what is left.
+    fn ammo(&self, hold: f32, left: u32) -> u32 {
+        let n = if hold < self.max_time { (1.0 + hold / (self.max_time / 9.0)) as u32 } else { 10 };
+        n.min(left)
+    }
+}
+
+/// A HuskGunProjectile class's values: `base` with the class's own
+/// ExplosionEmitter, ExplosionDecal and FlameTrailEmitterClass.
+fn husk_projectile(
+    set: &PackageSet,
+    defaults: &ClassDefaults,
+    class: &ObjectHandle,
+    base: crate::projectile::ExplosiveStats,
+) -> crate::projectile::ExplosiveStats {
+    use crate::decals::DecalKind;
+    let path = |prop: &str| match defaults.get(class, prop) {
+        Some((Value::Object(r), rp)) => set.resolve(&rp, r).map(|h| h.path()),
+        _ => None,
+    };
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let decal = match path("ExplosionDecal").as_deref().map(|p| p.rsplit('.').next().unwrap_or("").to_ascii_lowercase()) {
+        Some(n) if n.ends_with("_small") => DecalKind::BurnSmall,
+        Some(n) if n.ends_with("_large") => DecalKind::BurnLarge,
+        _ => DecalKind::BurnMedium,
+    };
+    crate::projectile::ExplosiveStats {
+        class: leak(class.path()),
+        effect: path("ExplosionEmitter").map_or(base.effect, leak),
+        trail: path("FlameTrailEmitterClass").map(leak).or(base.trail),
+        decal,
+        ..base
+    }
+}
+
 /// Which burn rules a damage type follows, if it has bDealBurningDamage
 /// (KFMonster.TakeDamage / ZombieBloat / ZombieHusk tell them apart by class).
 fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<crate::combat::FireType> {
@@ -466,6 +537,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         requires_aim: false,
         spawn_delay: None,
         fire: None,
+        charge: None,
         combat: CombatStats {
             headshot_mult: 1.0,
             ..default()
@@ -500,9 +572,9 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         defaults.is_a(fm_class, "KFShotgunFire")
             && (defaults.is_a(p, "ShotgunBullet")
                 || defaults.is_a(p, "TrenchgunBullet")
-                // Grenades and rockets (W6; the Husk gun's fireball is W7).
+                // Grenades, rockets and the Husk Gun's fireball (a LAWProj).
                 || defaults.is_a(p, "M79GrenadeProjectile")
-                || (defaults.is_a(p, "LAWProj") && !defaults.is_a(p, "HuskGunProjectile"))
+                || defaults.is_a(p, "LAWProj")
                 || defaults.is_a(p, "CrossbowArrow")
                 || defaults.is_a(p, "M99Bullet"))
     });
@@ -643,6 +715,13 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             _ => String::new(),
         };
         let is_law = defaults.is_a(pc, "LAWProj");
+        // HuskGunProjectile (a LAWProj): impact damage on every touch, a
+        // burning blast that spares the player, its own effects.
+        let is_husk = defaults.is_a(pc, "HuskGunProjectile");
+        let fire = match pget("MyDamageType") {
+            Some((Value::Object(r), rp)) => set.resolve(&rp, r).and_then(|dt| fire_type(defaults, &dt)),
+            _ => None,
+        };
         let explosive = (defaults.is_a(pc, "M79GrenadeProjectile") || is_law).then(|| crate::projectile::ExplosiveStats {
             class: projectile_path,
             speed: pfloat("Speed", 2000.0),
@@ -656,13 +735,47 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             life_span: pfloat("LifeSpan", 10.0),
             // ZombieFleshPound.TakeDamage: the frag and pipe bomb double,
             // the other explosive types (all of these) count fully.
-            fleshpound_mult: if damage_type.ends_with("DamTypeFrag") || damage_type.ends_with("DamTypePipeBomb") { 2.0 } else { 1.0 },
+            // DamTypeHuskGun is not in its list.
+            fleshpound_mult: if is_husk {
+                None
+            } else if damage_type.ends_with("DamTypeFrag") || damage_type.ends_with("DamTypePipeBomb") {
+                Some(2.0)
+            } else {
+                Some(1.0)
+            },
+            impact_on_touch: is_husk.then(|| pfloat("HeadShotDamageMult", 1.5)),
+            fire,
+            hurts_self: !is_husk,
             // Explode: LAWProj spawns LawExplosion, the M79 family
             // KFNadeLExplosion; ExplosionDecal RocketMarkDirt / KFScorchMark.
             effect: if is_law { "KFMod.LawExplosion" } else { "KFMod.KFNadeLExplosion" },
             decal: if is_law { crate::decals::DecalKind::RocketMark } else { crate::decals::DecalKind::NadeScorch },
             trail: Some("ROEffects.PanzerfaustTrail"),
         });
+        let explosive = match explosive {
+            Some(x) if is_husk => Some(husk_projectile(set, defaults, pc, x)),
+            x => x,
+        };
+        // HuskGunFire.GetDesiredProjectileClass: Weak / ProjectileClass /
+        // Strong by HoldTime; the subclasses only change the effects.
+        if let Some(x) = explosive
+            && defaults.is_a(fm_class, "HuskGunFire")
+        {
+            let variant = |prop: &str| match fget(prop) {
+                Some((Value::Object(r), rp)) => set.resolve(&rp, r).map(|h| husk_projectile(set, defaults, &h, x)).unwrap_or(x),
+                _ => x,
+            };
+            mode.charge = Some(ChargeFire {
+                max_time: ffloat("MaxChargeTime", 3.0),
+                weak: variant("WeakProjectileClass"),
+                medium: x,
+                strong: variant("StrongProjectileClass"),
+                effect: match fget("ChargeEmitterClass") {
+                    Some((Value::Object(r), rp)) => set.resolve(&rp, r).map(|h| h.path()),
+                    _ => None,
+                },
+            });
+        }
         let is_pipe = defaults.is_a(pc, "PipeBombProjectile");
         // CrossbowArrow / M99Bullet: TakeDamage with DamageTypeHeadShot on a
         // headshot (its HeadShotDamageMult is then the one KFMonster applies).
@@ -696,7 +809,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         // round in the magazine and never fires while reloading.
         let flame_fire = defaults.is_a(fm_class, "FlameBurstFire");
         mode.total_ammo_only = !flame_fire
-            && ["M79Fire", "M203Fire", "LAWFire", "CrossbowFire", "M99Fire"]
+            && ["M79Fire", "M203Fire", "LAWFire", "CrossbowFire", "M99Fire", "HuskGunFire"]
                 .iter()
                 .any(|c| defaults.is_a(fm_class, c));
         if flame_fire {
@@ -854,6 +967,10 @@ struct Weapons {
     /// PipeBombFire: (seconds left, weapon index, mode) of a placement
     /// waiting for its ProjectileSpawnDelay.
     pending_spawn: Option<(f32, usize, usize)>,
+    /// HuskGunFire: HoldTime of the charge in progress (mode 0), and the
+    /// ChargeEmitter effect.
+    charge_hold: Option<f32>,
+    charge_fx: Option<Entity>,
     /// Seconds left of the bring-up or put-down (Weapon's Timer), and
     /// whether the put-down is still waiting out DownDelay.
     switch_timer: f32,
@@ -1067,6 +1184,8 @@ fn load_weapons(
         reload_timer: 0.0,
         boomstick_pending: None,
         pending_spawn: None,
+        charge_hold: None,
+        charge_fx: None,
         switch_timer: 0.0,
         down_delayed: false,
         pending_swings: Vec::new(),
@@ -1822,11 +1941,19 @@ fn weapon_input(
         held[1] = false;
         pressed[1] = false;
     }
+    // A charge ends without a shot if the weapon leaves its ready state.
+    if w.charge_hold.is_some() && !matches!(w.action, Action::Idle) {
+        runlog::kv("charge_cancelled", &format!("weapon={} action={:?}", w.defs[w.current].item_name, w.action));
+        w.charge_hold = None;
+        w.firing[0] = false;
+    }
     for mode in 0..2 {
         let alt = 1 - mode;
         let cur = w.current;
+        // bFireOnRelease (HuskGunFire): letting go fires the charged shot.
+        let charge_release = if !held[mode] && mode == 0 { w.charge_hold.take() } else { None };
         // Weapon.StopFire on release: the fire end animation.
-        if !held[mode] {
+        if !held[mode] && charge_release.is_none() {
             if w.firing[mode] {
                 w.firing[mode] = false;
                 if matches!(w.action, Action::Idle | Action::Reload) {
@@ -1920,6 +2047,14 @@ fn weapon_input(
             w.firing[mode] = true;
             w.press_waiting[mode] = false;
             w.shots_this_press[mode] = 0;
+            // HuskGunFire: PlayPreFire (Charge / Charge_Iron), then hold.
+            if fm.charge.is_some() && mode == 0 {
+                w.charge_hold = Some(0.0);
+                let anim = if w.aiming { "Charge_Iron" } else { "Charge" };
+                play(&mut w, anim, 1.0, false);
+                runlog::kv("charge_start", &format!("weapon={}", w.defs[cur].item_name));
+                continue;
+            }
             // StartFire: NextFireTime = now (no PreFireTime).
             w.fire_cooldown[mode] = 0.0;
             // KFWeapon.StartFire interrupts a one-round reload.
@@ -1934,8 +2069,19 @@ fn weapon_input(
                 play(&mut w, &name, rate, true);
             }
         }
+        // Charging: HoldTime grows until the release.
+        if fm.charge.is_some() && charge_release.is_none() {
+            if let Some(h) = w.charge_hold.as_mut() {
+                *h += time.delta_secs();
+            }
+            continue;
+        }
         // ModeDoFire: once per press in semi auto, every FireRate in full auto.
         if w.fire_cooldown[mode] > 0.0 || !allow_fire || (fm.wait_for_release && w.shots_this_press[mode] > 0) {
+            if charge_release.is_some() {
+                w.firing[mode] = false;
+                runlog::kv("charge_dropped", &format!("weapon={} allow_fire={allow_fire}", w.defs[cur].item_name));
+            }
             // KFHighROFFire.ModeTick: an empty magazine ends the loop.
             if fm.high_rof && !fm.wait_for_release && !allow_fire && w.looping && w.firing[mode] {
                 w.firing[mode] = false;
@@ -1948,6 +2094,10 @@ fn weapon_input(
         let total_before = w.defs[cur].ammo.map_or(0, |a| a.mag + a.spare);
         // PipeBombFire: the ammo goes when the projectile spawns.
         let needs = if fm.spawn_delay.is_some() { 0 } else { needs };
+        let needs = match (&fm.charge, charge_release) {
+            (Some(c), Some(h)) => c.ammo(h, total.unwrap_or(0)),
+            _ => needs,
+        };
         if needs > 0 {
             if alt_pool.is_some() {
                 if let Some(a) = w.defs[cur].alt_ammo.as_mut() {
@@ -2029,7 +2179,20 @@ fn weapon_input(
                 runlog::kv("projectile_spawn_delayed", &format!("weapon={item_name} delay={delay}"));
             }
             FireKind::Pellets => {
-                let pf = fm.pellets.expect("pellet fire has pellet values");
+                let mut pf = fm.pellets.expect("pellet fire has pellet values");
+                if let (Some(c), Some(h)) = (&fm.charge, charge_release) {
+                    let x = c.projectile(h);
+                    runlog::kv(
+                        "charge_fired",
+                        &format!(
+                            "weapon={item_name} hold={h:.2} class={} ammo={needs} damage={:.1} radius={:.0} impact={:.0}",
+                            x.class, x.damage, x.radius, x.impact_damage
+                        ),
+                    );
+                    pf.explosive = Some(x);
+                    // ModeDoFire with bFireOnRelease: NextFireTime = now + FireRate.
+                    w.firing[mode] = false;
+                }
                 if let Ok((cam, walker)) = main_cam.single() {
                     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
                     let eye = to_ue(cam.translation) / coords::SCALE;
@@ -2485,6 +2648,10 @@ fn animate_weapon(
                         play(&mut w, &anim, rate, false);
                     } else if let Some((end, rate)) = next_end {
                         play(&mut w, &end, rate, false);
+                    } else if w.charge_hold.is_some() {
+                        // HuskGun.AnimEnd while charging: ChargeLoop(_Iron).
+                        let anim = if w.aiming { "ChargeLoop_Iron" } else { "ChargeLoop" };
+                        play(&mut w, anim, 1.0, true);
                     } else if !w.firing.iter().any(|&f| f) {
                         play_idle(&mut w);
                     } else {
@@ -2628,6 +2795,35 @@ fn weapon_fire_fx(
             }
         }
     }
+    // HuskGunFire.InitChargeEffect / DestroyChargeEffect: the charge glow
+    // on the 'tip' bone while charging. Its growth with the charge (Timer
+    // changing emitter sizes) is not done.
+    let tip = w.hand_frames.first().and_then(|h| h.0);
+    match (w.charge_hold.is_some(), w.charge_fx) {
+        (true, None) => {
+            let class = w.defs[current].modes[0].charge.as_ref().and_then(|c| c.effect.clone());
+            if let (Some(class), Some(lib)) = (class, library.as_deref()) {
+                let options = crate::particles::SpawnOptions {
+                    persistent: true,
+                    layer: Some(WEAPON_LAYER),
+                    ..default()
+                };
+                let (at, axes) = tip.unwrap_or((Vec3::ZERO, Mat3::IDENTITY));
+                w.charge_fx = crate::particles::spawn_effect_with(&mut commands, lib, &mut meshes, &class, at, axes, 11, options);
+                runlog::kv("charge_fx", &format!("class={class} spawned={}", w.charge_fx.is_some()));
+            }
+        }
+        (true, Some(e)) => {
+            if let (Ok((mut fx, _)), Some(f)) = (effects.get_mut(e), tip) {
+                fx.frame = f;
+            }
+        }
+        (false, Some(e)) => {
+            commands.entity(e).despawn();
+            w.charge_fx = None;
+        }
+        (false, None) => {}
+    }
     let shots = std::mem::take(&mut w.fx_shots);
     let frames = w.hand_frames.clone();
     for (i, def) in w.defs.iter().enumerate() {
@@ -2678,6 +2874,54 @@ fn weapon_fire_fx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn husk_charge() -> ChargeFire {
+        let x = crate::projectile::ExplosiveStats {
+            class: "medium",
+            speed: 1800.0,
+            damage: 25.0,
+            radius: 150.0,
+            momentum: 0.0,
+            impact_damage: 100.0,
+            impact_headshot_mult: 1.5,
+            impact_on_touch: Some(1.5),
+            fire: Some(crate::combat::FireType::HuskGun),
+            hurts_self: false,
+            arm_dist: 0.0,
+            straight_time: None,
+            life_span: 10.0,
+            fleshpound_mult: None,
+            effect: "",
+            decal: crate::decals::DecalKind::BurnMedium,
+            trail: None,
+        };
+        ChargeFire {
+            max_time: 3.0,
+            weak: crate::projectile::ExplosiveStats { class: "weak", ..x },
+            medium: x,
+            strong: crate::projectile::ExplosiveStats { class: "strong", ..x },
+            effect: None,
+        }
+    }
+
+    #[test]
+    fn husk_charge_picks_and_scales_the_fireball() {
+        let c = husk_charge();
+        // A tap: weak, impact x 0 (HoldTime x 2.5), 1 round.
+        let x = c.projectile(0.0);
+        assert_eq!((x.class, x.impact_damage, x.damage, x.radius), ("weak", 0.0, 25.0, 150.0));
+        assert_eq!(c.ammo(0.0, 75), 1);
+        // 1.5 s: the middle class, x 1.5 damage, x 2 radius, 375 impact, 5 rounds.
+        let x = c.projectile(1.5);
+        assert_eq!((x.class, x.impact_damage, x.damage, x.radius), ("medium", 375.0, 37.5, 300.0));
+        assert_eq!(c.ammo(1.5, 75), 5);
+        // Held past full: strong, x 7.5 impact, x 2 damage, x 3 radius, 10 rounds
+        // (or what is left).
+        let x = c.projectile(5.0);
+        assert_eq!((x.class, x.impact_damage, x.damage, x.radius), ("strong", 750.0, 50.0, 450.0));
+        assert_eq!(c.ammo(5.0, 75), 10);
+        assert_eq!(c.ammo(5.0, 4), 4);
+    }
 
     fn slot(group: u8, group_offset: i32, priority: i32) -> Slot {
         Slot {

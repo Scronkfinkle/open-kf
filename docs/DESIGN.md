@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W6, W7a and W7b implemented 2026-10-04)
+## Weapons (milestone 7, W1-W7 implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1877,6 +1877,36 @@ W7b (`projectile.rs` PlayerFlame / flame_burst, the Flamethrower):
 - Trail: FlameThrowerFlameB follows the flame and is Killed where it
   bursts. Not done: the HitFlame xEmitter trail (FlameThrowerFlame; no
   xEmitter support), the trails growing x 1.5 / x 1.8 per Timer, sounds.
+
+W7c (`weapon.rs` ChargeFire, `projectile.rs` Husk fields; the Husk Gun):
+- HuskGunFire is bFireOnRelease: a press (when ready, with at least 1
+  fuel) starts the charge: PlayPreFire plays Charge (Charge_Iron when
+  aiming), then HuskGun.AnimEnd loops ChargeLoop(_Iron); the
+  ChargeUp1stHusk effect sits on the 'tip' bone. Letting go fires:
+  GetDesiredProjectileClass by HoldTime (under 0.99 s weak, under 1.98 s
+  medium, else strong), PostSpawnProjectile scales it (ImpactDamage x
+  HoldTime x 2.5, Damage x (1 + HoldTime / 3), DamageRadius x (1 +
+  HoldTime / 1.5); from 3 s on x 7.5, x 2, x 3), and ModeDoFire uses
+  int(1 + 3 x HoldTime) fuel, 10 at full charge, at most what is left.
+  Then Fire / Fire_Iron, the muzzle flash, recoil (up to 1500 up),
+  NextFireTime = now + 0.75. The charge is dropped if the weapon leaves
+  its ready state (switching).
+- Fuel counts as one total (AllowFire: AmmoAmount >= 1; MagCapacity 1,
+  ReloadRate 0.01), like the M79.
+- HuskGunProjectile (a LAWProj, Speed 1800, straight, ArmDistSquared 0 so
+  never a dud): ProcessTouch gives the zed ImpactDamage (x 1.5 on a
+  headshot, then DamTypeHuskGunProjectileImpact's own x 1.5), then
+  explodes. Its HurtRadius is the LAW's (exposure-scaled) but skips the
+  Instigator: the Husk Gun never hurts you. DamTypeHuskGun burns (a
+  DamTypeBurned subclass: no headshot bonus; the Husk and Bloat
+  exact-class fire scales do not apply; the Fleshpound takes the
+  small-arms x 0.5, it is not in his explosives list).
+- Effects by class: trails FlameThrowerHusk_Weak / _Medium / _Strong
+  (pointing along the flight, unlike the LAW's backward rocket trail),
+  explosions FlameImpact_*, burn marks FlameThrowerBurnMark_Small /
+  _Medium / _Large; the EffectsSM.Ger_Tracer model at DrawScale 2.
+- Not done: the charge glow growing with the charge, the third-person
+  charge light, the camera shake, sounds.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

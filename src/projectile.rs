@@ -88,18 +88,28 @@ pub struct ExplosiveStats {
     /// takes from a dud (touched closer than ArmDist to the player).
     pub impact_damage: f32,
     pub impact_headshot_mult: f32,
+    /// HuskGunProjectile.ProcessTouch: every zed touched takes ImpactDamage
+    /// (x this HeadShotDamageMult on a headshot) before the explosion.
+    pub impact_on_touch: Option<f32>,
+    /// The blast's damage type burns (DamTypeHuskGun).
+    pub fire: Option<crate::combat::FireType>,
+    /// The blast hurts the player (HuskGunProjectile.HurtRadius skips the
+    /// Instigator; the LAW's and M79's do not).
+    pub hurts_self: bool,
     /// sqrt(ArmDistSquared).
     pub arm_dist: f32,
     /// StraightFlightTime: flies straight this long, then falls (M79
     /// family; None = straight until it hits, the LAW).
     pub straight_time: Option<f32>,
     pub life_span: f32,
-    /// ZombieFleshPound.TakeDamage's multiplier for this damage type.
-    pub fleshpound_mult: f32,
+    /// ZombieFleshPound.TakeDamage's multiplier for this damage type, if it
+    /// is in its explosives list (None: the small-arms rule).
+    pub fleshpound_mult: Option<f32>,
     /// Explode: the effect and decal.
     pub effect: &'static str,
     pub decal: crate::decals::DecalKind,
-    /// PanzerfaustTrail (turned backward).
+    /// The trail: PanzerfaustTrail (turned backward), or the Husk Gun's
+    /// FlameThrowerHusk_*.
     pub trail: Option<&'static str>,
 }
 
@@ -205,7 +215,10 @@ struct PlayerProjectile {
 /// StaticMeshRef): grenades, the LAW rocket, the frag, the pipe bomb and
 /// nails. Pellets and the M99 bullet are tiny and fast (their tracers show
 /// them); the Crossbow bolt is a skeletal mesh (not drawn yet).
-const MODEL_CLASSES: [&str; 7] = [
+const MODEL_CLASSES: [&str; 10] = [
+    "KFMod.HuskGunProjectile",
+    "KFMod.HuskGunProjectile_Weak",
+    "KFMod.HuskGunProjectile_Strong",
     "KFMod.M79GrenadeProjectile",
     "KFMod.M32GrenadeProjectile",
     "KFMod.M203GrenadeProjectile",
@@ -412,7 +425,11 @@ fn spawn_projectiles(
             let dir = s.dir.normalize_or_zero();
             let trail = x.trail.and_then(|class| {
                 let lib = library.as_deref()?;
-                crate::particles::spawn_effect(&mut commands, lib, &mut meshes, class, origin, crate::fireball::axes_along(-dir), *next_id)
+                // LAWProj turns PanzerfaustTrail backward (RelativeRotation
+                // pitch 32768); the Husk Gun's flame trail points along.
+                let backward = class.ends_with("PanzerfaustTrail");
+                let axes = crate::fireball::axes_along(if backward { -dir } else { dir });
+                crate::particles::spawn_effect(&mut commands, lib, &mut meshes, class, origin, axes, *next_id)
             });
             let e = commands.spawn(PlayerExplosive {
                 pos: origin,
@@ -773,6 +790,20 @@ fn move_explosives(
             p.pos = at;
             continue;
         }
+        // HuskGunProjectile.ProcessTouch: ImpactDamage to the zed touched
+        // (x HeadShotDamageMult on a headshot), then Explode.
+        if let (Some(head_mult), Some(id)) = (p.stats.impact_on_touch, zed)
+            && let Some(mut z) = zeds.iter_mut().find(|z| z.id == id)
+        {
+            let point = coords::pos(at.to_array());
+            let head = crate::combat::is_headshot(&z, point, dir, 1.0);
+            z.last_hit = Some((point, dir));
+            let attacker = coords::pos(player_ue.unwrap_or(at).to_array());
+            let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None, fire: None };
+            let damage = if head { p.stats.impact_damage * head_mult } else { p.stats.impact_damage };
+            runlog::kv("explosive_impact", &format!("id={} weapon={} zed={id} damage={damage:.1} headshot={head}", p.id, p.weapon));
+            crate::combat::damage_zed(&mut z, damage, head, p.stats.impact_headshot_mult, p.weapon, t, source, &mut kills);
+        }
         // Explode: the effect 20 units out, the decal, HurtRadius.
         let (zeds_hit, zeds_killed, self_damage) = blast(
             &mut commands,
@@ -793,6 +824,8 @@ fn move_explosives(
                 damage: p.stats.damage,
                 radius: p.stats.radius,
                 fleshpound_mult: p.stats.fleshpound_mult,
+                fire: p.stats.fire,
+                hurts_self: p.stats.hurts_self,
                 weapon: p.weapon,
                 id: p.id,
             },
@@ -1035,7 +1068,10 @@ struct Blast {
     decal: crate::decals::DecalKind,
     damage: f32,
     radius: f32,
-    fleshpound_mult: f32,
+    fleshpound_mult: Option<f32>,
+    /// A burning damage type (the Husk Gun's).
+    fire: Option<crate::combat::FireType>,
+    hurts_self: bool,
     weapon: &'static str,
     id: u32,
 }
@@ -1091,7 +1127,7 @@ fn blast(
         let point = coords::pos(hit_ue.to_array());
         let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
         z.last_hit = Some((point, dir_b));
-        let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: Some(b.fleshpound_mult), fire: None };
+        let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: b.fleshpound_mult, fire: b.fire };
         let before = z.health;
         crate::combat::damage_zed(&mut z, scale * b.damage, false, 1.0, b.weapon, dist * SCALE, source, kills);
         zeds_hit += 1;
@@ -1103,7 +1139,7 @@ fn blast(
     // KFGameType.ReduceDamage reduces self damage; KFHumanPawn.TakeDamage
     // drops the momentum of a player's damage (no push).
     let mut self_damage = 0.0;
-    if let Some(pl) = player_ue {
+    if let Some(pl) = player_ue.filter(|_| b.hurts_self) {
         let dist = (pl - at).length().max(1.0);
         if dist - PLAYER_RADIUS <= b.radius {
             let exposure = 0.5 * in_sight(spatial, at_bevy, coords::pos((pl + Vec3::Z * PLAYER_HEAD).to_array())) as u8 as f32
@@ -1309,7 +1345,9 @@ fn move_thrown(
                 decal: p.stats.decal,
                 damage: p.stats.damage,
                 radius: p.stats.radius,
-                fleshpound_mult: p.stats.fleshpound_mult,
+                fleshpound_mult: Some(p.stats.fleshpound_mult),
+                fire: None,
+                hurts_self: true,
                 weapon: p.weapon,
                 id: p.id,
             },

@@ -2430,3 +2430,30 @@ burn marks). The second trail (an xEmitter) is not drawn; trails don't
 grow. No sound. The view climbs while firing (KF's recoil; my scripted
 test can't pull down, so later flames went high).
 **Next:** W7c, the Husk Gun.
+
+## 2026-10-04 Weapons W7c: Husk Gun
+
+**Changed:** `weapon.rs`: `ChargeFire` (class by HoldTime, scaling, fuel
+use), charge on press / fire on release, Charge then ChargeLoop
+animations, the ChargeUp1stHusk effect on the tip, `husk_projectile`
+(each class's effects); the Husk Gun's fireball now counts as a working
+projectile. `projectile.rs`: `ExplosiveStats` gains `impact_on_touch`,
+`fire`, `hurts_self`, and `fleshpound_mult` became optional; trails turn
+backward only for the LAW's PanzerfaustTrail; the fireball models.
+`decals.rs`: three burn mark sizes. `particles.rs`: the Husk Gun's
+charge, trail and explosion effects. DESIGN, README.
+**Why:** W7 of the weapons plan.
+**Tested how:** `--give HuskGun`: a 0.15 s tap, a 1.3 s charge and a
+4 s charge at a Scrake; a LAW shot for regressions; `cargo test
+--release --workspace` (new: `husk_charge_picks_and_scales_the_fireball`).
+**Result:** Tap: weak fireball, 1 fuel, impact 37.5, blast 26 in 165
+units, Scrake lit. 1.32 s: medium, 4 fuel, impact 329, radius 282.
+4 s: strong, 10 fuel, impact 750 (killed the Scrake), radius 450. No
+damage to the player. Right trail, explosion and burn mark for each
+class. LAW unchanged (backward trail, dud up close). Tests 55 + 21.
+**Failure on the way:** the first run fired nothing: the W6 rule that
+lists working projectile classes still left the Husk Gun's out.
+**Still broken / not tested:** Not looked at (charge glow, fireballs,
+burn marks). The glow does not grow with the charge; no camera shake or
+sounds. Headshot impacts not seen in a run.
+**Next:** W8, medic and equipment.

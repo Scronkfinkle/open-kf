@@ -158,6 +158,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Husk Gun (W7c, 2026-10-04): hold to charge (up to 3 s), release to fire
+  a fireball that grows with the charge (weak / medium / strong, more
+  damage, up to 3x the blast radius, up to 10 fuel); a direct hit adds
+  impact damage; the blast sets zeds on fire and never hurts you.
+  Checked by unit tests and a logged run on a Scrake. Not play-tested by
+  you; not looked at.
 - Flamethrower (W7b, 2026-10-04): hold to spray flames that arc a little,
   burst after 0.4 s or on a zed or wall, and burn everything within 150
   units, zeds and (close up) you; a 100-round tank, then reload. Checked

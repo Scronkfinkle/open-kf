@@ -108,9 +108,17 @@ pub enum DecalKind {
     BulletHole,
     /// KFScorchMark (grenade explosions).
     NadeScorch,
+    /// FlameThrowerBurnMark_Small / _Medium / _Large (Husk Gun fireballs,
+    /// weak to strong).
+    BurnSmall,
+    BurnMedium,
+    BurnLarge,
 }
 
-const DECAL_CLASSES: [(DecalKind, &str); 9] = [
+const DECAL_CLASSES: [(DecalKind, &str); 12] = [
+    (DecalKind::BurnSmall, "KFMod.FlameThrowerBurnMark_Small"),
+    (DecalKind::BurnMedium, "KFMod.FlameThrowerBurnMark_Medium"),
+    (DecalKind::BurnLarge, "KFMod.FlameThrowerBurnMark_Large"),
     (DecalKind::NadeScorch, "KFMod.KFScorchMark"),
     (DecalKind::BulletHole, "ROEffects.BulletHoleDirt"),
     (DecalKind::Scorch, "KFMod.FlameThrowerBurnMark"),

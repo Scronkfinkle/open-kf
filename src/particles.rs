@@ -31,7 +31,16 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 58] = [
+const EFFECT_CLASSES: [&str; 65] = [
+    // Husk Gun: the charge glow (HuskGunFire.ChargeEmitterClass), fireball
+    // trails and explosions by charge (HuskGunProjectile _Weak / _Strong).
+    "ROEffects.ChargeUp1stHusk",
+    "KFMod.FlameThrowerHusk_Weak",
+    "KFMod.FlameThrowerHusk_Medium",
+    "KFMod.FlameThrowerHusk_Strong",
+    "KFMod.FlameImpact_Weak",
+    "KFMod.FlameImpact_Medium",
+    "KFMod.FlameImpact_Strong",
     // Flamethrower flames (FlameTendril's trail, Explode's FuelFlame).
     "KFMod.FlameThrowerFlameB",
     "KFMod.FuelFlame",
