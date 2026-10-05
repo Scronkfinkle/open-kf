@@ -160,6 +160,15 @@ impl PackageSet {
         }
     }
 
+    /// Finds an object by its full dotted path, e.g. "KF_Weapons2_Trip.AK47_Trip"
+    /// (as in UnrealScript's DynamicLoadObject). `class` limits the match.
+    pub fn find_object(&self, path: &str, class: Option<&str>) -> Option<ObjectHandle> {
+        let (pkg_name, inner) = path.split_once('.')?;
+        let package = self.load(pkg_name)?;
+        let export = package.find(inner, class)?;
+        Some(ObjectHandle { package, export })
+    }
+
     /// Names of all script packages (`System/*.u`).
     pub fn script_package_names(&self) -> Vec<String> {
         let mut v: Vec<String> = self

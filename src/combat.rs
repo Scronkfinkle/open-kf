@@ -94,9 +94,13 @@ impl Default for PlayerHealth {
     }
 }
 
-/// Ammo shown on the HUD (written by the weapon code).
+/// The weapon in hand and its ammo (magazine, spare), shown on the HUD
+/// (written by the weapon code).
 #[derive(Resource, Default)]
-pub struct AmmoDisplay(pub Option<(u32, u32)>);
+pub struct AmmoDisplay {
+    pub weapon: &'static str,
+    pub ammo: Option<(u32, u32)>,
+}
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
 /// jumping until `seconds` runs out or the grabbing zed dies or loses its head.
@@ -197,7 +201,8 @@ fn update_hud(
     let Ok(mut t) = text.single_mut() else {
         return;
     };
-    let ammo = ammo.0.map_or(String::new(), |(mag, spare)| format!("    AMMO {mag} / {spare}"));
+    let rounds = ammo.ammo.map_or(String::new(), |(mag, spare)| format!(" {mag} / {spare}"));
+    let ammo = format!("    {}{rounds}", ammo.weapon.to_uppercase());
     **t = format!(
         "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
         health.health.max(0.0),

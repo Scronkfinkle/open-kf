@@ -115,6 +115,9 @@ pub fn decode_image(h: &ObjectHandle, images: &mut Assets<Image>) -> Option<Hand
 pub struct Skins {
     pub refs: Vec<ObjectRef>,
     pub package: Option<Rc<LoadedPackage>>,
+    /// Skins named by path instead (KFWeapon SkinRefs, loaded with
+    /// DynamicLoadObject); these win over `refs`.
+    pub named: Vec<Option<ObjectHandle>>,
 }
 
 impl SkinnedModel {
@@ -206,8 +209,9 @@ impl SkinnedModel {
 
             // Material: Skins[i] if set, else the mesh's texture slot.
             let slot = mesh.material_slots.get(mat_index).copied().unwrap_or(mat_index);
-            let (rf, from) = match (skins.refs.get(mat_index), &skins.package) {
-                (Some(&s), Some(p)) if s != ObjectRef::Null => (s, p.clone()),
+            let (rf, from) = match (skins.named.get(mat_index), skins.refs.get(mat_index), &skins.package) {
+                (Some(Some(h)), _, _) => (ObjectRef::Export(h.export), h.package.clone()),
+                (_, Some(&s), Some(p)) if s != ObjectRef::Null => (s, p.clone()),
                 _ => (
                     mesh.textures.get(slot).copied().unwrap_or(ObjectRef::Null),
                     mesh_h.package.clone(),

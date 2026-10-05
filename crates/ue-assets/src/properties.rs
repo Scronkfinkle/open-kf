@@ -79,9 +79,14 @@ pub struct PropertyList {
 impl PropertyList {
     /// The first property with this name, at array index 0.
     pub fn get(&self, pkg: &Package, name: &str) -> Option<&Value> {
+        self.get_at(pkg, name, 0)
+    }
+
+    /// Element `index` of a fixed-size array property (`name[index]`).
+    pub fn get_at(&self, pkg: &Package, name: &str, index: u32) -> Option<&Value> {
         self.props
             .iter()
-            .find(|p| p.array_index == 0 && pkg.name(p.name).eq_ignore_ascii_case(name))
+            .find(|p| p.array_index == index && pkg.name(p.name).eq_ignore_ascii_case(name))
             .map(|p| &p.value)
     }
 }

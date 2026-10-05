@@ -1506,11 +1506,13 @@ fn load_class(
                     .filter_map(|_| r.compact_index().ok().map(ObjectRef::from_raw))
                     .collect(),
                 package: Some(p),
+                named: Vec::new(),
             }
         }
         _ => Skins {
             refs: Vec::new(),
             package: None,
+            named: Vec::new(),
         },
     };
     let model = SkinnedModel::load(set, &mesh_h, &skins, true, meshes, images, materials)?;
@@ -2431,7 +2433,8 @@ fn spawn_zeds(
     if keys.just_pressed(KeyCode::KeyZ) {
         wanted.push((classes.0[z_spawn.class.min(classes.0.len() - 1)].kind, 300.0, 0.0));
     }
-    if keys.just_pressed(KeyCode::KeyG) {
+    // H (G is KF's grenade key).
+    if keys.just_pressed(KeyCode::KeyH) {
         wanted.push((ZedKind::Gorefast, 300.0, 0.0));
     }
     if start {

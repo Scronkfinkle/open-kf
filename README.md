@@ -31,6 +31,7 @@ cargo run --release -- --walk --spawn fleshpound   # any specimen: clot, gorefas
 cargo run --release -- --walk --spawn patriarch --god --input 300:record,600:record   # test: record a 5 s video (scripted F9)
 cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
+cargo run --release -- --walk --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
 
@@ -47,13 +48,15 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | F12 | screenshot to `work/screenshots/`, with a `.txt` command that recreates the view |
 | F9 | start / stop recording a video to `work/videos/` (30 fps, H.264, up to 1280 wide); the window title shows `[REC]` |
 | V | switch between flying and walking |
-| 1 / 2 | knife / 9mm |
+| 1 2 3 4 5 | weapon slots: melee, pistols, primary, specials, equipment; press again to cycle within a slot (KF's rules) |
+| Mouse wheel | next / previous weapon |
 | Left click (mouse captured) | fire |
+| Middle click (mouse captured) | alt fire (KF's key): melee heavy attacks (other alt fires not done yet) |
 | R | reload (9mm) |
 | Right click (mouse captured) | iron sights on / off (9mm) |
 | Z | spawn a zed in front of you (more spawn side by side); the HUD shows which |
 | N | change what Z spawns (all ten specimens) |
-| G | spawn a Gorefast in front of you |
+| H | spawn a Gorefast in front of you (G is kept for KF's grenade) |
 | X | pause / resume zeds |
 | F1 | god mode on / off (HUD shows "(GOD)") |
 | Space (walking) | jump |
@@ -135,6 +138,18 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   (KarmaData/KF_Characters_Trip.ka), pushed along the shot, and lie on the
   ground for 30 s. Corpses do not block you, zeds or bullets. Checked by logs
   (all joints hold within 0.2 units, bodies rest in ~2 s) and screenshots;
+  play-tested by you.
+- Weapon inventory (2026-10-04): KF's starting kit (knife, 9mm, frag,
+  syringe, welder), any base-game weapon given with `--give`, slot keys
+  1-5 and the mouse wheel with KF's ordering and cycling rules, the
+  carried weight slowing you as in KF (starting kit: 198 instead of 200).
+  Melee alt attacks on middle click (KF's AltFire key), each with its own
+  damage, reach, delay and animation (Axe 175 / 275, Knife 19 / 55, ...),
+  and KF's rule that one fire mode waits for the other. Pistols, the Lever
+  Action, M14, shotguns and launchers fire once per click
+  (bWaitForRelease); rifles and SMGs keep firing while held.
+  Guns deal KF's DamageMax (the 9mm now 35 every shot; it rolled 25-35
+  before). Checked by unit tests, logs and a screenshot of the AK47. Not
   play-tested by you.
 - Iron sights (ADS) on the 9mm: right click zooms the view (FOV 90 -> 75)
   over 0.25 s, brings the sights to the screen centre, plays KF's iron idle
@@ -259,9 +274,17 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Doors, breakable windows and scripted barriers (movers) do not block
   movement yet, because they don't move yet.
 - No crouching. Ladders, water and swimming are not handled.
-- No muzzle flash, impact effects on walls, or sound;  only the two starting
-  weapons are available. All ten specimens exist, but only the Clot's and Gorefast's special behaviour is done.
-  Emitters and sound: not started.
+- No sound.
+- Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
+  carried (`--give`), switched to and fired, but only melee weapons and
+  plain bullet guns deal damage, with the 9mm's rules (no recoil,
+  penetration, auto/semi toggle, per-weapon reload styles yet). Melee hits
+  one zed per swing, with no backstab bonus (KF hits every zed in the
+  cone and doubles damage from behind; step W5). Alt fires other than
+  melee (medic darts, M203 grenade, ...) do nothing yet. Shotguns,
+  launchers, the crossbow, M99, flamethrower, husk gun, syringe, welder and
+  ZED gun play their fire animation and use ammo but do nothing. The ZED
+  Gun MKII does not load. No DLC weapons. No trader.
 - Frame rate not measured with the monitor on (during testing the monitor was
   off, which throttles to 1 fps).
 - Exit crash: about half of all runs end in a segmentation fault or abort

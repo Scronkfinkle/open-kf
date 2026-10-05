@@ -56,6 +56,8 @@ struct Args {
     spawn: Option<String>,
     /// Start in god mode: the player takes no damage.
     god: bool,
+    /// Test: extra weapons to carry ("all" or class names, comma-separated).
+    give: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -88,6 +90,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--walk" => args.walk = true,
             "--god" => args.god = true,
+            "--give" => args.give = Some(it.next().ok_or("--give needs \"all\" or weapon class names")?),
             "--zed" => args.zed = true,
             "--gorefast" => args.gorefast = true,
             "--always-sever" => args.always_sever = true,
@@ -160,6 +163,7 @@ fn main() -> AppExit {
         at_frames: args.screenshot.clone(),
     };
     let scripted = weapon::ScriptedInput(args.input.clone());
+    let loadout = args.give.as_deref().map(weapon::WeaponLoadout::parse).unwrap_or_default();
     let zed_settings = zed::ZedSettings {
         spawn_at_start: args.zed,
         gorefast_at_start: args.gorefast,
@@ -212,6 +216,7 @@ fn main() -> AppExit {
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(scripted)
+        .insert_resource(loadout)
         .insert_resource(zed_settings)
         .insert_resource(combat::PlayerHealth {
             god: args_god,

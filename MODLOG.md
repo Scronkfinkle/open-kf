@@ -1976,3 +1976,60 @@ now say the Patriarch is unfinished and list what is missing or untested.
 **Result:** -
 **Still broken / not tested:** See the list in the README.
 **Next:** The stuck-after-falling movement bug, or whatever you choose.
+
+## 2026-10-04 Weapons plan, and step W1: any weapon from data, inventory
+
+**Changed:** DESIGN: new "Weapons" section (which weapons, rules from
+the scripts, steps W1-W9). `weapon.rs`: any weapon class loads from its
+defaults (Mesh or MeshRef, Skins or SkinRefs); `BASE_WEAPONS` (48, no
+DLC); KF's starting kit; `--give all|Class,...` (`WeaponLoadout`);
+inventory order (Pawn.AddInventory), slot keys 1-5 (Pawn.SwitchWeapon),
+mouse wheel (KFWeapon.NextWeapon); `FireKind` from the fire class; guns
+deal DamageMax; carried weight -> `weight_speed_mult`. `skinned.rs`:
+`Skins.named`. `package_set.rs`: `find_object(path)`. `walk.rs`: speed x
+weight factor. `combat.rs`: HUD shows the weapon name. `zed.rs`: spawn
+Gorefast moved from G to H. `main.rs`: `--give`. Three unit tests.
+**Why:** You asked for the weapons, without DLC.
+**Tested how:** `cargo test --release`; `cargo run --release -- --walk
+--give all --frames 200`; scripted switching (`--give
+Machete,Axe,AK47AssaultRifle,Shotgun --input
+100:1,200:1,300:1,400:1,500:3,600:3,700:3,800:next,900:prev,1000:5,1100:2`);
+AK47 and 9mm against a Fleshpound; `--autowalk 3` on KF-Farm; a
+screenshot of the AK47.
+**Result:** Tests 45/45. 47 of 48 weapons load in 6.3 s. Order
+Axe, Machete, Knife, 9mm, Frag, Syringe, Welder, Shotgun, AK47; key 1
+cycles Axe -> Machete -> Knife -> Axe, key 3 Shotgun <-> AK47, wheel
+steps correctly, key 4 with nothing there does nothing. AK47 hits for
+22.5 (45 halved by the Fleshpound), 9mm headshot 19.2 (35 x 1.1 halved).
+Walk speed 198 (was 200). The AK47 draws textured (screenshot).
+**Still broken / not tested:** The ZED Gun MKII does not load (defaults
+partly unparsed; no mesh package found). The AK47's SkinRefs path is
+wrong in the game data; the mesh's own material is used. Projectile
+weapons (shotguns, launchers, ...) animate and use ammo but deal no
+damage. Not play-tested by you; most new weapons not looked at by eye.
+**Next:** W2, bullet guns: auto/semi fire, the toggle, recoil, each gun's
+reload.
+
+## 2026-10-04 Melee alt attacks (middle click), one shot per click
+
+**Changed:** `weapon.rs`: `FireMode` + `load_fire_mode` (both
+FireModeClass entries); `Action::Fire { mode }`; middle mouse = alt fire
+(scripted `altfire`); per-mode cooldowns with Weapon.ReadyToFire's
+rules; a list of pending melee swings; bWaitForRelease per mode;
+`melee_swing` and `alt_fire_not_implemented` logs. `properties.rs` /
+`class_defaults.rs`: `get_at` for array elements. README, DESIGN.
+**Why:** You saw no alt attack on melee weapons.
+**Tested how:** `cargo test --release`; `--walk --god --give Axe,Katana
+--spawn clot --input 60:1,400:altfire,401:altfire,402:altfire,560:fire,562:altfire,...`;
+the same with `--give Axe --spawn fleshpound`.
+**Result:** Tests 45/45. Katana HardAttack (205) took a Clot's head off;
+three alt presses in a row gave one swing; fire then alt 2 frames later
+gave only the first. Against the Fleshpound (halves all non-explosive
+damage, as ZombieFleshPound.TakeDamage does): Axe PowerAttack 137.5,
+swing 87.5, Knife Stab 27.5, slash 9.5 = 275 / 175 / 55 / 19 halved.
+Animations found: hardattack, powerattack, stab.
+**Still broken / not tested:** Melee still hits one zed and has no
+backstab x2 (W5). Non-melee alt fires do nothing. One shot per click for
+pistols etc. is not checked with a real mouse (scripted input cannot
+hold a button). Not play-tested by you.
+**Next:** W2 bullet guns, unless you want W5 melee first.

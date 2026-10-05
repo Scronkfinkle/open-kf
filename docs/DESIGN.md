@@ -1464,6 +1464,125 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
+## Weapons (milestone 7, W1 implemented 2026-10-04)
+
+Goal: every base-game weapon, with KF's own numbers and firing rules. You
+asked to skip DLC weapons.
+
+**Which weapons.** KF marks paid weapons with a Steam `AppID` on the weapon
+class (checked by `KFSteamStatsAndAchievements.PlayerOwnsWeaponDLC`). 30
+classes have one (Golden, Camo, Neon, the Halloween and summer packs,
+Thompsons, Dwarf axe, Scythe, flare revolvers...): skipped. Of the rest, these
+are not trader weapons and are skipped too: the `*DM` / `*SP` variants
+(deathmatch and story-mode copies), MachinePistol (no mesh), StunNade and Bat
+(leftovers), Claws, the story-mode dummies. Left, 48 weapons (`BASE_WEAPONS` in `weapon.rs`):
+
+| Kind (KF fire class) | Weapons |
+| --- | --- |
+| Melee (KFMeleeFire) | Knife, Machete, Axe, Katana, Claymore, Chainsaw |
+| Bullets (KFFire, KFHighROFFire) | 9mm, Dual 9mm, Handcannon (Deagle), Dual Handcannons, 44 Magnum, Dual 44, MK23, Dual MK23, Lever Action (Winchester), Bullpup, AK47, SCAR, M4, MKb42, FN FAL, M14 EBR, MAC10, MP7M, MP5M, M7A3M, Kriss (primary fire) |
+| Pellets (KFShotgunFire, projectiles) | Shotgun, Hunting Shotgun (Boomstick), AA12, Benelli, KSG, Trenchgun, Nailgun |
+| Projectiles and explosives | Crossbow, M99, LAW, M79, M32, M4 203 (grenade alt fire), Frag, Pipe bomb, Husk gun |
+| Fire | Flamethrower (also Trenchgun, MAC10, Husk gun, which set zeds alight) |
+| Equipment | Syringe, Welder, medic dart alt fires |
+| Special | ZED Gun (achievement unlock, not DLC), ZED Gun MKII |
+
+**Shared rules found in the scripts (checked 2026-10-04).**
+- `KFFire.DoTrace` always deals **DamageMax**, not a roll between DamageMin
+  and DamageMax. Our 9mm rolls 25-35; KF deals 35. Fixed in W1.
+- Penetrating bullets: Deagle, 44, MK23 (and their duals), MAC10 override
+  `DoTrace`; details read in W3.
+- Shotguns fire `ProjPerFire` pellet projectiles (`KFShotgunFire.DoFireEffect`,
+  random spread per pellet). Each pellet goes through zeds, keeping
+  `PenDamageReduction` of its damage per zed, until damage falls to
+  `PenDamageReduction / MaxPenetrations` of the start (`ShotgunBullet.ProcessTouch`).
+  Firing pushes you back by `KickMomentum`.
+- Recoil (`KFFire.HandleRecoil`): pitch and yaw kicks between half and full
+  `maxVerticalRecoilAngle` / `maxHorizontalRecoilAngle`, plus speed x
+  `RecoilVelocityScale`, plus HealthMax / Health x 5, spread over `RecoilRate`.
+- Semi / full auto: `FireMode[0].bWaitForRelease`; `KFWeapon.DoToggle`
+  flips it (the alt-fire key on rifles with no other alt fire).
+- Inventory: KF starts you with Knife, 9mm, Frag, Syringe, Welder
+  (KFHumanPawn RequiredEquipment). Carry limit `MaxCarryWeight` 15.
+  Slots by `InventoryGroup` (1 melee, 2 pistols, 3 primary, 4 specials,
+  5 equipment, 0 grenade), ordered by `GroupOffset`.
+- Many weapons added after release name their mesh by string (`MeshRef`,
+  `SkinRefs`, `HandSkinRef`) instead of `Mesh`; the loader must read both.
+- KF's default keys (System/defuser.ini): G ThrowNade, Q QuickHeal, F
+  ToggleFlashlight, middle mouse AltFire, right mouse ToggleAiming, mouse
+  wheel Next/PrevWeapon, R reload.
+
+**Steps.** One weapon family per step; each step logs every shot (weapon,
+damage, hits, penetrations) and adds unit tests for the rules.
+- **W1, any weapon from data + inventory.** Load any weapon class by name
+  (Mesh or MeshRef). Startup check: load all 48 and log which fail. KF's
+  starting inventory; number keys pick a slot and pressing again cycles
+  inside it; mouse wheel cycles all. Test flag `--give all` or
+  `--give AK47AssaultRifle,Shotgun` (ignores the weight limit, logged).
+  Fix DamageMax. Move "spawn Gorefast" off G (to H) for KF's grenade key.
+- **W2, bullet guns.** All KFFire / KFHighROFFire weapons above: auto and
+  semi fire, the toggle on middle mouse, recoil, per-weapon spread, aimed
+  spread, iron sights, ammo and reloads, muzzle effects (reusing F1-F5).
+- **W3, pistols.** Penetration (Deagle family), dual pistols (alternating
+  hands, both muzzles), and KF's rule that picking up a second pistol makes
+  a dual (read when reached).
+- **W4, shotguns.** Pellet projectiles with penetration, kick momentum,
+  shell-by-shell reloads (`KFWeaponShotgun`), the Boomstick's two-barrel
+  fire, the Nailgun's nails.
+- **W5, melee.** Primary and heavy secondary attacks for every melee
+  weapon (damage, range, delay, hit cone, from each fire class), the
+  Chainsaw's continuous fire.
+- **W6, projectiles and explosions.** Grenades and rockets (M79, M32,
+  LAW, M4 203), Frag on G, pipe bombs (proximity), Crossbow bolts and M99
+  bullets (penetration, headshots). The explosion code from the Husk and
+  Patriarch rockets is shared.
+- **W7, fire.** Zeds catching fire (KFMonster's burning: damage over time,
+  `SetBurningBehavior`), then the Flamethrower, Trenchgun, MAC10 and
+  Husk gun (charged shots).
+- **W8, medic and equipment.** Syringe (heal yourself; Q quick heal),
+  medic dart alt fires. The Welder loads and animates, but doors are not
+  simulated, so it has nothing to weld yet.
+- **W9, ZED guns.**
+
+**W1 findings (done).**
+- 47 of 48 load (`--give all`, 6.3 s). The ZED Gun MKII fails: its class
+  defaults only partly parse and no mesh package for it is in the install.
+- Inventory order is Pawn.AddInventory's: inside a group, falling
+  `Priority` (melee: Axe, Machete, Knife). Number keys follow
+  Pawn.SwitchWeapon: the first weapon of that group after the one in hand,
+  so pressing again cycles. The wheel steps by (group, GroupOffset). The
+  Frag is never picked (Frag.WeaponChange / NextWeapon).
+- The AK47's `SkinRefs` path ("KF_Weapons2_Trip_T.Rifles.AK47_cmb") does
+  not exist (the package has "Rifle.AK47_cmb"); the mesh's own material
+  is used. What KF does then is not checked.
+- Fire kind comes from the fire class defaults: MeleeDamage = melee,
+  ProjectileClass = projectile (not done: animation and ammo only, logged
+  `fire_not_implemented`), DamageMax = bullet. WeldFire counts as no
+  damage (it only welds doors).
+- Weight: starting kit weighs 1 (the Frag), so walking speed is 198.3
+  (measured 198); the health factor of ModifyVelocity is not done.
+
+**Melee alt attacks (part of W5, done early on request).**
+- Both fire modes load (`FireModeClass[1]` through `ClassDefaults::get_at`).
+  Alt fire is the middle mouse button: KF's `defuser.ini` and your
+  `User.ini` bind MiddleMouse=AltFire; right mouse is ToggleIronSights,
+  which does nothing on weapons without bHasAimingMode.
+- Weapon.ReadyToFire / StartFire: a mode cannot fire while the other's
+  button is held, and waits for the other's cooldown as well.
+- Each swing has its own damage timer (KFMeleeFire.ModeDoFire SetTimer),
+  so a swing still lands if another starts before it.
+- `bWaitForRelease` per mode: one shot per click. A click during the
+  cooldown is kept until it can fire, if the button is still held (my
+  choice; KF's exact handling of such a click is not checked).
+- Still to do in W5: KFMeleeFire.Timer hits the traced zed plus every
+  other zed within 1.1 x range in the cone (damage x cosine), doubles
+  damage on backstabs, and the Chainsaw's held fire.
+
+**Not covered.** Sound (the project has no audio yet), perks (KF with no
+perk chosen uses the plain values; perk bonuses come with the game loop),
+the trader and buying (W1's `--give` stands in), third-person weapon
+models, the flashlight, zed time.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

@@ -70,11 +70,17 @@ impl<'a> ClassDefaults<'a> {
     /// Default value of `prop` for `class`, searching up the class chain.
     /// Returns the value and the package its names/references belong to.
     pub fn get(&self, class: &ObjectHandle, prop: &str) -> Option<(Value, Rc<LoadedPackage>)> {
+        self.get_at(class, prop, 0)
+    }
+
+    /// Default value of element `index` of a fixed-size array property
+    /// (e.g. `FireModeClass[1]`), searching up the class chain.
+    pub fn get_at(&self, class: &ObjectHandle, prop: &str, index: u32) -> Option<(Value, Rc<LoadedPackage>)> {
         let mut current = Some(self.class_info(class));
         for _ in 0..32 {
             let info = current?;
             if let Some(list) = &info.defaults
-                && let Some(v) = list.get(&info.handle.package.pkg, prop)
+                && let Some(v) = list.get_at(&info.handle.package.pkg, prop, index)
             {
                 return Some((v.clone(), info.handle.package.clone()));
             }

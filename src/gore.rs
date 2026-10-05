@@ -217,11 +217,13 @@ fn skins_of(defaults: &ClassDefaults, class: &ObjectHandle) -> Skins {
             Skins {
                 refs: (0..count).filter_map(|_| r.compact_index().ok().map(ObjectRef::from_raw)).collect(),
                 package: Some(p),
+                named: Vec::new(),
             }
         }
         _ => Skins {
             refs: Vec::new(),
             package: None,
+            named: Vec::new(),
         },
     }
 }
