@@ -200,8 +200,16 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
         "Combiner" => {
             // Material1, else Material2; also when Material1 ends without a
             // texture (the Stalker's cloak: a rotating environment map).
+            let before = out.blend;
             if !follow("Material1", out) || out.texture.is_none() {
                 follow("Material2", out);
+            }
+            // An input texture's bAlphaTexture / bMasked does not make the
+            // Combiner see-through: its alpha feeds the combine (e.g. the
+            // weapons' diffuse + reflection, alpha = reflection mask). Only
+            // for skinned meshes (with `opacity_from_combiner`) for now.
+            if out.opacity_from_combiner {
+                out.blend = before;
             }
         }
         "MaterialSwitch" => {

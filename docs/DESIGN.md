@@ -1679,7 +1679,11 @@ Combiner, use it for colour and alpha, alpha-blended; the speckle layer
 is dropped. `kfpkg materials` lists where the rule applies: 39 of 1023
 Shaders in all packages, many of them level materials whose Opacity is a
 plain mask (puddles, oil, water), hence skinned meshes only. Skinned
-meshes now draw Translucent as alpha blend (was opaque).
+meshes now draw Translucent as alpha blend (was opaque); for them a
+Combiner no longer passes an input texture's bAlphaTexture / bMasked up
+as transparency (its alpha feeds the combine: the Shotgun's diffuse +
+reflection, alpha = reflection mask, came out see-through). Levels keep
+the old reading (`kfpkg materials`: 95 Combiners would differ).
 
 **W4 shotguns (done).** `src/projectile.rs`.
 - Pellets are projectiles (ShotgunBullet): Speed 3500, LifeSpan 3,

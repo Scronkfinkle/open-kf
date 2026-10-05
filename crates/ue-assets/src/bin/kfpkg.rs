@@ -1637,11 +1637,22 @@ fn scan_anims(install: &Install) -> Result<bool, String> {
 /// rule in material.rs, used for weapons and characters only).
 fn scan_materials(install: &Install) -> Result<bool, String> {
     let set = ue_assets::package_set::PackageSet::new(&install.root);
-    let (mut shaders, mut opacity_rule) = (0usize, 0usize);
+    let (mut shaders, mut opacity_rule, mut combiner_changed) = (0usize, 0usize, 0usize);
     for (_, path) in package_files(install)? {
         let rel = path.strip_prefix(&install.root).unwrap_or(&path).display().to_string();
         let Ok(lp) = set.load_path(&path) else { continue };
         for i in 0..lp.pkg.exports.len() {
+            if lp.pkg.export_class_name(i) == "Combiner" {
+                let h = ue_assets::package_set::ObjectHandle { package: lp.clone(), export: i };
+                let (a, b) = (
+                    ue_assets::material::resolve(&set, &h, ObjectRef::Export(i)),
+                    ue_assets::material::resolve_skinned(&set, &h, ObjectRef::Export(i)),
+                );
+                if a.blend != b.blend {
+                    combiner_changed += 1;
+                    println!("combiner_blend file=\"{rel}\" combiner={} level={:?} skinned={:?}", h.path(), a.blend, b.blend);
+                }
+            }
             if lp.pkg.export_class_name(i) != "Shader" {
                 continue;
             }
@@ -1654,6 +1665,6 @@ fn scan_materials(install: &Install) -> Result<bool, String> {
             }
         }
     }
-    println!("shaders={shaders} opacity_rule={opacity_rule}");
+    println!("shaders={shaders} opacity_rule={opacity_rule} combiners_whose_blend_differs_between_level_and_skinned={combiner_changed}");
     Ok(true)
 }

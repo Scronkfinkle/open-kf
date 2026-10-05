@@ -2206,3 +2206,24 @@ stop). Pellet meshes not drawn; stuck nails and pinned heads not drawn;
 Trenchgun fire damage is W7; flashlights not done.
 **Next:** W5, melee: the cone hitting every zed, backstabs, the
 Chainsaw's held fire.
+
+## 2026-10-04 Fix: the Shotgun drawn see-through
+
+**Changed:** `crates/ue-assets/src/material.rs`: for skinned meshes a
+Combiner keeps the blend it had before its inputs (an input texture's
+bAlphaTexture no longer makes it translucent). `kfpkg materials` also
+lists Combiners whose blend differs between level and skinned reading.
+DESIGN.
+**Why:** You saw the pump Shotgun transparent. Its Shotgun_D texture
+has bAlphaTexture (the alpha is the reflection mask inside a Combiner);
+since the reflex-sight fix, skinned Translucent draws blended.
+**Tested how:** materials of every weapon and zed (`--give all` load
+log); screenshot of the Shotgun; `cargo test --release`.
+**Result:** Shotgun opaque. Remaining non-opaque skinned materials: the
+sights (meant), the two chainsaw blades (scrolling blade texture with
+alpha, now blended; not looked at), glows (additive), hair / gore
+(masked). Tests 51/51. Levels unchanged (95 Combiners would differ;
+not switched).
+**Still broken / not tested:** Whether UE2 really ignores input alpha
+in Combiners is my reading, not checked against the engine.
+**Next:** W5.
