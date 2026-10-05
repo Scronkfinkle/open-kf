@@ -2947,10 +2947,17 @@ Steps:
   window's scale factor. Glyphs advance by USize + Kerning (assumed;
   Kerning is 0 in every HUD font). Compared at 1280 x 960 with the
   screenshot: same font, size and place for all three texts.
-- **H3, the top-right circle.** Trader time: Hud_Bio_Clock_Circle with
+- **H3, the top-right circle (done 2026-10-05).** Trader time: Hud_Bio_Clock_Circle with
   the countdown (mm:ss). Waves: Hud_Bio_Circle with the zeds left and
   "Wave 1/4" (DrawKFHUDTextElements). Then our debug line goes off by
-  default.
+  default. As built: CircleSize = Min(128 x SizeX / 1024, 128) at (ClipX -
+  CircleSize, 2), fonts LoadFont(2) / (1) / (5) scaled Min(SizeX / 1024,
+  1). The zed count stands in for GRI.MaxMonsters as zeds to come plus
+  zeds alive (KF updates it at SetupWave and on each kill; spawning keeps
+  the sum; in the boss wave KF counts the helpers only after a kill, we
+  at once). The boss wave reads "Wave 5/4" on Short, as KF's code gives
+  (GRI.WaveNumber is WaveNum, which is FinalWave then). Compared with
+  both screenshots: "00:02" and "20 / Wave 1/4" match.
 - **H4, messages (later).** "NEXT WAVE INBOUND" and the other wave and
   trader messages (KFMainMessages / WaitingMessage, KFFonts), the end
   of game text.

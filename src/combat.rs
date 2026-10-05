@@ -224,7 +224,8 @@ impl Plugin for CombatPlugin {
 fn spawn_hud(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
-        // Our debug line (KF's HUD is hud.rs): small, at the top, F3 hides it.
+        // Our debug line (KF's HUD is hud.rs): small, at the top, hidden
+        // until F3.
         TextFont {
             font_size: bevy::text::FontSize::Px(16.0),
             ..default()
@@ -236,6 +237,7 @@ fn spawn_hud(mut commands: Commands) {
             left: Val::Percent(22.0),
             ..default()
         },
+        Visibility::Hidden,
         HudText,
     ));
 }

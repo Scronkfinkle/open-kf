@@ -3501,3 +3501,25 @@ assumed from the native code (Kerning is 0 in these fonts). Fonts other
 than the HUD's are read but not drawn anywhere yet. You confirmed it
 working in the game.
 **Next:** H3, the top-right wave / countdown circle.
+
+## 2026-10-05 H3: the top-right circle; debug line hidden
+
+**Changed:** `src/hud.rs`: DrawKFHUDTextElements' circle: between waves
+Hud_Bio_Clock_Circle with the countdown ("mm:ss", LoadFont(2)), during a
+wave Hud_Bio_Circle with the zeds left (LoadFont(1)) and "Wave N/F"
+(LoadFont(5)); size Min(128 x SizeX / 1024, 128), fonts scaled Min(SizeX
+/ 1024, 1); hidden while the buy menu is open. `combat.rs`: our debug
+line starts hidden (F3 shows it).
+**Why:** H3 of the HUD milestone.
+**Tested how:** read DrawKFHUDTextElements and where KFGameType sets
+GRI.MaxMonsters, WaveNumber and TimeToNextWave. Screenshots at `--window
+1280x960` from the matched view through the first countdown and just
+after the wave start, cropped next to your two screenshots; one in the
+normal window.
+**Result:** our clock showed 00:04, 00:03, 00:03, 00:02, 00:01, then
+"20 / Wave 1/4" (wave_start zeds=20); "00:02" and "20 / Wave 1/4" match
+yours in picture, font, size and place. Tests 123 pass; clippy clean.
+**Still broken / not tested:** the boss-wave count includes the
+Patriarch's helpers at once (KF only after a kill). The circle during
+the boss wave and at the game's end not looked at. Not played by you.
+**Next:** H4, KF's messages; or back to the gameplay list.

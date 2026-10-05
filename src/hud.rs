@@ -96,6 +96,9 @@ struct Hud {
     font_array: [Option<usize>; 9],
     small_font_array: [Option<usize>; 9],
     fonts: Vec<HudFont>,
+    /// Hud_Bio_Clock_Circle and Hud_Bio_Circle (DrawKFHUDTextElements).
+    clock_circle: Option<usize>,
+    bio_circle: Option<usize>,
     loaded: bool,
 }
 
@@ -181,6 +184,15 @@ struct Loader<'a> {
 }
 
 impl Loader<'_> {
+    /// A material by its full path ("Package.Group.Name").
+    fn texture_path(&mut self, path: &str) -> Option<usize> {
+        let Some(h) = self.set.find_object(path, None) else {
+            self.missing.push(path.to_string());
+            return None;
+        };
+        self.texture(&h.package, ObjectRef::Export(h.export))
+    }
+
     /// A material reference from `pkg` -> its texture, loaded once.
     fn texture(&mut self, pkg: &std::rc::Rc<LoadedPackage>, rf: ObjectRef) -> Option<usize> {
         if rf == ObjectRef::Null {
@@ -319,6 +331,8 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
         ),
     );
     hud.fonts = fonts;
+    hud.clock_circle = loader.texture_path("KillingFloorHUD.HUD.Hud_Bio_Clock_Circle");
+    hud.bio_circle = loader.texture_path("KillingFloorHUD.HUD.Hud_Bio_Circle");
     // DrawHudPassA's weapon checks (IsA, so subclasses count).
     let is = |c: &ObjectHandle, names: &[&str]| names.iter().any(|n| defaults.is_a(c, n));
     let mut weapons = HashMap::new();
@@ -526,7 +540,7 @@ fn draw_hud(
     ammo: Res<crate::combat::AmmoDisplay>,
     (dosh, inv, time): (Res<crate::dosh::Dosh>, Res<crate::buy_menu::ShopInventory>, Res<Time>),
     (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
-    (shops, menu, player): (Res<crate::trader::Shops>, Res<crate::buy_menu::BuyMenu>, PlayerQuery),
+    (shops, menu, player, game, options): (Res<crate::trader::Shops>, Res<crate::buy_menu::BuyMenu>, PlayerQuery, Res<crate::game::WaveGame>, Res<crate::game::GameOptions>),
     mut slots: Query<(&HudSlot, &mut Node, &mut ImageNode, &mut Visibility)>,
     mut spawned: Local<bool>,
 ) {
@@ -686,6 +700,11 @@ fn draw_hud(
         let phys = c.size * c.scale_factor;
         c.text(f, ammo.weapon, Vec2::new(phys.x * 0.983 - size.x, phys.y * 0.90), 1.0, [255, 50, 50, hud.alpha], "WeaponName");
     }
+    // DrawKFHUDTextElements: the top-right circle (not while shopping;
+    // wave mode only, standing in for bMatchHasBegun).
+    if !menu.open && options.mode == crate::game::GameMode::Waves {
+        top_right_circle(&mut c, &hud, &game);
+    }
     // DrawTraderDistance (from DrawKFHUDTextElements: not while shopping,
     // only with a current shop): "Trader: Nm", N = int(distance / 50),
     // centred on SizeX / 14, top at SizeX / 10, (255, 50, 50, 255).
@@ -738,6 +757,61 @@ fn draw_hud(
         image.rect = Some(q.uv);
         image.color = Color::srgba_u8(q.tint[0], q.tint[1], q.tint[2], q.tint[3]);
         *vis = Visibility::Inherited;
+    }
+}
+
+/// The circle: CircleSize = Min(128 x SizeX / 1024, 128), drawn white at
+/// (ClipX - CircleSize, 2); fonts scaled Min(SizeX / 1024, 1). Between
+/// waves the clock (LoadFont(2), "mm:ss" of TimeToNextWave, centred);
+/// in a wave the biohazard sign with GRI.MaxMonsters (LoadFont(1), raised
+/// by YL / 1.5) and "Wave N/F" (LoadFont(5), lowered by YL / 2.5).
+fn top_right_circle(c: &mut Canvas, hud: &Hud, game: &crate::game::WaveGame) {
+    use crate::game::Phase;
+    let clip = c.clip_x();
+    let res = clip / 1024.0;
+    let circle = (128.0 * res).min(128.0);
+    let font_scale = res.min(1.0);
+    let in_wave = matches!(game.phase, Phase::Wave | Phase::BossWave);
+    let tex = if in_wave { hud.bio_circle } else { hud.clock_circle };
+    if let Some(t) = tex {
+        let min = Vec2::new(clip - circle, 2.0) / c.scale_factor;
+        let size = hud.textures[t].size;
+        c.quads.push(Quad {
+            texture: t,
+            uv: Rect::from_corners(Vec2::ZERO, size.min(Vec2::splat(256.0))),
+            screen: Rect::from_corners(min, min + Vec2::splat(circle) / c.scale_factor),
+            tint: [255, 255, 255, 255],
+            what: "Circle".into(),
+        });
+    }
+    let centre_x = clip - circle / 2.0;
+    let tint = [255, 50, 50, hud.alpha];
+    let font = |i: usize| hud.font_array[i].map(|f| &hud.fonts[f]);
+    if !in_wave {
+        let t = game.countdown.max(0);
+        let (m, sec) = (t / 60, t % 60);
+        let text = format!("{m:02}:{sec:02}");
+        if let Some(f) = font(2) {
+            let sz = Canvas::text_size(f, &text, font_scale);
+            c.text(f, &text, Vec2::new(centre_x - sz.x / 2.0, circle / 2.0 - sz.y / 2.0), font_scale, tint, "Clock");
+        }
+    } else {
+        // GRI.MaxMonsters: TotalMaxMonsters at SetupWave, then TotalMaxMonsters
+        // + NumMonsters - 1 at each kill; spawning keeps that sum, so ours is
+        // the zeds still to come plus those alive. (In the boss wave KF only
+        // counts his helpers after the next kill; ours counts them at once.)
+        let left = (game.total_max_monsters.max(0) as usize + game.living).to_string();
+        if let Some(f) = font(1) {
+            let sz = Canvas::text_size(f, &left, font_scale);
+            c.text(f, &left, Vec2::new(centre_x - sz.x / 2.0, circle / 2.0 - sz.y / 1.5), font_scale, tint, "ZedsLeft");
+        }
+        // WaveString @ (WaveNumber + 1) $ "/" $ FinalWave: in the boss wave
+        // WaveNum is FinalWave, so KF shows e.g. "Wave 5/4" (copied).
+        let text = format!("Wave {}/{}", game.wave_num + 1, game.final_wave);
+        if let Some(f) = font(5) {
+            let sz = Canvas::text_size(f, &text, font_scale);
+            c.text(f, &text, Vec2::new(centre_x - sz.x / 2.0, circle / 2.0 + sz.y / 2.5), font_scale, tint, "Wave");
+        }
     }
 }
 

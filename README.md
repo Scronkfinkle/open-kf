@@ -227,9 +227,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   shells, the M4's grenades, the flashlight box), syringe, welder and
   medic gun charge, and the cash. Matches the real game's screenshot at
   1280 x 960. KF's own fonts (H2): the weight "1/15", the weapon name
-  and "Trader: Nm", also matching the screenshot. Not yet: the
-  top-right wave circle (H3). Our old text line is now a small debug
-  line at the top (F3 hides it). Checked by
+  and "Trader: Nm", also matching the screenshot. The top-right
+  circle (H3): the countdown clock between waves, the zeds left and
+  "Wave 1/4" during a wave, matching both screenshots. Our old text line
+  is hidden; F3 shows it (debug). Not yet: KF's messages ("NEXT WAVE
+  INBOUND", H4). Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.
