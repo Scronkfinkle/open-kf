@@ -2406,6 +2406,56 @@ KFGameLength=0) is Short.
   weapons, sell, ammo (clip / fill), grenades, armour; all the
   server-side rules above. Armour itself (absorbing damage) needs reading
   KFPawn's armour rules first; may become its own step.
+  - **T3a, weapons and ammo (done 2026-10-05).** From KFPawn (CanBuyNow, ServerBuyWeapon,
+    ServerSellWeapon, ServerBuyAmmo), KFHumanPawn (CanCarry,
+    MaxCarryWeight 15), ShopVolume.UsedBy, KFLevelRules:
+    - What is for sale (KFBuyMenuSaleList): one list at a time, picked
+      with the perk filter (Medic, Support, Sharpshooter, Commando,
+      Berserker, Firebug, Demolitions, Neutral: the map's KFLevelRules
+      MediItemForSale .. NeutItemForSale, else the class defaults),
+      keeping the base-game weapons we have (BASE_WEAPONS). Hidden:
+      weapons owned, bKFNeverThrow weapons (knife, 9mm, frag, syringe,
+      welder), a single pistol while its duals are owned. A dual whose
+      single is owned shows half its Cost (int) and half its Weight.
+      Per item from its pickup and weapon class: ItemName, Cost,
+      AmmoCost, Weight, BuyClipSize. Logged at load.
+    - The menu opens with USE (E) while standing in the open shop with
+      no wave running (UsedBy -> ShowBuyMenu); Escape or E closes it, and
+      it closes when the wave starts (BootPlayers closes menus). While it
+      is open the player does not move, look or fire (KF's menu takes
+      the mouse; the game keeps running). Keys: Up / Down move, Left /
+      Right change the perk filter, Tab switches between "For sale" and
+      "Yours", Enter buys or sells, F
+      fills the selected weapon's ammo, C buys one magazine, Shift+C /
+      Shift+F the same for its second ammo (M4 203 grenades).
+    - CanBuyNow: no wave in progress and inside a shop (any shop; KF's
+      check is any touching ShopVolume).
+    - Buy: refused if owned, if CurrentWeight + ItemWeight > 15 (the
+      list's weight, halved as above), or if Score < Price. Price = Cost
+      (no perk discount: perks are not in), halved for the dual version
+      of an owned single (Dualies is not halved: KF has no such rule for
+      it). The weapon comes with its
+      InitialAmount ammo (FillToInitialAmmo); SellValue = Price x 0.75;
+      it is brought up (ClientForceChangeWeapon). A dual replaces its
+      single (Dualies.GiveTo), as `--give` already does, ammo merged.
+    - Sell: + SellValue (int(Cost x 0.75) if never set, e.g. starting
+      weapons); selling duals gives the single back (Dualies -> 9mm;
+      the others with SellValue = Price / 2, and the duals pay Price /
+      2). Knife, 9mm, Frag, Syringe, Welder cannot be sold (bKFNeverThrow
+      / not in the lists: checked from the class defaults).
+    - Ammo: refused at MaxAmmo. Clip price = AmmoCost; amount = MagCapacity
+      (1 for a secondary ammo, BuyClipSize for the Husk Gun) for a clip,
+      MaxAmmo - AmmoAmount for a fill; Price = int(amount / MagCapacity x
+      AmmoCost). Short of dosh: amount x Score / Price, at least 1, paid
+      pro rata; Score is then rounded down (int) after a full buy, as KF.
+      Frags and pipe bombs are ammo of their weapon (KF lists them so).
+    - Loading: a weapon is loaded from the game files the first time it
+      is bought (the package set is kept for it); about 0.1-0.3 s, during
+      trader time.
+    - Logs `shop_catalogue`, `shop_buy`, `shop_sell`, `shop_ammo`,
+      `shop_refused` (reason), `buy_menu` (open / close).
+  - **T3b, armour.** Vest (300 for 100 points, partial), ShieldStrength
+    and KFPawn's absorption rules, the HUD.
 
 **G1 as built (`game.rs`).** `load_game_data` (called by the map loader
 in wave mode) reads the length's WaveInfo array (WaveMask int,

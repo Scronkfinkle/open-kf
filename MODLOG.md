@@ -3237,3 +3237,40 @@ the brush, not KF's cylinder touch; the trail and HUD arrow (T2b), the
 trader's animation and voice lines, buying (T3). Door sounds not played.
 Not played by you.
 **Next:** T2b (the trail) or T3 (buying).
+
+## 2026-10-05 T3a: buying weapons and ammo
+
+**Changed:** new `buy_menu.rs`: the catalogue (every base weapon's pickup:
+Cost, AmmoCost, Weight, BuyClipSize, bKFNeverThrow; KFLevelRules' eight
+per-perk sale lists), a keyboard text menu (E in the shop with no wave:
+Up/Down, Left/Right perk filter, Tab For sale / Yours, Enter buy or sell,
+C clip, F fill, Shift for second ammo, E or Backspace closes; the wave
+start or leaving the shop closes it), and an input gate: while the menu
+is open, keys, mouse buttons, mouse motion and wheel are cleared after
+the menu reads them, so the player does not move, look or fire.
+`weapon.rs`: ServerBuyWeapon / ServerSellWeapon / ServerBuyAmmo
+(`shop_requests`): a bought weapon is loaded then (0.1 s) and inserted
+where Pawn.AddInventory puts it (stored indices shifted); sold weapons
+are marked gone and reloaded fresh if bought again; duals replace their
+single (ammo merged) and give it back when sold; weight slows you as
+before. Test actions `add_dosh`, `buy_menu`, `menu_*`, `buy:C`, `sell:C`,
+`ammo_fill:C`, `ammo_clip:C`, `ammo_clip2:C`.
+**Why:** T3a in DESIGN.md: dosh can now be spent.
+**Tested how:** scripted shopping on KF-WestLondon after wave 1 (logs
+`shop_buy`, `shop_sell`, `shop_ammo`, `shop_refused`, `weapon_given`,
+`buy_menu`), screenshots of the menu; catalogue loaded on all 34 maps
+(no map overrides the lists, nothing missing); unit tests for the sale
+list and ammo prices.
+**Result:** Shotgun 500, refused when owned; 8 shells for 20; Handcannon
+refused at 228 dosh, bought after selling the Shotgun for 375; Dual
+Handcannons at half price (500) with the single, weight 3 -> 5; AA12
+to exactly 15 kg, then Dual 9mms refused as too heavy; selling the dual
+Handcannons paid 187.5 and gave the single back; 9mm fill 120 rounds for
+80; M4 203 grenade 1 for 10 (KF prices the second ammo at the gun's
+AmmoCost). Tests 103 pass; clippy clean.
+**Still broken / not tested:** the input freeze while the menu is open is
+not tested by a run (scripted input bypasses the keyboard); the menu by
+real keys not tried by me; a weapon sold while reloading or mid-throw
+is swapped abruptly; armour (T3b), first aid, perks and their discounts
+are not in; the trader's GUI look is a text list. Not played by you.
+**Next:** T3b armour, or D5 door respawns, or T2b the trail.

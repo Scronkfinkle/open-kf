@@ -159,6 +159,11 @@ impl Shops {
         runlog::kv("shop", &format!("shop={} event={what} doors={}", s.name, s.doors.len()));
     }
 
+    /// The shop the player is touching, if any.
+    pub fn player_inside(&self) -> Option<usize> {
+        self.inside
+    }
+
     /// The shop whose brush holds this point (Unreal units).
     fn shop_at(&self, p: Vec3) -> Option<usize> {
         self.shops.iter().position(|s| crate::zvolume::encompasses(&s.polys, p))

@@ -201,8 +201,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   (Clot 12 on Short) and the same again at the wave end; shown on the
   HUD. The trader (T2a): after each wave one of the map's shops opens
   (its door swings open), the HUD shows "TRADER: Nm" to it, and at the
-  next wave it closes and anyone inside is put outside, as in KF. No
-  buying yet, and no trail to follow yet. Checked by
+  next wave it closes and anyone inside is put outside, as in KF.
+  Buying (T3a): press E inside the open shop for a text menu (Up/Down,
+  Left/Right perk list, Tab for your weapons, Enter buy/sell, C one
+  magazine, F fill, Shift+C/F the second ammo, E closes); KF's prices,
+  weight limit (15), half-price second pistol, 75% resale. No armour yet,
+  no trail. Checked by
   logged runs on KF-Manor (all waves with test kills, the Patriarch win, a
   loss and restart). Not play-tested by you. Without `--mode waves` the
   game is the debug setup as before.

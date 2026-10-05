@@ -85,7 +85,13 @@ fn update_dosh(
     health: Res<crate::combat::PlayerHealth>,
     mut zeds: Query<&mut crate::zed::Zed>,
     mut seen: Local<Option<(u32, u32, u32)>>,
+    (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
 ) {
+    // Test action "add_dosh": + 5000.
+    if script.0.iter().any(|(f, a)| *f == frames.0 && a == "add_dosh") {
+        dosh.score += 5000.0;
+        runlog::kv("dosh", &format!("reason=test amount=5000 total={:.0}", dosh.score));
+    }
     let (restarts, waves_ended, deaths) = seen.get_or_insert((game.restarts, game.waves_ended, health.deaths));
     if game.restarts != *restarts {
         *restarts = game.restarts;

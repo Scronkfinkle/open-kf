@@ -572,6 +572,7 @@ fn load_map(
     if game_options.mode == crate::game::GameMode::Waves {
         commands.insert_resource(crate::game::load_game_data(&set, &class_defaults, &lp, game_options.length));
         commands.insert_resource(crate::trader::load_shops(&class_defaults, &lp));
+        commands.insert_resource(crate::buy_menu::load_catalogue(&set, &class_defaults, &lp));
     }
     let mut nav = crate::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg));
     nav.add_jump_pads(&lp.pkg);
