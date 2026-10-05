@@ -2274,3 +2274,27 @@ the grenade's cooldown. LAW fired only when aimed.
 **Still broken / not tested:** Self damage not triggered in a run.
 Meshes, view shake and zed momentum not done. Not play-tested by you.
 **Next:** W6b, frag grenade (G) and pipe bombs.
+
+## 2026-10-04 Weapons step W6b: frag grenade (G) and pipe bombs
+
+**Changed:** `projectile.rs`: shared `blast` (effect, decal, HurtRadius,
+self damage); `ThrownStats` / `ThrownKind` and `PlayerThrown` (gravity,
+bounce damping, rest, frag fuse with the first-bounce restart, pipe
+arming / threat check / countdown). `weapon.rs`: `Action::Grenade` with
+`NadePhase` (quick put-down, toss, nade at TossSpawnTime, quick
+bring-up), G key and scripted `nade`; frag and pipe bomb values loaded;
+pipe bombs fired through the pellet path. `zed.rs`: `motion_threat` from
+MotionDetectorThreat. `combat.rs`: HUD FRAGS; self damage logged as
+`zed=self`. `particles.rs`: KFNadeExplosion. DESIGN, README.
+**Why:** Step W6b.
+**Tested how:** `cargo test --release`; G at `zed_line_far`; a pipe
+bomb dropped at the feet with a Scrake spawned.
+**Result:** Tests 51/51. Frag: weapon down 0.13 s, toss, nade at 0.23 s,
+second G refused during the throw; it bounced, rested, and exploded 2.45
+s after the throw, killing the three Clots; 9 self damage. Pipe bomb:
+rested 0.72 s, armed 1 s later, Scrake detected (threat 3), exploded 0.8
+s later: Scrake 1370 (killed), self 661 (god mode).
+**Still broken / not tested:** Shooting pipe bombs, Siren
+disintegration, shrapnel, sounds, meshes in flight. Not play-tested by
+you.
+**Next:** W6c, Crossbow and M99.

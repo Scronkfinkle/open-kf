@@ -203,6 +203,11 @@ struct WeaponDef {
     toggles_on_alt: Option<AltToggle>,
     /// KSGShotgun.bWideSpread (KSGFire: Spread x 2.05).
     wide_spread: bool,
+    /// Frag: TossAnim, TossTime and TossSpawnTime (Frag.StartThrow).
+    toss: Option<(String, f32, f32)>,
+    /// KFWeapon QuickPutDownTime / QuickBringUpTime (around a frag throw).
+    quick_put_down_time: f32,
+    quick_bring_up_time: f32,
     /// KFMeleeGun.ChopSlowRate: each melee attack scales the walking
     /// velocity by this (KFMeleeFire.ModeDoFire), 1 for other weapons.
     chop_slow_rate: f32,
@@ -394,6 +399,8 @@ struct PelletFire {
     spawn_offset: Vec3,
     /// A grenade or rocket instead of pellets.
     explosive: Option<crate::projectile::ExplosiveStats>,
+    /// A thrown frag or pipe bomb instead.
+    thrown: Option<crate::projectile::ThrownStats>,
 }
 
 /// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
@@ -458,6 +465,8 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         _ => None,
     };
     let pellet_class = projectile_class.as_ref().filter(|p| {
+        // Frags (FragFire, thrown with G) and pipe bombs.
+        defaults.is_a(p, "Nade") || defaults.is_a(p, "PipeBombProjectile") ||
         defaults.is_a(fm_class, "KFShotgunFire")
             && (defaults.is_a(p, "ShotgunBullet")
                 || defaults.is_a(p, "TrenchgunBullet")
@@ -613,10 +622,35 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             decal: if is_law { crate::decals::DecalKind::RocketMark } else { crate::decals::DecalKind::NadeScorch },
             trail: Some("ROEffects.PanzerfaustTrail"),
         });
+        let is_pipe = defaults.is_a(pc, "PipeBombProjectile");
+        let thrown = (defaults.is_a(pc, "Nade") || is_pipe).then(|| crate::projectile::ThrownStats {
+            // FragFire.PostSpawnProjectile: a quick throw (HoldTime 0) at
+            // mHoldSpeedMin; the pipe bomb at its own Speed.
+            speed: if is_pipe { pfloat("Speed", 50.0) } else { ffloat("mHoldSpeedMin", 850.0) },
+            damage: pfloat("Damage", 0.0),
+            radius: pfloat("DamageRadius", 0.0),
+            dampen_normal: pfloat("DampenFactor", 0.25),
+            dampen_parallel: pfloat("DampenFactorParallel", 0.4),
+            fleshpound_mult: 2.0,
+            // Nade.Explode: KFNadeExplosion; PipeBombProjectile: KFNadeLExplosion.
+            effect: if is_pipe { "KFMod.KFNadeLExplosion" } else { "KFMod.KFNadeExplosion" },
+            decal: crate::decals::DecalKind::NadeScorch,
+            kind: if is_pipe {
+                crate::projectile::ThrownKind::Pipe {
+                    arming: pfloat("ArmingCountDown", 1.0),
+                    detection_radius: pfloat("DetectionRadius", 150.0),
+                    countdown: pfloat("CountDown", 5.0) as u32,
+                    threshold: pfloat("ThreatThreshhold", 1.0),
+                }
+            } else {
+                crate::projectile::ThrownKind::Frag { fuse: pfloat("ExplodeTimer", 2.0) }
+            },
+        });
         mode.total_ammo_only =
             defaults.is_a(fm_class, "M79Fire") || defaults.is_a(fm_class, "M203Fire") || defaults.is_a(fm_class, "LAWFire");
         mode.requires_aim = defaults.is_a(fm_class, "LAWFire");
         mode.pellets = Some(PelletFire {
+            thrown,
             explosive,
             stats: crate::projectile::ProjectileStats {
                 speed: pfloat("Speed", 3500.0),
@@ -704,6 +738,19 @@ enum Action {
     Idle,
     Reload,
     PutDown { next: usize },
+    /// KFPawn.ThrowGrenade (G): the weapon goes down quickly, the frag is
+    /// tossed, the weapon comes back up quickly; `back_to` is the weapon.
+    Grenade { phase: NadePhase, back_to: usize },
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum NadePhase {
+    /// PutDown at QuickPutDownTime.
+    Down,
+    /// Frag.StartThrow: TossAnim; the Nade at TossSpawnTime.
+    Toss { spawned: bool },
+    /// BringUp at QuickBringUpTime.
+    Up,
 }
 
 #[derive(Resource)]
@@ -1241,6 +1288,9 @@ fn load_weapon(
             TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)).then_some(AltToggle::FireMode)
         },
         wide_spread: false,
+        toss: name("TossAnim").map(|a| (a.to_ascii_lowercase(), float("TossTime", 0.366), float("TossSpawnTime", 0.2))),
+        quick_put_down_time: float("QuickPutDownTime", 0.15),
+        quick_bring_up_time: float("QuickBringUpTime", 0.15),
         alt_ammo: {
             let ammo_class_of = |c: Option<&ObjectHandle>| {
                 let c = c?;
@@ -1348,6 +1398,7 @@ fn set_action(w: &mut Weapons, action: Action) {
         }
         Action::Idle => return play_idle(w),
         Action::Reload => (def.reload_anim.clone(), def.reload_anim_rate),
+        Action::Grenade { .. } => return,
         Action::PutDown { .. } => {
             // Weapon.PutDown: wait DownDelay first if a mode fired just now
             // (NextFireTime more than FireRate x (1 - MinReloadPct 0.5) away).
@@ -1588,6 +1639,7 @@ fn weapon_input(
     if let Some(next) = choice {
         match w.action {
             Action::PutDown { .. } => w.action = Action::PutDown { next },
+            Action::Grenade { .. } => {}
             _ if next != w.current => {
                 // KFWeapon.PutDown: a one-round reload is interrupted; any
                 // other reload refuses the switch.
@@ -1602,6 +1654,30 @@ fn weapon_input(
                 }
             }
             _ => {}
+        }
+    }
+    // KFPawn.ThrowGrenade (G): a frag in stock, the weapon's next shot due
+    // within 0.1 s, not reloading (a one-round reload is interrupted).
+    if keys.just_pressed(KeyCode::KeyG) || scripted("nade") {
+        let frag = w.defs.iter().position(|d| d.toss.is_some());
+        let frags = frag.and_then(|i| w.defs[i].ammo).map_or(0, |a| a.mag + a.spare);
+        interrupt_reload(&mut w, "grenade");
+        if let Some(fi) = frag
+            && frags > 0
+            && w.action == Action::Idle
+            && w.fire_cooldown[0] <= 0.1
+            && !w.firing.iter().any(|&f| f)
+        {
+            zoom_out(&mut w, true, "grenade");
+            let back = w.current;
+            let d = &w.defs[back];
+            let (anim, rate, time) = (d.put_down_anim.clone(), d.put_down_anim_rate * d.put_down_time / d.quick_put_down_time, d.quick_put_down_time);
+            play(&mut w, &anim, rate, false);
+            w.switch_timer = time;
+            w.action = Action::Grenade { phase: NadePhase::Down, back_to: back };
+            runlog::kv("grenade_throw_start", &format!("weapon={} frags={frags} frag_index={fi}", w.defs[back].item_name));
+        } else {
+            runlog::kv("grenade_throw_refused", &format!("frags={frags} action={:?} cooldown={:.2}", w.action, w.fire_cooldown[0]));
         }
     }
     // Iron sights: right mouse toggles (KFWeapon.ToggleIronSights). Not while
@@ -1894,8 +1970,10 @@ fn weapon_input(
                             dir,
                             stats: pf.stats,
                             weapon: item_name,
-                            tracer_start: if pf.explosive.is_some() { None } else { tip },
+                            tracer_start: if pf.explosive.is_some() || pf.thrown.is_some() { None } else { tip },
                             explosive: pf.explosive,
+                            thrown: pf.thrown,
+                            extra_speed: 0.0,
                         });
                     }
                     // AddVelocity(KickMomentum >> view rotation), not when falling.
@@ -2038,10 +2116,70 @@ fn weapon_input(
     }
     // Weapon.Timer: the bring-up ends in idle; the put-down plays its
     // animation after any DownDelay, then the next weapon comes up.
-    if matches!(w.action, Action::Select | Action::PutDown { .. }) {
+    if matches!(w.action, Action::Select | Action::PutDown { .. } | Action::Grenade { .. }) {
         w.switch_timer -= dt;
         if w.switch_timer <= 0.0 {
             match w.action {
+                Action::Grenade { phase, back_to } => {
+                    let frag = w.defs.iter().position(|d| d.toss.is_some()).unwrap_or(back_to);
+                    match phase {
+                        NadePhase::Down => {
+                            // KFPawn.WeaponDown -> Frag.StartThrow: TossAnim.
+                            w.current = frag;
+                            let (anim, _, spawn_at) = w.defs[frag].toss.clone().unwrap_or_default();
+                            play(&mut w, &anim, 1.0, false);
+                            w.switch_timer = spawn_at;
+                            w.action = Action::Grenade { phase: NadePhase::Toss { spawned: false }, back_to };
+                        }
+                        NadePhase::Toss { spawned: false } => {
+                            // Frag.ServerThrow: ConsumeAmmo, FragFire.DoFireEffect.
+                            if let Some(a) = w.defs[frag].ammo.as_mut() {
+                                if a.mag > 0 {
+                                    a.mag -= 1;
+                                } else {
+                                    a.spare = a.spare.saturating_sub(1);
+                                }
+                            }
+                            let fm = w.defs[frag].modes[0].clone();
+                            if let (Some(pf), Ok((cam, walker))) = (fm.pellets, main_cam.single())
+                                && let Some(t) = pf.thrown
+                            {
+                                let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+                                let eye = to_ue(cam.translation) / coords::SCALE;
+                                let (x, y, z) = (to_ue(*cam.forward()), to_ue(*cam.right()), to_ue(*cam.up()));
+                                // StartProj = eye + X x 25, + Hand (right, 1) x Y x -10 + Z x 0.
+                                let start = eye + x * pf.spawn_offset.x + y * pf.spawn_offset.y + z * pf.spawn_offset.z;
+                                // PostSpawnProjectile: + the player's speed along the view.
+                                let pawn_speed = walker.map_or(0.0, |wk| x.dot(to_ue(wk.velocity) / coords::SCALE));
+                                pellets.write(crate::projectile::SpawnPlayerProjectile {
+                                    origin: start,
+                                    trace_from: eye,
+                                    dir: x,
+                                    stats: pf.stats,
+                                    weapon: w.defs[frag].item_name,
+                                    tracer_start: None,
+                                    explosive: None,
+                                    thrown: Some(t),
+                                    extra_speed: pawn_speed,
+                                });
+                            }
+                            let (_, toss_time, spawn_at) = w.defs[frag].toss.clone().unwrap_or_default();
+                            w.switch_timer = (toss_time - spawn_at).max(0.0);
+                            w.action = Action::Grenade { phase: NadePhase::Toss { spawned: true }, back_to };
+                        }
+                        NadePhase::Toss { spawned: true } => {
+                            // ThrowGrenadeFinished: the weapon comes up quickly.
+                            w.current = back_to;
+                            let d = &w.defs[back_to];
+                            let (anim, rate, time) =
+                                (d.select_anim.clone(), d.select_anim_rate * d.bring_up_time / d.quick_bring_up_time, d.quick_bring_up_time);
+                            play(&mut w, &anim, rate, false);
+                            w.switch_timer = time;
+                            w.action = Action::Grenade { phase: NadePhase::Up, back_to };
+                        }
+                        NadePhase::Up => set_action(&mut w, Action::Idle),
+                    }
+                }
                 Action::Select => set_action(&mut w, Action::Idle),
                 Action::PutDown { next } if w.down_delayed => {
                     w.down_delayed = false;
@@ -2093,6 +2231,7 @@ fn weapon_input(
     ammo_display.weapon = w.defs[w.current].item_name;
     ammo_display.ammo = w.defs[w.current].ammo.map(|a| (a.mag, a.spare));
     ammo_display.alt_ammo = w.defs[w.current].alt_ammo.map(|a| a.0);
+    ammo_display.frags = w.defs.iter().find(|d| d.toss.is_some()).and_then(|d| d.ammo).map(|a| a.mag + a.spare);
     ammo_display.fire_mode = match w.defs[w.current].toggles_on_alt {
         Some(AltToggle::FireMode) => Some(if w.defs[w.current].modes[0].wait_for_release { "SEMI" } else { "AUTO" }),
         Some(AltToggle::WideSpread) => Some(if w.defs[w.current].wide_spread { "WIDE" } else { "NARROW" }),
@@ -2168,7 +2307,7 @@ fn animate_weapon(
         } else {
             match w.action {
                 // Switching runs on timers (weapon_input); hold the last frame.
-                Action::PutDown { .. } | Action::Select => w.frame = length,
+                Action::PutDown { .. } | Action::Select | Action::Grenade { .. } => w.frame = length,
                 // Weapon.AnimEnd: after FireAnim comes FireEndAnim if the
                 // weapon has it; otherwise idle unless a mode is firing
                 // (then the last frame holds until the next shot).

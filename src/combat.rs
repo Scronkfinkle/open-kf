@@ -109,6 +109,8 @@ pub struct AmmoDisplay {
     pub fire_mode: Option<&'static str>,
     /// Alt fire's own rounds (the M4 203's grenades).
     pub alt_ammo: Option<u32>,
+    /// Frags left (thrown with G).
+    pub frags: Option<u32>,
 }
 
 /// The player held by a Clot's grab (KFPawn.DisableMovement): no walking or
@@ -213,7 +215,8 @@ fn update_hud(
     let rounds = ammo.ammo.map_or(String::new(), |(mag, spare)| format!(" {mag} / {spare}"));
     let mode = ammo.fire_mode.map_or(String::new(), |m| format!(" [{m}]"))
         + &ammo.alt_ammo.map_or(String::new(), |n| format!(" [GRENADES {n}]"));
-    let ammo = format!("    {}{rounds}{mode}", ammo.weapon.to_uppercase());
+    let frags = ammo.frags.map_or(String::new(), |n| format!("    FRAGS {n}"));
+    let ammo = format!("    {}{rounds}{mode}{frags}", ammo.weapon.to_uppercase());
     **t = format!(
         "HEALTH {:.0}{}{ammo}    KILLS {}    Z: {}",
         health.health.max(0.0),
@@ -660,7 +663,7 @@ fn apply_player_damage(
             "player_hit",
             &format!(
                 "zed={} damage={} kind={:?} health_left={:.0} god={}",
-                hit.zed_id,
+                if hit.zed_id == usize::MAX { "self".to_string() } else { hit.zed_id.to_string() },
                 hit.amount,
                 hit.kind,
                 health.health.max(0.0),

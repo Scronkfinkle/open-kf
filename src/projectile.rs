@@ -79,6 +79,10 @@ pub struct SpawnPlayerProjectile {
     pub tracer_start: Option<Vec3>,
     /// A grenade or rocket instead of a pellet (`stats` unused).
     pub explosive: Option<ExplosiveStats>,
+    /// A thrown frag or pipe bomb instead (`stats` unused).
+    pub thrown: Option<ThrownStats>,
+    /// Added to the velocity (FragFire: the player's forward speed).
+    pub extra_speed: f32,
 }
 
 #[derive(Component)]
@@ -115,7 +119,7 @@ pub struct ProjectilePlugin;
 impl Plugin for ProjectilePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SpawnPlayerProjectile>()
-            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives).chain());
+            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown).chain());
     }
 }
 
@@ -142,6 +146,31 @@ fn spawn_projectiles(
             && let Some(h) = spatial.cast_ray(a, d, (b - a).length(), true, &crate::collision::world_filter())
         {
             origin = s.trace_from + (s.origin - s.trace_from).normalize_or_zero() * (h.distance / SCALE);
+        }
+        if let Some(t) = s.thrown {
+            let dir = s.dir.normalize_or_zero();
+            let fuse = match t.kind {
+                ThrownKind::Frag { fuse } => fuse,
+                ThrownKind::Pipe { .. } => 1.0,
+            };
+            commands.spawn(PlayerThrown {
+                pos: origin,
+                vel: dir * (t.speed + s.extra_speed),
+                stats: t,
+                weapon: s.weapon,
+                age: 0.0,
+                resting: false,
+                bounced: false,
+                timer: fuse,
+                arming: None,
+                countdown: None,
+                id: *next_id,
+            });
+            runlog::kv(
+                "thrown_spawned",
+                &format!("id={} weapon={} speed={:.0} damage={} radius={}", *next_id, s.weapon, t.speed + s.extra_speed, t.damage, t.radius),
+            );
+            continue;
         }
         if let Some(x) = s.explosive {
             let dir = s.dir.normalize_or_zero();
@@ -491,65 +520,29 @@ fn move_explosives(
             continue;
         }
         // Explode: the effect 20 units out, the decal, HurtRadius.
-        if let Some(lib) = library.as_deref() {
-            crate::particles::spawn_effect(&mut commands, lib, &mut meshes, p.stats.effect, at + normal * 20.0, crate::fireball::axes_along(normal), p.id);
-        }
-        decals.write(crate::decals::SpawnDecal {
-            kind: p.stats.decal,
-            at,
-            dir: -normal,
-            trace: false,
-        });
-        let at_bevy = coords::pos(at.to_array());
-        let (mut zeds_hit, mut zeds_killed) = (0, 0);
-        for mut z in &mut zeds {
-            if z.health <= 0.0 {
-                continue;
-            }
-            let centre = to_ue(z.centre) / SCALE;
-            let d = centre - at;
-            let dist = d.length().max(1.0);
-            // CollidingActors: the cylinder touches the radius.
-            if dist - z.radius > p.stats.radius {
-                continue;
-            }
-            let dirs = d / dist;
-            let scale = (1.0 - ((dist - z.radius) / p.stats.radius).max(0.0)) * zed_exposure(&spatial, &z, at);
-            if scale <= 0.0 {
-                continue;
-            }
-            let hit_ue = centre - 0.5 * (z.half_height + z.radius) * dirs;
-            let point = coords::pos(hit_ue.to_array());
-            let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
-            z.last_hit = Some((point, dir_b));
-            let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: Some(p.stats.fleshpound_mult) };
-            let before = z.health;
-            crate::combat::damage_zed(&mut z, scale * p.stats.damage, false, 1.0, p.weapon, dist * SCALE, source, &mut kills);
-            zeds_hit += 1;
-            if before > 0.0 && z.health <= 0.0 {
-                zeds_killed += 1;
-            }
-        }
-        // The player: KFPawn.GetExposureTo (head and root, half each);
-        // KFGameType.ReduceDamage halves self damage; KFHumanPawn.TakeDamage
-        // drops the momentum of a player's damage (no push).
-        let mut self_damage = 0.0;
-        if let Some(pl) = player_ue {
-            let dist = (pl - at).length().max(1.0);
-            if dist - PLAYER_RADIUS <= p.stats.radius {
-                let exposure = 0.5 * in_sight(&spatial, at_bevy, coords::pos((pl + Vec3::Z * PLAYER_HEAD).to_array())) as u8 as f32
-                    + 0.5 * in_sight(&spatial, at_bevy, coords::pos(pl.to_array())) as u8 as f32;
-                let scale = (1.0 - ((dist - PLAYER_RADIUS) / p.stats.radius).max(0.0)) * exposure;
-                self_damage = (scale * p.stats.damage * 0.5).floor();
-                if self_damage > 0.0 {
-                    player_damage.write(crate::combat::PlayerDamaged {
-                        amount: self_damage,
-                        zed_id: usize::MAX,
-                        kind: crate::combat::HurtKind::Plain,
-                    });
-                }
-            }
-        }
+        let (zeds_hit, zeds_killed, self_damage) = blast(
+            &mut commands,
+            &spatial,
+            &mut zeds,
+            &mut kills,
+            player_ue,
+            library.as_deref(),
+            &mut meshes,
+            &mut decals,
+            &mut player_damage,
+            &Blast {
+                at,
+                normal,
+                effect_offset: 20.0,
+                effect: p.stats.effect,
+                decal: p.stats.decal,
+                damage: p.stats.damage,
+                radius: p.stats.radius,
+                fleshpound_mult: p.stats.fleshpound_mult,
+                weapon: p.weapon,
+                id: p.id,
+            },
+        );
         runlog::kv(
             "explosive_exploded",
             &format!(
@@ -564,6 +557,302 @@ fn move_explosives(
             ),
         );
         kill_trail(&mut effects, p.trail);
+        commands.entity(entity).despawn();
+    }
+}
+
+
+/// One explosion (Explode + HurtRadius), Unreal units.
+struct Blast {
+    at: Vec3,
+    normal: Vec3,
+    /// The effect is spawned this far out along the normal (M79 / LAW 20;
+    /// Nade and pipe bomb at the spot).
+    effect_offset: f32,
+    effect: &'static str,
+    decal: crate::decals::DecalKind,
+    damage: f32,
+    radius: f32,
+    fleshpound_mult: f32,
+    weapon: &'static str,
+    id: u32,
+}
+
+/// The effect, the decal, and HurtRadius: every zed whose cylinder reaches
+/// the radius takes Damage x (1 - max(0, (distance - its radius) / radius))
+/// x its exposure; the player the same with KFPawn's exposure, halved (own
+/// explosive), with no push. Returns (zeds hit, zeds killed, self damage).
+#[allow(clippy::too_many_arguments)]
+fn blast(
+    commands: &mut Commands,
+    spatial: &SpatialQuery,
+    zeds: &mut Query<&mut Zed>,
+    kills: &mut crate::combat::KillCount,
+    player_ue: Option<Vec3>,
+    library: Option<&crate::particles::EffectLibrary>,
+    meshes: &mut Assets<Mesh>,
+    decals: &mut MessageWriter<crate::decals::SpawnDecal>,
+    player_damage: &mut MessageWriter<crate::combat::PlayerDamaged>,
+    b: &Blast,
+) -> (u32, u32, f32) {
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    let at = b.at;
+    if let Some(lib) = library {
+        crate::particles::spawn_effect(commands, lib, meshes, b.effect, at + b.normal * b.effect_offset, crate::fireball::axes_along(b.normal), b.id);
+    }
+    decals.write(crate::decals::SpawnDecal {
+        kind: b.decal,
+        at,
+        dir: -b.normal,
+        trace: false,
+    });
+    let at_bevy = coords::pos(at.to_array());
+    let (mut zeds_hit, mut zeds_killed) = (0, 0);
+    for mut z in zeds.iter_mut() {
+        if z.health <= 0.0 {
+            continue;
+        }
+        let centre = to_ue(z.centre) / SCALE;
+        let d = centre - at;
+        let dist = d.length().max(1.0);
+        // CollidingActors: the cylinder touches the radius.
+        if dist - z.radius > b.radius {
+            continue;
+        }
+        let dirs = d / dist;
+        let scale = (1.0 - ((dist - z.radius) / b.radius).max(0.0)) * zed_exposure(spatial, &z, at);
+        if scale <= 0.0 {
+            continue;
+        }
+        let hit_ue = centre - 0.5 * (z.half_height + z.radius) * dirs;
+        let point = coords::pos(hit_ue.to_array());
+        let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
+        z.last_hit = Some((point, dir_b));
+        let source = crate::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: Some(b.fleshpound_mult) };
+        let before = z.health;
+        crate::combat::damage_zed(&mut z, scale * b.damage, false, 1.0, b.weapon, dist * SCALE, source, kills);
+        zeds_hit += 1;
+        if before > 0.0 && z.health <= 0.0 {
+            zeds_killed += 1;
+        }
+    }
+    // The player: KFPawn.GetExposureTo (head and root, half each);
+    // KFGameType.ReduceDamage halves self damage; KFHumanPawn.TakeDamage
+    // drops the momentum of a player's damage (no push).
+    let mut self_damage = 0.0;
+    if let Some(pl) = player_ue {
+        let dist = (pl - at).length().max(1.0);
+        if dist - PLAYER_RADIUS <= b.radius {
+            let exposure = 0.5 * in_sight(spatial, at_bevy, coords::pos((pl + Vec3::Z * PLAYER_HEAD).to_array())) as u8 as f32
+                + 0.5 * in_sight(spatial, at_bevy, coords::pos(pl.to_array())) as u8 as f32;
+            let scale = (1.0 - ((dist - PLAYER_RADIUS) / b.radius).max(0.0)) * exposure;
+            self_damage = (scale * b.damage * 0.5).floor();
+            if self_damage > 0.0 {
+                player_damage.write(crate::combat::PlayerDamaged {
+                    amount: self_damage,
+                    zed_id: usize::MAX,
+                    kind: crate::combat::HurtKind::Plain,
+                });
+            }
+        }
+    }
+    (zeds_hit, zeds_killed, self_damage)
+}
+
+/// A thrown explosive's values: the frag's Nade or a PipeBombProjectile.
+#[derive(Clone, Copy, Debug)]
+pub struct ThrownStats {
+    pub speed: f32,
+    pub damage: f32,
+    pub radius: f32,
+    /// HitWall: Velocity = -VNorm x DampenFactor + (Velocity - VNorm) x
+    /// DampenFactorParallel; at rest under 20.
+    pub dampen_normal: f32,
+    pub dampen_parallel: f32,
+    pub fleshpound_mult: f32,
+    pub effect: &'static str,
+    pub decal: crate::decals::DecalKind,
+    pub kind: ThrownKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ThrownKind {
+    /// Nade: explodes ExplodeTimer after the throw, restarted by its first
+    /// bounce (bTimerSet is not set at the throw: KF quirk, kept).
+    Frag { fuse: f32 },
+    /// PipeBombProjectile: at rest, armed after ArmingCountDown; checks for
+    /// zeds within DetectionRadius in sight every second (0.5 s while some
+    /// threat but under ThreatThreshhold); detected: CountDown beeps every
+    /// 0.15 s, then explodes.
+    Pipe { arming: f32, detection_radius: f32, countdown: u32, threshold: f32 },
+}
+
+#[derive(Component)]
+struct PlayerThrown {
+    pos: Vec3,
+    vel: Vec3,
+    stats: ThrownStats,
+    weapon: &'static str,
+    age: f32,
+    resting: bool,
+    bounced: bool,
+    /// Frag: seconds to the explosion. Pipe: the next check.
+    timer: f32,
+    /// Pipe: seconds of arming left; None until at rest.
+    arming: Option<f32>,
+    /// Pipe: beeps left once a zed is detected.
+    countdown: Option<u32>,
+    id: u32,
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
+fn move_thrown(
+    mut commands: Commands,
+    time: Res<Time>,
+    spatial: SpatialQuery,
+    mut thrown: Query<(Entity, &mut PlayerThrown)>,
+    mut zeds: Query<&mut Zed>,
+    mut kills: ResMut<crate::combat::KillCount>,
+    player: Query<(&Transform, Option<&crate::walk::Walker>), With<crate::camera::FlyCamera>>,
+    library: Option<Res<crate::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut decals: MessageWriter<crate::decals::SpawnDecal>,
+    mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    let player_ue = player.single().ok().map(|(t, w)| {
+        to_ue(w.map_or(t.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center)) / SCALE
+    });
+    for (entity, mut p) in &mut thrown {
+        p.age += dt;
+        // Fly: PHYS_Falling, bouncing off the level; a zed stops it dead.
+        if !p.resting {
+            p.vel.z -= GRAVITY * dt;
+            let step = p.vel * dt;
+            let len = step.length();
+            if len > 0.0 {
+                let dir_ue = step / len;
+                let from = coords::pos(p.pos.to_array());
+                let dir = coords::dir(dir_ue.to_array()).normalize_or_zero();
+                if let Ok(dir3) = Dir3::new(dir) {
+                    let world = spatial.cast_ray(from, dir3, len * SCALE, true, &crate::collision::world_filter());
+                    let world_t = world.map_or(len * SCALE, |h| h.distance);
+                    let zed_touch = zeds.iter().any(|z| {
+                        z.health > 0.0 && crate::combat::zed_hit(z, from, dir).is_some_and(|t| t <= world_t)
+                    });
+                    if zed_touch {
+                        // ProcessTouch: Velocity = 0 (then falls).
+                        p.vel = Vec3::ZERO;
+                    } else if let Some(h) = world {
+                        let n = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
+                        let n = to_ue(n).normalize_or_zero();
+                        p.pos += dir_ue * (h.distance / SCALE) + n;
+                        let v_norm = p.vel.dot(n) * n;
+                        p.vel = -v_norm * p.stats.dampen_normal + (p.vel - v_norm) * p.stats.dampen_parallel;
+                        if let ThrownKind::Frag { fuse } = p.stats.kind
+                            && !p.bounced
+                        {
+                            p.timer = fuse;
+                        }
+                        p.bounced = true;
+                        if p.vel.length() < 20.0 {
+                            p.resting = true;
+                            p.vel = Vec3::ZERO;
+                            if let ThrownKind::Pipe { arming, .. } = p.stats.kind {
+                                p.arming = Some(arming);
+                            }
+                            runlog::kv(
+                                "thrown_rest",
+                                &format!("id={} weapon={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2}", p.id, p.weapon, p.pos.x, p.pos.y, p.pos.z, p.age),
+                            );
+                        }
+                    } else {
+                        p.pos += step;
+                    }
+                }
+            }
+        }
+        // Timers.
+        let mut explode = false;
+        match p.stats.kind {
+            ThrownKind::Frag { .. } => {
+                p.timer -= dt;
+                explode = p.timer <= 0.0;
+            }
+            ThrownKind::Pipe { detection_radius, threshold, .. } => {
+                if let Some(a) = p.arming.as_mut() {
+                    *a -= dt;
+                    if *a <= 0.0 {
+                        p.arming = None;
+                        p.timer = 0.0;
+                        runlog::kv("pipebomb_armed", &format!("id={}", p.id));
+                    }
+                } else if p.resting {
+                    p.timer -= dt;
+                    if p.timer <= 0.0 {
+                        if let Some(c) = p.countdown.as_mut() {
+                            // Fast beeps, then the explosion.
+                            *c = c.saturating_sub(1);
+                            explode = *c == 0;
+                            p.timer = 0.15;
+                        } else {
+                            // VisibleCollidingActors within DetectionRadius.
+                            let at_bevy = coords::pos(p.pos.to_array());
+                            let threat: f32 = zeds
+                                .iter()
+                                .filter(|z| z.health > 0.0)
+                                .filter(|z| (to_ue(z.centre) / SCALE - p.pos).length() - z.radius <= detection_radius)
+                                .filter(|z| in_sight(&spatial, at_bevy, z.centre))
+                                .map(|z| z.motion_threat)
+                                .sum();
+                            if threat >= threshold {
+                                let ThrownKind::Pipe { countdown, .. } = p.stats.kind else { unreachable!() };
+                                p.countdown = Some(countdown);
+                                p.timer = 0.15;
+                                runlog::kv("pipebomb_detected", &format!("id={} threat={threat:.2}", p.id));
+                            } else {
+                                p.timer = if threat > 0.0 { 0.5 } else { 1.0 };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !explode {
+            continue;
+        }
+        let normal = Vec3::Z;
+        let (zeds_hit, zeds_killed, self_damage) = blast(
+            &mut commands,
+            &spatial,
+            &mut zeds,
+            &mut kills,
+            player_ue,
+            library.as_deref(),
+            &mut meshes,
+            &mut decals,
+            &mut player_damage,
+            &Blast {
+                at: p.pos,
+                normal,
+                effect_offset: 0.0,
+                effect: p.stats.effect,
+                decal: p.stats.decal,
+                damage: p.stats.damage,
+                radius: p.stats.radius,
+                fleshpound_mult: p.stats.fleshpound_mult,
+                weapon: p.weapon,
+                id: p.id,
+            },
+        );
+        runlog::kv(
+            "thrown_exploded",
+            &format!(
+                "id={} weapon={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} bounced={} zeds_hit={zeds_hit} zeds_killed={zeds_killed} self_damage={self_damage}",
+                p.id, p.weapon, p.pos.x, p.pos.y, p.pos.z, p.age, p.bounced
+            ),
+        );
         commands.entity(entity).despawn();
     }
 }

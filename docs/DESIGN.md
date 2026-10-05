@@ -1464,7 +1464,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   quit: its capture had been dropped.)
 - The source is `src/record.rs`.
 
-## Weapons (milestone 7, W1-W5 and W6a implemented 2026-10-04)
+## Weapons (milestone 7, W1-W5 and W6a-b implemented 2026-10-04)
 
 Goal: every base-game weapon, with KF's own numbers and firing rules. You
 asked to skip DLC weapons.
@@ -1766,6 +1766,30 @@ W6a (`projectile.rs` PlayerExplosive):
 - Not done: the grenade / rocket meshes, view shake, momentum on zeds
   (MomentumTransfer is logged only), explosions setting off other
   explosives, a dud's rest (it just stops).
+
+W6b (`projectile.rs` PlayerThrown, `weapon.rs` Action::Grenade):
+- G (KFPawn.ThrowGrenade): with a frag left, the weapon's next shot due
+  within 0.1 s and no reload (a one-round reload is interrupted): the
+  weapon goes down (PutDownAnim, QuickPutDownTime 0.15), the frag's Toss
+  animation plays (Frag.StartThrow), the Nade spawns at TossSpawnTime 0.2
+  (FragFire.DoFireEffect: eye + X x 25 - Y x 10; speed mHoldSpeedMin 850
+  + the player's speed along the view), and at TossTime 0.366 the weapon
+  comes back up (QuickBringUpTime 0.15). HUD: FRAGS n.
+- Nade: falls, bounces (Velocity = -VNorm x 0.25 + parallel x 0.4), at
+  rest under 20; a zed it touches stops it; explodes ExplodeTimer 2 s after
+  the throw, restarted by the first bounce (KF quirk). KFNadeExplosion,
+  KFScorchMark, HurtRadius 300 in 420.
+- Pipe bomb (PipeBombExplosive, fired like a gun): tossed at Speed 50, at
+  rest it arms after 1 s, then every 1 s (0.5 s while some threat) adds
+  up the MotionDetectorThreat (from each zed class: Clot / Crawler 0.34,
+  Gorefast 0.5, Stalker 0.25, Bloat / Husk 1, Siren 2, Scrake 3,
+  Fleshpound 5, Patriarch 10) of zeds in sight within 150; at 1 or more,
+  5 beeps 0.15 s apart, then KFNadeLExplosion and HurtRadius 1500 in 350.
+- Frag and pipe bomb damage counts double on the Fleshpound.
+- One `blast` function serves all explosives.
+- Not done: shooting a pipe bomb to set it off (PipeBombProjectile.
+  TakeDamage), the Siren disintegrating explosives, shrapnel pieces, the
+  pipe bomb's light and beeps (no sound), the frag mesh in flight.
 
 **Not covered.** Sound (the project has no audio yet), perks (KF with no
 perk chosen uses the plain values; perk bonuses come with the game loop),

@@ -31,7 +31,9 @@ use crate::map::MapRequest;
 use crate::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 54] = [
+const EFFECT_CLASSES: [&str; 55] = [
+    // Frag explosions (Nade.Explode).
+    "KFMod.KFNadeExplosion",
     // Grenade explosions (M79GrenadeProjectile.Explode).
     "KFMod.KFNadeLExplosion",
     "KFMod.DismembermentJetHead",

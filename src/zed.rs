@@ -201,6 +201,8 @@ struct ZedClass {
     fp_red_device: Option<Handle<StandardMaterial>>,
     /// Share of non-explosive damage taken (ZombieFleshPound 0.5).
     small_arms_scale: f32,
+    /// MotionDetectorThreat: how much this zed counts toward setting off a pipe bomb.
+    motion_threat: f32,
     /// The ranged attack (RangedAttack beyond melee reach, head on): the
     /// Bloat's ZombieBarf within 250, the Siren's Siren_Scream within
     /// ScreamRadius. Its SpawnTwoShots notify times (0..1: the vomit, or
@@ -415,6 +417,8 @@ pub struct Zed {
     fp_rage_threshold: f32,
     /// Share of non-explosive damage taken.
     pub small_arms_scale: f32,
+    /// MotionDetectorThreat (pipe bombs).
+    pub(crate) motion_threat: f32,
     /// Patriarch: the head never comes off (ZombieBoss.RemoveHead is empty)
     /// and hits never flinch or stun him (PlayDirectionalHit is empty).
     pub keeps_head: bool,
@@ -1680,6 +1684,7 @@ fn load_class(
         fp_rage_threshold: float("RageDamageThreshold", 0.0),
         fp_red_device: if kind == ZedKind::Fleshpound { load_named_material(set, "KFCharacters", "FPRedBloomShader", images, materials) } else { None },
         small_arms_scale: if kind == ZedKind::Fleshpound { 0.5 } else { 1.0 },
+        motion_threat: float("MotionDetectorThreat", 1.0),
         ranged_anim,
         ranged_distance: match kind {
             ZedKind::Siren => float("ScreamRadius", 700.0),
@@ -2159,6 +2164,7 @@ impl Zed {
             fp_frustrated: false,
             fp_rage_threshold: 0.0,
             small_arms_scale: 1.0,
+            motion_threat: 1.0,
             keeps_head: false,
             no_hit_reactions: false,
             boss: None,
@@ -2361,6 +2367,7 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 fp_frustrated: false,
                 fp_rage_threshold: c.fp_rage_threshold,
                 small_arms_scale: c.small_arms_scale,
+                motion_threat: c.motion_threat,
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
                 boss: c.boss.is_some().then(|| crate::boss::BossState::new(c.health)),

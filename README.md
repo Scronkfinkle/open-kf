@@ -57,7 +57,8 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | R | reload |
 | Z | spawn a zed in front of you (more spawn side by side); the HUD shows which |
 | N | change what Z spawns (all ten specimens) |
-| H | spawn a Gorefast in front of you (G is kept for KF's grenade) |
+| G | throw a frag grenade (HUD: FRAGS) |
+| H | spawn a Gorefast in front of you |
 | X | pause / resume zeds |
 | F1 | god mode on / off (HUD shows "(GOD)") |
 | Space (walking) | jump |
@@ -157,6 +158,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   switch timing (0.33 s down + 0.33 s up). Checked by unit tests and
   logged runs (AK47, M4, 9mm, Lever Action, Bullpup). Play-tested by you
   ("guns feel good").
+- Frag grenades and pipe bombs (W6b, 2026-10-04): G throws a frag (your
+  weapon goes down and comes back up), it bounces and explodes after 2 s;
+  pipe bombs are placed and go off when enough zeds come near. Checked by
+  logged runs. Not play-tested by you.
 - Grenades and rockets (W6a, 2026-10-04): the M79, M32, the M4 203's
   launcher (middle click, own grenade count) and the LAW (aim first) fire
   grenades / rockets that fly, explode with KF's falloff and line-of-sight
@@ -316,8 +321,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
   accuracy bonus. Alt fires other than melee, the rifle toggles and the shotguns
-  (medic darts, flashlights) do nothing yet. The frag, pipe bomb,
-  crossbow, M99, flamethrower, husk gun, syringe, welder and ZED guns play
+  (medic darts, flashlights) do nothing yet. The crossbow, M99, flamethrower, husk gun, syringe, welder and ZED guns play
   their fire animation and use ammo but do nothing. The Trenchgun's fire
   damage is not done (W7). No DLC weapons. No trader.
 - Frame rate not measured with the monitor on (during testing the monitor was
