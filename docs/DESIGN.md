@@ -3312,8 +3312,21 @@ with a test you can run):
     Ammo_GenericPickup (SLOT_Pain, 0.6, 400). Nails: 40% of bounces
     Impact_Metal. Not done: the bullet whiz (only the Patriarch's chaingun
     could cause it solo; native, not known), shell casings (none in KF).
-  - **S5e. The trader** (buy sounds, too expensive / too heavy, the radio
-    voice lines).
+  - **S5e. The trader** (done 2026-10-06, `src/trader_voice.rs`). Buying
+    a weapon or the vest: its PickupSound (MakeSomeBuyNoise, SLOT_Interface,
+    255 capped, radius 120); a purchase refused for dosh or weight:
+    KF_Trader.TooExpensive / TooHeavy (2.0; KF plays them on selecting the
+    item in the list, ours on the refused purchase). Buying ammo and
+    selling are silent, as KF. The radio lines (KFVoicePack TraderSound
+    0-6) at KFGameType's moments: 0 "moving" after 20% of the wave is
+    dead, 1 "almost open" at 80% (solo only farther than 30 m from the
+    shop; KF checks at each kill, ours each second), 2 / 3 at OpenShops,
+    6 at CloseShops (WaveNum < FinalWave - 1), 4 at 30 s left (not in a
+    shop, nor after entering one since the last "closed"), 5 at 10 s (only
+    in a shop). Each: Walkie_Beep (SLOT_Talk, 10) and the chat beep
+    (bullethitflesh2) at once, the line 0.6 s later (SLOT_Interface, 2.0,
+    bNoOverride). The Welcome line plays nothing (no sender: our reading).
+    Not done: menu click sounds (no KF menus yet), the perk sound (no perks).
 - **S6. Music** (done 2026-10-05, `src/music.rs`). The map's
   KFMusicTrigger (Song, CombatSong, WaveBasedSongs[n].CombatSong /
   CalmSong, FadeInTime, FadeOutTime; every map's survey: none sets the

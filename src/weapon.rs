@@ -207,6 +207,9 @@ struct WeaponDef {
     /// (KFWeapon: 100; capped by the mixer).
     select_sound: Option<String>,
     select_volume: f32,
+    /// The pickup class's PickupSound, played when bought
+    /// (KFTab_BuyMenu.MakeSomeBuyNoise).
+    pickup_sound: Option<String>,
     /// The third-person attachment's own AmbientSound (AttachmentClass
     /// defaults: AmbientSound, SoundVolume, SoundRadius), playing while the
     /// weapon is in hand: the chainsaw's idle engine.
@@ -1840,6 +1843,10 @@ fn load_weapon(
         select_sound: sound_prop(defaults, &class, "SelectSound"),
         select_volume: float("TransientSoundVolume", 0.3),
         throw_sound: sound_prop(defaults, &class, "ThrowSound"),
+        pickup_sound: match get("PickupClass") {
+            Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).and_then(|pc| sound_prop(defaults, &pc, "PickupSound")),
+            _ => None,
+        },
         idle_ambient: match get("AttachmentClass") {
             Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).and_then(|a| {
                 let sound = sound_prop(defaults, &a, "AmbientSound")?;
@@ -2244,6 +2251,14 @@ fn anim_sounds(w: &mut Weapons, from: f32, to: f32) {
     w.sounds.extend(hits);
 }
 
+/// KFBuyMenuSaleList / KFTab_BuyMenu: TraderSoundTooExpensive /
+/// TooHeavy, DemoPlaySound(.., SLOT_Interface, 2.0) on the player. KF plays
+/// them when an item that cannot be bought is selected in the list; ours,
+/// when it is bought (our menu has no separate selection step).
+pub(crate) fn trader_refusal(sound: &'static str) -> PlaySound {
+    PlaySound::new(sound, Emitter::Listener).slot(SoundSlot::Interface).volume(2.0).actor(4)
+}
+
 /// FRand for sounds (xorshift).
 fn sound_rand(w: &mut Weapons) -> f32 {
     w.sound_rng ^= w.sound_rng << 13;
@@ -2267,7 +2282,7 @@ fn send_weapon_sounds(
     for def in &w.defs {
         if done.insert(def.class.clone()) {
             let mut sounds: Vec<String> =
-                def.select_sound.iter().chain(&def.throw_sound).cloned().chain(def.idle_ambient.as_ref().map(|a| a.sound.clone())).collect();
+                def.select_sound.iter().chain(&def.throw_sound).chain(&def.pickup_sound).cloned().chain(def.idle_ambient.as_ref().map(|a| a.sound.clone())).collect();
             for m in &def.modes {
                 let s = &m.sounds;
                 sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo, &s.fire_start, &s.charge_up, &s.placed].into_iter().flatten().cloned());
@@ -4036,10 +4051,12 @@ fn shop_requests(
                 let weight = carried_weight(w);
                 if item_weight > 0.0 && weight + item_weight > MAX {
                     refuse("buy", class, &format!("too_heavy weight={weight} item_weight={item_weight}"));
+                    w.sounds.push(trader_refusal("KF_Trader.TooHeavy"));
                     continue;
                 }
                 if dosh.score < price {
                     refuse("buy", class, &format!("dosh score={:.0} price={price}", dosh.score));
+                    w.sounds.push(trader_refusal("KF_Trader.TooExpensive"));
                     continue;
                 }
                 let i = match give_weapon(w, class, &assets, &mut commands, &mut meshes, &mut images, &mut materials) {
@@ -4064,6 +4081,11 @@ fn shop_requests(
                     "shop_buy",
                     &format!("weapon={class} price={price} half={half} weight={} dosh={:.0} replaced_single={}", weight + item_weight, dosh.score, single.is_some()),
                 );
+                // MakeSomeBuyNoise: Pawn.PlaySound(PickupSound,
+                // SLOT_Interface, 255.0, , 120).
+                if let Some(snd) = w.defs[i].pickup_sound.clone() {
+                    w.sounds.push(PlaySound::new(snd, Emitter::Listener).slot(SoundSlot::Interface).volume(255.0).radius(120.0));
+                }
                 force_change(w, i);
             }
             ShopRequest::Sell(class) => {

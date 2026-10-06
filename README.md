@@ -582,6 +582,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Bullet impacts on walls (one "dirt" impact sound for every surface
   until surfaces are read), glass cracking and breaking, crossbow / M99
   bolt hits, nail ricochets (S5d, 2026-10-05). Not heard by you yet.
+- The trader (S5e, 2026-10-06): the radio lines (shop moving, almost
+  open, open, last wave, 30 s, 10 s, closed) with the walkie-talkie beep,
+  the buy sound of each weapon and the vest, "too expensive" / "too heavy".
+  Not heard by you yet.
 - Music (S6, 2026-10-05): the map's calm song in trader time, its combat
   song in waves (per-wave songs where the map has them), the Patriarch's
   KF_Abandon with a 1 s fade at his entrance. Volumes from your

@@ -127,6 +127,7 @@ fn buy_vest(
     mut armour: ResMut<Armour>,
     mut dosh: ResMut<crate::dosh::Dosh>,
     (game, shops): (Res<crate::game::WaveGame>, Res<crate::trader::Shops>),
+    mut sounds: MessageWriter<crate::audio::PlaySound>,
 ) {
     for _ in requests.read() {
         // CanBuyNow: no wave in progress, touching a shop.
@@ -138,7 +139,10 @@ fn buy_vest(
         let before = armour.strength;
         match buy_kevlar(&mut armour, &mut dosh.score) {
             VestBuy::Full100 => runlog::kv("shop_refused", "request=vest reason=armour_full"),
-            VestBuy::NoDosh => runlog::kv("shop_refused", &format!("request=vest reason=dosh score={:.2} armour=0", dosh.score)),
+            VestBuy::NoDosh => {
+                runlog::kv("shop_refused", &format!("request=vest reason=dosh score={:.2} armour=0", dosh.score));
+                sounds.write(crate::weapon::trader_refusal("KF_Trader.TooExpensive"));
+            }
             VestBuy::Full(cost) => runlog::kv(
                 "shop_vest",
                 &format!("bought=full cost={cost:.2} armour_before={before:.2} armour={:.2} dosh_left={:.2}", armour.strength, dosh.score),
@@ -147,6 +151,15 @@ fn buy_vest(
                 "shop_vest",
                 &format!("bought=partial points={points} cost={cost} armour_before={before:.2} armour={:.2} dosh_left={:.2}", armour.strength, dosh.score),
             ),
+        }
+        // MakeSomeBuyNoise(class'Vest'): Vest_Pickup, SLOT_Interface, 255, radius 120.
+        if armour.strength > before {
+            sounds.write(
+                crate::audio::PlaySound::new("KF_InventorySnd.Vest_Pickup", crate::audio::Emitter::Listener)
+                    .slot(crate::audio::Slot::Interface)
+                    .volume(255.0)
+                    .radius(120.0),
+            );
         }
     }
 }

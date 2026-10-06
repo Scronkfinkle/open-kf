@@ -258,6 +258,15 @@ pub enum Phase {
     Lost,
 }
 
+/// The wave timer's sound messages (music.rs, trader_voice.rs) and the
+/// kill count they need.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct WaveSounds<'w> {
+    music: MessageWriter<'w, crate::music::MusicCue>,
+    speech: MessageWriter<'w, crate::trader_voice::TraderSpeech>,
+    kills: Res<'w, crate::combat::KillCount>,
+}
+
 /// KFGameType's wave state.
 #[derive(Resource, Debug)]
 pub struct WaveGame {
@@ -298,6 +307,11 @@ pub struct WaveGame {
     /// KFGameType MusicPlaying and CalmMusicPlaying (music.rs).
     music_playing: bool,
     calm_music_playing: bool,
+    /// bDidTraderMovingMessage, bDidMoveTowardTraderMessage, and the kill
+    /// count when the wave started (for ZombiesKilled).
+    did_moving_message: bool,
+    did_almost_open_message: bool,
+    kills_at_wave_start: u32,
     /// Counters other systems watch (dosh.rs): games restarted, DoWaveEnd
     /// calls. Kept across a restart.
     pub restarts: u32,
@@ -334,6 +348,9 @@ impl Default for WaveGame {
             restarts: 0,
             music_playing: false,
             calm_music_playing: false,
+            did_moving_message: false,
+            did_almost_open_message: false,
+            kills_at_wave_start: 0,
             waves_ended: 0,
         }
     }
@@ -474,7 +491,7 @@ pub fn wave_timer(
     frames: Res<bevy::diagnostic::FrameCount>,
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
-    (keys, mut clear, mut hud_messages, mut music): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>, MessageWriter<crate::hud::LocalMessage>, MessageWriter<crate::music::MusicCue>),
+    (keys, mut clear, mut hud_messages, mut talk): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>, MessageWriter<crate::hud::LocalMessage>, WaveSounds),
     (player, mut doors, mut kill_stuck, player_zone): (PlayerQuery, ResMut<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
     (mut boss_died, mut respawn_doors, mut view_target, mut boss_actions): (
         MessageWriter<BossDied>,
@@ -533,6 +550,9 @@ pub fn wave_timer(
             restarts: g.restarts + 1,
             music_playing: false,
             calm_music_playing: false,
+            did_moving_message: false,
+            did_almost_open_message: false,
+            kills_at_wave_start: 0,
             waves_ended: g.waves_ended,
             deaths_at_start: Some(health.deaths),
             final_wave: data.waves.len(),
@@ -589,7 +609,7 @@ pub fn wave_timer(
     // MatchInProgress.Timer, once a second.
     g.next_tick += 1.0;
     let num_monsters = g.living as i32;
-    boss_view_tick(g, &zeds, &mut view_target, &mut boss_actions, &mut music);
+    boss_view_tick(g, &zeds, &mut view_target, &mut boss_actions, &mut talk.music);
     // Shop calls are made after the match (`ctx` borrows the doors).
     let mut shop_action = ShopAction::None;
     match g.phase {
@@ -609,11 +629,29 @@ pub fn wave_timer(
         Phase::Wave => {
             shop_action = ShopAction::CloseAndBoot;
             g.wave_time_elapsed += 1.0;
+            // KFGameType.Killed: the trader's "shop moving" line once 20% of
+            // the wave is dead, "almost open" at 80% (solo: only farther
+            // than 30 m from the shop); not before the last waves. KF checks
+            // at each kill; ours once a second.
+            let killed = talk.kills.0.saturating_sub(g.kills_at_wave_start) as f32;
+            let share = killed / (killed + (g.total_max_monsters.max(0) as usize + g.living) as f32).max(1.0);
+            if g.wave_num < g.final_wave && killed > 0.0 {
+                if !g.did_moving_message && share >= 0.2 {
+                    g.did_moving_message = true;
+                    talk.speech.write(crate::trader_voice::TraderSpeech(0));
+                } else if g.did_moving_message && !g.did_almost_open_message && share >= 0.8 {
+                    g.did_almost_open_message = true;
+                    let far = shops.current.and_then(|i| shops.shops.get(i)).is_none_or(|s| (s.location - ctx.player.location).length_squared() > 2_250_000.0);
+                    if far {
+                        talk.speech.write(crate::trader_voice::TraderSpeech(1));
+                    }
+                }
+            }
             // if( !MusicPlaying ) StartGameMusic(True).
             if !g.music_playing {
                 g.music_playing = true;
                 g.calm_music_playing = false;
-                music.write(crate::music::MusicCue::Combat(g.wave_num));
+                talk.music.write(crate::music::MusicCue::Combat(g.wave_num));
             }
             if g.total_max_monsters <= 0 {
                 // All spawned, 5 or fewer left: one zed a tick that
@@ -644,11 +682,17 @@ pub fn wave_timer(
                 return;
             }
             g.countdown -= 1;
+            // WaveCountDown == 30 / 10: the trader's 30 s and 10 s lines.
+            if g.countdown == 30 {
+                talk.speech.write(crate::trader_voice::TraderSpeech(4));
+            } else if g.countdown == 10 {
+                talk.speech.write(crate::trader_voice::TraderSpeech(5));
+            }
             // if ( !CalmMusicPlaying ) StartGameMusic(False).
             if !g.calm_music_playing {
                 g.calm_music_playing = true;
                 g.music_playing = false;
-                music.write(crate::music::MusicCue::Calm(g.wave_num));
+                talk.music.write(crate::music::MusicCue::Calm(g.wave_num));
             }
             // WaitingMessage at 4..1 seconds left (after WaveCountDown--):
             // FINAL WAVE INBOUND before the boss, else NEXT WAVE INBOUND!
@@ -673,6 +717,9 @@ pub fn wave_timer(
                 } else {
                     g.phase = Phase::Wave;
                     g.setup_wave(data);
+                    g.kills_at_wave_start = talk.kills.0;
+                    g.did_moving_message = false;
+                    g.did_almost_open_message = false;
                 }
             }
         }
@@ -684,10 +731,18 @@ pub fn wave_timer(
                 shops.select_shop();
             }
         }
-        ShopAction::Open => shops.open_shops(&mut doors),
+        ShopAction::Open => {
+            shops.open_shops(&mut doors);
+            // OpenShops: "the shop is open" (or "last wave" before the boss).
+            talk.speech.write(crate::trader_voice::TraderSpeech(if g.wave_num < g.final_wave { 2 } else { 3 }));
+        }
         ShopAction::CloseAndBoot => {
             if shops.doors_open {
                 shops.close_shops(&mut doors);
+                // CloseShops: "the shop is closed" if WaveNum < FinalWave - 1.
+                if g.wave_num + 1 < g.final_wave {
+                    talk.speech.write(crate::trader_voice::TraderSpeech(6));
+                }
             }
             // BootShopPlayers (trader.rs moves the player).
             shops.boot_requested = true;

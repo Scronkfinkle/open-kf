@@ -4117,3 +4117,30 @@ like dirt (SurfaceType not read: needs the materials' surface types).
 Glass sounds, bolt hits on zeds, nail ricochets and the pickup not run.
 Bullet whiz not done.
 **Next:** S5e, the trader.
+
+## 2026-10-06 S5e: the trader's lines and the shop sounds
+
+**Changed:** `src/trader_voice.rs` (new): KFVoicePack's trader radio
+lines 0-6 with KFPlayerController's filters, the radio beep, the chat
+beep and the 0.6 s delay; preloaded. `src/game.rs`: the triggers
+(kill share 20% / 80%, OpenShops, CloseShops, WaveCountDown 30 / 10),
+KF's bDidTraderMovingMessage / bDidMoveTowardTraderMessage, the wave's
+starting kill count; the timer's sound messages grouped in a
+`WaveSounds` system parameter. `src/weapon.rs`: each weapon's
+PickupSound (from its PickupClass), played when bought; TooExpensive /
+TooHeavy on refused purchases (`trader_refusal`). `src/armour.rs`: the
+vest's Vest_Pickup and TooExpensive. `src/main.rs`: the plugin. DESIGN,
+README.
+**Why:** S5e, the last part of S5.
+**Tested how:** `--mode waves --no-vsync --fps 100 --frames 9500` on
+KF-WestLondon: `next_wave`, `kill_zeds` every 60 frames, then
+`warp_shop`, `buy:M99SniperRifle` (too expensive), `add_dosh`,
+`buy:AK47AssaultRifle`; clippy (counted); tests.
+**Result:** line 0 at 2 s into wave 1, line 1 at 18 s, line 2 at the
+wave end, line 4 at 30 s left (not yet in a shop), TooExpensive for the
+M99, AK47_Pickup for the AK, line 5 at 10 s left (inside the shop),
+line 6 at the next wave's start; every line with its Walkie_Beep and
+the voice 0.6 s later. Tests 139 pass; clippy 0 warnings.
+**Still broken / not tested:** not heard by you. The vest sounds not
+run. The 20% / 80% checks run once a second, not at each kill.
+**Next:** your listening test of S4b2-S6 (see the handoff).
