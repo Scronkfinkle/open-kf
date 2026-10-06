@@ -3276,7 +3276,21 @@ with a test you can run):
     silent voices (most map loops at any moment). SoundPitch 0 is taken
     as 64. Several of KF's sounds are silent placeholders (zombiehoard2,
     WoodDoorShut, ChopperLands: 8 kHz, all zeros), as in the real game.
-  - **S5b. Doors.** **S5c. Explosions and projectiles.** **S5d. Bullet
+  - **S5b. Doors** (done 2026-10-05). Mover: DoOpen / DoOpenToKey
+    OpeningSound, FinishedOpening OpenedSound, DoClose ClosingSound,
+    FinishedClosing ClosedSound (KFDoorMover: none while welded or
+    broken), PlaySound(X, SLOT_None, SoundVolume / 255, false,
+    SoundRadius, SoundPitch / 64), Mover defaults 228 / 64 / 64;
+    MoveAmbientSound loops while the door moves. Trader doors the same.
+    KFDoorMover: a zed hitting a welded door plays Zomb_HitDoor_Wood /
+    _Metal (SurfaceType 3) at 2.0, radius 200, at most every 0.5 s;
+    breaking plays Door_Break_Wood / _Metal at 2.0, radius 5000. Each
+    weld tick: PatchSounds.WelderFire at the weld point (KFHitEmitter:
+    150 capped, radius 80). Not done: the key-door unlock sound (no key
+    items). Also in this step (ours, not KF's): player landings slower
+    than 100 units/s are not played, because our walker leaves the
+    ground for a frame on steps and edges (UE2 stays walking).
+  - **S5c. Explosions and projectiles.** **S5d. Bullet
     impacts, glass, whiz.** **S5e. The trader** (buy sounds, too
     expensive / too heavy, the radio voice lines).
 - **S6. Music** (done 2026-10-05, `src/music.rs`). The map's

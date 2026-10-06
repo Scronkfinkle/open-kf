@@ -4042,3 +4042,31 @@ falloff and bFullVolume, the one-shots' volume and radius, bAttenuate
 false = at the listener, SoundPitch 0. SoundOcclusion (BSP /
 StaticMeshes on 874 loops) is not done: sounds pass through walls.
 **Next:** S5b, doors.
+
+## 2026-10-05 S5b: door sounds; tiny player landings filtered
+
+**Changed:** `crates/ue-assets/src/level.rs`: DoorInfo reads the Mover
+sounds (OpeningSound, OpenedSound, ClosingSound, ClosedSound,
+MoveAmbientSound) and SoundVolume / SoundRadius / SoundPitch.
+`src/door.rs`: doors collect sound events where Mover / KFDoorMover play
+them (`DoorSound`), `door_sounds` plays them and keeps MoveAmbientSound on
+while a door moves; zed hits on welded doors (0.5 s apart), breaking,
+and the welder's WelderFire per weld tick. `src/player_sound.rs`:
+landings slower than 100 units/s are skipped (ours: the walker's
+one-frame falls on steps flooded the landing sound and cut the real one
+off). DESIGN, README.
+**Why:** S5b. The landing filter: found in the S5b test runs (33
+landings while standing; the first real landing cut after 0.04 s).
+**Tested how:** KF-WestLondon with `--camera` at the church and the
+station doors' triggers, `use` twice, `break_doors`; clippy (counted);
+tests.
+**Result:** station doors: `PatchSounds.WoodDoorOpen volume=0.89
+radius=64` at the open, `WoodDoorShut` at the close (a silent
+placeholder in KF's data); the church doors have no sounds (as in the
+map). `break_doors`: 13 `Door_Break_Wood`, 3 `Door_Break_Metal`.
+Landings after the filter: 9, all real falls (fall speeds 117-1925).
+Tests 139 pass; clippy 0 warnings. (A test-only DoorInfo needed the new
+fields: clippy does not build tests, the test run caught it.)
+**Still broken / not tested:** not heard by you. Zed hits on welded
+doors and the welder sound not run in a test. Key-door unlock (no keys).
+**Next:** S5c, explosions and projectiles.

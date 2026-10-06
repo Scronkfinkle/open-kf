@@ -42,6 +42,11 @@ const FOOTSTEP_RADIUS: f32 = 125.0;
 /// xPawn GruntVolume; KFPawn JumpZ.
 const GRUNT_VOLUME: f32 = 0.5;
 const JUMP_Z: f32 = 325.0;
+/// Ours, not KF's: our walker leaves the ground for a frame on steps and
+/// edges (UE2 stays in PHYS_Walking there), and each of those "landings"
+/// would play (and cut the last one off, SLOT_Interact). Landings slower
+/// than this (Unreal units/s) are not played.
+const MIN_LANDING_SPEED: f32 = 100.0;
 /// xPawn MinTimeBetweenPainSounds.
 const MIN_TIME_BETWEEN_PAIN_SOUNDS: f32 = 0.35;
 
@@ -142,7 +147,7 @@ fn player_sounds(
     // frame in the air (ours zeroes it on touching down).
     if !w.on_ground {
         st.fall_speed = vz;
-    } else if !st.was_on_ground && st.fall_speed < 0.0 {
+    } else if !st.was_on_ground && st.fall_speed < -MIN_LANDING_SPEED {
         let volume = (-0.3 * st.fall_speed / JUMP_Z).min(1.0);
         runlog::kv("player_landed", &format!("fall_speed_unreal={:.0} volume={volume:.2}", -st.fall_speed));
         out.write(PlaySound::new(LAND_SOUND, at).slot(Slot::Interact).volume(volume).radius(PAWN_RADIUS));

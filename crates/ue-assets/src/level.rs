@@ -115,6 +115,13 @@ pub struct DoorInfo {
     /// A KFTraderDoor (moved only by the shop it belongs to), not a
     /// KFDoorMover.
     pub trader: bool,
+    /// Mover sounds: OpeningSound, OpenedSound, ClosingSound, ClosedSound,
+    /// MoveAmbientSound, with SoundVolume (Mover default 228), SoundRadius
+    /// (64) and SoundPitch (64).
+    pub sounds: [Option<String>; 5],
+    pub sound_volume: u8,
+    pub sound_radius: f32,
+    pub sound_pitch: u8,
 }
 
 /// A KFUseTrigger: the cylinder players press USE in, and zeds walk into,
@@ -247,6 +254,14 @@ impl Effective<'_, '_> {
         match self.value(name) {
             Some((Value::Str(s), _)) => s,
             _ => String::new(),
+        }
+    }
+    /// A Sound property as a full object path (None if unset).
+    fn sound(&self, name: &str) -> Option<String> {
+        match self.value(name) {
+            Some((Value::Object(rf @ ObjectRef::Import(_)), from)) => Some(from.pkg.object_path(rf)),
+            Some((Value::Object(rf @ ObjectRef::Export(_)), from)) => Some(format!("{}.{}", from.name, from.pkg.object_path(rf))),
+            _ => None,
         }
     }
     fn rotator(&self, name: &str) -> Rotator {
@@ -484,6 +499,10 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                     is_leader: v.bool("bIsLeader"),
                     return_group: v.name("ReturnGroup"),
                     blocks_traces: v.bool("bBlockZeroExtentTraces"),
+                    sounds: ["OpeningSound", "OpenedSound", "ClosingSound", "ClosedSound", "MoveAmbientSound"].map(|n| v.sound(n)),
+                    sound_volume: v.byte("SoundVolume", 228),
+                    sound_radius: v.float("SoundRadius", 64.0),
+                    sound_pitch: v.byte("SoundPitch", 64),
                 })
             }
             _ => None,

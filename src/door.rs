@@ -94,6 +94,24 @@ pub struct Door {
     /// bShouldBeOpen: what an open or close asked for while the door was
     /// sealed or hidden (and so did not move). RespawnDoor uses it.
     should_be_open: bool,
+    /// Sound events of this frame, played by `door_sounds`.
+    sounds: Vec<DoorSound>,
+    /// Seconds since the last zed-hit sound (LastZombieHitSoundTime).
+    since_zed_hit_sound: f32,
+    /// MoveAmbientSound is on (while moving).
+    ambient_on: bool,
+}
+
+/// What a door plays (Mover and KFDoorMover).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DoorSound {
+    /// OpeningSound, OpenedSound, ClosingSound, ClosedSound (index into
+    /// DoorInfo.sounds).
+    Mover(usize),
+    /// KFDoorMover.PlayZombieHitSound.
+    ZedHit,
+    /// GoBang: MetalBreakSound / WoodBreakSound.
+    Break,
 }
 
 pub struct Trigger {
@@ -133,7 +151,7 @@ impl Plugin for DoorPlugin {
             .add_message::<DoorBlast>()
             .add_message::<RespawnDoors>()
             .add_systems(PostStartup, spawn_doors)
-            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, respawn_doors, move_doors, door_path_costs).chain());
+            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, respawn_doors, move_doors, door_path_costs, door_sounds).chain());
     }
 }
 
@@ -199,6 +217,9 @@ impl Door {
             closed: true,
             phase: Phase::Idle,
             sealed: false,
+            sounds: Vec::new(),
+            since_zed_hit_sound: f32::MAX,
+            ambient_on: false,
             hidden: false,
             weld: 0.0,
             max_weld: 0.0,
@@ -315,6 +336,8 @@ impl Door {
         if !(self.sealed || self.hidden) {
             let back = if to_first { 0 } else { self.key_num.saturating_sub(1) };
             self.interpolate_to(back, self.info.move_time);
+            // DoClose / DoCloseToFirst: ClosingSound.
+            self.sounds.push(DoorSound::Mover(2));
         } else {
             self.should_be_open = false;
         }
@@ -344,6 +367,8 @@ impl Door {
                     }
                     if !(self.sealed || self.hidden) {
                         self.interpolate_to(to_key.unwrap_or(1), self.info.move_time);
+                        // DoOpen / DoOpenToKey: OpeningSound, AmbientSound = MoveAmbientSound.
+                        self.sounds.push(DoorSound::Mover(0));
                     } else {
                         self.should_be_open = true;
                     }
@@ -351,6 +376,10 @@ impl Door {
                 } else if !self.interpolating {
                     self.phase = Phase::Idle;
                     self.log("opened", "move");
+                    // FinishedOpening: OpenedSound (KFDoorMover: not while sealed or hidden).
+                    if !(self.sealed || self.hidden) {
+                        self.sounds.push(DoorSound::Mover(1));
+                    }
                 }
             }
             Phase::Closing => {
@@ -358,7 +387,61 @@ impl Door {
                     self.closed = true;
                     self.phase = Phase::Idle;
                     self.log("closed", "move");
+                    // FinishedClosing: ClosedSound.
+                    if !(self.sealed || self.hidden) {
+                        self.sounds.push(DoorSound::Mover(3));
+                    }
                 }
+            }
+        }
+    }
+}
+
+/// Plays the doors' sound events and keeps MoveAmbientSound on while a
+/// door moves (Mover: DoOpen / DoClose set it, the end of the move clears
+/// it). Mover sounds: PlaySound(X, SLOT_None, SoundVolume / 255, false,
+/// SoundRadius, SoundPitch / 64). KFDoorMover: ZombieHitSound (metal or
+/// wood by SurfaceType) at 2.0, radius 200; the break sound at 2.0,
+/// radius 5000.
+fn door_sounds(time: Res<Time>, mut doors: ResMut<Doors>, mut commands: Commands, mut out: MessageWriter<crate::audio::PlaySound>) {
+    use crate::audio::{Emitter, PlaySound};
+    let dt = time.delta_secs();
+    let doors = &mut *doors;
+    for d in doors.doors.iter_mut().chain(doors.trader.iter_mut()) {
+        d.since_zed_hit_sound = (d.since_zed_hit_sound + dt).min(1e6);
+        let at = Emitter::Entity(d.root);
+        let metal = d.info.surface_type == 3;
+        for ev in std::mem::take(&mut d.sounds) {
+            let play = match ev {
+                DoorSound::Mover(k) => d.info.sounds[k].clone().map(|snd| {
+                    PlaySound::new(snd, at).volume(d.info.sound_volume as f32 / 255.0).radius(d.info.sound_radius).pitch(d.info.sound_pitch as f32 / 64.0)
+                }),
+                DoorSound::ZedHit => {
+                    let snd = if metal { "KF_EnemyGlobalSnd.Zomb_HitDoor_Metal" } else { "KF_EnemyGlobalSnd.Zomb_HitDoor_Wood" };
+                    Some(PlaySound::new(snd, at).volume(2.0).radius(200.0))
+                }
+                DoorSound::Break => {
+                    let snd = if metal { "KF_EnvAmbientSnd2.DoorBreak.Door_Break_Metal" } else { "KF_EnvAmbientSnd2.DoorBreak.Door_Break_Wood" };
+                    Some(PlaySound::new(snd, at).volume(2.0).radius(5000.0))
+                }
+            };
+            if let Some(p) = play {
+                out.write(p);
+            }
+        }
+        let want = d.interpolating && !(d.sealed || d.hidden) && d.info.sounds[4].is_some();
+        if want != d.ambient_on {
+            d.ambient_on = want;
+            if want {
+                commands.entity(d.root).insert(crate::audio::AmbientSound {
+                    sound: d.info.sounds[4].clone().unwrap_or_default(),
+                    volume: d.info.sound_volume,
+                    radius: d.info.sound_radius,
+                    pitch: d.info.sound_pitch,
+                    ..default()
+                });
+            } else {
+                commands.entity(d.root).remove::<crate::audio::AmbientSound>();
             }
         }
     }
@@ -840,7 +923,7 @@ fn weld_hits(
     mut doors: ResMut<Doors>,
     mut commands: Commands,
     library: Option<Res<crate::particles::EffectLibrary>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    (mut meshes, mut sounds): (ResMut<Assets<Mesh>>, MessageWriter<crate::audio::PlaySound>),
     mut seed: Local<u32>,
 ) {
     for h in hits.read() {
@@ -859,6 +942,10 @@ fn weld_hits(
                 d.info.name, h.damage, d.weld, d.max_weld, d.sealed
             ),
         );
+        // WelderHitEmitter (a KFHitEmitter): PlaySound(ImpactSounds[Rand]),
+        // PatchSounds.WelderFire, its TransientSoundVolume 150 (capped) and
+        // TransientSoundRadius 80.
+        sounds.write(crate::audio::PlaySound::new("PatchSounds.WelderFire", crate::audio::Emitter::Point(at)).volume(150.0).radius(80.0));
         // KFWelderHitEffect: a WelderHitEmitter on the door, 0.15 x the
         // player's CollisionHeight (50) below the hit, 4 units out.
         if let Some(lib) = library.as_deref() {
@@ -942,6 +1029,11 @@ impl Doors {
         let dmg = ((damage as i32) as f32 * 0.85).max(5.0).trunc() as i32;
         let d = &mut self.doors[i];
         d.zed_hitting = true;
+        // KFDoorMover.TakeDamage: welded, at most every 0.5 s.
+        if d.sealed && d.since_zed_hit_sound >= 0.5 {
+            d.since_zed_hit_sound = 0.0;
+            d.sounds.push(DoorSound::ZedHit);
+        }
         if !d.sealed {
             // Unsealed: Damage *= 0.5 (int), from Health.
             let half = dmg / 2;
@@ -1015,6 +1107,7 @@ fn go_bang(
         *seed = seed.wrapping_add(1);
         crate::particles::spawn_effect(commands, lib, meshes, class, Vec3::from_array(d.pos), crate::fireball::axes_along(Vec3::Z), *seed);
     }
+    d.sounds.push(DoorSound::Break);
     d.log("broken", by);
     runlog::kv("door_broken", &format!("door={} effect={class}", d.info.name));
 }
@@ -1289,6 +1382,10 @@ mod tests {
             is_leader: false,
             return_group: String::new(),
             blocks_traces: true,
+            sounds: Default::default(),
+            sound_volume: 228,
+            sound_radius: 64.0,
+            sound_pitch: 64,
         };
         Door::new(info, Entity::PLACEHOLDER, None)
     }

@@ -570,6 +570,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   (owls, thunder, creaks), the helicopter taking off at the start on
   KF-WestLondon and KF-Farm. Not heard by you yet; how far they carry is
   a guess (silent past each sound's radius).
+- Doors (S5b, 2026-10-05): opening / closing sounds and the moving
+  loops of the big mechanical doors, zeds banging on welded doors, doors
+  breaking, the welder's sparks. Not heard by you yet. (Many of KF's
+  wooden doors close silently in the real game too: WoodDoorShut is a
+  silent placeholder sound.)
 - Music (S6, 2026-10-05): the map's calm song in trader time, its combat
   song in waves (per-wave songs where the map has them), the Patriarch's
   KF_Abandon with a 1 s fade at his entrance. Volumes from your
