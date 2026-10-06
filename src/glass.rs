@@ -156,9 +156,16 @@ fn damage_glass(
     mut visibility: Query<&mut Visibility>,
     mut materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
     library: Option<Res<crate::particles::EffectLibrary>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    (mut meshes, mut sounds): (ResMut<Assets<Mesh>>, MessageWriter<crate::audio::PlaySound>),
     mut seed: Local<u32>,
 ) {
+    // WindowGlassEmitter / BreakWindowGlassEmitter (GlassHitEmitters):
+    // ImpactSounds bullethitglass / bullethitglass2 at random, KFHitEmitter
+    // TransientSoundVolume 150 (capped) and TransientSoundRadius 80.
+    let mut glass_sound = |seed: u32, at: Vec3| {
+        let snd = if seed.is_multiple_of(2) { "KFWeaponSound.bullethitglass" } else { "KFWeaponSound.bullethitglass2" };
+        sounds.write(crate::audio::PlaySound::new(snd, crate::audio::Emitter::Point(coords::pos(at.to_array()))).volume(150.0).radius(80.0));
+    };
     // (pane, damage, cause) in order.
     let mut hits: Vec<(usize, f32, String)> = damage.read().map(|d| (d.pane, d.damage, d.by.to_string())).collect();
     for b in bumps.read() {
@@ -209,6 +216,8 @@ fn damage_glass(
         let lib = library.as_deref();
         if p.health > 0 {
             // ShardWindow.
+            *seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            glass_sound(*seed >> 16, p.location);
             if let Some(lib) = lib {
                 *seed = seed.wrapping_add(1);
                 crate::particles::spawn_effect(&mut commands, lib, &mut meshes, "KFMod.WindowGlassEmitter", p.location, Mat3::IDENTITY, *seed);
@@ -218,6 +227,8 @@ fn damage_glass(
         }
         // BreakWindow.
         p.broken = true;
+        *seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        glass_sound(*seed >> 16, p.location);
         if let Some(c) = p.collider {
             commands.entity(c).insert(CollisionLayers::NONE);
         }

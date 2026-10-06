@@ -579,6 +579,9 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   blasts, the LAW's rocket hiss and explosion, M79 / M32 / M203 blasts,
   the Husk Gun's fireball, pipe bomb bounce and arming beeps, medic dart
   flight, LAW / M79 duds. Not heard by you yet.
+- Bullet impacts on walls (one "dirt" impact sound for every surface
+  until surfaces are read), glass cracking and breaking, crossbow / M99
+  bolt hits, nail ricochets (S5d, 2026-10-05). Not heard by you yet.
 - Music (S6, 2026-10-05): the map's calm song in trader time, its combat
   song in waves (per-wave songs where the map has them), the Patriarch's
   KF_Abandon with a 1 s fade at his entrance. Volumes from your

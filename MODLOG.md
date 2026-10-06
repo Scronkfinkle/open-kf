@@ -4096,3 +4096,24 @@ there is one old warning in boss.rs test code, not from this work).
 countdown beeps and the Husk Gun's explosion volumes not run. Flame
 fire loops, the Siren's disintegrate sound: not done.
 **Next:** S5d, bullet impacts.
+
+## 2026-10-05 S5d: bullet impacts, glass, bolts, nails
+
+**Changed:** `src/bullet_fx.rs`: each ROBulletHitEffect plays
+ProjectileSounds.Bullets.Impact_Dirt (1.0, radius 100) at its spot
+(`impact` returns the spot). `src/glass.rs`: a crack or break plays
+bullethitglass / bullethitglass2 (150, radius 80). `src/projectile.rs`:
+crossbow / M99 bolt hits on zeds and walls, nail ricochets (40%),
+the bolt pickup sound. DESIGN (also fixed: the S5c entry had swallowed
+the S5d heading), README.
+**Why:** S5d.
+**Tested how:** two 9mm shots and a crossbow bolt at a wall on
+KF-WestLondon; clippy (counted); tests.
+**Result:** `Impact_Dirt volume=1.00 radius=100` per 9mm impact; the
+bolt: `bullethitflesh2 volume=0.75 radius=300` plus its ROBulletHitEffect
+Impact_Dirt. Tests 139 pass; clippy 0 warnings.
+**Still broken / not tested:** not heard by you. Every surface sounds
+like dirt (SurfaceType not read: needs the materials' surface types).
+Glass sounds, bolt hits on zeds, nail ricochets and the pickup not run.
+Bullet whiz not done.
+**Next:** S5e, the trader.

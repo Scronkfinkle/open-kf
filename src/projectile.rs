@@ -651,6 +651,7 @@ fn move_projectiles(
     mut bullet_fx: MessageWriter<crate::bullet_fx::BulletFx>,
     player: Query<&Transform, With<crate::camera::FlyCamera>>,
     (glass, mut glass_damage): (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassDamage>),
+    (mut sounds, mut rng): (MessageWriter<crate::audio::PlaySound>, Local<u32>),
 ) {
     let dt = time.delta_secs();
     let attacker = player.single().map_or(Vec3::ZERO, |t| t.translation - Vec3::Y * crate::combat::PLAYER_EYE_HEIGHT * SCALE);
@@ -712,6 +713,9 @@ fn move_projectiles(
             let source = crate::combat::HitSource { point, attacker, melee: false, explosive: None, fire: p.stats.fire };
             crate::combat::damage_zed(&mut z, damage, head, p.stats.damage_type_headshot_mult, p.weapon, t, source, &mut kills);
             if p.stats.rule == PenRule::Bolt {
+                // CrossbowArrow / M99Bullet.PlayhitNoise: Arrow_hitflesh
+                // (bullethitflesh4) at the defaults (0.3, radius 300).
+                sounds.write(crate::audio::PlaySound::new("KFWeaponSound.bullethitflesh4", crate::audio::Emitter::Point(point)));
                 p.damage /= 1.25;
                 p.vel *= 0.85;
                 continue;
@@ -738,13 +742,26 @@ fn move_projectiles(
                 let n_ue = to_ue(n).normalize_or_zero();
                 let hit_ue = p.pos + dir_ue * (h.distance / SCALE);
                 if p.bounces_left > 0 {
-                    // NailGunProjectile.HitWall: reflect at 0.65 speed, fall.
+                    // NailGunProjectile.HitWall: reflect at 0.65 speed, fall;
+                    // 40% of the time ImpactSounds[Rand(6)] (all Impact_Metal)
+                    // at the defaults.
+                    *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    if (*rng >> 16) % 100 < 40 {
+                        sounds.write(sound_at("ProjectileSounds.Bullets.Impact_Metal", hit_ue));
+                    }
                     p.bounces_left -= 1;
                     p.vel = 0.65 * (p.vel - 2.0 * n_ue * p.vel.dot(n_ue));
                     p.pos = hit_ue + n_ue;
                     p.falling = true;
                     runlog::kv("projectile_bounce", &format!("id={} weapon={} bounces_left={}", p.id, p.weapon, p.bounces_left));
                     continue;
+                }
+                // CrossbowArrow / M99Bullet.HitWall: Arrow_hitwall[Rand(3)]
+                // (bullethitflesh2/3/4: KF's names) at 2.5 x 0.3, radius 300.
+                if p.stats.rule == PenRule::Bolt {
+                    *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    let pick = ["KFWeaponSound.bullethitflesh2", "KFWeaponSound.bullethitflesh3", "KFWeaponSound.bullethitflesh4"][(*rng >> 16) as usize % 3];
+                    sounds.write(sound_at(pick, hit_ue).volume(0.75));
                 }
                 // HitWall: ImpactEffect (ROBulletHitEffect) at the wall.
                 bullet_fx.write(crate::bullet_fx::BulletFx {
@@ -1700,6 +1717,7 @@ fn pick_up_bolts(
     room: Res<BoltRoom>,
     player: Query<(&Transform, Option<&crate::walk::Walker>), With<crate::camera::FlyCamera>>,
     mut picked: MessageWriter<BoltPickedUp>,
+    mut sounds: MessageWriter<crate::audio::PlaySound>,
 ) {
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
     let player_ue = player.single().ok().map(|(t, w)| {
@@ -1716,6 +1734,8 @@ fn pick_up_bolts(
             let touching = d.truncate().length() <= 25.0 + PLAYER_RADIUS && d.z.abs() <= 25.0 + 50.0;
             if touching && room.0 {
                 picked.write(BoltPickedUp);
+                // CrossbowArrow: Ammo_GenericPickup, SLOT_Pain, 2 x 0.3, radius 400.
+                sounds.write(sound_at("KF_InventorySnd.Ammo_GenericPickup", b.pos).slot(crate::audio::Slot::Pain).volume(0.6).radius(400.0));
                 runlog::kv("bolt_picked_up", &format!("id={}", b.id));
                 commands.entity(e).despawn();
             }

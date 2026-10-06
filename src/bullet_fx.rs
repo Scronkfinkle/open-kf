@@ -8,9 +8,10 @@
 //!   particle that dies just before the hit point.
 //! - Impact (ROBulletHitEffect, a ROHitEffect): a 16-unit trace into the
 //!   surface finds the hit point and material; the entry for the material's
-//!   SurfaceType gives a bullet-hole decal and an impact emitter (and a
-//!   sound, not played: no sound yet). Every surface uses the default entry
-//!   for now (EST_Default: BulletHoleDirt, ROBulletHitRockEffect).
+//!   SurfaceType gives a bullet-hole decal, an impact emitter and a sound
+//!   (PlaySound(HitSound, SLOT_None, 1.0, false, 100)). Every surface uses
+//!   the default entry for now (EST_Default: BulletHoleDirt,
+//!   ROBulletHitRockEffect, ProjectileSounds.Bullets.Impact_Dirt).
 
 use std::collections::HashMap;
 
@@ -91,7 +92,7 @@ fn bullet_fx(
     mut meshes: ResMut<Assets<Mesh>>,
     mut effects: Query<&mut ParticleEffect>,
     mut tracers: ResMut<Tracers>,
-    mut decals: MessageWriter<SpawnDecal>,
+    (mut decals, mut sounds): (MessageWriter<SpawnDecal>, MessageWriter<crate::audio::PlaySound>),
     spatial: SpatialQuery,
 ) {
     let Some(lib) = library.as_deref() else {
@@ -101,7 +102,8 @@ fn bullet_fx(
     let mut todo: Vec<BulletFx> = std::mem::take(&mut tracers.waiting);
     for r in requests.read() {
         if r.impact {
-            impact(&mut commands, lib, &mut meshes, &mut decals, &spatial, r);
+            let at = impact(&mut commands, lib, &mut meshes, &mut decals, &spatial, r);
+            sounds.write(crate::audio::PlaySound::new("ProjectileSounds.Bullets.Impact_Dirt", crate::audio::Emitter::Point(coords::pos(at.to_array()))).volume(1.0).radius(100.0));
         }
         if r.start.is_some() {
             todo.push(*r);
@@ -165,7 +167,7 @@ fn impact(
     decals: &mut MessageWriter<SpawnDecal>,
     spatial: &SpatialQuery,
     r: &BulletFx,
-) {
+) -> Vec3 {
     // Trace(HitLoc, HitNormal, Location + Vector(Rotation) x 16, Location):
     // Rotation is rotator(-HitNormal), into the surface.
     let into = r.into.normalize_or_zero();
@@ -207,4 +209,5 @@ fn impact(
             hit_loc.is_some()
         ),
     );
+    at
 }

@@ -3300,9 +3300,20 @@ with a test you can run):
     50), the pipe bomb's beeps (each check 0.5 / radius 50; the
     countdown SLOT_Misc 2.0 / 150), the LAW / M79 dud (PTRD_deflect04).
     Not done: the flamethrower flames' and puddles' fire loops, the
-    Siren's "disintegrate" sound, the crossbow / M99 bolt hits (S5d). **S5d. Bullet
-    impacts, glass, whiz.** **S5e. The trader** (buy sounds, too
-    expensive / too heavy, the radio voice lines).
+    Siren's "disintegrate" sound, the crossbow / M99 bolt hits (S5d).
+  - **S5d. Bullet impacts, glass, bolts, nails** (done 2026-10-05).
+    ROBulletHitEffect: PlaySound(HitSound, SLOT_None, 1.0, false, 100) by
+    SurfaceType; ours always the default entry (Impact_Dirt) until the
+    materials' SurfaceType is read. Bullets on zeds: no impact sound (KF
+    only spawns the effect for non-pawns). Glass: each crack or break plays
+    bullethitglass / bullethitglass2 (KFHitEmitter, 150 capped, radius 80).
+    Crossbow / M99 bolts: bullethitflesh4 on a zed (defaults), one of
+    bullethitflesh2/3/4 on a wall at 0.75 (radius 300); picking a bolt up
+    Ammo_GenericPickup (SLOT_Pain, 0.6, 400). Nails: 40% of bounces
+    Impact_Metal. Not done: the bullet whiz (only the Patriarch's chaingun
+    could cause it solo; native, not known), shell casings (none in KF).
+  - **S5e. The trader** (buy sounds, too expensive / too heavy, the radio
+    voice lines).
 - **S6. Music** (done 2026-10-05, `src/music.rs`). The map's
   KFMusicTrigger (Song, CombatSong, WaveBasedSongs[n].CombatSong /
   CalmSong, FadeInTime, FadeOutTime; every map's survey: none sets the
