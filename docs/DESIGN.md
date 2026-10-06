@@ -3258,9 +3258,27 @@ with a test you can run):
     radius 200, every 0.35 s at most), death, footsteps (CheckBob, about
     every 0.375 s at full speed, per surface, 0.45, x 0.4 crouched or
     walking), jump and landing, low-health breathing (under 25 %).
-- **S5. The world.** The map's AmbientSound actors, doors (open, close,
-  weld), explosions, bullet impacts (bullet_fx's ImpactSound), pickups,
-  trader and zed-time sounds.
+- **S5. The world** (researched 2026-10-05; notes with script quotes in
+  `work/s5-research.md`, untracked), in parts:
+  - **S5a. The map's sounds** (done 2026-10-05, `src/map_sound.rs`).
+    AmbientSound actors (2915 in the 40 maps; Engine.AmbientSound
+    defaults SoundVolume 100, SoundRadius 100) and other actors with an
+    AmbientSound (ZoneInfo on 3 maps, ...): a looping AmbientSound with
+    `Falloff::Radius` (a guess at the native code: silent outside
+    SoundRadius; inside, full volume with bFullVolume, else a linear
+    fade) at SoundVolume / 128 x the ini's [Engine.AmbientSound]
+    AmbientVolume (0.25). SoundEmitters (random one-shots): every
+    EmitInterval +- a random part of EmitVariance, at the actor (volume
+    and radius as its loop: a guess). ScriptedTriggers whose
+    WAITFOREVENT matches a PlayerStart's Event play their PLAYSOUND when
+    the player spawns (KF-WestLondon, KF-Farm: Merlin_Takeoff, Volume
+    255, bAttenuate false: at the listener). The mixer skips the work of
+    silent voices (most map loops at any moment). SoundPitch 0 is taken
+    as 64. Several of KF's sounds are silent placeholders (zombiehoard2,
+    WoodDoorShut, ChopperLands: 8 kHz, all zeros), as in the real game.
+  - **S5b. Doors.** **S5c. Explosions and projectiles.** **S5d. Bullet
+    impacts, glass, whiz.** **S5e. The trader** (buy sounds, too
+    expensive / too heavy, the radio voice lines).
 - **S6. Music** (done 2026-10-05, `src/music.rs`). The map's
   KFMusicTrigger (Song, CombatSong, WaveBasedSongs[n].CombatSong /
   CalmSong, FadeInTime, FadeOutTime; every map's survey: none sets the

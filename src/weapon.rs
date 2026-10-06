@@ -1817,6 +1817,7 @@ fn load_weapon(
                     },
                     pitch: 64,
                     at_listener: true,
+                    ..default()
                 })
             }),
             _ => None,
@@ -2279,7 +2280,7 @@ fn weapon_loop_sound(
         let fm = &def.modes[m];
         (fm.high_rof && !fm.wait_for_release && w.firing[m] && fm.sounds.ambient.is_some()).then(|| fm.sounds.clone())
     });
-    let loop_sound = |s: &FireSounds, sound: &str| AmbientSound { sound: sound.to_string(), volume: s.ambient_volume, radius: s.ambient_radius, pitch: 64, at_listener: true };
+    let loop_sound = |s: &FireSounds, sound: &str| AmbientSound { sound: sound.to_string(), volume: s.ambient_volume, radius: s.ambient_radius, pitch: 64, at_listener: true, ..default() };
     match (st.fire_loop.take(), wanted) {
         (None, Some(s)) => {
             st.wait = 0.0;

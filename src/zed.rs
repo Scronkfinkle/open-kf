@@ -3009,7 +3009,7 @@ fn play_zed_sounds(commands: &mut Commands, entity: Entity, c: &ZedClass, z: &mu
     };
     if want.as_ref().map(|a| &a.sound) != z.ambient_on.as_ref() {
         match &want {
-            Some(a) => commands.entity(entity).insert(crate::audio::AmbientSound { sound: a.sound.clone(), volume: a.volume, radius: a.radius, pitch: 64, at_listener: false }),
+            Some(a) => commands.entity(entity).insert(crate::audio::AmbientSound { sound: a.sound.clone(), volume: a.volume, radius: a.radius, pitch: 64, at_listener: false, ..default() }),
             None => commands.entity(entity).remove::<crate::audio::AmbientSound>(),
         };
         z.ambient_on = want.map(|a| a.sound);

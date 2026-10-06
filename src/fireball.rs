@@ -228,7 +228,7 @@ fn spawn_fireballs(
                     scale: Vec3::splat(scale),
                 },
                 Visibility::Visible,
-                crate::audio::AmbientSound { sound: spec.flight_sound.into(), volume: 255, radius: 250.0, pitch: 64, at_listener: false },
+                crate::audio::AmbientSound { sound: spec.flight_sound.into(), volume: 255, radius: 250.0, pitch: 64, at_listener: false, ..default() },
                 Fireball {
                     id: *next_id,
                     kind: r.kind,

@@ -137,6 +137,28 @@ pub struct AmbientSound {
     pub pitch: u8,
     /// At the listener (the player's own weapon), like `Emitter::Listener`.
     pub at_listener: bool,
+    pub falloff: Falloff,
+    /// A multiplier on top (the map's AmbientSound actors: the ini's
+    /// [Engine.AmbientSound] AmbientVolume).
+    pub scale: f32,
+}
+
+impl Default for AmbientSound {
+    fn default() -> Self {
+        AmbientSound { sound: String::new(), volume: 128, radius: 64.0, pitch: 64, at_listener: false, falloff: Falloff::Inverse, scale: 1.0 }
+    }
+}
+
+/// How a voice fades with distance.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Falloff {
+    /// `distance_gain`: full inside the radius, inverse distance beyond.
+    #[default]
+    Inverse,
+    /// The map's AmbientSound actors. **A guess** (native code): silent
+    /// outside the radius; inside, full volume with bFullVolume ("whether
+    /// to apply ambient attenuation"), else a linear fade to the edge.
+    Radius { full_volume: bool },
 }
 
 impl AmbientSound {
@@ -144,7 +166,7 @@ impl AmbientSound {
     /// counts as 1.0, matching KF's weapons, which end a 255 loop with a
     /// tail played at AmbientFireVolume/127 = 2.0 (KFHighROFFire).
     fn voice_volume(&self) -> f32 {
-        self.volume as f32 / 128.0
+        self.volume as f32 / 128.0 * self.scale
     }
 }
 
@@ -309,6 +331,17 @@ fn distance_gain(distance: f32, radius: f32) -> f32 {
     radius / (radius + ROLLOFF * (distance - radius))
 }
 
+/// `Falloff::Radius` (the map's AmbientSound actors; a guess).
+fn radius_gain(distance: f32, radius: f32, full_volume: bool) -> f32 {
+    if distance > radius {
+        0.0
+    } else if full_volume {
+        1.0
+    } else {
+        1.0 - distance / radius.max(1.0)
+    }
+}
+
 /// A voice's final volume: the PlaySound volume x the distance fade x the
 /// master volume, capped at 1. **A guess**: OpenAL (which KF's audio used)
 /// caps each source's gain at 1 by default (AL_MAX_GAIN), and KF's scripts
@@ -361,6 +394,16 @@ impl MixState {
             }
             let last = v.clip.frames().saturating_sub(1) as f64;
             let (loop_start, loop_end) = v.clip.loop_range();
+            // Silent (out of range): only move on, without mixing.
+            if v.gain == [0.0; 2] && v.target == [0.0; 2] && !v.stopping {
+                v.pos += v.step * frames as f64;
+                if v.looping && v.pos >= loop_end {
+                    v.pos = loop_start + (v.pos - loop_end) % (loop_end - loop_start).max(1.0);
+                } else if !v.looping && v.pos > last {
+                    ended.push(v.id);
+                }
+                continue;
+            }
             for f in 0..frames {
                 if v.looping && v.pos >= loop_end {
                     v.pos = loop_start + (v.pos - loop_end) % (loop_end - loop_start).max(1.0);
@@ -441,6 +484,7 @@ struct VoiceInfo {
     /// 32 are busy.
     loudness: f32,
     actor: u64,
+    falloff: Falloff,
     /// An AmbientSound's voice: the entity carrying it. These loop and are
     /// not counted in the 32 (a simplification).
     ambient: Option<Entity>,
@@ -688,7 +732,7 @@ fn play_sounds(
             }
         }
         let clip = bank.pick(&entry);
-        let info = VoiceInfo { id: 0, sound: req.sound.clone(), slot: req.slot, emitter: req.emitter, actor: req.actor, volume: req.volume, radius: req.radius, pitch: req.pitch, clip_rate: clip.rate, loudness, ambient: None };
+        let info = VoiceInfo { id: 0, sound: req.sound.clone(), slot: req.slot, emitter: req.emitter, actor: req.actor, volume: req.volume, radius: req.radius, pitch: req.pitch, clip_rate: clip.rate, loudness, falloff: Falloff::Inverse, ambient: None };
         let id = start_voice(&mut audio, clip.clone(), info, false);
         runlog::kv(
             "sound_play",
@@ -737,7 +781,7 @@ fn sync_ambient_sounds(
         let pitch = amb.pitch as f32 / 64.0;
         if let Some(v) = audio.voices.iter_mut().find(|v| v.ambient == Some(e)) {
             if v.sound.eq_ignore_ascii_case(&amb.sound) {
-                (v.volume, v.radius, v.pitch, v.emitter) = (amb.voice_volume(), amb.radius, pitch, emitter);
+                (v.volume, v.radius, v.pitch, v.emitter, v.falloff) = (amb.voice_volume(), amb.radius, pitch, emitter, amb.falloff);
                 continue;
             }
             let id = v.id;
@@ -747,7 +791,7 @@ fn sync_ambient_sounds(
             continue;
         };
         let clip = bank.pick(&entry);
-        let info = VoiceInfo { id: 0, sound: amb.sound.clone(), slot: Slot::Ambient, emitter, actor: 0, volume: amb.voice_volume(), radius: amb.radius, pitch, clip_rate: clip.rate, loudness: 0.0, ambient: Some(e) };
+        let info = VoiceInfo { id: 0, sound: amb.sound.clone(), slot: Slot::Ambient, emitter, actor: 0, volume: amb.voice_volume(), radius: amb.radius, pitch, clip_rate: clip.rate, loudness: 0.0, falloff: amb.falloff, ambient: Some(e) };
         let id = start_voice(&mut audio, clip.clone(), info, true);
         runlog::kv(
             "sound_ambient",
@@ -801,7 +845,11 @@ fn update_voices(
                     let to = p - cam.translation();
                     let d = to.length();
                     let pan = if d > 1e-3 { to.dot(*cam.right()) / d } else { 0.0 };
-                    (distance_gain(d / crate::coords::SCALE, v.radius), pan)
+                    let gain = match v.falloff {
+                        Falloff::Inverse => distance_gain(d / crate::coords::SCALE, v.radius),
+                        Falloff::Radius { full_volume } => radius_gain(d / crate::coords::SCALE, v.radius, full_volume),
+                    };
+                    (gain, pan)
                 }
                 // The entity is gone: KF keeps playing at its last place;
                 // ours fades out (not tracked yet).
@@ -876,6 +924,26 @@ mod tests {
         let left: Vec<f32> = out.chunks(2).map(|f| (f[0] * 10.0).round() / 10.0).collect();
         assert_eq!(left, vec![0.1, 0.2, 0.3, 0.4, 0.3, 0.4, 0.3, 0.4]);
         assert!(s.finished.is_empty());
+    }
+
+    #[test]
+    fn map_ambients_are_silent_outside_their_radius() {
+        assert_eq!(radius_gain(50.0, 100.0, true), 1.0);
+        assert_eq!(radius_gain(50.0, 100.0, false), 0.5);
+        assert_eq!(radius_gain(101.0, 100.0, true), 0.0);
+    }
+
+    #[test]
+    fn silent_voices_move_on_without_mixing() {
+        let clip = Arc::new(Clip { rate: 100, channels: 1, samples: vec![1.0; 10], loop_points: None });
+        let mut s = MixState::default();
+        s.voices.push(MixVoice { id: 3, clip, pos: 0.0, step: 1.0, gain: [0.0; 2], target: [0.0; 2], stopping: false, looping: true });
+        let mut out = vec![0.0; 16];
+        s.render(&mut out);
+        assert!(out.iter().all(|&x| x == 0.0));
+        assert_eq!(s.voices[0].pos, 8.0);
+        s.render(&mut out);
+        assert_eq!(s.voices[0].pos, 6.0);
     }
 
     #[test]

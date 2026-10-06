@@ -4018,3 +4018,27 @@ without the flag, the screen in that state.
 **Still broken / not tested:** nothing else changes; normal play keeps
 vsync.
 **Next:** S5a.
+
+## 2026-10-05 S5a: the map's sounds
+
+**Changed:** `src/map_sound.rs` (new): AmbientSound actors and other
+actors with an AmbientSound become looping sounds at their location;
+SoundEmitters play random one-shots; ScriptedTrigger sounds waiting for
+the player start's event play at spawn; all preloaded. `src/audio.rs`:
+`Falloff::Radius` for map ambients, `AmbientSound.scale` (the ini's
+[Engine.AmbientSound] AmbientVolume, read from the install), the mixer
+skips silent voices (2 new unit tests). Other AmbientSound users get
+`..default()`. `src/main.rs`: the plugin. DESIGN (S5 parts), README.
+**Why:** S5a; the S5 research report is in `work/s5-research.md`.
+**Tested how:** KF-WestLondon, KF-Farm and KF-Manor, 4000 frames each
+with `--no-vsync`; clippy (counted); tests.
+**Result:** WestLondon `map_sounds loops=25 random=0
+silent_ambient_actors=19`, Merlin_Takeoff at spawn; Farm loops=119
+random=5, Merlin_Takeoff, `owl1` and `Kessel_Metal_Moan03` played; Manor
+loops=33 random=4. 0 missing sounds. 242-274 fps with all loops running.
+Tests 139 pass; clippy 0 warnings.
+**Still broken / not tested:** not heard by you. Guesses: the radius
+falloff and bFullVolume, the one-shots' volume and radius, bAttenuate
+false = at the listener, SoundPitch 0. SoundOcclusion (BSP /
+StaticMeshes on 874 loops) is not done: sounds pass through walls.
+**Next:** S5b, doors.

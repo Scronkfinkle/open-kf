@@ -565,6 +565,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   impale hit; the Husk fireball's and the rocket's flight and impact;
   the Bloat's acid splash; corpses thudding; zeds landing (S4b2,
   2026-10-05). Confirmed by you.
+- The map's own sounds (S5a, 2026-10-05): every placed ambient loop
+  (fires, engines, wind, buzzing lights, insects...), random one-shots
+  (owls, thunder, creaks), the helicopter taking off at the start on
+  KF-WestLondon and KF-Farm. Not heard by you yet; how far they carry is
+  a guess (silent past each sound's radius).
 - Music (S6, 2026-10-05): the map's calm song in trader time, its combat
   song in waves (per-wave songs where the map has them), the Patriarch's
   KF_Abandon with a 1 s fade at his entrance. Volumes from your
