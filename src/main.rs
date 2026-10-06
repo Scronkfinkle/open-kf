@@ -1,4 +1,5 @@
 mod armour;
+mod audio;
 mod boss;
 mod bullet_fx;
 mod buy_menu;
@@ -85,6 +86,8 @@ struct Args {
     /// 1), e.g. 1280x960 to compare with KF screenshots. The window
     /// manager may still resize it; the screenshot log has the real size.
     window: Option<(u32, u32)>,
+    /// `--mute`: sounds are played (and logged) at zero volume.
+    mute: bool,
     /// `--mode waves|debug` and `--length short|normal|long`.
     game: game::GameOptions,
 }
@@ -139,6 +142,7 @@ fn parse_args() -> Result<Args, String> {
                 args.game.start_wave = Some(n.parse().map_err(|_| format!("bad --wave value: {n}"))?);
             }
             "--walk" => args.walk = true,
+            "--mute" => args.mute = true,
             "--god" => args.god = true,
             "--give" => args.give = Some(it.next().ok_or("--give needs \"all\" or weapon class names")?),
             "--zed" => args.zed = true,
@@ -180,7 +184,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -263,7 +267,10 @@ fn main() -> AppExit {
                 },
             }),
             ..default()
-        }))
+        })
+        // Our own mixer (audio.rs) replaces Bevy's player.
+        .disable::<bevy::audio::AudioPlugin>())
+        .insert_resource(audio::AudioSettings { muted: args.mute })
         .insert_resource(args)
         .insert_resource(request)
         .insert_resource(ClearColor(Color::srgb(0.32, 0.36, 0.42)))
@@ -285,7 +292,7 @@ fn main() -> AppExit {
             fireball::FireballPlugin,
         ))
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
-        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin))
+        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::AudioPlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)

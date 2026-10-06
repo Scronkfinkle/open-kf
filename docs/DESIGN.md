@@ -3131,10 +3131,19 @@ with a test you can run):
   7926 members, 0 failures, 149 with loop points, about 4.2 hours in all.
   Likelihood (a member's weight in its group's random pick) is 1.0 for
   all but 3 sounds. No audio output yet.
-- **S2. The mixer.** `src/audio.rs`: output stream, voices, slots,
-  32-voice limit, falloff, panning, pitch, master volumes from the ini
-  values. A test action `sound:Package.Name` and a `--mute` flag. Test:
-  you hear the 9mm shot; the log shows voice counts.
+- **S2. The mixer** (done 2026-10-05). `src/audio.rs`. Systems write a
+  `PlaySound` message (KF's PlaySound arguments, its defaults filled in);
+  `play_sounds` finds the sound (cached, a weighted random pick for
+  groups), applies the slot rule, skips sounds out of range, and enforces
+  32 voices (drops the quietest if quieter than the new one: a guess).
+  `update_voices` sets each voice's left/right volume from the player's
+  view each frame and its pitch x the game speed. The audio thread mixes
+  in blocks of 256 frames with linear resampling and volume ramps (no
+  clicks), then clamps. Master SoundVolume 0.3 from the ini. Bevy's own
+  audio plugin is switched off. Emitters: an entity (followed; owns
+  slots), a fixed point, or the listener (no falloff or panning). Test
+  actions `sound:NAME` and `sound_at:NAME@DIST` (volume 1.8, KF's gun
+  volume); `--mute`.
 - **S3. Weapons.** Fire, dry fire, select, reload and pickup sounds (from
   each weapon's FireSound and its animation sound notifies; to research).
 - **S4. Zeds and the player.** Moans, attacks, pain, death, melee hits,

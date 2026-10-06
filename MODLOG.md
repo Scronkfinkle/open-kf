@@ -3663,3 +3663,33 @@ Tests 130 pass (2 new); clippy clean.
 point into other packages are counted, not resolved, by the scan.
 **Next:** S2, the mixer (a test action plays one sound, e.g. the 9mm
 shot).
+
+## 2026-10-05 S2: the sound mixer
+
+**Changed:** `src/audio.rs` (new): `PlaySound` message (KF's
+Actor.PlaySound with its defaults: volume 0.3, radius 300, pitch 1),
+`SoundBank` (finds sounds and groups by name in the install, decodes,
+caches; weighted random pick with a fixed seed), slots, the 32-voice
+limit, distance fade and left/right balance from the player's view,
+pitch x game speed (zed time), and the mixer itself on the audio thread.
+Test actions `sound:NAME`, `sound_at:NAME@DIST`. `src/main.rs`: `--mute`,
+Bevy's own audio plugin switched off. `Cargo.toml`: `rodio` as a direct
+dependency (already in the build through Bevy; playback only). README and
+DESIGN (S2) updated.
+**Why:** step S2 of the sound plan.
+**Tested how:** 4 new unit tests (fade, balance, a clip played to its end,
+half speed doubles the length). A run: `--map KF-WestLondon --frames 500
+--input "200:sound:kf_9mmsnd.9mm_fire,260:sound_at:kf_9mmsnd.9mm_fire@150,320:sound_at:kf_9mmsnd.9mm_fire@600,380:sound:kf_9mmsnd.nosuchsound,400:sound:KF_AK47Snd.AK47_Fire"`.
+**Result:** `audio_device ok=true rate=44100 channels=2`; four
+`sound_play` lines (group picks of 1.97 s and 2.00 s, distance 0 / 150 /
+600), `sound_missing sound=kf_9mmsnd.nosuchsound`, voice count back to 2
+after the first shots ended. Tests 134 pass; clippy clean.
+**Still broken / not tested:** you listened to the test run (2026-10-05):
+loud and clear, centre and right placement and the fade as described. The fade
+curve (linear to the radius) and the voice-dropping rule are guesses;
+pitch following zed time is assumed. Slot override and the voice limit
+are not exercised by a run yet (no game sounds until S3). Sounds of an
+entity that is removed fade out at once (KF keeps playing them where it
+was). Rolloff=0.5 from the ini is not used.
+**Next:** S3, weapon sounds (fire, the first-person stereo versions
+`*_FireST`, dry fire, reload, select).

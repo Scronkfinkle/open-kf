@@ -32,6 +32,8 @@ cargo run --release -- --walk --spawn patriarch --god --input 300:record,600:rec
 cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
 cargo run --release -- --walk --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
+cargo run --release -- --input 200:sound:KF_9MMSnd.9mm_Fire,300:sound_at:KF_9MMSnd.9mm_Fire@600   # test: play a sound at you, then 600 units to your right
+cargo run --release -- --walk --mute                 # no sound (still logged)
 cargo run --release -- --walk --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
@@ -474,6 +476,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   same package). All 8535 textures read. Exported PNGs look correct.
 - Static meshes: all 5021 decode (positions, normals, UVs, triangles,
   per-section materials) and pass consistency checks.
+- Sound files: all 6687 sounds and 1630 sound groups read and decode
+  (`kfpkg sounds`).
+- Sound output (S2, 2026-10-05): our own mixer plays KF's sounds through
+  the sound card: random pick within sound groups, KF's slots, 32 voices,
+  fade with distance and left/right balance (the fade curve is a guess),
+  pitch follows zed time. Only the test actions play sounds so far
+  (`--input 200:sound:KF_9MMSnd.9mm_Fire`); `--mute` silences it. Logged
+  as `sound_play` lines. Test shots heard by you (2026-10-05).
 - Map contents: all 40 maps load. That covers BSP level geometry, placed meshes,
   player starts, materials and textures, with 0 unresolved references.
 
@@ -522,7 +532,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Zeds can wedge in tight spots and hang in the air (2 of 20 in a
   KF-WestLondon test); KF's stuck-zed cleanup removes them late in a wave.
 - No crouching. Ladders, water and swimming are not handled.
-- No sound.
+- No sound in the game yet: weapons, zeds, the world and music are steps
+  S3-S6 (only test actions play sounds).
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
@@ -537,7 +548,7 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   *after* the clean shutdown is logged, even with no map loaded (8 of 14 in
   one measurement). Cause unknown. It happens only when quitting.
 
-- Sound is not read yet. Terrain, skyboxes, lightmaps and emitters are not read.
+- Terrain, skyboxes, lightmaps and emitters are not read.
 - G16 textures (terrain heightmaps). P8 textures whose palette is in another
   package (64 textures).
 - 2 dialogue triggers in KF-Steamland have stale stored property sizes (see

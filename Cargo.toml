@@ -18,6 +18,8 @@ bevy = "0.19.1"
 # no debug rendering, picking or scenes needed.
 avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32", "parry-f32", "parallel", "xpbd_joints"] }
 ue-assets = { path = "crates/ue-assets" }
+# Sound output (already used by Bevy's audio): our mixer in src/audio.rs feeds it.
+rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
 
 # Bevy is very slow when built without optimisation. Optimise dependencies
 # fully and our own code a little, so debug builds stay usable.
