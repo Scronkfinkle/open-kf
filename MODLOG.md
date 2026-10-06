@@ -4202,3 +4202,26 @@ by the dominant layer is a guess. No deep-water step. Static meshes use
 their render triangles' materials (KF may use separate collision
 models).
 **Next:** your check; commit when you say.
+
+## 2026-10-06 Clean-up 1: source files in folders by area
+
+**Changed:** the 46 game modules moved from `src/` into 8 folders
+(`engine`, `world`, `render`, `player`, `weapons`, `zeds`, `game`,
+`audio`), each with a `mod.rs` listing its files; `src/audio.rs` is now
+`src/audio/mixer.rs` and `src/game.rs` `src/game/waves.rs` (a folder and
+a file named `game` clash). Every `crate::x::` path rewritten;
+`main.rs` declares the folders. Moves with `git mv`, so each file's
+history follows (`git log --follow`). DESIGN "Architecture" lists the
+folders; file paths in DESIGN, README and docs/ updated (MODLOG keeps
+the old paths as history).
+**Why:** you asked to tidy the code base before pushing to GitHub; step
+1 of 3 (then splitting zed.rs and weapon.rs).
+**Tested how:** build, clippy (counted), tests; the same scripted wave
+run (`--mode waves --fps 100 --frames 3200`, kills, shots, weapon
+switch, shop, buy, frag) before and after, comparing the log's event
+kinds and counts.
+**Result:** no logic changed. Same 161 event kinds before and after, none
+missing or new; counts differ only for logs paced by wall-clock time
+(this run took 37 s instead of 53 s). Tests 140 pass; clippy 0 warnings.
+**Still broken / not tested:** nothing new.
+**Next:** clean-up 2, splitting zeds/zed.rs.

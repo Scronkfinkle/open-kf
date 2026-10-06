@@ -68,7 +68,17 @@ only and do not translate its code line for line.
 
 ```
 kf-rs/                     Cargo workspace root
-  src/                     the game binary (Bevy app): rendering, input, camera, gameplay
+  src/                     the game binary (Bevy app), one folder per area:
+    main.rs                command line, plugins
+    engine/                coordinates, run log, cameras, screenshots, video recording
+    world/                 map loading, collision, zones, navigation, spawn volumes,
+                           doors, breakable glass
+    render/                skinned meshes, particles, decals, vision overlay, lighting
+    player/                walking, pawn collision, pain flash, armour
+    weapons/               first-person weapons, firing, projectiles, bullet effects
+    zeds/                  the specimens, the Patriarch, gore, ragdolls, vomit, fireballs
+    game/                  waves, damage and health, dosh, trader and shop, HUD, zed time
+    audio/                 the mixer, music, map / player / trader sounds
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
   work/        (ignored)   extracted data for study
@@ -186,9 +196,9 @@ KF-Farm, 625 of 2895 placed meshes have non-zero pitch or roll.
 
 ## Viewer (step 7)
 
-- `src/coords.rs` is the only place where Unreal coordinates become Bevy ones
+- `src/engine/coords.rs` is the only place where Unreal coordinates become Bevy ones
   (`bevy = (ue.y, ue.z, -ue.x) / 50`). Rotations convert as `C·R·Cᵀ`.
-- `src/map.rs` builds one Bevy mesh per BSP material, and one per static-mesh
+- `src/world/map.rs` builds one Bevy mesh per BSP material, and one per static-mesh
   section shared by every actor that uses it. Textures are uploaded once each.
   DXT textures stay compressed on the GPU (BC1/2/3), 229 of 234 on
   KF-WestLondon, cutting texture memory from 709 MB to 115 MB.
@@ -213,7 +223,7 @@ KF-Farm, 625 of 2895 placed meshes have non-zero pitch or roll.
   `work/screenshots/` with a `.txt` command that recreates the view. You
   allowed screenshots as a visual check alongside the logged numbers. Saved
   views are in `docs/test-views.md`.
-- `src/camera.rs`: fly camera starting at the first PlayerStart. Field of
+- `src/engine/camera.rs`: fly camera starting at the first PlayerStart. Field of
   view matches KF: PlayerController DefaultFOV 90 (horizontal, for 4:3) with
   KFPlayerController bUseTrueWideScreenFOV, so the vertical angle stays at
   the 4:3 value, 73.74°, on any screen. Bevy's default was 45°, which made the
@@ -462,7 +472,7 @@ Each step is logged, and screenshot views are added to `docs/test-views.md`.
   skeleton). Tracks are matched to mesh bones by name.
 - Weapon meshes include the arms and hands (the 9mm has 62 bones).
 
-**Steps 3-6 (done, `src/weapon.rs`).**
+**Steps 3-6 (done, `src/weapons/weapon.rs`).**
 - CPU skinning in Unreal mesh space, then (point - MeshOrigin) * MeshScale
   (5 for KF weapons), then `coords::pos`. Without MeshScale the weapon
   showed tiny in the screen corner.
@@ -1156,7 +1166,7 @@ while walking). Timing comes from the animation's own notifies, which the
 mesh reader now reads (`Sequence::notifies`; `kfpkg notifies`):
 AnimNotify_Effect at 0.424 starts ROEffects.KFVomitJet on CHR_Head (offset
 and rotation from the notify), AnimNotify_Script SpawnTwoShots at 0.444
-fires three globs (`src/vomit.rs`): speed 400 with gravity, from 30 ahead
+fires three globs (`src/zeds/vomit.rs`): speed 400 with gravity, from 30 ahead
 and 64 up, aimed at the player, side ones at +-1200 yaw. A glob touching
 the player does HurtRadius(4, 120) and flies on; reaching the level it
 leaves a VomitDecal and blows up for 3 + 4 = 7 within 120. HurtRadius
@@ -1197,7 +1207,7 @@ ShootBurns (full body, standing): at any range within 65535 in sight
 (FireWeaponAt needs Focus; now checked for every ranged attack), not before
 NextFireProjectileTime (ProjectileFireInterval 5.5 + FRand() x 2 after each
 shot). Notifies: HuskChargeUp at 0.26 (attached to Barrel), SpawnTwoShots at
-0.475, HuskMuzzle at 0.49. The fireball (`src/fireball.rs`) starts at the
+0.475, HuskMuzzle at 0.49. The fireball (`src/zeds/fireball.rs`) starts at the
 Barrel bone, aimed by AdjustAim: lead by the player's velocity, then with
 bTrySplash half the time (Skill 2 assumed) at the floor under the player,
 else the middle, else the head, whichever is in sight. Straight flight at
@@ -1351,7 +1361,7 @@ zed time, pipe-bomb damage scaling, voice lines (no sound yet).
 
 **Code placement.** `zed.rs` is already over 3000 lines with per-zed
 special cases in one think function. Boss-only logic (his attack choice,
-chaingun, escape) goes in a new `src/boss.rs`, called from `zed.rs`, like
+chaingun, escape) goes in a new `src/zeds/boss.rs`, called from `zed.rs`, like
 `fireball.rs` and `vomit.rs`. A bigger reorganisation of `zed.rs` would be
 a separate decision.
 
@@ -1462,7 +1472,7 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   frame with an F12 / `--screenshot` capture is skipped by the recorder;
   the next capture covers its slot. (Found when a `--screenshot` run never
   quit: its capture had been dropped.)
-- The source is `src/record.rs`.
+- The source is `src/engine/record.rs`.
 
 ## Weapons (milestone 7, W1-W9 implemented 2026-10-05)
 
@@ -1619,7 +1629,7 @@ damage, hits, penetrations) and adds unit tests for the rules.
   it draws with no select animation; the Kriss has no Fire or Fire_Iron,
   so semi-auto shots show no animation; many weapons lack FireEnd.
 
-**3D scopes (done 2026-10-04, after W2, on request).** `src/scope.rs`.
+**3D scopes (done 2026-10-04, after W2, on request).** `src/weapons/scope.rs`.
 - Only the Crossbow and M99 have bHasScope. No ini sets KFScopeDetail,
   so KF uses KF_ModelScope: Crossbow.RenderTexture draws the world from
   the eye along the view (DrawPortal) into a 512 x 512 ScriptedTexture at
@@ -1685,7 +1695,7 @@ as transparency (its alpha feeds the combine: the Shotgun's diffuse +
 reflection, alpha = reflection mask, came out see-through). Levels keep
 the old reading (`kfpkg materials`: 95 Combiners would differ).
 
-**W4 shotguns (done).** `src/projectile.rs`.
+**W4 shotguns (done).** `src/weapons/projectile.rs`.
 - Pellets are projectiles (ShotgunBullet): Speed 3500, LifeSpan 3,
   straight; each zed on the path takes the damage (x HeadShotDamageMult
   1.5 on a headshot, and KFMonster.TakeDamage multiplies again by the
@@ -3108,7 +3118,7 @@ time, combat during waves. The Patriarch fight switches to BossBattleSong
 left/right panning. It cannot do KF's rules: a range past which a sound is
 silent, slots that cut off the previous sound, 32 voices with the
 quietest dropped first, and pitch following zed time. So we write a small
-mixer of our own (`src/audio.rs`). It feeds `rodio`, the library Bevy's
+mixer of our own (`src/audio/mixer.rs`). It feeds `rodio`, the library Bevy's
 audio already uses, so nothing new is downloaded. The mixer adds the
 voices together sample by sample. Each frame the game updates every
 voice's volume, left/right balance and pitch from the listener's position.
@@ -3133,7 +3143,7 @@ with a test you can run):
   7926 members, 0 failures, 149 with loop points, about 4.2 hours in all.
   Likelihood (a member's weight in its group's random pick) is 1.0 for
   all but 3 sounds. No audio output yet.
-- **S2. The mixer** (done 2026-10-05). `src/audio.rs`. Systems write a
+- **S2. The mixer** (done 2026-10-05). `src/audio/mixer.rs`. Systems write a
   `PlaySound` message (KF's PlaySound arguments, its defaults filled in);
   `play_sounds` finds the sound (cached, a weighted random pick for
   groups), applies the slot rule, skips sounds out of range, and enforces
@@ -3249,7 +3259,7 @@ with a test you can run):
     chaingun's fire and spin loops; the impale hit), ragdoll bumps
     (Zomb_BodyImpact), the Husk fireball's flight loop and impact, the
     Bloat's acid puddle, zeds landing (Player_LandDirt), gibbed deaths.
-  - **S4c. The player** (done 2026-10-05, `src/player_sound.rs`; the
+  - **S4c. The player** (done 2026-10-05, `src/audio/player_sound.rs`; the
     damage code sends Hurt / Died; jumps, landings and footsteps are read
     from the walker each frame; surfaces default until materials carry a
     SurfaceType; no crouch or walk, so no quiet steps). Also the zed time
@@ -3260,7 +3270,7 @@ with a test you can run):
     walking), jump and landing, low-health breathing (under 25 %).
 - **S5. The world** (researched 2026-10-05; notes with script quotes in
   `work/s5-research.md`, untracked), in parts:
-  - **S5a. The map's sounds** (done 2026-10-05, `src/map_sound.rs`).
+  - **S5a. The map's sounds** (done 2026-10-05, `src/audio/map_sound.rs`).
     AmbientSound actors (2915 in the 40 maps; Engine.AmbientSound
     defaults SoundVolume 100, SoundRadius 100) and other actors with an
     AmbientSound (ZoneInfo on 3 maps, ...): a looping AmbientSound with
@@ -3312,7 +3322,7 @@ with a test you can run):
     Ammo_GenericPickup (SLOT_Pain, 0.6, 400). Nails: 40% of bounces
     Impact_Metal. Not done: the bullet whiz (only the Patriarch's chaingun
     could cause it solo; native, not known), shell casings (none in KF).
-  - **S5e. The trader** (done 2026-10-06, `src/trader_voice.rs`). Buying
+  - **S5e. The trader** (done 2026-10-06, `src/audio/trader_voice.rs`). Buying
     a weapon or the vest: its PickupSound (MakeSomeBuyNoise, SLOT_Interface,
     255 capped, radius 120); a purchase refused for dosh or weight:
     KF_Trader.TooExpensive / TooHeavy (2.0; KF plays them on selecting the
@@ -3327,7 +3337,7 @@ with a test you can run):
     (bullethitflesh2) at once, the line 0.6 s later (SLOT_Interface, 2.0,
     bNoOverride). The Welcome line plays nothing (no sender: our reading).
     Not done: menu click sounds (no KF menus yet), the perk sound (no perks).
-- **S6. Music** (done 2026-10-05, `src/music.rs`). The map's
+- **S6. Music** (done 2026-10-05, `src/audio/music.rs`). The map's
   KFMusicTrigger (Song, CombatSong, WaveBasedSongs[n].CombatSong /
   CalmSong, FadeInTime, FadeOutTime; every map's survey: none sets the
   fade times, so KF switches songs at once). `game.rs` keeps KF's

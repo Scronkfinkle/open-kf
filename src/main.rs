@@ -1,52 +1,20 @@
-mod armour;
-mod audio;
-mod boss;
-mod bullet_fx;
-mod buy_menu;
-mod camera;
-mod combat;
-mod collision;
-mod coords;
-mod decals;
-mod door;
-mod fireball;
-mod firing;
-mod dosh;
+mod engine;
+mod world;
+mod render;
+mod player;
+mod weapons;
+mod zeds;
 mod game;
-mod trader;
-mod trader_arrow;
-mod trader_path;
-mod trader_voice;
-mod view_target;
-mod glass;
-mod hud;
-mod zvolume;
-mod zones;
-mod overlay;
-mod pain;
-mod gore;
-mod lighting;
-mod map;
-mod map_sound;
-mod music;
-mod nav;
-mod particles;
-mod pawn_collision;
-mod player_sound;
-mod projectile;
-mod ragdoll;
-mod record;
-mod runlog;
-mod scope;
-mod screenshot;
-mod skinned;
-mod walk;
-mod vomit;
-mod weapon;
-mod zed;
-mod zed_beam;
-mod zed_time;
+mod audio;
 
+use engine::{camera, record, runlog, screenshot, view_target};
+use world::{collision, door, glass, map, nav, zones};
+use render::{decals, overlay, particles};
+use player::{armour, pain, walk};
+use weapons::{bullet_fx, projectile, scope, weapon, zed_beam};
+use zeds::{fireball, gore, vomit, zed};
+use game::{buy_menu, combat, dosh, hud, trader, trader_arrow, trader_path, waves, zed_time};
+use audio::{map_sound, music, player_sound, trader_voice};
 use bevy::diagnostic::FrameCount;
 use bevy::prelude::*;
 use ue_assets::install::Install;
@@ -96,7 +64,7 @@ struct Args {
     /// the window cannot be shown, e.g. a locked screen, ran at 1 fps).
     no_vsync: bool,
     /// `--mode waves|debug` and `--length short|normal|long`.
-    game: game::GameOptions,
+    game: waves::GameOptions,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -135,14 +103,14 @@ fn parse_args() -> Result<Args, String> {
             "--mode" => {
                 let n = it.next().ok_or("--mode needs waves or debug")?;
                 args.game.mode = match n.as_str() {
-                    "waves" => game::GameMode::Waves,
-                    "debug" => game::GameMode::Debug,
+                    "waves" => waves::GameMode::Waves,
+                    "debug" => waves::GameMode::Debug,
                     _ => return Err(format!("bad --mode value: {n} (waves or debug)")),
                 };
             }
             "--length" => {
                 let n = it.next().ok_or("--length needs short, normal or long")?;
-                args.game.length = game::GameLength::parse(&n).ok_or(format!("bad --length value: {n}"))?;
+                args.game.length = waves::GameLength::parse(&n).ok_or(format!("bad --length value: {n}"))?;
             }
             "--wave" => {
                 let n = it.next().ok_or("--wave needs a number")?;
@@ -279,9 +247,9 @@ fn main() -> AppExit {
             }),
             ..default()
         })
-        // Our own mixer (audio.rs) replaces Bevy's player.
+        // Our own mixer (audio/mixer.rs) replaces Bevy's player.
         .disable::<bevy::audio::AudioPlugin>())
-        .insert_resource(audio::AudioSettings { muted: args.mute })
+        .insert_resource(audio::mixer::AudioSettings { muted: args.mute })
         .insert_resource(args)
         .insert_resource(request)
         .insert_resource(ClearColor(Color::srgb(0.32, 0.36, 0.42)))
@@ -302,8 +270,8 @@ fn main() -> AppExit {
             vomit::VomitPlugin,
             fireball::FireballPlugin,
         ))
-        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
-        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
+        .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
+        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)
