@@ -3161,12 +3161,17 @@ with a test you can run):
     AmbientFireVolume / 127 when it stops. Each weapon has its own slots
     (in KF each is its own actor). Each weapon's sounds are preloaded
     when it is first carried (`sound_preload`; all 44: 0 missing).
-  - **S3b. Animation sounds.** Reloads and other timed sounds come from
-    `KFWeaponSoundNotify` objects in the weapon animations (e.g. the
-    9mm Reload: 4 at 0.00, 0.43, 0.60, 0.78 of the animation; Sound and
-    Volume, e.g. 2.5). KFWeaponSoundNotify.Notify plays them on the
-    player (Instigator.PlaySound, SLOT_None).
-  - **S3c. Melee and specials.** Melee swings and hits (KFMeleeFire
+  - **S3b. Animation sounds** (done 2026-10-05). Reloads, the pump
+    shotgun's rack (two notifies in its Fire animation, at 0.35 and
+    0.54), melee swing whooshes and other timed sounds are
+    `KFWeaponSoundNotify` objects in the weapon animations (Sound,
+    Volume, Radius, bAttenuate; class defaults Volume 1, Radius 0,
+    from Engine.CustomSoundNotify). KFWeaponSoundNotify.Notify plays
+    them on the player (Instigator.PlaySound, SLOT_None). Ours: each
+    frame, the notifies between the last frame and this one (also
+    across a loop's wrap; a new animation starts at -1 so time-0
+    notifies play). 363 weapon sounds in all are preloaded, 0 missing.
+  - **S3c. Melee and specials.** Melee hits (KFMeleeFire
     MeleeHitSounds), the chainsaw (idle, start, loop, end), the
     flamethrower, Husk Gun charge, ZED Gun beam, welder and syringe.
 

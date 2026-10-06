@@ -281,6 +281,11 @@ impl SkinnedModel {
         self.anim.as_ref().map_or(1.0, |a| a.sequences[seq].track_time)
     }
 
+    /// Every sound named by the animations' sound notifies (for preloading).
+    pub fn all_notify_sounds(&self) -> Vec<String> {
+        self.anim.as_ref().map_or(Vec::new(), |a| a.sequences.iter().flat_map(|s| s.notifies.iter()).filter_map(|n| n.sound.as_ref().map(|s| s.sound.clone())).collect())
+    }
+
     /// A sequence's animation notifies (timed events).
     pub fn notifies(&self, seq: usize) -> &[ue_assets::skeletal::Notify] {
         self.anim.as_ref().and_then(|a| a.sequences.get(seq)).map_or(&[], |s| s.notifies.as_slice())

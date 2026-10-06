@@ -3732,3 +3732,30 @@ Patriarch's behind views). Reload, melee swing and hit, chainsaw,
 flamethrower, Husk Gun, ZED Gun, welder and syringe sounds are missing
 (S3b, S3c). Weapon pickups (S5).
 **Next:** S3b, the reload and other animation sounds.
+
+## 2026-10-05 S3b: weapon animation sounds (reloads, shotgun rack, swings)
+
+**Changed:** `crates/ue-assets/src/skeletal.rs`: notifies carry their
+sound (`NotifySound`: path, Volume default 1, Radius default 0,
+bAttenuate), from KFWeaponSoundNotify / CustomSoundNotify /
+AnimNotify_Sound objects; `kfpkg notifies` prints it. `src/weapon.rs`:
+`anim_sounds` plays the sound notifies the weapon animation passes each
+frame (`notify_frame`, reset to -1 by `play`; wraps on loops); the
+animation sounds are added to the weapon's preload. `src/skinned.rs`:
+`all_notify_sounds`. DESIGN and README updated.
+**Why:** you heard no reloads and no shotgun rack. Both are timed sounds
+inside the weapon animations (the rack: two notifies in the shotgun's
+Fire animation at 0.346 and 0.538).
+**Tested how:** runs with scripted fire and reload on the 9mm and the
+pump shotgun; `--give all --frames 400` for the preload; clippy; tests.
+**Result:** 9mm Reload (2.00 s): `9mm_Single_Reload_000/026/036/049` at
++0.00, +0.85, +1.18, +1.55 s (the notifies at 0.002, 0.433, 0.600, 0.783).
+Shotgun: each shot `SG_FireST`, then `SG_Reload` +0.30 s and
+`SG_Reload02` +0.48 s (pump back and forward); its reload a shell sound
+per shell until full (3 shells, then the animation ends). Preload: 44
+weapons, 363 sounds, 0 missing, 93 ms. Melee swings get their whooshes
+from the same notifies (Knife Fire at 0.375, Axe 0.297, ...). Tests 136
+pass; clippy clean.
+**Still broken / not tested:** you listened (2026-10-05): working. Melee hits, chainsaw,
+flamethrower, welder, syringe, Husk Gun and ZED Gun sounds (S3c).
+**Next:** S3c.

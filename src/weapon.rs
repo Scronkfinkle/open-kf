@@ -1164,6 +1164,9 @@ struct Weapons {
     /// Frames per second for the current sequence.
     play_rate: f32,
     looping: bool,
+    /// The frame up to which the sequence's sound notifies have played
+    /// (-1 at the start, so notifies at time 0 play).
+    notify_frame: f32,
     /// Seconds until each fire mode may fire again (NextFireTime).
     fire_cooldown: [f32; 2],
     fire_count: usize,
@@ -1402,6 +1405,7 @@ fn load_weapons(
         frame: 0.0,
         play_rate: 30.0,
         looping: false,
+        notify_frame: -1.0,
         fire_cooldown: [0.0; 2],
         fire_count: 0,
         firing: [false; 2],
@@ -1923,6 +1927,7 @@ fn play(w: &mut Weapons, name: &str, rate: f32, looping: bool) {
     w.sequence = def.model.sequence(name);
     w.anim = name.to_ascii_lowercase();
     w.frame = 0.0;
+    w.notify_frame = -1.0;
     w.looping = looping;
     w.play_rate = w.sequence.map_or(30.0, |s| def.model.rate(s)) * rate;
     if w.sequence.is_none() {
@@ -2087,6 +2092,29 @@ fn weapon_actor(def: &WeaponDef) -> u64 {
     h.finish() | 1
 }
 
+/// KFWeaponSoundNotify.Notify: the playing sequence's sound notifies whose
+/// time falls in (from, to] (frames): Instigator.PlaySound(Sound, ,
+/// Volume, false, Radius, , bAttenuate), on the player: SLOT_None, at the
+/// listener.
+fn anim_sounds(w: &mut Weapons, from: f32, to: f32) {
+    let Some(seq) = w.sequence else {
+        return;
+    };
+    let model = &w.defs[w.current].model;
+    let length = model.length(seq);
+    let hits: Vec<PlaySound> = model
+        .notifies(seq)
+        .iter()
+        .filter(|n| n.time * length > from && n.time * length <= to)
+        .filter_map(|n| n.sound.as_ref())
+        .map(|n| {
+            let radius = if n.radius > 0.0 { n.radius } else { crate::audio::DEFAULT_RADIUS };
+            PlaySound::new(n.sound.clone(), Emitter::Listener).volume(n.volume).radius(radius)
+        })
+        .collect();
+    w.sounds.extend(hits);
+}
+
 /// FRand for sounds (xorshift).
 fn sound_rand(w: &mut Weapons) -> f32 {
     w.sound_rng ^= w.sound_rng << 13;
@@ -2114,6 +2142,7 @@ fn send_weapon_sounds(
                 let s = &m.sounds;
                 sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo].into_iter().flatten().cloned());
             }
+            sounds.extend(def.model.all_notify_sounds());
             sounds.sort();
             sounds.dedup();
             preload.write(crate::audio::PreloadSounds { what: def.class.clone(), sounds });
@@ -3383,6 +3412,17 @@ fn animate_weapon(
     // Advance the animation; finished one-shots lead to the next action.
     w.frame += dt * w.play_rate;
     let length = w.sequence.map_or(1.0, |s| w.defs[w.current].model.length(s));
+    // Sound notifies passed this frame (reloads, the shotgun's pump), also
+    // across a loop's wrap.
+    let (from, to) = (w.notify_frame, w.frame.min(length));
+    anim_sounds(&mut w, from, to);
+    if w.looping && w.frame >= length {
+        let wrapped = w.frame % length.max(1e-3);
+        anim_sounds(&mut w, -1.0, wrapped);
+        w.notify_frame = wrapped;
+    } else {
+        w.notify_frame = w.frame;
+    }
     if w.frame >= length {
         if w.looping {
             w.frame %= length.max(1e-3);

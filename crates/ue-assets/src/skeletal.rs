@@ -312,6 +312,21 @@ pub struct Notify {
     /// its offset and rotation relative to that bone, whether it stays
     /// attached, and its DrawScale.
     pub effect: Option<NotifyEffect>,
+    /// A sound notify (CustomSoundNotify subclasses such as
+    /// KFWeaponSoundNotify, or AnimNotify_Sound).
+    pub sound: Option<NotifySound>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NotifySound {
+    /// Full object path, e.g. `KF_9MMSnd.9mm_Single_Reload_000`.
+    pub sound: String,
+    /// Volume (class default 1 for both notify classes) and Radius
+    /// (default 0).
+    pub volume: f32,
+    pub radius: f32,
+    /// CustomSoundNotify.bAttenuate.
+    pub attenuate: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -406,13 +421,29 @@ pub fn read_mesh_animation(pkg: &Package, export: usize) -> Result<MeshAnimation
                 Ok(i) if i < pkg.names.len() => pkg.name(i).to_string(),
                 _ => String::new(),
             };
-            let (mut object_class, mut name, mut effect) = (String::new(), String::new(), None);
+            let (mut object_class, mut name, mut effect, mut sound) = (String::new(), String::new(), None, None);
             if let ObjectRef::Export(e) = object {
                 use crate::properties::Value;
                 object_class = pkg.export_class_name(e).to_string();
                 if let Ok(props) = read_export_properties(pkg, e) {
                     if let Some(Value::Name(n)) = props.get(pkg, "NotifyName") {
                         name = pkg.name(*n).to_string();
+                    }
+                    // Sounds live in other packages (imports, whose path
+                    // includes the package).
+                    if let Some(Value::Object(snd @ ObjectRef::Import(_))) = props.get(pkg, "Sound") {
+                        sound = Some(NotifySound {
+                            sound: pkg.object_path(*snd),
+                            volume: match props.get(pkg, "Volume") {
+                                Some(Value::Float(f)) => *f,
+                                _ => 1.0,
+                            },
+                            radius: match props.get(pkg, "Radius") {
+                                Some(Value::Int(i)) => *i as f32,
+                                _ => 0.0,
+                            },
+                            attenuate: matches!(props.get(pkg, "bAttenuate"), Some(Value::Bool(true))),
+                        });
                     }
                     if let Some(Value::Object(class)) = props.get(pkg, "EffectClass") {
                         effect = Some(NotifyEffect {
@@ -438,7 +469,7 @@ pub fn read_mesh_animation(pkg: &Package, export: usize) -> Result<MeshAnimation
                     }
                 }
             }
-            notifies.push(Notify { time, function, object_class, name, effect });
+            notifies.push(Notify { time, function, object_class, name, effect, sound });
         }
         let rate = r.f32()?;
         sequences.push(Sequence {

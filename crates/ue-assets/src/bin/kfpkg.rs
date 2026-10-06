@@ -1623,7 +1623,7 @@ fn notifies(install: &Install, file: &str, anim: &str) -> Result<bool, String> {
     let a = read_mesh_animation(&p, i).map_err(|e| e.to_string())?;
     for s in &a.sequences {
         for n in &s.notifies {
-            println!("{} frames={} time={:.3} function={} object={} name={} effect={:?}", s.name, s.num_frames, n.time, n.function, n.object_class, n.name, n.effect);
+            println!("{} frames={} time={:.3} function={} object={} name={} effect={:?} sound={:?}", s.name, s.num_frames, n.time, n.function, n.object_class, n.name, n.effect, n.sound);
         }
     }
     Ok(true)

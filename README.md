@@ -487,8 +487,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Weapon sounds (S3a, 2026-10-05): every weapon's shots (first-person
   stereo versions), the dry-fire click, the select sound, and the
   full-auto loop with its tail on the fast-firing guns (MP7, MP5, M4,
-  MAC10, ...). Heard by you (2026-10-05). Reloads, the shotgun's rack,
-  melee and the special weapons' sounds are still silent (S3b, S3c).
+  MAC10, ...). Heard by you (2026-10-05).
+- Weapon animation sounds (S3b, 2026-10-05): reloads, the shotgun's rack
+  after each shot, melee swing whooshes. Heard by you (2026-10-05). Melee hits
+  and the special weapons' sounds (chainsaw, flamethrower, welder,
+  syringe, Husk Gun, ZED Gun) are still silent (S3c).
 - Map contents: all 40 maps load. That covers BSP level geometry, placed meshes,
   player starts, materials and textures, with 0 unresolved references.
 
@@ -537,8 +540,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Zeds can wedge in tight spots and hang in the air (2 of 20 in a
   KF-WestLondon test); KF's stuck-zed cleanup removes them late in a wave.
 - No crouching. Ladders, water and swimming are not handled.
-- Sound is partly done: weapon shots and switching only. Reloads, melee,
-  zeds, the player, the world and music are steps S3b-S6.
+- Sound is partly done: weapons only (minus melee hits and the special
+  weapons). Zeds, the player, the world and music are steps S4-S6.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
