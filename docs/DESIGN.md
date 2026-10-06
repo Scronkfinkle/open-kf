@@ -404,7 +404,7 @@ verified**): max step height 35, minimum walkable floor normal Z 0.7.
    AccelRate up to GroundSpeed, ground friction, gravity, jump, step up to
    35 units, slide along walls, walkable floors only. **V** toggles walk/fly.
    Log position, speed, on-ground state and floor normal.
-4. Automated test: `--walk` starts in walk mode, and `--autowalk SECONDS`
+4. Automated test: walk mode is the start mode (since 2026-10-06; `--fly` starts flying), and `--autowalk SECONDS`
    holds W.
 
 **What was learned implementing it.**

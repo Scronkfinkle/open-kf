@@ -34,8 +34,9 @@ struct Args {
     screenshot: Vec<u32>,
     /// Scripted input for tests: (frame, action).
     input: Vec<(u32, String)>,
-    /// Start in walk mode instead of flying.
-    walk: bool,
+    /// `--fly`: start flying (the map viewer; screenshots from a
+    /// `--camera` pose) instead of walking. V switches during play.
+    fly: bool,
     /// Hold "forward" for this many seconds (walk test).
     autowalk: Option<f32>,
     /// Spawn a Clot in front of the start position.
@@ -116,7 +117,7 @@ fn parse_args() -> Result<Args, String> {
                 let n = it.next().ok_or("--wave needs a number")?;
                 args.game.start_wave = Some(n.parse().map_err(|_| format!("bad --wave value: {n}"))?);
             }
-            "--walk" => args.walk = true,
+            "--fly" => args.fly = true,
             "--mute" => args.mute = true,
             "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
@@ -144,7 +145,6 @@ fn parse_args() -> Result<Args, String> {
             "--autowalk" => {
                 let n = it.next().ok_or("--autowalk needs seconds")?;
                 args.autowalk = Some(n.parse().map_err(|_| format!("bad --autowalk value: {n}"))?);
-                args.walk = true;
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -160,7 +160,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -219,7 +219,7 @@ fn main() -> AppExit {
     let game_options = args.game;
     runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
     let walk_settings = walk::WalkSettings {
-        start_walking: args.walk,
+        start_walking: !args.fly,
         autowalk: args.autowalk,
     };
 

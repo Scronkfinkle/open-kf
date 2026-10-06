@@ -73,7 +73,7 @@ notes with KF script quotes (untracked): `work/s4-research.md`,
 
 ### Your listening test for S5 and S6
 
-`cargo run --release -- --mode waves --length short --walk` on
+`cargo run --release -- --mode waves --length short` on
 KF-WestLondon (and once on KF-Farm), then:
 
 1. At the start: the helicopter taking off; the map's fires, engines and
@@ -113,7 +113,7 @@ be shown (locked screen) need `--no-vsync`, or they run at 1 fps.
 
 ## Test commands
 
-- Wave game: `cargo run --release -- --map KF-WestLondon --mode waves --length short --walk`
+- Wave game: `cargo run --release -- --map KF-WestLondon --mode waves --length short`
   (add `--god`; `--wave 5` starts at the Patriarch).
 - Scripted shopping (no keyboard needed): `--input` with `next_wave`,
   `kill_zeds`, `warp_shop` (stand in the current shop), `add_dosh`,

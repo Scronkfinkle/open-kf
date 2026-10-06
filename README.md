@@ -25,23 +25,23 @@ See `docs/DESIGN.md` for how it works and the plan.
 cargo run --release                        # opens KF-WestLondon
 cargo run --release -- --map KF-Offices    # any map name from the game's Maps folder
 cargo run --release -- --frames 300        # quits by itself after 300 frames (for test runs)
-cargo run --release -- --camera -4090,1300,-3650,-1.5708,0 --screenshot 60   # start at a saved view, screenshot, quit
-cargo run --release -- --walk              # start walking instead of flying
+cargo run --release -- --fly --camera -4090,1300,-3650,-1.5708,0 --screenshot 60   # start at a saved view, screenshot, quit
+cargo run --release -- --fly               # start flying (the map viewer); V switches between flying and walking
 cargo run --release -- --autowalk 4        # walk test: hold forward for 4 s (see logs/latest.log "walk" lines)
-cargo run --release -- --input 120:fire,200:1 --screenshot 126,330   # scripted input + screenshots (tests)
-cargo run --release -- --walk --zed        # a Clot spawns in front of you and comes at you
-cargo run --release -- --walk --gorefast   # the same with a Gorefast
-cargo run --release -- --walk --spawn fleshpound   # any specimen: clot, gorefast, crawler, stalker, bloat, siren, husk, scrake, fleshpound, patriarch
-cargo run --release -- --walk --spawn patriarch --god --input 300:record,600:record   # test: record a 5 s video (scripted F9)
-cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
-cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
-cargo run --release -- --walk --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
+cargo run --release -- --fly --input 120:fire,200:1 --screenshot 126,330   # scripted input + screenshots (tests)
+cargo run --release -- --zed        # a Clot spawns in front of you and comes at you
+cargo run --release -- --gorefast   # the same with a Gorefast
+cargo run --release -- --spawn fleshpound   # any specimen: clot, gorefast, crawler, stalker, bloat, siren, husk, scrake, fleshpound, patriarch
+cargo run --release -- --spawn patriarch --god --input 300:record,600:record   # test: record a 5 s video (scripted F9)
+cargo run --release -- --spawn clot --god   # god mode: zeds hit you (logged) but you lose no health
+cargo run --release -- --zed --always-sever   # test: killing shots on limbs always sever them
+cargo run --release -- --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
 cargo run --release -- --input 200:sound:KF_9MMSnd.9mm_Fire,300:sound_at:KF_9MMSnd.9mm_Fire@600   # test: play a sound at you, then 600 units to your right
-cargo run --release -- --walk --input 200:jump   # test action: jump (also "jump" in any --input list)
-cargo run --release -- --walk --no-vsync --frames 600   # test runs: frames do not wait for the display (a hidden window ran at 1 fps)
-cargo run --release -- --walk --mute                 # no sound (still logged)
-cargo run --release -- --walk --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
-cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
+cargo run --release -- --input 200:jump   # test action: jump (also "jump" in any --input list)
+cargo run --release -- --no-vsync --frames 600   # test runs: frames do not wait for the display (a hidden window ran at 1 fps)
+cargo run --release -- --mute                 # no sound (still logged)
+cargo run --release -- --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
+cargo run --release -- --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
 
 Saved views for checking the viewer are listed in `docs/test-views.md`.

@@ -4321,3 +4321,24 @@ the introduction with a caption. `.gitignore`: whitelist entry
 **Result:** the README shows the image.
 **Still broken / not tested:** how GitHub renders it (not pushed yet).
 **Next:** —
+
+## 2026-10-06 Walking is the start mode; `--walk` removed, `--fly` added
+
+**Changed:** `src/main.rs`: the `--walk` option is gone; the game always
+starts walking. New `--fly` starts flying (the map viewer, screenshots
+from a `--camera` pose); V still switches during play. `--autowalk` no
+longer needs to imply walking. `src/engine/camera.rs` header. Docs:
+`--walk` removed from every command in README, DESIGN, handoff,
+test-views and STATUS; commands that relied on starting in fly mode
+(`--camera` / `--screenshot` views) got `--fly`, so they show the same
+view as before (9 commands); DESIGN's walking chapter notes the change.
+MODLOG keeps the old commands as history.
+**Why:** you asked for walking to be always on.
+**Tested how:** runs with no options, with `--fly`, and with
+`--autowalk 2`; clippy (counted); tests.
+**Result:** no options: `move_mode mode=Walk` and walk lines; `--fly`: no
+walking; `--autowalk 2`: 22 moving walk lines. Tests 140 pass; clippy 0
+warnings.
+**Still broken / not tested:** an old command with `--walk` now stops with
+"unknown argument: --walk".
+**Next:** —

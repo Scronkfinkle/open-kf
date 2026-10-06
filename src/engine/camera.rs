@@ -1,6 +1,7 @@
-//! Free-fly camera: click to capture the mouse, Escape to release.
-//! WASD to move, mouse to look, Space/E up, Ctrl/Q down, Shift for speed.
-//! V switches to walking (see walk.rs).
+//! The camera, and free flying: click to capture the mouse, Escape to
+//! release. The game starts walking (player/walk.rs); `--fly` starts
+//! flying, and V switches. Flying: WASD to move, mouse to look, Space/E up,
+//! Ctrl/Q down, Shift for speed.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;

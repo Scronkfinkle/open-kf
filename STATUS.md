@@ -169,7 +169,7 @@ Expected: a gap near 0. Seen: 15 to 82 Unreal units at rest, different in
 each run. The gap is 0 at spawn and grows from the first physics step.
 
 ## Evidence
-Run: `nix develop -c cargo run --release -- --map KF-WestLondon --camera -4090,1100,-3650,-1.5708,-0.05 --walk --zed --input 60:fire --frames 300`
+Run: `nix develop -c cargo run --release -- --map KF-WestLondon --camera -4090,1100,-3650,-1.5708,-0.05 --zed --input 60:fire --frames 300`
 then read `logs/latest.log`:
 ```
 ragdoll_joint_gap id=0 age=0.02 worst_joint=chr_larmcollar gap_unreal=0.0
