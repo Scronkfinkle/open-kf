@@ -4483,3 +4483,23 @@ blurred, so maps are untouched otherwise). No blur in behind view.
 **Next:** your play test of E1-E3; then possibly the near-death look
 (NearDeathShader below 25% health), not planned yet.
 
+## 2026-10-06 E4: the near-death look
+
+**Changed:** `src/render/overlay.rs`: under 25 health (alive) the vision
+overlay's colour is multiplied by KFX.NearDeathShader's texel, pulsing
+over 1.5 s between InjuredGrain (255, 13, 13) and Grain1 (174, 172, 174);
+log `near_death_overlay`; unit test `near_death_pulse`. DESIGN.md E4
+(how DeSat was decoded, and why only the top-left texel shows).
+**Why:** you asked to finish the hit-effect leftovers.
+**Tested how:** `scripts/headless.sh --mode debug --spawn bloat
+--screenshot 350,362,374,386,398,410`, log read; clippy (no warnings);
+tests (121 pass).
+**Result:** `near_death_overlay on=true` at 25 (24.x) health, `on=false`
+after the respawn. Screenshots at 16 and 4 health: one fully red-only
+view, one part way back to the darkened normal look.
+**Still broken / not tested:** the fade curve of MaterialSequence is a
+guess (straight blend); the pulse's phase is not compared with KF. Not
+seen by you.
+**Next:** test the gore splash and the Siren behind a wall; whole-number
+damage.
+

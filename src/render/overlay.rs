@@ -1,7 +1,8 @@
 //! KF's vision overlay (HUDKillingFloor.DrawModOverlay): every frame the
 //! whole view is multiplied by 2 x tint / 255, the tint following the
 //! player zone's fog colour. This is KF-WestLondon's orange look. See
-//! DESIGN.md, "Baked lighting", LV.
+//! DESIGN.md, "Baked lighting", LV. Below 25% health the overlay is
+//! NearDeathOverlay instead, a red pulse (E4, DESIGN.md "Hit effects").
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ClearColorConfig, ScalingMode};
@@ -117,7 +118,31 @@ fn spawn_overlay(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut m
     ));
 }
 
+/// KFX.NearDeathShader -> DeSat, a looping MaterialSequence (TotalTime
+/// 1.5): fade to InjuredGrain over 0.5 s, then to Grain1 over 1.0 s
+/// (SequenceItems decoded from `kfpkg raw KFX.utx DeSat`). DrawModOverlay
+/// draws it with DrawTileScaled(Mat, SizeX, SizeY): scale factors, so the
+/// tile is SizeX times the texture and only its top-left texel shows (KF's
+/// own film grain passes ClipX / 1024 to fill the screen). Those texels,
+/// read from the decoded textures: InjuredGrain (255, 13, 13), Grain1
+/// (174, 172, 174). The sepia look's texel is white (Grain2 x Grain2).
+const INJURED_TEXEL: [f32; 3] = [1.0, 13.0 / 255.0, 13.0 / 255.0];
+const GRAIN1_TEXEL: [f32; 3] = [174.0 / 255.0, 172.0 / 255.0, 174.0 / 255.0];
+
+/// DeSat's colour at game time `t`. MaterialSequence's fade is native:
+/// taken as a straight blend from the previous item (a guess), the
+/// sequence running on the game clock.
+fn near_death_texel(t: f32) -> [f32; 3] {
+    let s = t.rem_euclid(1.5);
+    let (from, to, k) = if s < 0.5 { (GRAIN1_TEXEL, INJURED_TEXEL, s / 0.5) } else { (INJURED_TEXEL, GRAIN1_TEXEL, (s - 0.5) / 1.0) };
+    [0, 1, 2].map(|i| from[i] + (to[i] - from[i]) * k)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn update_overlay(
+    time: Res<Time>,
+    health: Res<crate::game::combat::PlayerHealth>,
+    mut near_death_was: Local<bool>,
     zones: Option<Res<crate::world::zones::Zones>>,
     player: Res<crate::world::zones::PlayerZone>,
     overlay: Query<&MeshMaterial3d<OverlayMaterial>, With<Overlay>>,
@@ -160,9 +185,39 @@ fn update_overlay(
         }
     }
     // DrawModOverlay: brighten each channel by round(c (1 - c/255) - 2).
-    let draw = tint.last.map(|c| (c + (c * (1.0 - c / 255.0) - 2.0).round()).clamp(0.0, 255.0) / 255.0);
+    let mut draw = tint.last.map(|c| (c + (c * (1.0 - c / 255.0) - 2.0).round()).clamp(0.0, 255.0) / 255.0);
+    // Alive and under HealthMax x 0.25: NearDeathOverlay, the draw colour
+    // times its texel.
+    let near_death = health.health > 0.0 && health.health < crate::game::combat::PLAYER_HEALTH_MAX * 0.25;
+    if near_death != *near_death_was {
+        *near_death_was = near_death;
+        runlog::kv("near_death_overlay", &format!("on={near_death} health={:.0}", health.health));
+    }
+    if near_death {
+        let texel = near_death_texel(time.elapsed_secs());
+        for (d, t) in draw.iter_mut().zip(texel) {
+            *d *= t;
+        }
+    }
     // Screen x 2 x draw in gamma space = screen x (2 draw)^2.2 in linear;
     // the blend doubles, so the source is half of that (at most 1).
     let lin = draw.map(|d| ((2.0 * d).powf(2.2) / 2.0).min(1.0));
     mat.color = LinearRgba::rgb(lin[0], lin[1], lin[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DeSat: red at 0.5 s into each 1.5 s loop, back to Grain1 at 1.5 s.
+    #[test]
+    fn near_death_pulse() {
+        assert_eq!(near_death_texel(0.5), INJURED_TEXEL);
+        let end = near_death_texel(1.4999);
+        assert!((end[1] - GRAIN1_TEXEL[1]).abs() < 1e-3);
+        assert!((near_death_texel(2.0)[0] - 1.0).abs() < 1e-6);
+        // Half way into the red: G between the two.
+        let g = near_death_texel(0.25)[1];
+        assert!((g - (GRAIN1_TEXEL[1] + INJURED_TEXEL[1]) / 2.0).abs() < 1e-5);
+    }
 }

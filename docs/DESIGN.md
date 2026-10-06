@@ -3404,7 +3404,7 @@ their texture's value). Actors have their own `Actor.SurfaceType` too
   static meshes' simplified collision models (we collide with the
   render triangles, so their materials).
 
-## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1-E3 implemented)
+## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1-E4 implemented)
 
 What the player sees when hurt, vomited on or screamed at. All from the
 scripts (KFHumanPawn, KFPawn, KFPlayerController, HUDKillingFloor,
@@ -3549,8 +3549,25 @@ while the amount is over 0 (`hit_blur_pass` on / off in the log). In
 behind view (Patriarch cut scenes) the weapon camera is off, so no
 blur there.
 
-Not planned here: the near-death look (HUDKillingFloor swaps the
-vision overlay for KFX.NearDeathShader below 25% health), the bloody
+### E4. The near-death look (DrawModOverlay's NearDeathOverlay)
+
+Alive and under HealthMax x 0.25, DrawModOverlay draws NearDeathOverlay
+(KFX.NearDeathShader) instead of the sepia VisionOverlay, with the same
+zone tint and modulate blend. NearDeathShader is the MaterialSequence
+DeSat (looping, TotalTime 1.5): fade to InjuredGrain over 0.5 s, then to
+Grain1 over 1.0 s (SequenceItems decoded by hand from `kfpkg raw`).
+DrawTileScaled(Mat, SizeX, SizeY) takes scale factors (KF's film grain
+passes ClipX / 1024 to fill the screen), so the tile is SizeX times the
+texture and only its top-left texel shows: InjuredGrain (255, 13, 13),
+Grain1 (174, 172, 174). So the view pulses between "red channel only"
+and "a third darker". This also explains why the sepia look is a flat
+colour (its texel is white). The sequence's fade is native: a straight
+blend on the game clock (a guess). Only drawn where the vision overlay
+is (maps or zones without it get no near-death look either, as in KF).
+As built (2026-10-06): render/overlay.rs, log `near_death_overlay`
+on / off.
+
+Not planned here: the bloody
 skin on the player's third-person body (InjuredOverlay), the bullet
 whiz blur (HandleWhizSound; not checked whether the Patriarch's
 chaingun triggers it).
