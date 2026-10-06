@@ -3,9 +3,10 @@
 //! music". Values from KFHumanPawn, KFPawn, xPawn and KFMaleSoundGroup.
 //!
 //! Every sound plays at the player (`Emitter::Listener`, the pawn's slots).
-//! Surfaces are not known yet (no SurfaceType per material), so footsteps,
-//! jumps and landings use KF's entries for the default surface.
+//! Footsteps, jumps and landings pick their sound by the surface under the
+//! feet (KFPawn.FootStepping / GetSound; see DESIGN.md, "Surface types").
 
+use avian3d::prelude::SpatialQuery;
 use bevy::prelude::*;
 
 use crate::audio::{Emitter, PlaySound, Slot};
@@ -24,11 +25,20 @@ const DEATH_SOUNDS: [&str; 5] = [
     "Inf_Player.playerdeath.LowerBodyShot",
     "Inf_Player.playerdeath.LimbShot",
 ];
-/// KFPawn.SoundFootsteps[0], KFMaleSoundGroup.JumpSounds[0] and
-/// LandSounds[0]: the default surface.
-const STEP_SOUND: &str = "KF_PlayerGlobalSnd.Player_StepDefault";
-const JUMP_SOUND: &str = "Inf_Player.footsteps.JumpDirt";
-const LAND_SOUND: &str = "KF_PlayerGlobalSnd.Player_LandDefault";
+/// KFPawn.SoundFootsteps[20], KFMaleSoundGroup.JumpSounds[20] and
+/// LandSounds[20], by ESurfaceTypes (class defaults).
+const STEP_SOUNDS: [&str; 20] = [
+    "Default", "Dirt", "Dirt", "Metal", "Wood", "Grass", "Dirt", "Default", "Default", "Water", "BrGlass", "Default", "Conc", "Wood", "Default", "Metal", "Default",
+    "Default", "Default", "Default",
+];
+const JUMP_SOUNDS: [&str; 20] = [
+    "Dirt", "Asphalt", "Dirt", "Metal", "Wood", "Grass", "Dirt", "SnowRough", "SnowHard", "WaterShallow", "Dirt", "Dirt", "Asphalt", "Wood", "Mud", "Metal", "Asphalt",
+    "Dirt", "Dirt", "Dirt",
+];
+const LAND_SOUNDS: [&str; 20] = [
+    "Default", "Conc", "Dirt", "Metal", "Wood", "Grass", "Default", "Dirt", "Dirt", "Water", "Dirt", "Dirt", "Conc", "Wood", "Dirt", "Metal", "Conc", "Default", "Default",
+    "Default",
+];
 /// KFMaleSoundGroup.BreathingSound.
 const BREATH_SOUND: &str = "KFPlayerSound.Malebreath";
 
@@ -83,7 +93,10 @@ struct State {
     rng: u32,
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn player_sounds(
+    spatial: SpatialQuery,
+    surfaces: Query<(&avian3d::prelude::Collider, &GlobalTransform, &crate::collision::SurfaceMap)>,
     time: Res<Time>,
     mut events: MessageReader<PlayerSoundEvent>,
     health: Res<crate::combat::PlayerHealth>,
@@ -135,12 +148,24 @@ fn player_sounds(
     let Ok(w) = walker.single() else {
         return;
     };
+    // FootStepping: the Base actor's SurfaceType if not the level and not
+    // 0, else the material 16 units below the feet (Trace from
+    // Location - CollisionHeight). Water volumes (the deep-water step) are
+    // not done.
+    let surface = || {
+        let feet = w.center - Vec3::Y * crate::walk::kf::HALF_HEIGHT * SCALE;
+        let hit = spatial.cast_ray(feet, Dir3::NEG_Y, 16.0 * SCALE, true, &crate::collision::world_filter())?;
+        let [material, actor] = crate::collision::surface_of_hit(&surfaces, hit.entity, feet, Vec3::NEG_Y, 16.0 * SCALE)?;
+        Some(if actor != 0 { actor } else { material })
+    };
+    let surface = |w_on: bool| if w_on { surface().unwrap_or(0).min(19) as usize } else { 0 };
     // Jump (xPawn.DoJump): GetSound(EST_Jump), SLOT_Pain, GruntVolume,
     // radius 80. Seen here as leaving the ground going up fast (walking off
     // a ledge is not a jump).
     let vz = w.velocity.y / SCALE;
     if st.was_on_ground && !w.on_ground && vz > 0.5 * JUMP_Z {
-        out.write(PlaySound::new(JUMP_SOUND, at).slot(Slot::Pain).volume(GRUNT_VOLUME).radius(80.0));
+        let st = surface(true);
+        out.write(PlaySound::new(format!("Inf_Player.footsteps.Jump{}", JUMP_SOUNDS[st]), at).slot(Slot::Pain).volume(GRUNT_VOLUME).radius(80.0));
     }
     // Landed (xPawn): GetSound(EST_Land), SLOT_Interact, volume
     // min(1, -0.3 x Velocity.Z / JumpZ), using the speed of the last
@@ -149,8 +174,9 @@ fn player_sounds(
         st.fall_speed = vz;
     } else if !st.was_on_ground && st.fall_speed < -MIN_LANDING_SPEED {
         let volume = (-0.3 * st.fall_speed / JUMP_Z).min(1.0);
-        runlog::kv("player_landed", &format!("fall_speed_unreal={:.0} volume={volume:.2}", -st.fall_speed));
-        out.write(PlaySound::new(LAND_SOUND, at).slot(Slot::Interact).volume(volume).radius(PAWN_RADIUS));
+        let sf = surface(true);
+        runlog::kv("player_landed", &format!("fall_speed_unreal={:.0} volume={volume:.2} surface={}", -st.fall_speed, crate::collision::surface_name(sf as u8)));
+        out.write(PlaySound::new(format!("KF_PlayerGlobalSnd.Player_Land{}", LAND_SOUNDS[sf]), at).slot(Slot::Interact).volume(volume).radius(PAWN_RADIUS));
     }
     st.was_on_ground = w.on_ground;
     // KFPawn.CheckBob: a footstep when int(0.5 Pi + 9 BobTime / Pi)
@@ -160,7 +186,8 @@ fn player_sounds(
     let step = (0.5 * std::f32::consts::PI + 9.0 * w.bob_time / std::f32::consts::PI) as i32;
     let speed2d = w.velocity.with_y(0.0).length() / SCALE;
     if step != st.last_step && w.on_ground && speed2d >= 10.0 {
-        out.write(PlaySound::new(STEP_SOUND, at).slot(Slot::Interact).volume(FOOTSTEP_VOLUME).radius(FOOTSTEP_RADIUS));
+        let sf = surface(true);
+        out.write(PlaySound::new(format!("KF_PlayerGlobalSnd.Player_Step{}", STEP_SOUNDS[sf]), at).slot(Slot::Interact).volume(FOOTSTEP_VOLUME).radius(FOOTSTEP_RADIUS));
     }
     st.last_step = step;
 }

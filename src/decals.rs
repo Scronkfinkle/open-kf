@@ -117,8 +117,17 @@ pub enum DecalKind {
     Scorch,
     /// RocketMarkDirt (where the Patriarch's rocket explodes).
     RocketMark,
-    /// BulletHoleDirt (ROBulletHitEffect, default surface).
+    /// BulletHoleDirt (ROBulletHitEffect, default surface), and the other
+    /// surfaces' bullet holes (ROBulletHitEffect.HitEffects).
     BulletHole,
+    BulletHoleConcrete,
+    BulletHoleMetal,
+    BulletHoleWood,
+    BulletHoleFlesh,
+    BulletHoleIce,
+    BulletHoleSnow,
+    BulletHoleMetalArmor,
+    BulletHoleCloth,
     /// KFScorchMark (grenade explosions).
     NadeScorch,
     /// FlameThrowerBurnMark_Small / _Medium / _Large (Husk Gun fireballs,
@@ -128,7 +137,15 @@ pub enum DecalKind {
     BurnLarge,
 }
 
-const DECAL_CLASSES: [(DecalKind, &str); 12] = [
+const DECAL_CLASSES: [(DecalKind, &str); 20] = [
+    (DecalKind::BulletHoleConcrete, "ROEffects.BulletHoleConcrete"),
+    (DecalKind::BulletHoleMetal, "ROEffects.BulletHoleMetal"),
+    (DecalKind::BulletHoleWood, "ROEffects.BulletHoleWood"),
+    (DecalKind::BulletHoleFlesh, "ROEffects.BulletHoleFlesh"),
+    (DecalKind::BulletHoleIce, "ROEffects.BulletHoleIce"),
+    (DecalKind::BulletHoleSnow, "ROEffects.BulletHoleSnow"),
+    (DecalKind::BulletHoleMetalArmor, "ROEffects.BulletHoleMetalArmor"),
+    (DecalKind::BulletHoleCloth, "ROEffects.BulletHoleCloth"),
     (DecalKind::BurnSmall, "KFMod.FlameThrowerBurnMark_Small"),
     (DecalKind::BurnMedium, "KFMod.FlameThrowerBurnMark_Medium"),
     (DecalKind::BurnLarge, "KFMod.FlameThrowerBurnMark_Large"),
@@ -790,6 +807,7 @@ mod tests {
         let soup = TriSoup {
             vertices: vec![c(-1000.0, -1000.0), c(1000.0, -1000.0), c(1000.0, 1000.0), c(-1000.0, 1000.0)],
             triangles: vec![[0, 1, 2], [0, 2, 3]],
+            ..Default::default()
         };
         DecalSurfaces::new(&[&soup, &TriSoup::default(), &TriSoup::default()])
     }

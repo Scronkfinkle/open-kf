@@ -9,9 +9,8 @@
 //! - Impact (ROBulletHitEffect, a ROHitEffect): a 16-unit trace into the
 //!   surface finds the hit point and material; the entry for the material's
 //!   SurfaceType gives a bullet-hole decal, an impact emitter and a sound
-//!   (PlaySound(HitSound, SLOT_None, 1.0, false, 100)). Every surface uses
-//!   the default entry for now (EST_Default: BulletHoleDirt,
-//!   ROBulletHitRockEffect, ProjectileSounds.Bullets.Impact_Dirt).
+//!   (PlaySound(HitSound, SLOT_None, 1.0, false, 100)): `HIT_EFFECTS`, by
+//!   the hit triangle's material SurfaceType (collision.rs SurfaceMap).
 
 use std::collections::HashMap;
 
@@ -27,6 +26,31 @@ use crate::runlog;
 const TRACER_PULLBACK: f32 = 50.0;
 /// ROHitEffect: how far it traces into the surface for the material.
 const SURFACE_TRACE: f32 = 16.0;
+
+/// ROBulletHitEffect.HitEffects[ESurfaceTypes]: (HitSound, HitEffect,
+/// HitDecal), from the class defaults (decoded in work/s5-research.md).
+const HIT_EFFECTS: [(&str, &str, Option<DecalKind>); 20] = [
+    ("Impact_Dirt", "ROBulletHitRockEffect", Some(DecalKind::BulletHole)),
+    ("Impact_Asphalt", "ROBulletHitRockEffect", Some(DecalKind::BulletHoleConcrete)),
+    ("Impact_Dirt", "ROBulletHitDirtEffect", Some(DecalKind::BulletHole)),
+    ("Impact_Metal", "ROBulletHitMetalEffect", Some(DecalKind::BulletHoleMetal)),
+    ("Impact_Wood", "ROBulletHitWoodEffect", Some(DecalKind::BulletHoleWood)),
+    ("Impact_Grass", "ROBulletHitGrassEffect", Some(DecalKind::BulletHole)),
+    ("Impact_Mud", "ROBulletHitFleshEffect", Some(DecalKind::BulletHoleFlesh)),
+    ("Impact_Glass", "ROBulletHitIceEffect", Some(DecalKind::BulletHoleIce)),
+    ("Impact_Snow", "ROBulletHitSnowEffect", Some(DecalKind::BulletHoleSnow)),
+    ("Impact_Snow", "ROBulletHitWaterEffect", None),
+    ("Impact_Glass", "ROBreakingGlass", Some(DecalKind::BulletHoleIce)),
+    ("Impact_Gravel", "ROBulletHitGravelEffect", Some(DecalKind::BulletHoleConcrete)),
+    ("Impact_Asphalt", "ROBulletHitConcreteEffect", Some(DecalKind::BulletHoleConcrete)),
+    ("Impact_Wood", "ROBulletHitWoodEffect", Some(DecalKind::BulletHoleWood)),
+    ("Impact_Mud", "ROBulletHitMudEffect", Some(DecalKind::BulletHoleSnow)),
+    ("Impact_Metal", "ROBulletHitMetalArmorEffect", Some(DecalKind::BulletHoleMetalArmor)),
+    ("Impact_Wood", "ROBulletHitPaperEffect", Some(DecalKind::BulletHoleConcrete)),
+    ("Impact_Dirt", "ROBulletHitClothEffect", Some(DecalKind::BulletHoleCloth)),
+    ("Impact_Dirt", "ROBulletHitRubberEffect", Some(DecalKind::BulletHoleMetal)),
+    ("Impact_Mud", "ROBulletHitMudEffect", Some(DecalKind::BulletHole)),
+];
 
 /// Who fired: each has its own tracer emitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -93,7 +117,7 @@ fn bullet_fx(
     mut effects: Query<&mut ParticleEffect>,
     mut tracers: ResMut<Tracers>,
     (mut decals, mut sounds): (MessageWriter<SpawnDecal>, MessageWriter<crate::audio::PlaySound>),
-    spatial: SpatialQuery,
+    (spatial, surfaces): (SpatialQuery, Query<(&Collider, &GlobalTransform, &crate::collision::SurfaceMap)>),
 ) {
     let Some(lib) = library.as_deref() else {
         requests.clear();
@@ -102,8 +126,12 @@ fn bullet_fx(
     let mut todo: Vec<BulletFx> = std::mem::take(&mut tracers.waiting);
     for r in requests.read() {
         if r.impact {
-            let at = impact(&mut commands, lib, &mut meshes, &mut decals, &spatial, r);
-            sounds.write(crate::audio::PlaySound::new("ProjectileSounds.Bullets.Impact_Dirt", crate::audio::Emitter::Point(coords::pos(at.to_array()))).volume(1.0).radius(100.0));
+            let (at, sound) = impact(&mut commands, lib, &mut meshes, &mut decals, &spatial, &surfaces, r);
+            sounds.write(
+                crate::audio::PlaySound::new(format!("ProjectileSounds.Bullets.{sound}"), crate::audio::Emitter::Point(coords::pos(at.to_array())))
+                    .volume(1.0)
+                    .radius(100.0),
+            );
         }
         if r.start.is_some() {
             todo.push(*r);
@@ -166,48 +194,55 @@ fn impact(
     meshes: &mut Assets<Mesh>,
     decals: &mut MessageWriter<SpawnDecal>,
     spatial: &SpatialQuery,
+    surfaces: &Query<(&Collider, &GlobalTransform, &crate::collision::SurfaceMap)>,
     r: &BulletFx,
-) -> Vec3 {
+) -> (Vec3, &'static str) {
     // Trace(HitLoc, HitNormal, Location + Vector(Rotation) x 16, Location):
     // Rotation is rotator(-HitNormal), into the surface.
     let into = r.into.normalize_or_zero();
     let from = coords::pos(r.hit.to_array());
-    let (hit_loc, hit_normal) = match Dir3::new(coords::dir(into.to_array()))
+    let dir_bevy = coords::dir(into.to_array());
+    let (hit_loc, hit_normal, surface) = match Dir3::new(dir_bevy)
         .ok()
         .and_then(|d| spatial.cast_ray(from, d, SURFACE_TRACE * SCALE, true, &crate::collision::world_filter()))
     {
         Some(h) => {
-            let p = from + coords::dir(into.to_array()) * h.distance;
+            let p = from + dir_bevy * h.distance;
             let n = Vec3::new(-h.normal.z, h.normal.x, h.normal.y);
             let n = if n.dot(into) > 0.0 { -n } else { n };
-            (Some(Vec3::new(-p.z, p.x, p.y) / SCALE), n)
+            // HitMat.SurfaceType (no material: EST_Default).
+            let st = crate::collision::surface_of_hit(surfaces, h.entity, from, dir_bevy, SURFACE_TRACE * SCALE).map_or(0, |s| s[0]);
+            (Some(Vec3::new(-p.z, p.x, p.y) / SCALE), n, st)
         }
-        None => (None, -into),
+        None => (None, -into, 0),
     };
-    // EST_Default (the material's SurfaceType is not read yet).
-    decals.write(SpawnDecal {
-        kind: DecalKind::BulletHole,
-        at: r.hit,
-        dir: into,
-        trace: false,
-    });
+    let (sound, effect, decal) = HIT_EFFECTS.get(surface as usize).copied().unwrap_or(HIT_EFFECTS[0]);
+    if let Some(kind) = decal {
+        decals.write(SpawnDecal {
+            kind,
+            at: r.hit,
+            dir: into,
+            trace: false,
+        });
+    }
     // At HitLoc facing out of the surface, or (no trace hit) at Location
     // with Rotation.
     let (at, axes) = match hit_loc {
         Some(p) => (p, axes_along(hit_normal)),
         None => (r.hit, axes_along(into)),
     };
-    particles::spawn_effect(commands, lib, meshes, "ROEffects.ROBulletHitRockEffect", at, axes, 13);
+    particles::spawn_effect(commands, lib, meshes, &format!("ROEffects.{effect}"), at, axes, 13);
     runlog::kv(
         "bullet_impact",
         &format!(
-            "shooter={:?} at_unreal=({:.0}, {:.0}, {:.0}) surface_found={} surface=default",
+            "shooter={:?} at_unreal=({:.0}, {:.0}, {:.0}) surface_found={} surface={}",
             r.shooter,
             at.x,
             at.y,
             at.z,
-            hit_loc.is_some()
+            hit_loc.is_some(),
+            crate::collision::surface_name(surface)
         ),
     );
-    at
+    (at, sound)
 }

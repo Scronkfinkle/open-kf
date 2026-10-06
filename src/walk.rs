@@ -17,7 +17,7 @@ use crate::runlog;
 const BOB: f32 = 0.006;
 
 /// Movement values in Unreal units (converted with SCALE when used).
-mod kf {
+pub(crate) mod kf {
     pub const GROUND_SPEED: f32 = 200.0; // KFHumanPawn
     pub const ACCEL_RATE: f32 = 1000.0; // KFHumanPawn
     pub const JUMP_Z: f32 = 325.0; // KFHumanPawn

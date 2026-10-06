@@ -17,6 +17,11 @@ use crate::runlog;
 pub struct TriSoup {
     pub vertices: Vec<Vec3>,
     pub triangles: Vec<[u32; 3]>,
+    /// Per triangle: (the material's SurfaceType, the actor's SurfaceType;
+    /// 0 for the level). See DESIGN.md, "Surface types".
+    pub surfaces: Vec<[u8; 2]>,
+    /// What the next pushed triangles get.
+    pub surface: [u8; 2],
 }
 
 impl TriSoup {
@@ -29,6 +34,7 @@ impl TriSoup {
         self.vertices.extend_from_slice(pts);
         for k in 1..pts.len() as u32 - 1 {
             self.triangles.push([base, base + k, base + k + 1]);
+            self.surfaces.push(self.surface);
         }
     }
 
@@ -161,8 +167,15 @@ fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
             continue;
         }
         spawned.push(format!("{name}_triangles={}", soup.triangles.len()));
+        let mut counts = [0usize; 32];
+        for s in &soup.surfaces {
+            counts[(s[0] as usize).min(31)] += 1;
+        }
+        let by_surface: Vec<String> = counts.iter().enumerate().filter(|(_, n)| **n > 0).map(|(k, n)| format!("{}:{n}", surface_name(k as u8))).collect();
+        runlog::kv("collision_surfaces", &format!("collider={name} triangles_by_material_surface=[{}]", by_surface.join(" ")));
         commands.spawn((
             RigidBody::Static,
+            SurfaceMap(std::sync::Arc::new(soup.surfaces)),
             Collider::trimesh(soup.vertices, soup.triangles),
             Transform::IDENTITY,
             Name::new(format!("collision_{name}")),
@@ -202,6 +215,43 @@ fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
         "collision_spawned",
         &format!("{} volumes={volumes} volume_triangles={volume_triangles} volume_layers={kinds:?}", spawned.join(" ")),
     );
+}
+
+/// Actor.ESurfaceTypes names (Material.uc), for logs.
+pub fn surface_name(k: u8) -> &'static str {
+    const NAMES: [&str; 20] = [
+        "Default", "Rock", "Dirt", "Metal", "Wood", "Plant", "Flesh", "Ice", "Snow", "Water", "Glass", "Gravel", "Concrete", "HollowWood", "Mud",
+        "MetalArmor", "Paper", "Cloth", "Rubber", "Poop",
+    ];
+    NAMES.get(k as usize).copied().unwrap_or("Custom")
+}
+
+/// Per triangle of a level collider: (material SurfaceType, actor
+/// SurfaceType), in the collider's triangle order.
+#[derive(Component, Clone)]
+pub struct SurfaceMap(pub std::sync::Arc<Vec<[u8; 2]>>);
+
+/// The (material, actor) SurfaceType where a ray hits the level collider
+/// `entity` (from a spatial query): the ray is cast again against that
+/// collider's triangle mesh to learn which triangle it hit (avian's hit
+/// does not say). None for colliders without a SurfaceMap (doors, glass,
+/// volumes).
+pub fn surface_of_hit(colliders: &Query<(&Collider, &GlobalTransform, &SurfaceMap)>, entity: Entity, origin: Vec3, dir: Vec3, max: f32) -> Option<[u8; 2]> {
+    use avian3d::parry::query::{Ray, RayCast};
+    let (collider, transform, map) = colliders.get(entity).ok()?;
+    let mesh = collider.shape().as_trimesh()?;
+    // Static level colliders sit at the origin (Transform::IDENTITY).
+    let inv = transform.affine().inverse();
+    let o = inv.transform_point3(origin);
+    let d = inv.transform_vector3(dir);
+    let ray = Ray::new(o.to_array().into(), d.to_array().into());
+    let hit = mesh.cast_local_ray_and_get_normal(&ray, max + 0.01, true)?;
+    let n = map.0.len().max(1);
+    let tri = match hit.feature {
+        avian3d::parry::shape::FeatureId::Face(i) => i as usize % n,
+        _ => return None,
+    };
+    map.0.get(tri).copied()
 }
 
 /// A few frames in (once avian has registered the colliders), cast a ray

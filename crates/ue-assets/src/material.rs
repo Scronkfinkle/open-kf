@@ -252,3 +252,19 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
         }
     }
 }
+
+/// `Material.SurfaceType` of the material `rf` (seen from `from`): the
+/// object's own value, not its texture's (ROHitEffect reads
+/// HitMat.SurfaceType directly); 0 (EST_Default) when unset or unresolved.
+pub fn surface_type(set: &PackageSet, from: &ObjectHandle, rf: ObjectRef) -> u8 {
+    let Some(h) = set.resolve(&from.package, rf) else {
+        return 0;
+    };
+    match crate::properties::read_export_properties(&h.package.pkg, h.export) {
+        Ok(props) => match props.get(&h.package.pkg, "SurfaceType") {
+            Some(crate::properties::Value::Byte(b)) => *b,
+            _ => 0,
+        },
+        Err(_) => 0,
+    }
+}

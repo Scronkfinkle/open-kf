@@ -39,6 +39,8 @@ pub struct MeshActor {
     pub glass: Option<GlassInfo>,
     /// bUnlit: drawn without lighting.
     pub unlit: bool,
+    /// Actor.SurfaceType (footsteps on this actor use it when not 0).
+    pub surface_type: u8,
     /// The StaticMeshInstance export holding the baked vertex colours
     /// (`lighting::read_mesh_instance_colors`), if any.
     pub instance: Option<usize>,
@@ -523,6 +525,10 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             door,
             glass,
             unlit: matches!(effective("bUnlit"), Some(Value::Bool(true))),
+            surface_type: match effective("SurfaceType") {
+                Some(Value::Byte(b)) => b,
+                _ => 0,
+            },
             instance: match props.get(pkg, "StaticMeshInstance") {
                 Some(Value::Object(ObjectRef::Export(e))) => Some(*e),
                 _ => None,

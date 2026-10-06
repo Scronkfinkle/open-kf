@@ -579,9 +579,12 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   blasts, the LAW's rocket hiss and explosion, M79 / M32 / M203 blasts,
   the Husk Gun's fireball, pipe bomb bounce and arming beeps, medic dart
   flight, LAW / M79 duds. Not heard by you yet.
-- Bullet impacts on walls (one "dirt" impact sound for every surface
-  until surfaces are read), glass cracking and breaking, crossbow / M99
+- Bullet impacts on walls, glass cracking and breaking, crossbow / M99
   bolt hits, nail ricochets (S5d, 2026-10-05). Not heard by you yet.
+- Surface types (2026-10-06): every level triangle knows its material's
+  SurfaceType; bullet impacts (sound, effect, bullet hole) and the
+  player's footsteps, jumps and landings follow it (metal, wood, dirt,
+  concrete, grass...). Checked by you (2026-10-06).
 - The trader (S5e, 2026-10-06): the radio lines (shop moving, almost
   open, open, last wave, 30 s, 10 s, closed) with the walkie-talkie beep,
   the buy sound of each weapon and the vest, "too expensive" / "too heavy".

@@ -782,6 +782,8 @@ fn load_map(
                 }
                 // Collision: every polygon except not-solid and portal
                 // surfaces; invisible and sky-backdrop walls still block.
+                // Each carries its material's SurfaceType (cached per material).
+                let mut bsp_surfaces: HashMap<String, u8> = HashMap::new();
                 for (i, node) in model.nodes.iter().enumerate() {
                     let flags = model.surfs[node.surf].flags;
                     let in_sky = sky_zone.as_ref().is_some_and(|(z, _)| node.zone[1] == *z);
@@ -789,6 +791,9 @@ fn load_map(
                         continue;
                     }
                     let pts: Vec<Vec3> = model.node_polygon(i).map(coords::pos).collect();
+                    let rf = model.surfs[node.surf].material;
+                    let surface = *bsp_surfaces.entry(format!("{rf:?}")).or_insert_with(|| ue_assets::material::surface_type(&set, &level_handle, rf));
+                    collision.bsp.surface = [surface, 0];
                     collision.bsp.push_polygon(&pts);
                 }
                 runlog::kv(
@@ -838,6 +843,8 @@ fn load_map(
         section: usize,
         /// Local-space (Bevy) triangle corners of this section, if it collides.
         collision: Option<std::rc::Rc<Vec<[Vec3; 3]>>>,
+        /// The section material's SurfaceType.
+        surface: u8,
         mesh: Handle<Mesh>,
         /// The mesh's own material; `None` means invisible.
         material: Option<Handle<StandardMaterial>>,
@@ -907,6 +914,7 @@ fn load_map(
             for (si, section) in sm.sections.iter().enumerate() {
                 let rf = sm.materials.get(si).copied().unwrap_or(ObjectRef::Null);
                 let mat = loader.material(&h, rf, false).map(|m| m.0);
+                let surface = ue_assets::material::surface_type(&set, &h, rf);
                 let mut b = MeshBuilder::default();
                 let mut remap: HashMap<u16, u32> = HashMap::new();
                 let mut source: Vec<u16> = Vec::new();
@@ -958,6 +966,7 @@ fn load_map(
                 });
                 parts.push(Part {
                     section: si,
+                    surface,
                     collision,
                     mesh: meshes.add(b.build()),
                     material: mat,
@@ -1093,6 +1102,14 @@ fn load_map(
             blocking_actors += 1;
             for part in parts.iter() {
                 if let Some(tris) = &part.collision {
+                    // The actor's Skins[section] replaces the material.
+                    let material_surface = match actor.skins.get(part.section) {
+                        Some(&skin) if skin != ObjectRef::Null => {
+                            ue_assets::material::surface_type(&set, &ObjectHandle { package: lp.clone(), export: actor.export }, skin)
+                        }
+                        _ => part.surface,
+                    };
+                    collision.meshes.surface = [material_surface, actor.surface_type];
                     for t in tris.iter() {
                         let [a, b, c] = t.map(|p| transform.transform_point(p));
                         collision.meshes.push_triangle(a, b, c);
@@ -1392,12 +1409,6 @@ fn spawn_terrains(
             }
         }
 
-        if !in_sky {
-            for tri in &tris {
-                collision.push_triangle(pos[tri[0]], pos[tri[1]], pos[tri[2]]);
-            }
-        }
-
         // Layer alpha at each vertex, sampled from the layer's AlphaMap.
         let alphas: Vec<Vec<f32>> = t
             .layers
@@ -1413,6 +1424,21 @@ fn spawn_terrains(
                 let a = if i == 0 { 1.0 } else { alphas[i][v] };
                 weights[i][v] = a * remaining;
                 remaining *= 1.0 - a;
+            }
+        }
+
+        // Collision, each triangle with the SurfaceType of the layer that
+        // shows most at its corners (a guess: what a trace on terrain
+        // returns as HitMaterial is native code).
+        if !in_sky {
+            let layer_surfaces: Vec<u8> = t.layers.iter().map(|l| ue_assets::material::surface_type(set, &handle, l.texture)).collect();
+            for tri in &tris {
+                let top = (0..n_layers).max_by(|&a, &b| {
+                    let sum = |li: usize| tri.iter().map(|&v| weights[li][v]).sum::<f32>();
+                    sum(a).total_cmp(&sum(b))
+                });
+                collision.surface = [top.map_or(0, |li| layer_surfaces[li]), 0];
+                collision.push_triangle(pos[tri[0]], pos[tri[1]], pos[tri[2]]);
             }
         }
 

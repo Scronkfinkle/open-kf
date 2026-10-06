@@ -4168,3 +4168,37 @@ warnings.
 properties in maps are not read from the .int files yet (we already take
 door messages from the map itself).
 **Next:** your listening test.
+
+## 2026-10-06 Surface types (F1, F2)
+
+**Changed:** DESIGN: new section "Surface types" (plan first, then this).
+`crates/ue-assets/src/material.rs`: `surface_type` (a material's own
+SurfaceType). `crates/ue-assets/src/level.rs`: MeshActor.surface_type.
+`src/collision.rs`: TriSoup carries (material, actor) SurfaceType per
+triangle; level colliders get a `SurfaceMap`; `surface_of_hit` re-casts
+a ray against the hit collider's triangle mesh (parry) for the triangle
+index; per-collider surface counts logged. `src/map.rs`: BSP polygons
+(their material), static mesh sections (section material or the actor's
+Skins override, and the actor's SurfaceType), terrain (the layer that
+shows most at the triangle: a guess). `src/bullet_fx.rs`: ROBulletHitEffect's
+HitEffects[20] (sound, effect, decal) by the hit's material surface.
+`src/decals.rs`: 8 more bullet-hole classes. `src/player_sound.rs`:
+footsteps, jumps and landings by the surface under the feet (Base actor
+first, else the material 16 units down). `src/walk.rs`: `kf` constants
+crate-visible.
+**Why:** you chose surface types next.
+**Tested how:** the surface counts on KF-WestLondon, KF-Farm, KF-Offices;
+walking, jumping and shooting on KF-WestLondon and KF-Farm
+(`--no-vsync --fps 100 --autowalk 3`); tests; clippy (counted).
+**Result:** e.g. KF-Farm terrain `Dirt:44896 Plant:8199 Gravel:2843`,
+its meshes mostly Wood and Metal; WestLondon BSP Rock (asphalt) 3602,
+Concrete 1418. WestLondon street: Player_StepDirt (Rock -> Dirt in KF's
+table), JumpAsphalt, LandConc; a shot wall there: Default. Farm: StepDirt,
+JumpDirt, LandDirt; a shot barn: `Impact_Wood` and a `BulletHoleWood`
+decal. All 9 bullet-hole classes load; no missing sounds or effects.
+Tests 140 pass; clippy 0 warnings.
+**Still broken / not tested:** you checked it: works (2026-10-06). Terrain surface
+by the dominant layer is a guess. No deep-water step. Static meshes use
+their render triangles' materials (KF may use separate collision
+models).
+**Next:** your check; commit when you say.

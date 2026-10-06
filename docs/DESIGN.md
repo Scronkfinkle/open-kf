@@ -3350,6 +3350,46 @@ with a test you can run):
 Not planned: Doppler (DopplerFactor 1.0; small effect, later if missed),
 EAX reverb (off in KF's ini), voice chat.
 
+## Surface types (F1-F2 implemented 2026-10-06)
+
+KF picks impact effects and step sounds by surface: dirt, metal, wood,
+glass, concrete... (ESurfaceTypes, 20 used values, Material.uc /
+Actor.uc). Until now every surface used the EST_Default entry.
+
+**Where KF stores it.** `Material.SurfaceType` on every material object:
+textures, and also shaders, combiners and final blends, which mostly set
+their own (KillingFloorTextures: 59 of 69 shaders set one, often not
+their texture's value). Actors have their own `Actor.SurfaceType` too
+(StaticMeshActors in maps set it).
+
+**How KF reads it.**
+- Bullets (ROHitEffect.PostNetBeginPlay): a 16-unit trace into the
+  surface returns HitMat; `HitMat.SurfaceType` picks the entry of
+  ROBulletHitEffect.HitEffects[20] (sound, emitter, decal). The material
+  object itself, not its texture: no looking through shaders.
+- Footsteps, jumps, landings (KFPawn.FootStepping / GetSound): in a
+  water volume the deep-water step; else the Base actor's SurfaceType if
+  it is not the level and not 0; else a trace 16 units below the feet
+  and that material's SurfaceType.
+- Terrain: what material a trace on terrain returns is native; **guess**:
+  the layer with the most alpha at that spot.
+
+**How we do it.**
+- F1. Data: each collision triangle carries (material surface, actor
+  surface). BSP: the surface's material; static meshes: the section's
+  material (the actor's Skins override) and the actor's SurfaceType;
+  terrain: the guess above. Colliders get a per-triangle table; a ray
+  that hit a collider is cast again against that collider's triangle
+  mesh (parry, which avian uses) to learn the triangle index. Logged per
+  map: triangles by surface.
+- F2. Use: bullet impacts (sound, emitter and decal from HitEffects[20];
+  8 more bullet-hole decal classes), footsteps, jumps and landings
+  (SoundFootsteps / JumpSounds / LandSounds [20]).
+- Not done: the deep-water step in water volumes; doors and glass panes
+  have no SurfaceMap (KF's ROHitEffect trace ignores actors anyway); the
+  static meshes' simplified collision models (we collide with the
+  render triangles, so their materials).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style
