@@ -180,6 +180,7 @@ fn run_zed_time(
     mut messages: MessageWriter<crate::hud::LocalMessage>,
     (script, frames): (Res<crate::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     keys: Res<ButtonInput<KeyCode>>,
+    mut sounds: MessageWriter<crate::audio::PlaySound>,
 ) {
     let now = virt.elapsed_secs();
     let mut started = None;
@@ -204,20 +205,37 @@ fn run_zed_time(
     }
     if let Some((reason, duration)) = started {
         runlog::kv("zed_time", &format!("event=start reason={reason} duration={duration} game_time={now:.2} real_time={:.2}", real.elapsed_secs()));
-        // ClientEnterZedTime: CheckZEDMessage (the Zedtime_Enter sound: no
-        // sound yet).
+        // ClientEnterZedTime: Zedtime_Enter, SLOT_Talk, 2.0, radius 500,
+        // pitch 1.1 / Level.TimeDilation (normal pitch once the mixer
+        // scales it by the game speed; ours runs at 1.0, not 1.1).
+        sounds.write(zed_time_sound("KF_PlayerGlobalSnd.Zedtime_Enter", zt.speed));
+        // CheckZEDMessage.
         if !zt.had_zed {
             zt.had_zed = true;
             messages.write(crate::hud::LocalMessage::new(crate::hud::MessageClass::Waiting, 5));
         }
     }
     if let Some(what) = zt.tick(real.delta_secs()) {
-        // speed_up: ClientExitZedTime (the Zedtime_Exit sound: no sound yet).
+        // speed_up: ClientExitZedTime: Zedtime_Exit, as the enter sound.
+        if what == "speed_up" {
+            sounds.write(zed_time_sound("KF_PlayerGlobalSnd.Zedtime_Exit", zt.speed));
+        }
         runlog::kv("zed_time", &format!("event={what} game_time={now:.2} real_time={:.2}", real.elapsed_secs()));
     }
     if virt.relative_speed() != zt.speed {
         virt.set_relative_speed(zt.speed);
     }
+}
+
+/// KFPlayerController's zed time sounds (played on the pawn's weapon or
+/// the controller: at the player, an actor of its own for the slots).
+fn zed_time_sound(sound: &str, speed: f32) -> crate::audio::PlaySound {
+    crate::audio::PlaySound::new(sound, crate::audio::Emitter::Listener)
+        .slot(crate::audio::Slot::Talk)
+        .volume(2.0)
+        .radius(500.0)
+        .pitch(1.0 / speed.max(0.05))
+        .actor(2)
 }
 
 #[cfg(test)]

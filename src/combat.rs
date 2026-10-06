@@ -889,6 +889,7 @@ fn apply_player_damage(
     mut burn: ResMut<Burning>,
     time: Res<Time>,
     mut armour: ResMut<crate::armour::Armour>,
+    mut sounds: MessageWriter<crate::player_sound::PlayerSoundEvent>,
 ) {
     for hit in hits.read() {
         // KFPawn.TakeDamage reads the burn from the damage before
@@ -904,6 +905,11 @@ fn apply_player_damage(
         }
         if !health.god {
             health.health -= taken;
+            // KFPawn.TakeDamage -> PlayTakeHit (pain sound) while alive;
+            // god mode returns before it (KFHumanPawn.TakeDamage).
+            if taken > 0.0 && health.health > 0.0 {
+                sounds.write(crate::player_sound::PlayerSoundEvent::Hurt);
+            }
         }
         // KFPawn.TakeDamage (and TakeBileDamage): healthToGive -= 5.
         health.to_give -= 5.0;
@@ -946,6 +952,7 @@ fn apply_player_damage(
             }
         }
         if health.health <= 0.0 {
+            sounds.write(crate::player_sound::PlayerSoundEvent::Died);
             bile.count = 0;
             burn.burn_down = 0;
             // Death: respawn at the player start with full health.

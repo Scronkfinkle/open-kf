@@ -33,6 +33,7 @@ cargo run --release -- --walk --spawn clot --god   # god mode: zeds hit you (log
 cargo run --release -- --walk --zed --always-sever   # test: killing shots on limbs always sever them
 cargo run --release -- --walk --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
 cargo run --release -- --input 200:sound:KF_9MMSnd.9mm_Fire,300:sound_at:KF_9MMSnd.9mm_Fire@600   # test: play a sound at you, then 600 units to your right
+cargo run --release -- --walk --input 200:jump   # test action: jump (also "jump" in any --input list)
 cargo run --release -- --walk --mute                 # no sound (still logged)
 cargo run --release -- --walk --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
@@ -552,9 +553,13 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   death 0.2 s after dying, decapitation, skull hits, attack hits on you,
   each zed's idle loop (the Scrake's chainsaw switching to its sawing
   sound). Confirmed by you (2026-10-05); decapitation and skull hits not run in a
-  test. Still to come: the Patriarch's speech and guns, ragdoll bumps,
-  the Husk fireball's flight (S4b2), the player's sounds (S4c), the world
-  (S5), music (S6).
+  test.
+- Your own sounds (S4c, 2026-10-05): footsteps (every ~0.375 s at full
+  speed), jump grunt, landing thud by fall speed, pain grunts, the death
+  sound, low-health breathing, the zed time sounds. Confirmed by you (2026-10-05).
+  Footsteps use the default surface everywhere (no per-material surfaces
+  yet). Still to come: the Patriarch's speech and guns, ragdoll bumps,
+  the Husk fireball's flight (S4b2), the world (S5), music (S6).
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch

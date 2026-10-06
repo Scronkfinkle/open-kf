@@ -352,7 +352,7 @@ fn walk(
     settings: Res<WalkSettings>,
     spatial: SpatialQuery,
     mut q: Query<(&mut Transform, &FlyCamera, &mut Walker)>,
-    frames: Res<bevy::diagnostic::FrameCount>,
+    (frames, script): (Res<bevy::diagnostic::FrameCount>, Res<crate::weapon::ScriptedInput>),
     names: Query<&Name>,
     mut effects: Option<ResMut<crate::weapon::WeaponEffects>>,
     mut bob: ResMut<ViewBob>,
@@ -433,7 +433,8 @@ fn walk(
             wish -= right;
         }
         let mut wish = wish.normalize_or_zero();
-        let mut jump = keys.just_pressed(KeyCode::Space);
+        // Test action "jump".
+        let mut jump = keys.just_pressed(KeyCode::Space) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "jump");
         // Held by a Clot's grab (KFPawn.DisableMovement / ModifyVelocity):
         // no input, no jumping, and no velocity while on the ground.
         let held = pinned.as_ref().is_some_and(|p| p.active());

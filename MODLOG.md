@@ -3899,3 +3899,36 @@ Impact_Skull not triggered in a test run. Guesses: the ambient radius
 pain sound checked before the hit-reaction rules. S4b2: the Patriarch's
 own sounds, ragdoll bumps, Husk fireball, Bloat puddle, landing, gibs.
 **Next:** S4b2 or S4c (the player), your choice.
+
+## 2026-10-05 S4c: the player's sounds, zed time sounds
+
+**Changed:** `src/player_sound.rs` (new): pain (xPawn.PlayTakeHit:
+Inf_Player.playerhurt.Wounding, SLOT_Pain, 0.6, radius 200, 0.35 s apart
+and 0.1 s after the last pain), death 0.2 s after dying (one of five
+Inf_Player.playerdeath sounds, 0.75, radius 500), low-health breathing
+(KFHumanPawn.Timer every 1.5 s under 25 health, ((50 - Health) / 5) x
+0.3), jump (JumpDirt, SLOT_Pain, 0.5, radius 80), landing (LandDefault,
+SLOT_Interact, min(1, -0.3 x Vz / 325)), footsteps (KFPawn.CheckBob's
+step count, Player_StepDefault, 0.45, radius 125). `src/combat.rs`:
+sends Hurt (not in god mode, as KF) and Died. `src/zed_time.rs`:
+Zedtime_Enter and _Exit (SLOT_Talk, 2.0, radius 500, pitch 1 / game
+speed). `src/walk.rs`: test action `jump` (the frame counter and the
+scripted input share one system parameter: Bevy's limit of 16).
+`src/main.rs`: the plugin. DESIGN, README.
+**Why:** S4c of the sound plan.
+**Tested how:** `--autowalk 2 --spawn clot` without god, `zed_time` at
+frame 300; `--autowalk 4`; `--walk` with two `jump`s; clippy (counted);
+tests.
+**Result:** a pain grunt per Clot hit about every 1.2 s; breathing from
+health 24 at volume 1.5, rising to 2.4; died at 39.756 s,
+`playerdeath.Headshot` at 39.990 s; `Zedtime_Enter pitch=5.00` at the
+start (speed 0.2), `Zedtime_Exit pitch=4.63` at the speed-up. Footsteps
+every 0.367-0.384 s while walking at 198 (each cuts the last one's tail,
+SLOT_Interact: KF's slot rule). Jumps: `JumpDirt` at the jump,
+`LandDefault volume=0.28` on landing (fall speed 308). Tests 136 pass;
+clippy 0 warnings.
+**Still broken / not tested:** you confirmed it working (2026-10-05). Surfaces: always the
+default step, jump and land sounds. No quiet steps (no crouch or walk
+key). The headshot-on-player sound (impact_metal09) and the player's
+decapitation are not done (zeds do not aim for the head).
+**Next:** S4b2 (Patriarch and zed leftovers), then S5 (the world).

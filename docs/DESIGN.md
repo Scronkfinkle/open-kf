@@ -3244,7 +3244,12 @@ with a test you can run):
     chaingun's fire and spin loops; the impale hit), ragdoll bumps
     (Zomb_BodyImpact), the Husk fireball's flight loop and impact, the
     Bloat's acid puddle, zeds landing (Player_LandDirt), gibbed deaths.
-  - **S4c. The player.** Pain (Inf_Player Wounding, SLOT_Pain, 0.6,
+  - **S4c. The player** (done 2026-10-05, `src/player_sound.rs`; the
+    damage code sends Hurt / Died; jumps, landings and footsteps are read
+    from the walker each frame; surfaces default until materials carry a
+    SurfaceType; no crouch or walk, so no quiet steps). Also the zed time
+    sounds (KFPlayerController: Zedtime_Enter / _Exit, SLOT_Talk, 2.0,
+    pitch 1.1 / TimeDilation, i.e. 1 / game speed for us). Pain (Inf_Player Wounding, SLOT_Pain, 0.6,
     radius 200, every 0.35 s at most), death, footsteps (CheckBob, about
     every 0.375 s at full speed, per surface, 0.45, x 0.4 crouched or
     walking), jump and landing, low-health breathing (under 25 %).
