@@ -34,6 +34,7 @@ cargo run --release -- --walk --zed --always-sever   # test: killing shots on li
 cargo run --release -- --walk --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
 cargo run --release -- --input 200:sound:KF_9MMSnd.9mm_Fire,300:sound_at:KF_9MMSnd.9mm_Fire@600   # test: play a sound at you, then 600 units to your right
 cargo run --release -- --walk --input 200:jump   # test action: jump (also "jump" in any --input list)
+cargo run --release -- --walk --no-vsync --frames 600   # test runs: frames do not wait for the display (a hidden window ran at 1 fps)
 cargo run --release -- --walk --mute                 # no sound (still logged)
 cargo run --release -- --walk --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
 cargo run --release -- --walk --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)

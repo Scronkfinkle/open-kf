@@ -4003,3 +4003,18 @@ is assumed linear. Whether the real game also stays silent in waves on
 maps with missing combat songs is not known (it would with UE2's
 PlayMusic as far as the scripts show).
 **Next:** S5 (the research is running).
+
+## 2026-10-05 Test flag --no-vsync
+
+**Changed:** `src/main.rs`: `--no-vsync` (PresentMode::AutoNoVsync).
+README test-command list.
+**Why:** while the display could not show the window (you were away;
+probably a locked screen), every frame waited about 1 s for it, so
+scripted test runs crawled at 1-2 fps (also with the previous commit,
+checked). Found during S5a.
+**Tested how:** `--map KF-Farm --walk --god --frames 300` with and
+without the flag, the screen in that state.
+**Result:** without: 1-2 fps (`frame_ms=1000`); with: 243 fps.
+**Still broken / not tested:** nothing else changes; normal play keeps
+vsync.
+**Next:** S5a.

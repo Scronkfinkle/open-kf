@@ -90,6 +90,9 @@ struct Args {
     window: Option<(u32, u32)>,
     /// `--mute`: sounds are played (and logged) at zero volume.
     mute: bool,
+    /// `--no-vsync`: frames do not wait for the display (test runs while
+    /// the window cannot be shown, e.g. a locked screen, ran at 1 fps).
+    no_vsync: bool,
     /// `--mode waves|debug` and `--length short|normal|long`.
     game: game::GameOptions,
 }
@@ -145,6 +148,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--walk" => args.walk = true,
             "--mute" => args.mute = true,
+            "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
             "--give" => args.give = Some(it.next().ok_or("--give needs \"all\" or weapon class names")?),
             "--zed" => args.zed = true,
@@ -186,7 +190,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute]");
+            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -250,6 +254,7 @@ fn main() -> AppExit {
     };
 
     let window_size = args.window;
+    let present_mode = if args.no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
     let mut app = App::new();
     if let Some(c) = camera_override {
         app.insert_resource(c);
@@ -261,10 +266,12 @@ fn main() -> AppExit {
                     title: "kf-rs".into(),
                     resolution: bevy::window::WindowResolution::new(w, h).with_scale_factor_override(1.0),
                     resizable: false,
+                    present_mode,
                     ..default()
                 },
                 None => Window {
                     title: "kf-rs".into(),
+                    present_mode,
                     ..default()
                 },
             }),
