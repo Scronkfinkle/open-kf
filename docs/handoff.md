@@ -14,6 +14,40 @@ history is in `MODLOG.md`; the plans and rules are in `docs/DESIGN.md`
 | 0fdf9a6 | T2a: shops and trader doors (pick, open/close with the waves, boot to teleporters, "TRADER: Nm") |
 | (this commit) | T3a: buy menu (weapons, selling, ammo, duals, weight) |
 
+## Second session (2026-10-05, new machine)
+
+Setup on the new machine: rebuilt `kfpkg` and re-exported the scripts
+(`work/scripts/`) and the lightmap pages (`work/lighting/`).
+
+| Commit | Step |
+| --- | --- |
+| 7e1987f | T3b: armour (Kevlar vest, KF's ShieldAbsorb, HUD, menu row) |
+| 8ddfecd | D5: doors respawn at wave end |
+| ae08869 | T2b-1: the trail to the trader (red whisps) |
+| 2bd1d1c | T2b-2: the HUD arrow (size fitted to a real-game screenshot); `--window WxH` |
+| c8212b1 | H1: KF's HUD bottom bar and cash |
+| 33fb842 | H2: KF's bitmap fonts and the HUD texts |
+| d87adcc | H3: the top-right circle (countdown, zeds left, wave) |
+| bb3af0e | H4: KF's on-screen messages |
+| 8f39d26 | Zed time (F2 forces it) |
+| 263eb52 | G3b: the Patriarch's entrance, death and laugh views |
+
+Real-game reference screenshots (1280 x 960, KF-WestLondon spawn) are in
+`references/` (untracked). To compare: `--window 1280x960 --camera
+-3110,1313,-3768,-3.72,0` matches their view.
+
+### Decisions waiting on you
+
+1. **KF's 1.1x game speed.** UE2 runs the whole game at 1.1 x real time
+   (TimeDilation 1.1 normally): animations, movement, fire rates, timers.
+   We run at 1.0. Match it everywhere? (It touches everything; zed time
+   is unaffected either way.) See DESIGN.md, "Zed time", open question.
+2. **Random seeds.** All randomness uses fixed seeds, so every run
+   repeats exactly (good for tests); KF rolls differently each game.
+   Random seeds for normal play, fixed for test runs?
+3. **What next:** the end-of-game screen ("Your squad survived!" /
+   "Squad eliminated."), or the lighting leftovers (item 5 below).
+
 ## What to do next (your order: waves -> trader -> door respawns)
 
 1. ~~T3b, armour~~ (done on the new machine, 2026-10-05; see MODLOG).
