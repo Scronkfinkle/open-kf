@@ -1,4 +1,4 @@
-# Handoff (2026-10-05)
+# Handoff (2026-10-06)
 
 Where the work stands, for picking it up on another machine. The full
 history is in `MODLOG.md`; the plans and rules are in `docs/DESIGN.md`
@@ -47,6 +47,60 @@ Real-game reference screenshots (1280 x 960, KF-WestLondon spawn) are in
    Random seeds for normal play, fixed for test runs?
 3. **What next:** the end-of-game screen ("Your squad survived!" /
    "Squad eliminated."), or the lighting leftovers (item 5 below).
+
+## Third session (2026-10-05/06): sound and music (milestone 10)
+
+Plan and rules: DESIGN.md, "Sound and music (milestone 10)". Research
+notes with KF script quotes (untracked): `work/s4-research.md`,
+`work/s5-research.md`.
+
+| Commit | Step | Checked by you |
+| --- | --- | --- |
+| 80b8399 | S1: reading KF's sounds (`kfpkg sounds`) | yes |
+| 22ee340 | S2: our mixer (rodio), `--mute` | yes |
+| f81da8e, 5ac3fe5, f5ed2f2, 0c563a4 | S3a-d: all weapon sounds | yes (S3c/d: you said go on) |
+| f320d66 | S4a: zed animation sounds; inverse-distance fade | yes |
+| b8d1d98 | S4b: zed voices and loops | yes |
+| d8ab251 | S4c: the player's sounds, zed time sounds | yes |
+| 9ee0c0c | S4b2: Patriarch, fireballs, vomit, corpses, landings | yes |
+| 67d4cec | S6: music | **no** |
+| be4dfe9 | `--no-vsync` test flag | (tooling) |
+| 62f291b | S5a: the map's ambient sounds, helicopter | **no** |
+| 339b480 | S5b: doors, welding; tiny landings filtered | **no** |
+| e532813 | S5c: explosions and projectiles | **no** |
+| 349f320 | S5d: bullet impacts, glass, bolts, nails | **no** |
+| 7ebfa87 | S5e: trader lines and shop sounds | **no** |
+
+### Your listening test for S5 and S6
+
+`cargo run --release -- --mode waves --length short --walk` on
+KF-WestLondon (and once on KF-Farm), then:
+
+1. At the start: the helicopter taking off; the map's fires, engines and
+   buzzing lights as you walk past them (they are silent beyond their
+   own small radius: a guess, tell me if they carry too little or too
+   far). KF-Farm: owls and creaking lamps now and then.
+2. Music: the calm song (KF_Mutagen) now; in a wave KF-WestLondon is
+   silent, because its combat song (KFSIN8) is not in your install (as
+   the real game would be, as far as the scripts show). KF-Crash has
+   music in waves too. `--wave 5`: KF_Abandon fades in at the
+   Patriarch's entrance. Volumes come from your KillingFloor.ini
+   (music 0.1).
+3. Trader: the radio beep then "the shop is moving" at 20% of a wave,
+   "almost open" at 80%, "shop's open" when the wave ends, "30 seconds",
+   "10 seconds" (only in the shop), "closed" at the next wave. Buying
+   plays the weapon's pickup sound; too expensive / too heavy talk back.
+4. Doors (E on a door's trigger): opening and closing (many wooden doors
+   close silently: KF's own sound file is a silent placeholder), zeds
+   banging on welded doors, a door breaking, the welder's sparks.
+5. Explosions: frag bounces and blast, LAW hiss and explosion, M79,
+   pipe bomb beeping once armed.
+6. Bullets hitting walls (all sound like dirt until surfaces are read),
+   glass cracking and breaking, crossbow bolts.
+
+Known guesses to judge by ear are listed in DESIGN.md (distance fades,
+map ambient radius, the volume cap). Test runs while the window cannot
+be shown (locked screen) need `--no-vsync`, or they run at 1 fps.
 
 ## What to do next (your order: waves -> trader -> door respawns)
 
