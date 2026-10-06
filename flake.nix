@@ -1,5 +1,5 @@
 {
-  description = "kf-rs Flake";
+  description = "Open KF Flake";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";

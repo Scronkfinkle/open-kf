@@ -1,4 +1,4 @@
-# kf-rs
+# Open KF
 
 A from-scratch Rust + Bevy reimplementation of Killing Floor (2009), reading the
 original game's files from an installed copy. Single-player, offline. No game

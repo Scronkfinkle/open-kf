@@ -11,7 +11,7 @@ less orange (layer order), the phone booth glass, a brighter fire decal.
 The write-up below is the record of the investigation.
 
 ## Goal
-kf-rs: a Rust/Bevy rewrite of the Killing Floor 1 engine. Current step:
+Open KF: a Rust/Bevy rewrite of the Killing Floor 1 engine. Current step:
 milestone 11, baked lighting (docs/DESIGN.md, "Baked lighting"). Make
 KF-WestLondon look like the real game.
 

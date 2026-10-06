@@ -3515,16 +3515,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kf-rs"
-version = "0.1.0"
-dependencies = [
- "avian3d",
- "bevy",
- "rodio",
- "ue-assets",
-]
-
-[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4328,6 +4318,16 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "open-kf"
+version = "0.1.0"
+dependencies = [
+ "avian3d",
+ "bevy",
+ "rodio",
+ "ue-assets",
+]
 
 [[package]]
 name = "orbclient"

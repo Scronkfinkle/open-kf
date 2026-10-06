@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn open_reads_build_label() {
-        let dir = std::env::temp_dir().join(format!("kf-rs-install-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("open-kf-install-test-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("System")).unwrap();
         std::fs::write(
             dir.join("System/Build.ini"),

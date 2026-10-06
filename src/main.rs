@@ -160,7 +160,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: kf-rs [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--walk] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -233,14 +233,14 @@ fn main() -> AppExit {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(match window_size {
                 Some((w, h)) => Window {
-                    title: "kf-rs".into(),
+                    title: "Open KF".into(),
                     resolution: bevy::window::WindowResolution::new(w, h).with_scale_factor_override(1.0),
                     resizable: false,
                     present_mode,
                     ..default()
                 },
                 None => Window {
-                    title: "kf-rs".into(),
+                    title: "Open KF".into(),
                     present_mode,
                     ..default()
                 },

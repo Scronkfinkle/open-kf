@@ -4267,3 +4267,22 @@ of its two runs, so it is timing, not the split.
 (zeds' think_and_move, weapon_input) are still single long functions;
 splitting their logic is a separate, riskier job.
 **Next:** your inspection; then pushing to GitHub.
+
+## 2026-10-06 Renamed to Open KF
+
+**Changed:** the project is now called Open KF: crate and program
+`open-kf` (Cargo.toml, so `target/release/open-kf`, log targets
+`open_kf::...`), window title "Open KF" ("Open KF [REC]" while
+recording), the usage message, README and DESIGN titles, the
+architecture tree, LICENSE-MIT's copyright line ("Open KF
+contributors"), STATUS.md, flake.nix's description, a test's temporary
+folder name. Earlier MODLOG entries keep the old name (history).
+**Why:** you are publishing it on GitHub as Open KF.
+**Tested how:** build, clippy (counted), tests, a 120-frame run of
+`target/release/open-kf`; a search of all tracked files for the old name.
+**Result:** no mention of kf-rs left outside MODLOG's history. Tests 140
+pass; clippy 0 warnings.
+**Still broken / not tested:** the local folder is still named kf-rs (its
+name is not part of the repository); the old `target/release/kf-rs`
+binary stays in the build folder until `cargo clean`.
+**Next:** you push to GitHub.

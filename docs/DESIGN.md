@@ -1,4 +1,4 @@
-# kf-rs design
+# Open KF design
 
 A from-scratch Rust + Bevy reimplementation of Killing Floor (2009) that reads
 the original game's files from an installed copy. Single-player and offline only.
@@ -67,7 +67,7 @@ only and do not translate its code line for line.
 ## Architecture
 
 ```
-kf-rs/                     Cargo workspace root
+open-kf/                   Cargo workspace root (the repository)
   src/                     the game binary (Bevy app), one folder per area:
     main.rs                command line, plugins
     engine/                coordinates, run log, cameras, screenshots, video recording

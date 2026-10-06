@@ -112,7 +112,7 @@ fn record(
             }
         }
         if let Ok(mut w) = windows.single_mut() {
-            w.title = if recorder.active.is_some() { "kf-rs [REC]".into() } else { "kf-rs".into() };
+            w.title = if recorder.active.is_some() { "Open KF [REC]".into() } else { "Open KF".into() };
         }
     }
     let Some(r) = recorder.active.as_mut() else {
