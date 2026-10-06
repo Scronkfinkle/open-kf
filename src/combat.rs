@@ -466,6 +466,8 @@ pub(crate) fn damage_zed(
     }
     let dealt = damage * mult;
     let mut total = dealt;
+    // For the pain sound (KFMonster.PlayTakeHit skips it for fire damage).
+    z.hit_by_fire = burned_type;
     let mut head_off = false;
     let mut explosion = 0.0;
     if headshot && !z.decapitated {
@@ -483,6 +485,11 @@ pub(crate) fn damage_zed(
                 &format!("id={} weapon={weapon} hit={dealt:.1} head_explosion={explosion:.1} health_before={:.1}", z.id, z.health),
             );
         }
+    }
+    // KFMonster.TakeDamage: a headshot on a zed that keeps its head plays
+    // Impact_Skull.
+    if headshot && !head_off && !z.decapitated {
+        z.sound_events.push(crate::zed::ZedSound::Skull);
     }
     z.health -= total;
     z.note_damage(total);

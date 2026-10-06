@@ -3858,3 +3858,44 @@ how everything sounds at a distance, also the weapons and the S2 test
 shots (`sound_at:...@600` is now louder than before). AnimNotify_Sound's
 slot and radius handling are guesses. Zed voices and loops: S4b.
 **Next:** S4b.
+
+## 2026-10-05 S4b: zed voices and loops
+
+**Changed:** `src/zed.rs`: `ZedSounds` per class (MoanVoice, HitSound[0],
+DeathSound[0] / Bloat_DeathPop, HeadlessDeathSound, DecapitationSound,
+ChallengeSound[0..3], MeleeAttackHitSound, AmbientSound with
+SoundVolume and SoundRadius x AmbientSoundScaling, the Scrake's
+SawAttackLoopSound and ChainSawOffSound); `ZedSound` events pushed by
+remove_head, take_hit (pain, 0.5 s gate, not for fire damage except
+Fleshpound / Scrake / Patriarch), the death timer (0.2 s), the claw
+and Patriarch melee hits, the moan timer (KFMonsterController MoanTime,
+whole seconds) and a challenge check every 0.5 s; `play_zed_sounds`
+plays them and keeps the zed's AmbientSound in step (off when dead or
+headless, the Scrake's saw loop while sawing); the voice sounds are
+preloaded. `src/combat.rs`: the fire flag for the pain rule and
+Impact_Skull on headshots that leave the head on. `src/weapon.rs`:
+`sound_prop` crate-visible. DESIGN (S4b done, S4b2 planned), README.
+**Why:** S4b of the sound plan.
+**Tested how:** `--spawn clot` runs: one with shots from frame 700, one
+of 3200 frames (shots from 2600) for the moan timer; `--spawn scrake`;
+clippy (counted, 0 warnings); tests.
+**Result:** Clot: `Clot_Idle1Loop volume=50 radius=546` at spawn;
+`Clot_Challenge` at first sight, then every 7.1 s while it saw me;
+`Clot_HitPlayer volume=2.00` for each landed swipe; `Clot_Pain` per hit
+(0.5 s apart at most); first `Clot_Talk` (moan) at 37.75 s, the next 13 s
+later; at death the loop stopped and `Clot_Death` played 0.17 s later.
+Scrake: `Scrake_Chainsaw_Idle volume=175 radius=683`, swapped to
+`Scrake_Chainsaw_Impale` when sawing started, `Scrake_Chainsaw_HitPlayer`
+every ~0.5 s. All 10 zed classes' voice and notify sounds preloaded, 0
+missing. Tests 136 pass; clippy 0 warnings.
+**Bugs found on the way:** the death sound and the loop's stop were
+missing at first (the ragdoll branch skipped my code; moved before it);
+the class's "pain from fire" flag went to the test-only constructor
+(swapped); an `allow(clippy::too_many_arguments)` ended up on the wrong
+function (moved back).
+**Still broken / not tested:** you confirmed it working (2026-10-05). Decapitation and
+Impact_Skull not triggered in a test run. Guesses: the ambient radius
+(SoundRadius x AmbientSoundScaling), the challenge sight interval, the
+pain sound checked before the hit-reaction rules. S4b2: the Patriarch's
+own sounds, ragdoll bumps, Husk fireball, Bloat puddle, landing, gibs.
+**Next:** S4b2 or S4c (the player), your choice.

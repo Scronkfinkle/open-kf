@@ -96,8 +96,65 @@ fn kind_named(name: &str) -> Option<ZedKind> {
 }
 
 /// Static data for one zed class.
+/// A zed class's sounds (KFMonster and the specimen's _STANDARD class;
+/// see DESIGN.md, "Sound and music", S4b), as full object paths.
+#[derive(Clone, Debug, Default)]
+struct ZedSounds {
+    /// MoanVoice (ZombieMoan: SLOT_Misc, MoanVolume, radius 250).
+    moan: Option<String>,
+    moan_volume: f32,
+    /// HitSound[0] (PlayTakeHit: SLOT_Pain, 1.25, radius 400; the
+    /// Patriarch 2 x TransientSoundVolume).
+    pain: Option<String>,
+    pain_volume: f32,
+    /// Pain also from fire damage (ZombieFleshPound, ZombieScrake and
+    /// ZombieBoss override PlayTakeHit without KFMonster's fire check).
+    pain_on_fire: bool,
+    /// DeathSound[0], HeadlessDeathSound; ZombieBloat: Bloat_DeathPop at
+    /// 2.0 unless headless.
+    death: Option<String>,
+    death_volume: f32,
+    headless_death: Option<String>,
+    decapitation: Option<String>,
+    /// ChallengeSound[0..3] (Monster.PlayChallengeSound: SLOT_Talk, the
+    /// TransientSound defaults 1.0 and 500).
+    challenge: Vec<String>,
+    /// MeleeAttackHitSound (ClawDamageTarget: SLOT_Interact, 2.0; the
+    /// Fleshpound 1.25).
+    melee_hit: Option<String>,
+    melee_hit_volume: f32,
+    /// AmbientSound with SoundVolume, SoundRadius x AmbientSoundScaling
+    /// (a guess at how the native code uses the scaling).
+    ambient: Option<AmbientLoop>,
+    /// ZombieScrake: SawAttackLoopSound while in SawingLoop, and
+    /// ChainSawOffSound when he dies.
+    saw_loop: Option<String>,
+    chainsaw_off: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct AmbientLoop {
+    sound: String,
+    volume: u8,
+    radius: f32,
+}
+
+/// Sound events a zed collected this frame (played by `animate_zeds`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ZedSound {
+    Pain,
+    Death,
+    Decapitation,
+    /// KFMonster.TakeDamage: a headshot on a zed that keeps its head.
+    Skull,
+    MeleeHit,
+    Moan,
+    Challenge,
+}
+
 struct ZedClass {
     kind: ZedKind,
+    sounds: ZedSounds,
     name: String,
     model: SkinnedModel,
     draw_scale: f32,
@@ -543,6 +600,22 @@ pub struct Zed {
     /// sequence, frame) and (upper-body sequence, frame).
     sounds_heard: (Option<usize>, f32),
     overlay_sounds_heard: Option<(usize, f32)>,
+    /// Sound events of this frame (`ZedSound`), played by `animate_zeds`.
+    pub sound_events: Vec<ZedSound>,
+    /// KFMonsterController MoanTime (game seconds, whole: an int in KF);
+    /// negative until the first is set.
+    moan_at: f32,
+    /// Seconds since the last pain sound (xPawn LastPainSound).
+    since_pain_sound: f32,
+    /// The last hit was fire damage (no pain sound for most zeds).
+    pub hit_by_fire: bool,
+    /// ChallengeTime (game seconds) and the next sight check.
+    last_challenge: f32,
+    challenge_check: f32,
+    /// The AmbientSound now on the entity, if any.
+    ambient_on: Option<String>,
+    /// ZedSounds.pain_on_fire, copied from the class.
+    pain_on_fire: bool,
     meshes: Vec<Handle<Mesh>>,
     /// At a welded door (state DoorBashing).
     door_bash: Option<DoorBash>,
@@ -1700,6 +1773,47 @@ fn load_zed_classes(
     commands.insert_resource(ZedClasses(classes));
 }
 
+fn load_zed_sounds(defaults: &ClassDefaults, class: &ObjectHandle, kind: ZedKind) -> ZedSounds {
+    use crate::weapon::sound_prop;
+    let float = |p: &str, d: f32| match defaults.get(class, p) {
+        Some((Value::Float(f), _)) => f,
+        _ => d,
+    };
+    let object_at = |p: &str, i: u32| match defaults.get_at(class, p, i) {
+        Some((Value::Object(r @ ObjectRef::Import(_)), lp)) => Some(lp.pkg.object_path(r)),
+        Some((Value::Object(r @ ObjectRef::Export(_)), lp)) => Some(format!("{}.{}", lp.name, lp.pkg.object_path(r))),
+        _ => None,
+    };
+    let bloat = kind == ZedKind::Bloat;
+    let boss = kind == ZedKind::Patriarch;
+    let fleshpound = kind == ZedKind::Fleshpound;
+    let ambient = sound_prop(defaults, class, "AmbientSound").map(|sound| AmbientLoop {
+        sound,
+        volume: match defaults.get(class, "SoundVolume") {
+            Some((Value::Byte(b), _)) => b,
+            _ => 128,
+        },
+        radius: float("SoundRadius", 64.0) * float("AmbientSoundScaling", 1.0),
+    });
+    ZedSounds {
+        moan: sound_prop(defaults, class, "MoanVoice"),
+        moan_volume: float("MoanVolume", 1.5),
+        pain: object_at("HitSound", 0),
+        pain_volume: if boss { 2.0 * float("TransientSoundVolume", 1.0) } else { 1.25 },
+        pain_on_fire: boss || fleshpound || kind == ZedKind::Scrake,
+        death: if bloat { Some("KF_EnemiesFinalSnd.Bloat_DeathPop".into()) } else { object_at("DeathSound", 0) },
+        death_volume: if bloat { 2.0 } else { 1.3 },
+        headless_death: sound_prop(defaults, class, "HeadlessDeathSound"),
+        decapitation: sound_prop(defaults, class, "DecapitationSound"),
+        challenge: (0..4).filter_map(|i| object_at("ChallengeSound", i)).collect(),
+        melee_hit: sound_prop(defaults, class, "MeleeAttackHitSound"),
+        melee_hit_volume: if fleshpound { 1.25 } else { 2.0 },
+        ambient,
+        saw_loop: sound_prop(defaults, class, "SawAttackLoopSound"),
+        chainsaw_off: sound_prop(defaults, class, "ChainSawOffSound"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn load_class(
     set: &PackageSet,
@@ -1874,7 +1988,9 @@ fn load_class(
     if s[0] != s[1] || s[1] != s[2] || s[0] <= 0.0 {
         runlog::kv("ragdoll_warning", &format!("class={class_path} mesh_scale={s:?} (ragdolls assume a uniform positive scale)"));
     }
+    let sounds = load_zed_sounds(defaults, &class, kind);
     Ok(ZedClass {
+        sounds,
         kind,
         ragdoll,
         health_max: float("HealthMax", float("Health", 100.0)),
@@ -2172,6 +2288,7 @@ impl Zed {
         }
         self.decapitated = true;
         self.head_health = 0.0;
+        self.sound_events.push(ZedSound::Decapitation);
         self.since_decap = Some(0.0);
         if self.headless_claws {
             self.melee_damage *= 2.0;
@@ -2335,6 +2452,16 @@ impl Zed {
     pub fn take_hit(&mut self, damage: f32, hit: Vec3, attacker: Vec3, melee: bool) -> Option<HitReaction> {
         if self.health <= 0.0 || damage <= 0.0 {
             return None;
+        }
+        // PlayTakeHit's pain sound: after the 0.5 s pain-animation gate and
+        // the 0.35 s pain-sound gate (so 0.5 s), not for fire damage
+        // (except the Fleshpound, Scrake and Patriarch). Ours is checked
+        // before the hit-reaction rules below (a simplification).
+        if self.since_pain_sound >= MIN_TIME_BETWEEN_PAIN_ANIMS {
+            self.since_pain_sound = 0.0;
+            if !self.hit_by_fire || self.pain_on_fire {
+                self.sound_events.push(ZedSound::Pain);
+            }
         }
         // ZombieBloat.HitCanInterruptAction: no hit reaction mid-attack.
         if self.no_hit_reactions {
@@ -2516,6 +2643,14 @@ impl Zed {
             looping: true,
             sounds_heard: (None, -1.0),
             overlay_sounds_heard: None,
+            sound_events: Vec::new(),
+            moan_at: -1.0,
+            since_pain_sound: f32::MAX,
+            hit_by_fire: false,
+            last_challenge: f32::MIN,
+            challenge_check: 0.0,
+            ambient_on: None,
+            pain_on_fire: false,
             meshes: Vec::new(),
         }
     }
@@ -2759,6 +2894,60 @@ fn death_launch(z: &Zed) -> Launch {
     }
 }
 
+/// Plays the zed's sound events of this frame (KFMonster's calls; see
+/// `ZedSounds`) and keeps its AmbientSound in step: the class's loop while
+/// alive with a head (PlayDying and RemoveHead clear it; RemoveHead sets
+/// MiscSound, None for every zed), the Scrake's saw loop while sawing.
+fn play_zed_sounds(commands: &mut Commands, entity: Entity, c: &ZedClass, z: &mut Zed, out: &mut MessageWriter<crate::audio::PlaySound>) {
+    use crate::audio::{Emitter, PlaySound, Slot};
+    let snd = &c.sounds;
+    let at = Emitter::Entity(entity);
+    for ev in std::mem::take(&mut z.sound_events) {
+        let play = match ev {
+            ZedSound::Pain => snd.pain.clone().map(|p| PlaySound::new(p, at).slot(Slot::Pain).volume(snd.pain_volume).radius(400.0)),
+            // PlayDyingSound: SLOT_Pain, bNoOverride, radius 525.
+            ZedSound::Death => {
+                if let Some(off) = snd.chainsaw_off.clone() {
+                    out.write(PlaySound::new(off, at).slot(Slot::Misc).volume(2.0).radius(525.0));
+                }
+                if z.decapitated {
+                    snd.headless_death.clone().map(|p| PlaySound::new(p, at).slot(Slot::Pain).volume(1.3).radius(525.0).no_override())
+                } else {
+                    snd.death.clone().map(|p| PlaySound::new(p, at).slot(Slot::Pain).volume(snd.death_volume).radius(525.0).no_override())
+                }
+            }
+            ZedSound::Decapitation => snd.decapitation.clone().map(|p| PlaySound::new(p, at).slot(Slot::Misc).volume(1.3).radius(525.0).no_override()),
+            ZedSound::Skull => Some(PlaySound::new("KF_EnemyGlobalSndTwo.Impact_Skull", at).volume(2.0).radius(500.0).no_override()),
+            // Monster: TransientSoundRadius 500.
+            ZedSound::MeleeHit => snd.melee_hit.clone().map(|p| PlaySound::new(p, at).slot(Slot::Interact).volume(snd.melee_hit_volume).radius(500.0)),
+            ZedSound::Moan => snd.moan.clone().map(|p| PlaySound::new(p, at).slot(Slot::Misc).volume(snd.moan_volume).radius(250.0)),
+            ZedSound::Challenge if !snd.challenge.is_empty() => {
+                let pick = z.random() as usize % snd.challenge.len();
+                Some(PlaySound::new(snd.challenge[pick].clone(), at).slot(Slot::Talk).volume(1.0).radius(500.0))
+            }
+            ZedSound::Challenge => None,
+        };
+        if let Some(p) = play {
+            out.write(p);
+        }
+    }
+    let want = if z.health > 0.0 && !z.decapitated {
+        match (&snd.saw_loop, &snd.ambient) {
+            (Some(saw), Some(a)) if z.sawing => Some(AmbientLoop { sound: saw.clone(), ..a.clone() }),
+            (_, a) => a.clone(),
+        }
+    } else {
+        None
+    };
+    if want.as_ref().map(|a| &a.sound) != z.ambient_on.as_ref() {
+        match &want {
+            Some(a) => commands.entity(entity).insert(crate::audio::AmbientSound { sound: a.sound.clone(), volume: a.volume, radius: a.radius, pitch: 64, at_listener: false }),
+            None => commands.entity(entity).remove::<crate::audio::AmbientSound>(),
+        };
+        z.ambient_on = want.map(|a| a.sound);
+    }
+}
+
 /// The sound notifies of `seq` passed on the way from frame `prev` to
 /// `frame`: a sequence just started counts from before frame 0; a lower
 /// frame than before means it wrapped (looping) or restarted.
@@ -2943,6 +3132,14 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 looping: true,
                 sounds_heard: (None, -1.0),
                 overlay_sounds_heard: None,
+                sound_events: Vec::new(),
+                moan_at: -1.0,
+                since_pain_sound: f32::MAX,
+                hit_by_fire: false,
+                last_challenge: f32::MIN,
+                challenge_check: 0.0,
+                ambient_on: None,
+                pain_on_fire: c.sounds.pain_on_fire,
                 meshes: handles.clone(),
             },
         ))
@@ -3225,7 +3422,12 @@ fn think_and_move(
                     }
                 }
             }
+            // Pawn state Dying: Sleep(0.2), then PlayDyingSound.
+            let before = z.dead_for;
             z.dead_for += dt;
+            if before < 0.2 && z.dead_for >= 0.2 {
+                z.sound_events.push(ZedSound::Death);
+            }
             if log_now && ragdoll_state.is_none() {
                 runlog::kv(
                     "zed_corpse",
@@ -3343,7 +3545,34 @@ fn think_and_move(
             z.bleed_out = Some(left);
         }
         z.since_pain_anim = (z.since_pain_anim + dt).min(1e6);
+        z.since_pain_sound = (z.since_pain_sound + dt).min(1e6);
         z.since_hit = (z.since_hit + dt).min(1e6);
+        // KFMonsterController: MoanTime = Level.TimeSeconds + 2 + 36 x
+        // FRand() at first, then + 12 + 8 x FRand() after each moan (an int,
+        // so whole seconds); headless zeds stay quiet, the Patriarch while
+        // busy (bShotAnim).
+        if z.moan_at < 0.0 {
+            z.moan_at = (now + 2.0 + 36.0 * (z.random() % 1000) as f32 / 1000.0).floor();
+        } else if now > z.moan_at {
+            z.moan_at = (now + 12.0 + 8.0 * (z.random() % 1000) as f32 / 1000.0).floor();
+            let busy = z.boss.is_some() && (z.attack.is_some() || z.state == ZedState::BossBusy);
+            if !z.decapitated && !busy {
+                z.sound_events.push(ZedSound::Moan);
+            }
+        }
+        // Monster.PlayChallengeSound: when the zed takes the player as its
+        // enemy and when it sees the player more than 7 s after the last
+        // (MonsterController EnemyChanged, Hunting.SeePlayer). Sight is
+        // checked every 0.5 s here (UE2's own interval: a guess).
+        z.challenge_check -= dt;
+        if z.challenge_check <= 0.0 && matches!(z.state, ZedState::Chase | ZedState::Melee) {
+            z.challenge_check = 0.5;
+            let eye = z.centre + Vec3::Y * c.collision_height * 0.8 * SCALE;
+            if now - z.last_challenge > 7.0 && sees(&spatial, eye, pt.translation) {
+                z.last_challenge = now;
+                z.sound_events.push(ZedSound::Challenge);
+            }
+        }
         if zap_all && z.health > 0.0 {
             z.set_zapped(10.0);
         }
@@ -3705,6 +3934,7 @@ fn think_and_move(
                             zed_id: z.id,
                             kind: crate::combat::HurtKind::Plain,
                         });
+                        z.sound_events.push(ZedSound::MeleeHit);
                         let (from, to) = (ue_pos(z.centre), ue_pos(target));
                         let momentum = (to - from).normalize_or_zero() * BOSS_DAMAGE_FORCE * push_scale;
                         push.write(crate::walk::PlayerPush { momentum });
@@ -3762,6 +3992,8 @@ fn think_and_move(
                         zed_id: z.id,
                         kind: crate::combat::HurtKind::Plain,
                     });
+                    // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
+                    z.sound_events.push(ZedSound::MeleeHit);
                     // ZombieClot: a landed grab pins the player (not when headless).
                     if c.grapple_duration > 0.0 && !z.decapitated && walker.is_some() {
                         pinned.pin(c.grapple_duration, z.id);
@@ -4473,6 +4705,10 @@ fn animate_zeds(
         *preloaded = true;
         for c in &classes.0 {
             let mut list = c.model.all_notify_sounds();
+            let v = &c.sounds;
+            list.extend([&v.moan, &v.pain, &v.death, &v.headless_death, &v.decapitation, &v.melee_hit, &v.saw_loop, &v.chainsaw_off].into_iter().flatten().cloned());
+            list.extend(v.challenge.iter().cloned());
+            list.extend(v.ambient.as_ref().map(|a| a.sound.clone()));
             list.sort();
             list.dedup();
             preload.write(crate::audio::PreloadSounds { what: c.name.clone(), sounds: list });
@@ -4486,6 +4722,9 @@ fn animate_zeds(
     }
     for (entity, mut z, t, ragdoll_state) in &mut zeds {
         let c = &classes.0[z.class];
+        // Before the ragdoll branch below, which skips the rest: the death
+        // sound comes 0.2 s after death, when the zed is usually a ragdoll.
+        play_zed_sounds(&mut commands, entity, c, &mut z, &mut sounds);
         if let Some(gore) = gore.as_deref() {
             let clock = (time.elapsed_secs_f64() * 1000.0) as u32 ^ std::process::id();
             apply_gore(&mut commands, &mut meshes, gore, library.as_deref(), c, &mut z, entity, t, clock, settings.always_sever, &mut decals);

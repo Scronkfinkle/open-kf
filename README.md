@@ -547,9 +547,14 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - No crouching. Ladders, water and swimming are not handled.
 - Zed animation sounds (S4a, 2026-10-05): footsteps, claw swishes and
   attack grunts, the Siren's scream, the Husk's fireball, the Bloat's
-  vomit, burning screams. Heard by you (2026-10-05). Zed moans, pain, death,
-  decapitation and looping sounds (S4b), the player's sounds (S4c), the
-  world (S5) and music (S6) are still to come.
+  vomit, burning screams. Heard by you (2026-10-05).
+- Zed voices and loops (S4b, 2026-10-05): moans, challenge roars, pain,
+  death 0.2 s after dying, decapitation, skull hits, attack hits on you,
+  each zed's idle loop (the Scrake's chainsaw switching to its sawing
+  sound). Confirmed by you (2026-10-05); decapitation and skull hits not run in a
+  test. Still to come: the Patriarch's speech and guns, ragdoll bumps,
+  the Husk fireball's flight (S4b2), the player's sounds (S4c), the world
+  (S5), music (S6).
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch

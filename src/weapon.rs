@@ -392,7 +392,7 @@ struct FireSounds {
 
 /// A sound property as a full object path. KF's `XRef` strings (loaded by
 /// name in PreloadAssets) win over the `X` object reference.
-fn sound_prop(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str) -> Option<String> {
+pub(crate) fn sound_prop(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str) -> Option<String> {
     if let Some((Value::Str(s), _)) = defaults.get(class, &format!("{prop}Ref"))
         && !s.is_empty()
     {

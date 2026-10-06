@@ -3223,14 +3223,27 @@ with a test you can run):
     reference distance: full volume inside the radius, then
     radius / (radius + 0.5 x (distance - radius)). Sounds too quiet to
     matter are not started.
-  - **S4b. Zed voices and loops.** KFMonster: moans (MoanVoice, SLOT_Misc,
+  - **S4b. Zed voices and loops** (done 2026-10-05, except the parts
+    moved to S4b2 below). Each zed collects sound events (`ZedSound`)
+    from the hit, death and AI code; `play_zed_sounds` plays them on the
+    zed and keeps its AmbientSound (SoundVolume, radius SoundRadius x
+    AmbientSoundScaling: a guess, e.g. 80 x 6.83 = 546, KF's comment says
+    "10 meters") in step. Challenge: at the first sight and when it sees
+    the player more than 7 s after the last, checked every 0.5 s (a
+    guess at UE2's sight interval). KFMonster: moans (MoanVoice, SLOT_Misc,
     MoanVolume 1.5, radius 250; first after 2 + 36 x rand s, then every
     12 + 8 x rand s, whole seconds; never headless), pain (HitSound[0],
     SLOT_Pain, 1.25, radius 400, at most every 0.35 s, not for fire
     damage), death 0.2 s after dying (DeathSound / headless / gibbed),
     decapitation, Impact_Skull on headshots, the melee hit on the player,
     challenge sounds, AmbientSound loops (Scrake's chainsaw, Bloat,
-    Husk, Patriarch), and the Patriarch's own sounds.
+    Husk, Patriarch).
+  - **S4b2. The rest of the zeds.** The Patriarch's own sounds (speech
+    from his AnimNotify_Script calls: KnockedDown, Entrance, Victory,
+    WarnGun, WarnRocket, the taunts; Kev_SaveMe; the rocket; the
+    chaingun's fire and spin loops; the impale hit), ragdoll bumps
+    (Zomb_BodyImpact), the Husk fireball's flight loop and impact, the
+    Bloat's acid puddle, zeds landing (Player_LandDirt), gibbed deaths.
   - **S4c. The player.** Pain (Inf_Player Wounding, SLOT_Pain, 0.6,
     radius 200, every 0.35 s at most), death, footsteps (CheckBob, about
     every 0.375 s at full speed, per surface, 0.45, x 0.4 crouched or
