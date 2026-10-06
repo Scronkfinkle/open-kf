@@ -3068,6 +3068,86 @@ game-time timers run 10% faster than the wall clock. We run at 1.0.
 Zed time copies the ratios, so it is unaffected; matching KF's 1.1
 everywhere is a separate decision.
 
+## Sound and music (milestone 10, planned 2026-10-05)
+
+**What the files hold (checked 2026-10-05).** A `Sound` object in a `.uax`
+package is a short header followed by a complete `.wav` file: an empty
+property list, FileType (a name, "WAV"), Likelihood (float, 1.0), then a
+lazy array (an int32 file offset, a compact byte count) holding the
+`RIFF/WAVE` bytes. A `SoundGroup` (KF's "pick one at random" list) is an
+empty property list, then a compact count and object references, e.g.
+`KF_9MMSnd.9mm_Fire` = Fire1, Fire2, Fire3 (Fire4 exists but is not in
+the group). A raw byte scan of all 156 packages found 6286 wav files,
+all uncompressed PCM (format tag 1): 6151 mono, 135 stereo; 6122 16-bit,
+164 8-bit; rates 44100 (2612), 32000 (2276), 22050 (1282), 8000, 11025,
+48000, 96000, 16000. No Ogg inside packages. Music is 75 plain `.ogg`
+files in `Music/`.
+
+**How KF plays them (Engine/Actor.uc).** `PlaySound(Sound, Slot,
+Volume, bNoOverride, Radius, Pitch, Attenuate)`. Defaults when omitted:
+Volume = TransientSoundVolume (Actor default 0.3), Radius =
+TransientSoundRadius (300), Pitch 1.0. Slots (SLOT_None, Misc, Pain,
+Interact, Ambient, Talk, Interface): a new sound in an actor's slot
+stops the one already playing there, unless bNoOverride is set and the
+old one is still going (SLOT_None never overrides). Looping sounds:
+`AmbientSound` on any actor, with SoundVolume (0-255, default 128),
+SoundRadius (default 64) and SoundPitch (64 = normal). The mixing
+itself (distance falloff, panning) is native code, so it is not in the
+scripts. `System/KillingFloor.ini [ALAudio.ALAudioSubsystem]` gives the
+settings: Channels=32 (voices at once), SoundVolume=0.3,
+AmbientVolume=0.5, MusicVolume=0.1, Rolloff=0.5, DopplerFactor=1.0,
+Use3DSound=False (so plain stereo panning, no HRTF).
+
+**Music (KFMod/KFGameType.uc).** The map's `KFMusicTrigger`
+(MapSongHandler) names a calm Song and a CombatSong, optionally per wave
+(WaveBasedSongs), with FadeInTime / FadeOutTime. Calm plays during trader
+time, combat during waves. The Patriarch fight switches to BossBattleSong
+(ClientSetMusic, MTRAN_FastFade).
+
+**Mixer choice.** Bevy's built-in audio can play a file and do simple
+left/right panning. It cannot do KF's rules: a range past which a sound is
+silent, slots that cut off the previous sound, 32 voices with the
+quietest dropped first, and pitch following zed time. So we write a small
+mixer of our own (`src/audio.rs`). It feeds `rodio`, the library Bevy's
+audio already uses, so nothing new is downloaded. The mixer adds the
+voices together sample by sample. Each frame the game updates every
+voice's volume, left/right balance and pitch from the listener's position.
+If the machine has no sound device, the game logs it and runs silent.
+
+**Distance falloff (a guess, to be checked by ear).** OpenAL's
+"inverse distance clamped" model is what UE2's ALAudio used, with
+Rolloff 0.5 from the ini, and silence past the sound's Radius. Labelled a
+guess in the code until a side-by-side listen with the real game confirms
+it. Zed time: the voices' pitch is multiplied by the game speed (assumed
+from how KF sounds in zed time; to be checked).
+
+**Steps** (each one logged as `sound_play` / `sound_stop` / `music` lines,
+with a test you can run):
+
+- **S1. Read sounds** (done 2026-10-05). `ue-assets/src/sound.rs`: Sound
+  and SoundGroup, the wav header (rate, channels, bits), samples and `smpl`
+  loop points. `kfpkg sounds` reads every sound in the install: 6687
+  sounds (6660 in `.uax`, 15 in maps, 12 in `.usx`), 1630 groups with
+  7926 members, 0 failures, 149 with loop points, about 4.2 hours in all.
+  Likelihood (a member's weight in its group's random pick) is 1.0 for
+  all but 3 sounds. No audio output yet.
+- **S2. The mixer.** `src/audio.rs`: output stream, voices, slots,
+  32-voice limit, falloff, panning, pitch, master volumes from the ini
+  values. A test action `sound:Package.Name` and a `--mute` flag. Test:
+  you hear the 9mm shot; the log shows voice counts.
+- **S3. Weapons.** Fire, dry fire, select, reload and pickup sounds (from
+  each weapon's FireSound and its animation sound notifies; to research).
+- **S4. Zeds and the player.** Moans, attacks, pain, death, melee hits,
+  the player's pain and death, footsteps if KF's scripts do them.
+- **S5. The world.** The map's AmbientSound actors, doors (open, close,
+  weld), explosions, bullet impacts (bullet_fx's ImpactSound), pickups,
+  trader and zed-time sounds.
+- **S6. Music.** KFMusicTrigger's calm and combat songs per wave, the
+  fades and the boss song.
+
+Not planned: Doppler (DopplerFactor 1.0; small effect, later if missed),
+EAX reverb (off in KF's ini), voice chat.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

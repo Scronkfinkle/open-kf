@@ -3640,3 +3640,26 @@ laugh views not looked at in a screenshot. After a loss he keeps
 attacking our debug respawn (as before). Not played by you.
 **Next:** your call: the two open questions (1.1 speed, seeds), the
 end-of-game screen, or the lighting leftovers.
+
+## 2026-10-05 S1: reading KF's sounds (milestone 10 plan)
+
+**Changed:** `docs/DESIGN.md`: new section "Sound and music (milestone
+10)" with what the files hold, how KF plays sounds (PlaySound slots,
+radius, pitch, AmbientSound), the music rules (KFMusicTrigger), KF's
+audio ini values, the mixer choice and steps S1-S6.
+`crates/ue-assets/src/sound.rs` (new): Sound and SoundGroup objects and
+a PCM `.wav` decoder (8/16-bit, mono/stereo, any rate, `smpl` loop
+points); 2 unit tests. `kfpkg sounds`: reads and decodes every sound in
+the install.
+**Why:** you asked for sound. This step only reads the data; nothing
+plays yet.
+**Tested how:** `./target/release/kfpkg sounds` (full output in
+`work/sounds-scan.txt`); `cargo test --release --workspace`; clippy.
+**Result:** `summary sounds=6687 groups=1630 group_members=7926
+bad_members=0 failed=0 looped=149 truncated=0 total_seconds=15265`.
+Formats: 6346 mono 16-bit, 165 mono 8-bit, 176 stereo 16-bit; all "WAV".
+Tests 130 pass (2 new); clippy clean.
+**Still broken / not tested:** no sound output (S2). Group members that
+point into other packages are counted, not resolved, by the scan.
+**Next:** S2, the mixer (a test action plays one sound, e.g. the 9mm
+shot).

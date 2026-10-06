@@ -24,6 +24,7 @@
 //! kfpkg meshtags <file> <mesh>     a skeletal mesh's bones and attach tags
 //! kfpkg emitter <Package.Class>    a particle effect's sub-emitters, values resolved
 //! kfpkg nav <map>                  a map's navigation network: nodes, ReachSpec flags, groups
+//! kfpkg sounds                     read and decode every sound and sound group (checks only)
 //! ```
 //! `<file>` may be absolute or relative to the install, e.g. `Maps/KF-Farm.rom`.
 
@@ -73,7 +74,8 @@ const USAGE: &str = "usage:
   kfpkg karma
   kfpkg meshtags <file> <mesh>
   kfpkg emitter <Package.Class>
-  kfpkg nav <map>";
+  kfpkg nav <map>
+  kfpkg sounds";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -109,6 +111,7 @@ fn main() -> ExitCode {
         ["anims"] => scan_anims(&install),
         ["karma"] => scan_karma(&install),
         ["fonts"] => scan_fonts(&install),
+        ["sounds"] => scan_sounds(&install),
         ["emitter", class] => emitter(&install, class),
         ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
@@ -1392,6 +1395,79 @@ fn scan_fonts(install: &Install) -> Result<bool, String> {
     }
     println!("summary fonts={total} failed={failed}");
     Ok(failed == 0)
+}
+
+fn scan_sounds(install: &Install) -> Result<bool, String> {
+    use ue_assets::sound::{decode_wav, read_sound, read_sound_group};
+    let (mut sounds, mut groups, mut failed) = (0usize, 0usize, 0usize);
+    let mut by_format: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_rate: BTreeMap<u32, usize> = BTreeMap::new();
+    let (mut looped, mut truncated, mut seconds, mut members, mut bad_members) = (0usize, 0usize, 0f64, 0usize, 0usize);
+    let mut where_found: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, path) in package_files(install)? {
+        let rel = path.strip_prefix(&install.root).unwrap_or(&path).display().to_string();
+        let p = Package::open(&path).map_err(|e| format!("{rel}: {e}"))?;
+        for i in 0..p.exports.len() {
+            let class = p.export_class_name(i);
+            let name = p.object_path(ObjectRef::Export(i));
+            match class {
+                "Sound" => {
+                    sounds += 1;
+                    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    *where_found.entry(ext).or_default() += 1;
+                    match read_sound(&p, i).map_err(|e| e.to_string()).and_then(|s| decode_wav(&s.data).map(|w| (s, w))) {
+                        Ok((s, w)) => {
+                            *by_format.entry(format!("{} {}ch {}bit", s.file_type, w.channels, w.bits)).or_default() += 1;
+                            *by_rate.entry(w.sample_rate).or_default() += 1;
+                            looped += w.loop_points.is_some() as usize;
+                            truncated += w.truncated as usize;
+                            seconds += w.duration() as f64;
+                            if s.likelihood != 1.0 {
+                                println!("{rel} {name}: likelihood {}", s.likelihood);
+                            }
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            println!("{rel} {name}: FAILED {e}");
+                        }
+                    }
+                }
+                "SoundGroup" => {
+                    groups += 1;
+                    match read_sound_group(&p, i) {
+                        Ok(list) => {
+                            members += list.len();
+                            for rf in list {
+                                // Members in the same package must be sounds; imports are only counted.
+                                if let ObjectRef::Export(j) = rf
+                                    && !matches!(p.export_class_name(j), "Sound" | "SoundGroup")
+                                {
+                                    bad_members += 1;
+                                    println!("{rel} {name}: member {} is a {}", p.object_path(rf), p.export_class_name(j));
+                                }
+                                if matches!(rf, ObjectRef::Null) {
+                                    bad_members += 1;
+                                    println!("{rel} {name}: empty member");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            println!("{rel} {name}: FAILED {e}");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    println!("formats {by_format:?}");
+    println!("rates {by_rate:?}");
+    println!("packages {where_found:?}");
+    println!(
+        "summary sounds={sounds} groups={groups} group_members={members} bad_members={bad_members} failed={failed} looped={looped} truncated={truncated} total_seconds={seconds:.0}"
+    );
+    Ok(failed == 0 && bad_members == 0)
 }
 
 fn scan_karma(install: &Install) -> Result<bool, String> {

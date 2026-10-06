@@ -18,6 +18,7 @@ pub mod properties;
 pub mod reader;
 pub mod script_text;
 pub mod skeletal;
+pub mod sound;
 pub mod static_mesh;
 pub mod terrain;
 pub mod texture;
