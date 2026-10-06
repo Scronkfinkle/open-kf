@@ -77,6 +77,8 @@ kf-rs/                     Cargo workspace root
     player/                walking, pawn collision, pain flash, armour
     weapons/               first-person weapons, firing, projectiles, bullet effects
     zeds/                  the specimens, the Patriarch, gore, ragdolls, vomit, fireballs
+      zed/                 the Zed component (mod.rs: types), load, spawn, think (AI),
+                           boss_ai, attacks, animate, effects, sounds, methods
     game/                  waves, damage and health, dosh, trader and shop, HUD, zed time
     audio/                 the mixer, music, map / player / trader sounds
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain

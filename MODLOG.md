@@ -4225,3 +4225,21 @@ missing or new; counts differ only for logs paced by wall-clock time
 (this run took 37 s instead of 53 s). Tests 140 pass; clippy 0 warnings.
 **Still broken / not tested:** nothing new.
 **Next:** clean-up 2, splitting zeds/zed.rs.
+
+## 2026-10-06 Clean-up 2: zeds/zed.rs split into a folder
+
+**Changed:** `src/zeds/zed.rs` (5172 lines) is now `src/zeds/zed/`:
+`mod.rs` (all types, constants, the plugin, small helpers; 884 lines)
+and `load.rs`, `spawn.rs`, `think.rs` (the AI; 1416 lines, mostly the one
+think_and_move function, not split: that would change logic), `boss_ai.rs`,
+`attacks.rs`, `animate.rs`, `effects.rs`, `sounds.rs`, `methods.rs` (the
+Zed methods). Code moved as is (the types stay in mod.rs, so no field
+became public); moved functions are `pub(super)`. `git mv` to `mod.rs`
+first, so the history follows. DESIGN "Architecture".
+**Why:** clean-up step 2 of 3.
+**Tested how:** build, clippy (counted), tests; the same scripted wave run
+twice, comparing event kinds with the baseline.
+**Result:** no logic changed. Tests 140 pass; clippy 0 warnings. Run 1:
+the baseline's 161 kinds plus `zed_corpse` (logged once a second only
+while a dead zed has no ragdoll yet: timing); run 2: exactly the 161.
+**Next:** clean-up 3, weapons/weapon.rs.
