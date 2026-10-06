@@ -4457,3 +4457,29 @@ fractional (zed MeleeDamage x 0.95-1.05; KF passes an int), which slightly
 changes jar sizes.
 **Next:** E3, drawing the blur.
 
+## 2026-10-06 E3: the hit blur drawn
+
+**Changed:** new `src/render/hit_blur.rs`: a full-screen pass (Bevy's
+FullscreenMaterial) on the weapon camera, put on while HitCam's blur
+amount is over 0 and taken off at 0: the frame mixed with a 13-tap ring
+blur by the amount, radius amount x 1.1% of the screen height (a guess:
+KF's PostFX blur is native). `render/mod.rs`, `main.rs` (plugin).
+DESIGN.md E3 as built.
+**Why:** E3, the last step of the hit effects.
+**Tested how:** `scripts/headless.sh --mode debug --spawn siren
+--screenshot 92`, compared with the same frame from E2 (no blur drawn);
+`--spawn clot --input 130:kill_zeds --frames 400`; a Siren run with
+stderr kept, searched for render or shader errors; clippy (no warnings);
+tests (120 pass).
+**Result:** Screenshot at blur 0.7: the scene, Siren and weapon are
+visibly soft, the HUD and splash sharp, brightness and colours as in
+the unblurred shot. Single hit: `hit_blur_pass on=true amount=0.789` at
+the hit, `hit_blur end=true reason=faded` and `hit_blur_pass on=false`
+1.99 s later. No render errors (only Xvfb's XSETTINGS warning).
+**Still broken / not tested:** the look of the blur is not compared
+with KF (native filter unknown). Not seen by you. Not tested with
+`HEADLESS_SOFTWARE=1`, nor on other maps (the pass is only on while
+blurred, so maps are untouched otherwise). No blur in behind view.
+**Next:** your play test of E1-E3; then possibly the near-death look
+(NearDeathShader below 25% health), not planned yet.
+

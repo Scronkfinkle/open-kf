@@ -3404,7 +3404,7 @@ their texture's value). Actors have their own `Actor.SurfaceType` too
   static meshes' simplified collision models (we collide with the
   render triangles, so their materials).
 
-## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1, E2 implemented)
+## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1-E3 implemented)
 
 What the player sees when hurt, vomited on or screamed at. All from the
 scripts (KFHumanPawn, KFPawn, KFPlayerController, HUDKillingFloor,
@@ -3538,6 +3538,16 @@ frames. Ours: a full-screen pass after the scene and weapon, before
 the vision overlay and HUD: the frame mixed with a blurred copy by
 `amount`. The blur size is a guess, to be compared with the real game
 by you.
+
+As built (2026-10-06): `render/hit_blur.rs`, a Bevy FullscreenMaterial
+pass on the weapon camera (the last 3D camera on the window, so sky,
+scene and weapon are blurred; the vision overlay, trader arrow and HUD
+come after and stay sharp). 12 taps on two rings (radius and half
+radius) plus the centre; radius = amount x 1.1% of the screen height;
+result = mix(frame, blurred, amount). The pass is on the camera only
+while the amount is over 0 (`hit_blur_pass` on / off in the log). In
+behind view (Patriarch cut scenes) the weapon camera is off, so no
+blur there.
 
 Not planned here: the near-death look (HUDKillingFloor swaps the
 vision overlay for KFX.NearDeathShader below 25% health), the bloody
