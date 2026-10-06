@@ -3693,3 +3693,42 @@ entity that is removed fade out at once (KF keeps playing them where it
 was). Rolloff=0.5 from the ini is not used.
 **Next:** S3, weapon sounds (fire, the first-person stereo versions
 `*_FireST`, dry fire, reload, select).
+
+## 2026-10-05 S3a: weapon shots, dry fire, select, full-auto loop
+
+**Changed:** `src/weapon.rs`: each fire mode reads its sounds
+(`FireSounds`: FireSound / StereoFireSound / NoAmmoSound with their `Ref`
+strings, TransientSoundVolume / Radius, random pitch, KFHighROFFire's
+AmbientFireSound, FireEndStereoSound, AmbientFireVolume and radius);
+each weapon its SelectSound and TransientSoundVolume. Sounds at
+PlayFiring, the dry click (KFWeapon.Fire), the select (KFWeapon.BringUp),
+and the full-auto loop and tail (`weapon_loop_sound`). Pitch rolls use
+their own random stream, so the seeded spread and damage rolls are
+unchanged. `src/audio.rs`: looping voices (wav loop points, else the
+whole clip), the `AmbientSound` component, `PreloadSounds`, a per-actor
+slot key (`actor`, so each weapon has its own slots), the gain cap at 1.
+`kfpkg sounds <file>`: lists a package's sounds with length, peak and RMS
+level. DESIGN (S3 split into S3a-c, the two volume guesses), README.
+**Why:** S3 of the sound plan; S3 split in three because the
+fast-firing guns, reloads and melee each work differently in KF.
+**Tested how:** runs with `--give AK47AssaultRifle,MP7MMedicGun` and
+scripted fire, and `--give all --frames 400`; 2 new unit tests (gain
+cap, loop wrap; the loop test also covers a stall bug found while
+reading the code); clippy; tests.
+**Result:** 9mm: `9mm_Select volume=100.00`, then `9mm_FireST
+volume=1.53` (1.8 x 0.85); the second shot stops the first
+(`slot_override`). AK47: `AK47_Select`, a `AK47_FireST` every 0.10-0.12 s
+while held, each cutting the last. The 9mm's last shot is no longer cut
+by the AK's select (voices=2). MP7: `sound_ambient MP7_FireLoop
+volume=255 radius=500` on fire_down, `MP7_tailST volume=2.01` and the loop
+stopped 1.2 s later (magazine empty); the next click: `MP7_DryFire
+volume=2.00` and the auto-reload. All 44 weapons preloaded: 0 missing,
+50 ms in total. Tests 136 pass; clippy clean.
+**Still broken / not tested:** you listened (2026-10-05): shots, select,
+dry click and the full-auto loop and tail as described; the shotgun's
+rack and all reloads are missing (animation sounds, S3b). Guesses: the gain cap
+at 1, ambient volume 128 = 1.0. Always first-person sounds (also in the
+Patriarch's behind views). Reload, melee swing and hit, chainsaw,
+flamethrower, Husk Gun, ZED Gun, welder and syringe sounds are missing
+(S3b, S3c). Weapon pickups (S5).
+**Next:** S3b, the reload and other animation sounds.

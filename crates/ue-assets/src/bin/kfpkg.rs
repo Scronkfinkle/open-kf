@@ -25,6 +25,7 @@
 //! kfpkg emitter <Package.Class>    a particle effect's sub-emitters, values resolved
 //! kfpkg nav <map>                  a map's navigation network: nodes, ReachSpec flags, groups
 //! kfpkg sounds                     read and decode every sound and sound group (checks only)
+//! kfpkg sounds <file>              one package's sounds: format, length, peak and RMS level; groups
 //! ```
 //! `<file>` may be absolute or relative to the install, e.g. `Maps/KF-Farm.rom`.
 
@@ -75,7 +76,7 @@ const USAGE: &str = "usage:
   kfpkg meshtags <file> <mesh>
   kfpkg emitter <Package.Class>
   kfpkg nav <map>
-  kfpkg sounds";
+  kfpkg sounds [FILE]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -112,6 +113,7 @@ fn main() -> ExitCode {
         ["karma"] => scan_karma(&install),
         ["fonts"] => scan_fonts(&install),
         ["sounds"] => scan_sounds(&install),
+        ["sounds", file] => list_sounds(&install, file),
         ["emitter", class] => emitter(&install, class),
         ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
@@ -1468,6 +1470,30 @@ fn scan_sounds(install: &Install) -> Result<bool, String> {
         "summary sounds={sounds} groups={groups} group_members={members} bad_members={bad_members} failed={failed} looped={looped} truncated={truncated} total_seconds={seconds:.0}"
     );
     Ok(failed == 0 && bad_members == 0)
+}
+
+fn list_sounds(install: &Install, file: &str) -> Result<bool, String> {
+    use ue_assets::sound::{decode_wav, read_sound, read_sound_group};
+    let p = Package::open(&resolve(install, file)).map_err(|e| e.to_string())?;
+    for i in 0..p.exports.len() {
+        let name = p.object_path(ObjectRef::Export(i));
+        match p.export_class_name(i) {
+            "Sound" => match read_sound(&p, i).map_err(|e| e.to_string()).and_then(|s| decode_wav(&s.data)) {
+                Ok(w) => {
+                    let peak = w.samples.iter().map(|&s| (s as f32 / 32768.0).abs()).fold(0.0, f32::max);
+                    let rms = (w.samples.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum::<f64>() / w.samples.len().max(1) as f64).sqrt();
+                    println!("{name}: {} Hz {}ch {}bit {:.2}s peak={peak:.2} rms={rms:.3} loop={:?}", w.sample_rate, w.channels, w.bits, w.duration(), w.loop_points);
+                }
+                Err(e) => println!("{name}: FAILED {e}"),
+            },
+            "SoundGroup" => match read_sound_group(&p, i) {
+                Ok(list) => println!("{name}: group [{}]", list.iter().map(|&r| p.object_path(r)).collect::<Vec<_>>().join(", ")),
+                Err(e) => println!("{name}: FAILED {e}"),
+            },
+            _ => {}
+        }
+    }
+    Ok(true)
 }
 
 fn scan_karma(install: &Install) -> Result<bool, String> {

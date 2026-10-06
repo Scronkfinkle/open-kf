@@ -7,6 +7,8 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
+use crate::audio::{AmbientSound, Emitter, PlaySound, Slot as SoundSlot};
+
 use ue_assets::class_defaults::ClassDefaults;
 use ue_assets::package::ObjectRef;
 use ue_assets::package_set::{ObjectHandle, PackageSet};
@@ -114,7 +116,7 @@ impl Plugin for WeaponPlugin {
             .add_systems(Update, shop_requests.before(weapon_input))
             .add_systems(
                 Update,
-                (weapon_input, animate_weapon, weapon_fire_fx)
+                (weapon_input, animate_weapon, weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
                     .chain()
                     .after(crate::camera::follow_sky),
             );
@@ -201,6 +203,10 @@ struct WeaponDef {
     idle_anim: String,
     /// bModeZeroCanDryFire: clicking with an empty magazine starts a reload.
     can_dry_fire: bool,
+    /// SelectSound (KFWeapon.BringUp) at the weapon's TransientSoundVolume
+    /// (KFWeapon: 100; capped by the mixer).
+    select_sound: Option<String>,
+    select_volume: f32,
     /// Fire mode 1's own ammo when it uses another ammo class (the M4 203's
     /// M203Ammo): rounds left and MaxAmmo.
     alt_ammo: Option<(u32, u32)>,
@@ -331,10 +337,81 @@ struct IronSights {
     idle_anim: String,
 }
 
+/// A fire mode's sounds (WeaponFire, KFFire, KFHighROFFire), as full
+/// object paths. See DESIGN.md, "Sound and music", S3a.
+#[derive(Clone, Debug, Default)]
+struct FireSounds {
+    /// FireSound / FireSoundRef.
+    fire: Option<String>,
+    /// KFFire / KFShotgunFire: StereoFireSound, played instead of FireSound
+    /// in first person (at 0.85 x the volume). None for other fire classes.
+    stereo: Option<String>,
+    /// NoAmmoSound: KFWeapon.Fire's dry click.
+    no_ammo: Option<String>,
+    /// TransientSoundVolume (WeaponFire default 0.5) and
+    /// TransientSoundRadius (400).
+    volume: f32,
+    radius: f32,
+    /// KFFire family with bRandomPitchFireSound: RandomPitchAdjustAmt
+    /// (pitch 1 +- up to this); 0 for none.
+    random_pitch: f32,
+    /// KFHighROFFire in full auto: AmbientFireSound loops while held
+    /// (AmbientFireVolume 0-255, AmbientFireSoundRadius), then
+    /// FireEndStereoSound (first person) at AmbientFireVolume / 127.
+    ambient: Option<String>,
+    end_stereo: Option<String>,
+    ambient_volume: u8,
+    ambient_radius: f32,
+}
+
+/// A sound property as a full object path. KF's `XRef` strings (loaded by
+/// name in PreloadAssets) win over the `X` object reference.
+fn sound_prop(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str) -> Option<String> {
+    if let Some((Value::Str(s), _)) = defaults.get(class, &format!("{prop}Ref"))
+        && !s.is_empty()
+    {
+        return Some(s);
+    }
+    match defaults.get(class, prop) {
+        Some((Value::Object(r @ ObjectRef::Import(_)), lp)) => Some(lp.pkg.object_path(r)),
+        Some((Value::Object(r @ ObjectRef::Export(_)), lp)) => Some(format!("{}.{}", lp.name, lp.pkg.object_path(r))),
+        _ => None,
+    }
+}
+
+fn load_fire_sounds(defaults: &ClassDefaults, fm: &ObjectHandle) -> FireSounds {
+    let float = |p: &str, d: f32| match defaults.get(fm, p) {
+        Some((Value::Float(f), _)) => f,
+        _ => d,
+    };
+    let kf_fire = defaults.is_a(fm, "KFFire") || defaults.is_a(fm, "KFShotgunFire");
+    let fire = sound_prop(defaults, fm, "FireSound");
+    // KFFire.PreloadAssets: no stereo sound given -> the plain one.
+    let stereo = kf_fire.then(|| sound_prop(defaults, fm, "StereoFireSound").or(fire.clone())).flatten();
+    let random_pitch = if kf_fire && matches!(defaults.get(fm, "bRandomPitchFireSound"), Some((Value::Bool(true), _))) { float("RandomPitchAdjustAmt", 0.0) } else { 0.0 };
+    let end = sound_prop(defaults, fm, "FireEndSound");
+    FireSounds {
+        fire,
+        stereo,
+        no_ammo: sound_prop(defaults, fm, "NoAmmoSound"),
+        volume: float("TransientSoundVolume", 0.5),
+        radius: float("TransientSoundRadius", 400.0),
+        random_pitch,
+        ambient: defaults.is_a(fm, "KFHighROFFire").then(|| sound_prop(defaults, fm, "AmbientFireSound")).flatten(),
+        end_stereo: sound_prop(defaults, fm, "FireEndStereoSound").or(end),
+        ambient_volume: match defaults.get(fm, "AmbientFireVolume") {
+            Some((Value::Byte(b), _)) => b,
+            _ => 255,
+        },
+        ambient_radius: float("AmbientFireSoundRadius", 500.0),
+    }
+}
+
 /// One fire mode (a WeaponFire class): what it does, its animations and timing.
 #[derive(Clone, Debug)]
 struct FireMode {
     kind: FireKind,
+    sounds: FireSounds,
     /// WeldFire / UnWeldFire: needs a weldable door in view (door.rs).
     weld: bool,
     /// bModeExclusive: false lets the other mode fire at the same time
@@ -601,6 +678,7 @@ fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<crate::comba
 fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&ObjectHandle>) -> FireMode {
     let mut mode = FireMode {
         kind: FireKind::None,
+        sounds: FireSounds::default(),
         class: "None".to_string(),
         anims: vec!["Fire".to_string()],
         anim_rate: 1.0,
@@ -645,6 +723,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         return mode;
     };
     mode.class = fm_class.path();
+    mode.sounds = load_fire_sounds(defaults, fm_class);
     let fget = |p: &str| defaults.get(fm_class, p);
     let ffloat = |p: &str, d: f32| match fget(p) {
         Some((Value::Float(f), _)) => f,
@@ -1144,6 +1223,11 @@ struct Weapons {
     /// Dual pistols: the next shot is the left gun's, from the hip / aimed
     /// (DualiesFire swaps FireAnim and FireAimedAnim separately).
     dual_left: [bool; 2],
+    /// Sounds started this frame, sent to the mixer by `send_weapon_sounds`.
+    sounds: Vec<crate::audio::PlaySound>,
+    /// Random pitch of fire sounds: its own stream, so the spread and
+    /// damage rolls stay as they were before sound.
+    sound_rng: u32,
 }
 
 impl Weapons {
@@ -1345,6 +1429,8 @@ fn load_weapons(
         fx_shots: Vec::new(),
         hand_frames: Vec::new(),
         dual_left: [false; 2],
+        sounds: Vec::new(),
+        sound_rng: 0x1b87_3593,
     };
     set_action(&mut w, Action::Select);
     commands.insert_resource(w);
@@ -1639,6 +1725,8 @@ fn load_weapon(
         reload_rate: float("ReloadRate", 1.0),
         hold_to_reload: matches!(get("bHoldToReload"), Some((Value::Bool(true), _))),
         can_dry_fire: matches!(get("bModeZeroCanDryFire"), Some((Value::Bool(true), _))),
+        select_sound: sound_prop(defaults, &class, "SelectSound"),
+        select_volume: float("TransientSoundVolume", 0.3),
         scope,
         dual,
         toggles_on_alt: if class_name.eq_ignore_ascii_case("KSGShotgun") {
@@ -1792,6 +1880,12 @@ fn set_action(w: &mut Weapons, action: Action) {
     let (name, rate) = match action {
         Action::Select => {
             w.switch_timer = def.bring_up_time;
+            // KFWeapon.BringUp: SelectSound, SLOT_Interact, the weapon's
+            // TransientSoundVolume and radius.
+            if let Some(sel) = def.select_sound.clone() {
+                let actor = weapon_actor(def);
+                w.sounds.push(PlaySound::new(sel, Emitter::Listener).slot(SoundSlot::Interact).volume(def.select_volume).actor(actor));
+            }
             (def.select_anim.clone(), def.select_anim_rate)
         }
         Action::Idle => return play_idle(w),
@@ -1924,6 +2018,7 @@ fn weld_fire(w: &mut Weapons, mode: usize, fm: &FireMode, door: Option<crate::do
 }
 
 fn play_firing(w: &mut Weapons, mode: usize, last: bool) {
+    fire_sound(w, mode);
     let mut m = w.defs[w.current].modes[mode].clone();
     // BoomStick: FireLastAnim / FireLastAimedAnim (fire and reload).
     if last {
@@ -1957,6 +2052,107 @@ fn play_firing(w: &mut Weapons, mode: usize, last: bool) {
         (fire, m.anim_rate)
     };
     play(w, &name, rate, false);
+}
+
+/// The sound half of PlayFiring. KFFire and KFShotgunFire in first
+/// person: StereoFireSound at TransientSoundVolume x 0.85, pitch 1 +-
+/// RandomPitchAdjustAmt when bRandomPitchFireSound; other fire classes
+/// (WeaponFire, WeldFire, SyringeAltFire, FragFire): FireSound at
+/// TransientSoundVolume. Always SLOT_Interact, at the player (we are always
+/// in first person; the behind view of view_target.rs keeps it).
+fn fire_sound(w: &mut Weapons, mode: usize) {
+    let s = &w.defs[w.current].modes[mode].sounds;
+    let (sound, volume) = match &s.stereo {
+        Some(st) => (st.clone(), s.volume * 0.85),
+        None => match &s.fire {
+            Some(f) => (f.clone(), s.volume),
+            None => return,
+        },
+    };
+    let (amount, radius) = (s.random_pitch, s.radius);
+    let mut pitch = 1.0;
+    if amount > 0.0 {
+        pitch += sound_rand(w) * amount * if sound_rand(w) < 0.5 { -1.0 } else { 1.0 };
+    }
+    let actor = weapon_actor(&w.defs[w.current]);
+    w.sounds.push(PlaySound::new(sound, Emitter::Listener).slot(SoundSlot::Interact).volume(volume).radius(radius).pitch(pitch).actor(actor));
+}
+
+/// The weapon as a sound "actor": its slots are its own (a hash of the
+/// class name, stable when weapons are bought or sold).
+fn weapon_actor(def: &WeaponDef) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    def.class.hash(&mut h);
+    h.finish() | 1
+}
+
+/// FRand for sounds (xorshift).
+fn sound_rand(w: &mut Weapons) -> f32 {
+    w.sound_rng ^= w.sound_rng << 13;
+    w.sound_rng ^= w.sound_rng >> 17;
+    w.sound_rng ^= w.sound_rng << 5;
+    (w.sound_rng >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// Hands this frame's weapon sounds to the mixer, and has each weapon's
+/// sounds loaded the first time it is carried.
+fn send_weapon_sounds(
+    w: Option<ResMut<Weapons>>,
+    mut out: MessageWriter<PlaySound>,
+    mut preload: MessageWriter<crate::audio::PreloadSounds>,
+    mut done: Local<std::collections::HashSet<String>>,
+) {
+    let Some(mut w) = w else {
+        return;
+    };
+    out.write_batch(w.sounds.drain(..));
+    for def in &w.defs {
+        if done.insert(def.class.clone()) {
+            let mut sounds: Vec<String> = def.select_sound.iter().cloned().collect();
+            for m in &def.modes {
+                let s = &m.sounds;
+                sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo].into_iter().flatten().cloned());
+            }
+            sounds.sort();
+            sounds.dedup();
+            preload.write(crate::audio::PreloadSounds { what: def.class.clone(), sounds });
+        }
+    }
+}
+
+/// KFHighROFFire's state FireLoop: AmbientFireSound on the weapon while a
+/// full-auto mode is held (on the weapon camera, at the listener), and
+/// FireEndStereoSound at AmbientFireVolume / 127 when it stops (released,
+/// empty, or the weapon put away).
+fn weapon_loop_sound(w: Option<ResMut<Weapons>>, mut commands: Commands, mut playing: Local<Option<(Entity, FireSounds)>>) {
+    let Some(mut w) = w else {
+        return;
+    };
+    let def = &w.defs[w.current];
+    let wanted = (0..2).find_map(|m| {
+        let fm = &def.modes[m];
+        (fm.high_rof && !fm.wait_for_release && w.firing[m] && fm.sounds.ambient.is_some()).then(|| fm.sounds.clone())
+    });
+    let same = match (&*playing, &wanted) {
+        (Some((_, a)), Some(b)) => a.ambient == b.ambient,
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    if let Some((e, old)) = playing.take() {
+        commands.entity(e).remove::<AmbientSound>();
+        if let Some(end) = old.end_stereo {
+            w.sounds.push(PlaySound::new(end, Emitter::Listener).volume(old.ambient_volume as f32 / 127.0).radius(old.ambient_radius));
+        }
+    }
+    if let Some(s) = wanted {
+        let e = w.camera;
+        commands.entity(e).insert(AmbientSound { sound: s.ambient.clone().unwrap_or_default(), volume: s.ambient_volume, radius: s.ambient_radius, pitch: 64, at_listener: true });
+        *playing = Some((e, s));
+    }
 }
 
 /// KFFire.PlayFireEnd (Weapon.StopFire on release): FireEndAimedAnim while
@@ -2552,6 +2748,12 @@ fn weapon_input(
             // KFWeapon.Fire: a click on an empty magazine asks for a reload.
             if mode == 0 && !fm.total_ammo_only && pressed[mode] && mag == Some(0) && !reloading && w.fire_cooldown[0] <= 0.0 {
                 runlog::kv("dry_fire", &format!("weapon={} auto_reload={}", w.defs[cur].item_name, w.defs[cur].can_dry_fire));
+                // KFWeapon.Fire: NoAmmoSound at 2.0, SLOT_None.
+                if w.defs[cur].can_dry_fire
+                    && let Some(click) = fm.sounds.no_ammo.clone()
+                {
+                    w.sounds.push(PlaySound::new(click, Emitter::Listener).volume(2.0));
+                }
                 if w.defs[cur].can_dry_fire && allow_reload(&w) {
                     start_reload(&mut w, "dry_fire");
                 }

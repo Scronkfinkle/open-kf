@@ -3144,8 +3144,38 @@ with a test you can run):
   slots), a fixed point, or the listener (no falloff or panning). Test
   actions `sound:NAME` and `sound_at:NAME@DIST` (volume 1.8, KF's gun
   volume); `--mute`.
-- **S3. Weapons.** Fire, dry fire, select, reload and pickup sounds (from
-  each weapon's FireSound and its animation sound notifies; to research).
+- **S3. Weapons**, in three parts:
+  - **S3a. Shots, dry fire, select, the full-auto loop** (done
+    2026-10-05). PlayFiring's sound (WeaponFire, KFFire, KFShotgunFire,
+    BoomStickFire, WeldFire, SyringeAltFire, FragFire all do the same):
+    KFFire family in first person: StereoFireSound (falls back to
+    FireSound) at TransientSoundVolume x 0.85, pitch 1 +-
+    RandomPitchAdjustAmt if bRandomPitchFireSound; other classes:
+    FireSound at TransientSoundVolume (WeaponFire default 0.5); always
+    SLOT_Interact, so a new shot cuts the last one's tail (UE2's slot
+    rule). Dry fire (KFWeapon.Fire, bModeZeroCanDryFire): NoAmmoSound at
+    2.0. Select (KFWeapon.BringUp): SelectSound, SLOT_Interact, the
+    weapon's TransientSoundVolume (KFWeapon: 100). KFHighROFFire in full
+    auto (state FireLoop): AmbientFireSound loops on the weapon
+    (AmbientFireVolume 255, radius 500), then FireEndStereoSound at
+    AmbientFireVolume / 127 when it stops. Each weapon has its own slots
+    (in KF each is its own actor). Each weapon's sounds are preloaded
+    when it is first carried (`sound_preload`; all 44: 0 missing).
+  - **S3b. Animation sounds.** Reloads and other timed sounds come from
+    `KFWeaponSoundNotify` objects in the weapon animations (e.g. the
+    9mm Reload: 4 at 0.00, 0.43, 0.60, 0.78 of the animation; Sound and
+    Volume, e.g. 2.5). KFWeaponSoundNotify.Notify plays them on the
+    player (Instigator.PlaySound, SLOT_None).
+  - **S3c. Melee and specials.** Melee swings and hits (KFMeleeFire
+    MeleeHitSounds), the chainsaw (idle, start, loop, end), the
+    flamethrower, Husk Gun charge, ZED Gun beam, welder and syringe.
+
+  Two volume rules found in S3a (both **guesses**, labelled in
+  `audio.rs`): a voice's final volume is volume x fade x master, capped
+  at 1 (OpenAL's AL_MAX_GAIN; KF passes 1.8 for guns and 100 for the
+  quietly recorded select sounds, peak 0.18 against 0.99). An
+  AmbientSound's SoundVolume counts 128 as 1.0 (KF ends a 255 loop with
+  a tail at 255/127). Not used yet: the ini's AmbientVolume 0.5.
 - **S4. Zeds and the player.** Moans, attacks, pain, death, melee hits,
   the player's pain and death, footsteps if KF's scripts do them.
 - **S5. The world.** The map's AmbientSound actors, doors (open, close,

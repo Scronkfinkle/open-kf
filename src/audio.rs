@@ -76,12 +76,16 @@ pub struct PlaySound {
     pub radius: f32,
     pub pitch: f32,
     pub no_override: bool,
+    /// Which actor's slots, when several share one emitter: the player's
+    /// weapons all play at the listener, but each KF weapon is its own
+    /// actor with its own slots. 0 = the emitter itself.
+    pub actor: u64,
 }
 
 #[allow(dead_code)]
 impl PlaySound {
     pub fn new(sound: impl Into<String>, emitter: Emitter) -> Self {
-        PlaySound { sound: sound.into(), emitter, slot: Slot::None, volume: DEFAULT_VOLUME, radius: DEFAULT_RADIUS, pitch: 1.0, no_override: false }
+        PlaySound { sound: sound.into(), emitter, slot: Slot::None, volume: DEFAULT_VOLUME, radius: DEFAULT_RADIUS, pitch: 1.0, no_override: false, actor: 0 }
     }
     pub fn slot(mut self, slot: Slot) -> Self {
         self.slot = slot;
@@ -99,9 +103,46 @@ impl PlaySound {
         self.pitch = pitch;
         self
     }
+    pub fn actor(mut self, actor: u64) -> Self {
+        self.actor = actor;
+        self
+    }
     pub fn no_override(mut self) -> Self {
         self.no_override = true;
         self
+    }
+}
+
+/// Loads and decodes sounds ahead of use (KF's PreloadAssets), so the
+/// first shot does not wait for a package; names that cannot be found are
+/// logged (`sound_missing`).
+#[derive(Message, Clone, Debug)]
+pub struct PreloadSounds {
+    /// For the log, e.g. the weapon class.
+    pub what: String,
+    pub sounds: Vec<String>,
+}
+
+/// Actor.AmbientSound: a sound that loops for as long as the entity has
+/// this component, with SoundVolume (0-255), SoundRadius and SoundPitch
+/// (64 = normal pitch). Changing the sound restarts it; changing the
+/// volume, radius or pitch does not.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct AmbientSound {
+    pub sound: String,
+    pub volume: u8,
+    pub radius: f32,
+    pub pitch: u8,
+    /// At the listener (the player's own weapon), like `Emitter::Listener`.
+    pub at_listener: bool,
+}
+
+impl AmbientSound {
+    /// The voice volume. **A guess**: 128 (Actor's default SoundVolume)
+    /// counts as 1.0, matching KF's weapons, which end a 255 loop with a
+    /// tail played at AmbientFireVolume/127 = 2.0 (KFHighROFFire).
+    fn voice_volume(&self) -> f32 {
+        self.volume as f32 / 128.0
     }
 }
 
@@ -110,6 +151,9 @@ pub struct Clip {
     rate: u32,
     channels: usize,
     samples: Vec<f32>,
+    /// Loop start and end frames (the wav's `smpl` chunk), else the whole
+    /// clip. Only used by looping voices.
+    loop_points: Option<(u32, u32)>,
 }
 
 impl Clip {
@@ -119,6 +163,15 @@ impl Clip {
 
     fn duration(&self) -> f32 {
         self.frames() as f32 / self.rate as f32
+    }
+
+    /// The frames a looping voice repeats: [start, end).
+    fn loop_range(&self) -> (f64, f64) {
+        let n = self.frames() as f64;
+        match self.loop_points {
+            Some((a, b)) if (a as f64) < (b as f64).min(n) => (a as f64, (b as f64).min(n)),
+            _ => (0.0, n),
+        }
     }
 
     /// Linear interpolation between frames; `pos` in frames.
@@ -186,7 +239,7 @@ impl SoundBank {
                             // More than two channels (none in KF): keep the first two.
                             w.samples.chunks(w.channels as usize).flat_map(|f| [f[0], f[1]]).map(|s| s as f32 / 32768.0).collect()
                         };
-                        out.push((Arc::new(Clip { rate: w.sample_rate, channels, samples }), s.likelihood.max(0.0)));
+                        out.push((Arc::new(Clip { rate: w.sample_rate, channels, samples, loop_points: w.loop_points }), s.likelihood.max(0.0)));
                     }
                     Err(e) => runlog::kv("sound_error", &format!("sound={} reason=\"{e}\"", h.path())),
                 },
@@ -237,6 +290,16 @@ fn distance_gain(distance: f32, radius: f32) -> f32 {
     (1.0 - distance / radius).clamp(0.0, 1.0)
 }
 
+/// A voice's final volume: the PlaySound volume x the distance fade x the
+/// master volume, capped at 1. **A guess**: OpenAL (which KF's audio used)
+/// caps each source's gain at 1 by default (AL_MAX_GAIN), and KF's scripts
+/// pass volumes far above 1 (guns 1.8, reload notifies 2.5, KFWeapon's
+/// TransientSoundVolume 100 for the select sound, which is recorded quiet:
+/// peak 0.18 against 0.99 for the 9mm shot).
+fn voice_gain(loudness: f32, master: f32) -> f32 {
+    (loudness * master).min(1.0)
+}
+
 /// Left/right volumes from where the sound is relative to the listener:
 /// -1 fully left, 1 fully right. KF's ini has Use3DSound=False, so plain
 /// stereo balance. The near ear stays at full volume, the far one fades.
@@ -255,6 +318,8 @@ struct MixVoice {
     gain: [f32; 2],
     target: [f32; 2],
     stopping: bool,
+    /// AmbientSound: repeats until stopped.
+    looping: bool,
 }
 
 /// State shared between the game and the audio thread.
@@ -276,8 +341,12 @@ impl MixState {
                 v.target = [0.0; 2];
             }
             let last = v.clip.frames().saturating_sub(1) as f64;
+            let (loop_start, loop_end) = v.clip.loop_range();
             for f in 0..frames {
-                if v.pos > last {
+                if v.looping && v.pos >= loop_end {
+                    v.pos = loop_start + (v.pos - loop_end) % (loop_end - loop_start).max(1.0);
+                }
+                if !v.looping && v.pos > last {
                     break;
                 }
                 let t = f as f32 / frames as f32;
@@ -287,7 +356,7 @@ impl MixState {
                 v.pos += v.step;
             }
             v.gain = v.target;
-            if v.pos > last || v.stopping {
+            if (!v.looping && v.pos > last) || v.stopping {
                 ended.push(v.id);
             }
         }
@@ -352,6 +421,10 @@ struct VoiceInfo {
     /// Last computed loudness (0-1), to pick which voice to drop when all
     /// 32 are busy.
     loudness: f32,
+    actor: u64,
+    /// An AmbientSound's voice: the entity carrying it. These loop and are
+    /// not counted in the 32 (a simplification).
+    ambient: Option<Entity>,
 }
 
 #[derive(Resource)]
@@ -403,8 +476,9 @@ impl Plugin for AudioPlugin {
         app.insert_non_send(SoundBank::new(root))
             .insert_resource(Audio::open(settings))
             .add_message::<PlaySound>()
+            .add_message::<PreloadSounds>()
             .add_systems(Update, test_sounds)
-            .add_systems(PostUpdate, (play_sounds, update_voices).chain().after(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate, (preload_sounds, play_sounds, sync_ambient_sounds, update_voices).chain().after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -434,6 +508,17 @@ fn test_sounds(
     }
 }
 
+fn preload_sounds(mut requests: MessageReader<PreloadSounds>, mut bank: NonSendMut<SoundBank>) {
+    for req in requests.read() {
+        let started = std::time::Instant::now();
+        let found = req.sounds.iter().filter(|s| bank.lookup(s).is_some()).count();
+        runlog::kv(
+            "sound_preload",
+            &format!("what={} sounds={} missing={} ms={:.1}", req.what, req.sounds.len(), req.sounds.len() - found, started.elapsed().as_secs_f64() * 1000.0),
+        );
+    }
+}
+
 /// Starts the requested sounds: slot rules, then the 32-voice limit.
 fn play_sounds(
     mut requests: MessageReader<PlaySound>,
@@ -449,7 +534,7 @@ fn play_sounds(
         };
         // Slots belong to an entity, or to the listener (the player's own
         // sounds); sounds at a bare point have none.
-        let same_slot = |v: &VoiceInfo| req.slot != Slot::None && v.slot == req.slot && v.emitter == req.emitter && !matches!(req.emitter, Emitter::Point(_));
+        let same_slot = |v: &VoiceInfo| req.slot != Slot::None && v.slot == req.slot && v.emitter == req.emitter && v.actor == req.actor && !matches!(req.emitter, Emitter::Point(_));
         if let Some(busy) = audio.voices.iter().find(|v| same_slot(v)) {
             if req.no_override {
                 runlog::kv("sound_skip", &format!("sound={} reason=slot_busy slot={:?} playing={}", req.sound, req.slot, busy.sound));
@@ -473,8 +558,8 @@ fn play_sounds(
         // All voices busy: drop the quietest if it is quieter than the new
         // one (a guess at what ALAudio does), else skip the new one.
         let loudness = req.volume * if req.emitter == Emitter::Listener { 1.0 } else { distance_gain(distance, req.radius) };
-        if audio.voices.len() >= MAX_VOICES {
-            let quietest = audio.voices.iter().min_by(|a, b| a.loudness.total_cmp(&b.loudness)).map(|v| (v.id, v.loudness));
+        if audio.voices.iter().filter(|v| v.ambient.is_none()).count() >= MAX_VOICES {
+            let quietest = audio.voices.iter().filter(|v| v.ambient.is_none()).min_by(|a, b| a.loudness.total_cmp(&b.loudness)).map(|v| (v.id, v.loudness));
             match quietest {
                 Some((id, l)) if l < loudness => stop_voice(&mut audio, id, "voice_limit"),
                 _ => {
@@ -484,8 +569,8 @@ fn play_sounds(
             }
         }
         let clip = bank.pick(&entry);
-        let id = audio.next_id;
-        audio.next_id += 1;
+        let info = VoiceInfo { id: 0, sound: req.sound.clone(), slot: req.slot, emitter: req.emitter, actor: req.actor, volume: req.volume, radius: req.radius, pitch: req.pitch, clip_rate: clip.rate, loudness, ambient: None };
+        let id = start_voice(&mut audio, clip.clone(), info, false);
         runlog::kv(
             "sound_play",
             &format!(
@@ -496,25 +581,59 @@ fn play_sounds(
                 req.radius,
                 req.pitch,
                 clip.duration(),
-                audio.voices.len() + 1
+                audio.voices.len()
             ),
         );
-        audio.voices.push(VoiceInfo {
-            id,
-            sound: req.sound.clone(),
-            slot: req.slot,
-            emitter: req.emitter,
-            volume: req.volume,
-            radius: req.radius,
-            pitch: req.pitch,
-            clip_rate: clip.rate,
-            loudness,
-        });
-        let out_rate = audio.out_rate;
-        if let Ok(mut s) = audio.shared.lock() {
-            // Starts silent; update_voices sets the volume this same frame.
-            s.voices.push(MixVoice { id, step: clip.rate as f64 / out_rate as f64 * req.pitch as f64, clip, pos: 0.0, gain: [0.0; 2], target: [0.0; 2], stopping: false });
+    }
+}
+
+/// Registers a voice and hands it to the mixer, silent; `update_voices`
+/// sets its volume the same frame.
+fn start_voice(audio: &mut Audio, clip: Arc<Clip>, mut info: VoiceInfo, looping: bool) -> u64 {
+    let id = audio.next_id;
+    audio.next_id += 1;
+    info.id = id;
+    let step = clip.rate as f64 / audio.out_rate as f64 * info.pitch as f64;
+    audio.voices.push(info);
+    if let Ok(mut s) = audio.shared.lock() {
+        s.voices.push(MixVoice { id, step, clip, pos: 0.0, gain: [0.0; 2], target: [0.0; 2], stopping: false, looping });
+    }
+    id
+}
+
+/// Starts, changes and stops the AmbientSound voices.
+fn sync_ambient_sounds(
+    mut bank: NonSendMut<SoundBank>,
+    mut audio: ResMut<Audio>,
+    changed: Query<(Entity, &AmbientSound), Changed<AmbientSound>>,
+    mut removed: RemovedComponents<AmbientSound>,
+) {
+    for e in removed.read() {
+        if let Some(id) = audio.voices.iter().find(|v| v.ambient == Some(e)).map(|v| v.id) {
+            stop_voice(&mut audio, id, "ambient_removed");
         }
+    }
+    for (e, amb) in &changed {
+        let emitter = if amb.at_listener { Emitter::Listener } else { Emitter::Entity(e) };
+        let pitch = amb.pitch as f32 / 64.0;
+        if let Some(v) = audio.voices.iter_mut().find(|v| v.ambient == Some(e)) {
+            if v.sound.eq_ignore_ascii_case(&amb.sound) {
+                (v.volume, v.radius, v.pitch, v.emitter) = (amb.voice_volume(), amb.radius, pitch, emitter);
+                continue;
+            }
+            let id = v.id;
+            stop_voice(&mut audio, id, "ambient_changed");
+        }
+        let Some(entry) = bank.lookup(&amb.sound) else {
+            continue;
+        };
+        let clip = bank.pick(&entry);
+        let info = VoiceInfo { id: 0, sound: amb.sound.clone(), slot: Slot::Ambient, emitter, actor: 0, volume: amb.voice_volume(), radius: amb.radius, pitch, clip_rate: clip.rate, loudness: 0.0, ambient: Some(e) };
+        let id = start_voice(&mut audio, clip.clone(), info, true);
+        runlog::kv(
+            "sound_ambient",
+            &format!("id={id} sound={} volume={} radius={:.0} pitch={} length={:.2} loop={:?}", amb.sound, amb.volume, amb.radius, amb.pitch, clip.duration(), clip.loop_points),
+        );
     }
 }
 
@@ -571,7 +690,7 @@ fn update_voices(
             },
         };
         v.loudness = v.volume * gain;
-        let g = pan_gains(pan).map(|x| x * v.loudness * master);
+        let g = pan_gains(pan).map(|x| x * voice_gain(v.loudness, master));
         updates.push((v.id, g, v.clip_rate as f64 / out_rate * v.pitch as f64 * speed));
     }
     let mut finished = Vec::new();
@@ -610,9 +729,9 @@ mod tests {
 
     #[test]
     fn mixer_plays_a_clip_to_its_end_and_reports_it() {
-        let clip = Arc::new(Clip { rate: 100, channels: 1, samples: vec![0.5; 10] });
+        let clip = Arc::new(Clip { rate: 100, channels: 1, samples: vec![0.5; 10], loop_points: None });
         let mut s = MixState::default();
-        s.voices.push(MixVoice { id: 7, clip, pos: 0.0, step: 1.0, gain: [1.0, 0.5], target: [1.0, 0.5], stopping: false });
+        s.voices.push(MixVoice { id: 7, clip, pos: 0.0, step: 1.0, gain: [1.0, 0.5], target: [1.0, 0.5], stopping: false, looping: false });
         let mut out = vec![0.0; 32];
         s.render(&mut out);
         assert_eq!(&out[..4], &[0.5, 0.25, 0.5, 0.25]);
@@ -623,10 +742,34 @@ mod tests {
     }
 
     #[test]
-    fn half_speed_doubles_the_length() {
-        let clip = Arc::new(Clip { rate: 100, channels: 1, samples: vec![1.0; 10] });
+    fn looping_voices_wrap_at_the_loop_points() {
+        // Frames 0..4 are 0.1 .. 0.4; the loop repeats frames 2..4.
+        let clip = Arc::new(Clip { rate: 100, channels: 1, samples: vec![0.1, 0.2, 0.3, 0.4], loop_points: Some((2, 4)) });
         let mut s = MixState::default();
-        s.voices.push(MixVoice { id: 1, clip, pos: 0.0, step: 0.5, gain: [1.0; 2], target: [1.0; 2], stopping: false });
+        s.voices.push(MixVoice { id: 1, clip, pos: 0.0, step: 1.0, gain: [1.0; 2], target: [1.0; 2], stopping: false, looping: true });
+        let mut out = vec![0.0; 16];
+        s.render(&mut out);
+        // Half steps through the end of the loop must not stall it.
+        s.voices[0].step = 0.5;
+        let mut more = vec![0.0; 64];
+        s.render(&mut more);
+        assert!(more.chunks(2).skip(24).all(|f| f[0] > 0.0));
+        let left: Vec<f32> = out.chunks(2).map(|f| (f[0] * 10.0).round() / 10.0).collect();
+        assert_eq!(left, vec![0.1, 0.2, 0.3, 0.4, 0.3, 0.4, 0.3, 0.4]);
+        assert!(s.finished.is_empty());
+    }
+
+    #[test]
+    fn gain_is_capped_at_one() {
+        assert!((voice_gain(1.8, 0.3) - 0.54).abs() < 1e-6);
+        assert_eq!(voice_gain(100.0, 0.3), 1.0);
+    }
+
+    #[test]
+    fn half_speed_doubles_the_length() {
+        let clip = Arc::new(Clip { rate: 100, channels: 1, samples: vec![1.0; 10], loop_points: None });
+        let mut s = MixState::default();
+        s.voices.push(MixVoice { id: 1, clip, pos: 0.0, step: 0.5, gain: [1.0; 2], target: [1.0; 2], stopping: false, looping: false });
         let mut out = vec![0.0; 64];
         s.render(&mut out);
         let played = out.chunks(2).filter(|f| f[0] != 0.0).count();
