@@ -53,7 +53,7 @@ A complete rewrite of the killing floor games engine to play with its assets
   `MODLOG-template.md`.
 - `docs/DESIGN.md`: how the project works, in plain language. Update when the
   architecture changes, not on every commit.
-- `README.md`: the "what works / what doesn't work" list. Test before you claim
+- `WORK_LOG.md`: the "what works / what doesn't work" list. Test before you claim
   something works.
 
 ## Environment
