@@ -4286,3 +4286,25 @@ pass; clippy 0 warnings.
 name is not part of the repository); the old `target/release/kf-rs`
 binary stays in the build folder until `cargo clean`.
 **Next:** you push to GitHub.
+
+## 2026-10-06 Dev shell: no LD_LIBRARY_PATH (VS Code failed to start)
+
+**Changed:** `flake.nix`: the dev shell no longer exports LD_LIBRARY_PATH;
+the libraries the game opens at run time (Vulkan, X11, xkbcommon, ...)
+are written into the game binary's own library path instead
+(`RUSTFLAGS = "-C link-arg=-Wl,-rpath,..."`). The libraries it links
+directly (alsa, udev, wayland-client) already got that path from Nix's
+linker.
+**Why:** `code .` in the shell failed: VS Code (built against the
+system's glibc 2.42) inherited the shell's LD_LIBRARY_PATH and loaded
+its alsa-lib, built against glibc 2.43. Old problem, not from the sound
+work.
+**Tested how:** a fresh shell (`env -u LD_LIBRARY_PATH nix develop`):
+build (all dependencies rebuild once: RUSTFLAGS changed, ~4 min),
+`readelf -d` on the binary, a 120-frame run with no LD_LIBRARY_PATH; you
+started VS Code from the new shell.
+**Result:** the binary's RUNPATH lists vulkan-loader and the others; the
+game runs (window, Vulkan, the sound device); VS Code starts (you).
+**Still broken / not tested:** an already-open direnv shell keeps the old
+LD_LIBRARY_PATH until it reloads (`direnv reload`).
+**Next:** —

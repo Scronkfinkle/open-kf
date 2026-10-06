@@ -53,8 +53,13 @@
     devShells."x86_64-linux".default = pkgs.mkShell {
        buildInputs = stdInputs ++ devInputs ++ bevyInputs;
 
-      # Vulkan and the window system are loaded at runtime, so they must be findable
-      LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath bevyInputs;
+      # Vulkan and the window system are loaded at runtime (dlopen), so the
+      # game must find them. They are written into the game binary's own
+      # library path (rpath) instead of exporting LD_LIBRARY_PATH: an
+      # exported path leaks into every program started from this shell
+      # (e.g. VS Code built against the system's older glibc failed to start
+      # with this shell's alsa-lib).
+      RUSTFLAGS = "-C link-arg=-Wl,-rpath,${pkgs.lib.makeLibraryPath bevyInputs}";
 
       # Rust stdlib for language servers
       RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
