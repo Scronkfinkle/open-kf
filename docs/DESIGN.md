@@ -3261,8 +3261,22 @@ with a test you can run):
 - **S5. The world.** The map's AmbientSound actors, doors (open, close,
   weld), explosions, bullet impacts (bullet_fx's ImpactSound), pickups,
   trader and zed-time sounds.
-- **S6. Music.** KFMusicTrigger's calm and combat songs per wave, the
-  fades and the boss song.
+- **S6. Music** (done 2026-10-05, `src/music.rs`). The map's
+  KFMusicTrigger (Song, CombatSong, WaveBasedSongs[n].CombatSong /
+  CalmSong, FadeInTime, FadeOutTime; every map's survey: none sets the
+  fade times, so KF switches songs at once). `game.rs` keeps KF's
+  MusicPlaying / CalmMusicPlaying and sends a cue at the same points as
+  MatchInProgress.Timer (combat in a wave, calm in trader time) and at
+  the Patriarch's entrance (BossBattleSong KF_Abandon, MTRAN_FastFade:
+  1 s out, 1 s in). KFMusicInteraction's fade: the old song's volume
+  goes down linearly, stops under 0.1 of it, then the next starts with
+  PlayMusic's fade-in (native; assumed linear). Songs are streamed from
+  `Music/<name>.ogg` (rodio's Ogg Vorbis decoder, already in the build
+  through Bevy). Several maps name songs this install does not have
+  (KFSIN6/7/8, KFRock, KF3): nothing plays, as the engine's PlayMusic
+  with a missing file (`music_missing`). Volumes: SoundVolume and
+  MusicVolume are read from the install's KillingFloor.ini (read only;
+  0.3 and 0.1 shipped). Music ignores zed time.
 
 Not planned: Doppler (DopplerFactor 1.0; small effect, later if missed),
 EAX reverb (off in KF's ini), voice chat.

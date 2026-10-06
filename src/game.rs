@@ -295,6 +295,9 @@ pub struct WaveGame {
     boss_laughed: bool,
     /// The boss's finished knockdowns already answered.
     boss_knockdowns_seen: u32,
+    /// KFGameType MusicPlaying and CalmMusicPlaying (music.rs).
+    music_playing: bool,
+    calm_music_playing: bool,
     /// Counters other systems watch (dosh.rs): games restarted, DoWaveEnd
     /// calls. Kept across a restart.
     pub restarts: u32,
@@ -329,6 +332,8 @@ impl Default for WaveGame {
             boss_laughed: false,
             boss_knockdowns_seen: 0,
             restarts: 0,
+            music_playing: false,
+            calm_music_playing: false,
             waves_ended: 0,
         }
     }
@@ -469,7 +474,7 @@ pub fn wave_timer(
     frames: Res<bevy::diagnostic::FrameCount>,
     mut spawns: MessageWriter<SpawnZedAt>,
     script: Res<crate::weapon::ScriptedInput>,
-    (keys, mut clear, mut hud_messages): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>, MessageWriter<crate::hud::LocalMessage>),
+    (keys, mut clear, mut hud_messages, mut music): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>, MessageWriter<crate::hud::LocalMessage>, MessageWriter<crate::music::MusicCue>),
     (player, mut doors, mut kill_stuck, player_zone): (PlayerQuery, ResMut<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
     (mut boss_died, mut respawn_doors, mut view_target, mut boss_actions): (
         MessageWriter<BossDied>,
@@ -526,6 +531,8 @@ pub fn wave_timer(
     if restart && matches!(g.phase, Phase::Won | Phase::Lost) {
         *g = WaveGame {
             restarts: g.restarts + 1,
+            music_playing: false,
+            calm_music_playing: false,
             waves_ended: g.waves_ended,
             deaths_at_start: Some(health.deaths),
             final_wave: data.waves.len(),
@@ -582,7 +589,7 @@ pub fn wave_timer(
     // MatchInProgress.Timer, once a second.
     g.next_tick += 1.0;
     let num_monsters = g.living as i32;
-    boss_view_tick(g, &zeds, &mut view_target, &mut boss_actions);
+    boss_view_tick(g, &zeds, &mut view_target, &mut boss_actions, &mut music);
     // Shop calls are made after the match (`ctx` borrows the doors).
     let mut shop_action = ShopAction::None;
     match g.phase {
@@ -602,6 +609,12 @@ pub fn wave_timer(
         Phase::Wave => {
             shop_action = ShopAction::CloseAndBoot;
             g.wave_time_elapsed += 1.0;
+            // if( !MusicPlaying ) StartGameMusic(True).
+            if !g.music_playing {
+                g.music_playing = true;
+                g.calm_music_playing = false;
+                music.write(crate::music::MusicCue::Combat(g.wave_num));
+            }
             if g.total_max_monsters <= 0 {
                 // All spawned, 5 or fewer left: one zed a tick that
                 // CanKillMeYet (unseen for 8 s; any zed from the final wave
@@ -631,6 +644,12 @@ pub fn wave_timer(
                 return;
             }
             g.countdown -= 1;
+            // if ( !CalmMusicPlaying ) StartGameMusic(False).
+            if !g.calm_music_playing {
+                g.calm_music_playing = true;
+                g.music_playing = false;
+                music.write(crate::music::MusicCue::Calm(g.wave_num));
+            }
             // WaitingMessage at 4..1 seconds left (after WaveCountDown--):
             // FINAL WAVE INBOUND before the boss, else NEXT WAVE INBOUND!
             if g.countdown > 0 && g.countdown < 5 {
@@ -940,7 +959,13 @@ fn boss_rules(
 /// NumMonsters > 0), MakeGrandEntry and the view to him; then, once his
 /// bShotAnim is off, the view back to the player. After the match, a
 /// living Patriarch laughs (SetBossLaught) and the view goes to him.
-fn boss_view_tick(g: &mut WaveGame, zeds: &Query<&crate::zed::Zed>, view: &mut crate::view_target::ViewTarget, actions: &mut MessageWriter<crate::zed::BossAction>) {
+fn boss_view_tick(
+    g: &mut WaveGame,
+    zeds: &Query<&crate::zed::Zed>,
+    view: &mut crate::view_target::ViewTarget,
+    actions: &mut MessageWriter<crate::zed::BossAction>,
+    music: &mut MessageWriter<crate::music::MusicCue>,
+) {
     let living_boss = || zeds.iter().find(|z| z.boss_knockdowns().is_some() && !z.is_dead());
     match g.phase {
         Phase::BossWave => {
@@ -948,7 +973,8 @@ fn boss_view_tick(g: &mut WaveGame, zeds: &Query<&crate::zed::Zed>, view: &mut c
                 g.has_set_view = true;
                 if let Some(z) = living_boss() {
                     actions.write(crate::zed::BossAction::Entrance(z.id));
-                    // ClientSetMusic(BossBattleSong): no sound yet.
+                    // ClientSetMusic(BossBattleSong, MTRAN_FastFade).
+                    music.write(crate::music::MusicCue::Boss);
                     view.set(Some(z.id), "entrance");
                 }
             } else if view.reason() == "entrance"

@@ -3971,3 +3971,35 @@ warnings.
 our game). The radial-attack taunt (needs 3 players). LAWProj's
 AmbientVolumeScale (5) is not used (its meaning is native code).
 **Next:** S5, the world.
+
+## 2026-10-05 S6: music
+
+**Changed:** `src/music.rs` (new): reads the map's KFMusicTrigger
+(Song, CombatSong, WaveBasedSongs, fade times), turns cues into songs as
+KFGameType.StartGameMusic, and fades as KFMusicInteraction. `src/audio.rs`:
+`play_music` streams an `.ogg` through rodio (feature `lewton`, already
+compiled through Bevy: no new libraries) with a volume knob and stop
+switch (`MusicHandle`); SoundVolume and MusicVolume from the install's
+KillingFloor.ini (read only). `src/game.rs`: MusicPlaying /
+CalmMusicPlaying and the cues (combat at the wave timer, calm at the
+countdown, the boss song at his entrance). `src/main.rs`, `Cargo.toml`.
+DESIGN, README. One unit test (song choice).
+**Why:** S6. You asked me (2026-10-05) to go through S5 and S6 without
+waiting for your checks, committing along the way; S6 went first while
+the S5 research ran.
+**Tested how:** `--mode waves` on KF-Crash and KF-WestLondon with
+`next_wave`; `--wave 5` on KF-WestLondon; a survey of every map's
+KFMusicTrigger; clippy (counted); tests.
+**Result:** `audio_volumes sound=0.3 music=0.1`. KF-Crash: trader time
+`KF_Insect` (wave 1's calm song), the wave `KF_Pathogen` (its combat
+song), switched at once (no fade times on any map). KF-WestLondon:
+`KF_Mutagen`, then `music_missing song=KFSIN8` in the wave. Boss:
+`cue=Boss song=KF_Abandon fade_in=1 fade_out=1`, KF_Mutagen stopped
+0.9 s later (under 0.1 of its volume), KF_Abandon fading in. Tests 137
+pass; clippy 0 warnings.
+**Still broken / not tested:** not heard by you (no listening check on
+the decoding: the log only shows the stream started). The fade-in shape
+is assumed linear. Whether the real game also stays silent in waves on
+maps with missing combat songs is not known (it would with UE2's
+PlayMusic as far as the scripts show).
+**Next:** S5 (the research is running).

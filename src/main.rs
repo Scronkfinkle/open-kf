@@ -26,6 +26,7 @@ mod pain;
 mod gore;
 mod lighting;
 mod map;
+mod music;
 mod nav;
 mod particles;
 mod pawn_collision;
@@ -293,7 +294,7 @@ fn main() -> AppExit {
             fireball::FireballPlugin,
         ))
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, game::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
-        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::AudioPlugin, player_sound::PlayerSoundPlugin))
+        .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)

@@ -23,8 +23,10 @@ use crate::runlog;
 
 /// KillingFloor.ini [ALAudio.ALAudioSubsystem] Channels: voices at once.
 const MAX_VOICES: usize = 32;
-/// KillingFloor.ini SoundVolume: the master volume of sound effects.
+/// KillingFloor.ini SoundVolume and MusicVolume as shipped (Default.ini);
+/// the player's own ini values are used when it can be read.
 const SOUND_VOLUME: f32 = 0.3;
+const MUSIC_VOLUME: f32 = 0.1;
 /// Actor defaults TransientSoundVolume and TransientSoundRadius: what
 /// PlaySound uses when the call leaves them out.
 pub const DEFAULT_VOLUME: f32 = 0.3;
@@ -452,7 +454,85 @@ pub struct Audio {
     next_id: u64,
     out_rate: u32,
     /// `--mute`: voices are still tracked and logged, at zero volume.
-    muted: bool,
+    pub muted: bool,
+    /// The player's KillingFloor.ini SoundVolume and MusicVolume.
+    pub sound_volume: f32,
+    pub music_volume: f32,
+}
+
+/// A playing song (music.rs): its volume and a stop switch, shared with
+/// the audio thread.
+pub struct MusicHandle {
+    volume: Arc<std::sync::atomic::AtomicU32>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl MusicHandle {
+    pub fn set_volume(&self, v: f32) {
+        self.volume.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for MusicHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// A streamed `.ogg` song with a volume knob, mixed by rodio beside our
+/// sound mixer (it resamples and converts channels itself).
+struct MusicSource {
+    inner: rodio::Decoder<std::io::BufReader<std::fs::File>>,
+    volume: Arc<std::sync::atomic::AtomicU32>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Iterator for MusicSource {
+    type Item = rodio::Sample;
+    fn next(&mut self) -> Option<rodio::Sample> {
+        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let v = f32::from_bits(self.volume.load(std::sync::atomic::Ordering::Relaxed));
+        self.inner.next().map(|s| s * v)
+    }
+}
+
+impl rodio::Source for MusicSource {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        self.inner.total_duration()
+    }
+}
+
+/// [ALAudio.ALAudioSubsystem] SoundVolume and MusicVolume from the
+/// install's System/KillingFloor.ini (read only), else the shipped values.
+fn ini_volumes(root: &std::path::Path) -> (f32, f32) {
+    let text = std::fs::read_to_string(root.join("System").join("KillingFloor.ini")).unwrap_or_default();
+    let (mut sound, mut music, mut in_section) = (SOUND_VOLUME, MUSIC_VOLUME, false);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_section = line.eq_ignore_ascii_case("[ALAudio.ALAudioSubsystem]");
+        } else if in_section && let Some((k, v)) = line.split_once('=') {
+            match (k.trim().to_ascii_lowercase().as_str(), v.trim().parse::<f32>()) {
+                ("soundvolume", Ok(x)) => sound = x,
+                ("musicvolume", Ok(x)) => music = x,
+                _ => {}
+            }
+        }
+    }
+    (sound, music)
 }
 
 /// `--mute` from the command line.
@@ -462,7 +542,26 @@ pub struct AudioSettings {
 }
 
 impl Audio {
-    fn open(settings: AudioSettings) -> Self {
+    /// PlayerController.PlayMusic: starts streaming `path` at volume 0
+    /// (music.rs fades it). None without a sound device or if the file
+    /// cannot be decoded.
+    pub fn play_music(&self, path: &std::path::Path) -> Option<MusicHandle> {
+        let sink = self._sink.as_ref()?;
+        let file = std::fs::File::open(path).ok()?;
+        let inner = match rodio::Decoder::try_from(file) {
+            Ok(d) => d,
+            Err(e) => {
+                runlog::kv("music_error", &format!("file=\"{}\" reason=\"{e}\"", path.display()));
+                return None;
+            }
+        };
+        let volume = Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        sink.mixer().add(MusicSource { inner, volume: volume.clone(), stop: stop.clone() });
+        Some(MusicHandle { volume, stop })
+    }
+
+    fn open(settings: AudioSettings, root: &std::path::Path) -> Self {
         let sink = match rodio::DeviceSinkBuilder::open_default_sink() {
             Ok(mut s) => {
                 s.log_on_drop(false);
@@ -480,7 +579,9 @@ impl Audio {
             runlog::kv("audio_device", &format!("ok=true rate={} channels={} muted={}", rate.get(), s.config().channel_count().get(), settings.muted));
             s.mixer().add(MixSource { shared: shared.clone(), buf: vec![0.0; BLOCK * 2], at: BLOCK * 2, rate });
         }
-        Audio { _sink: sink, shared, voices: Vec::new(), next_id: 1, out_rate, muted: settings.muted }
+        let (sound_volume, music_volume) = ini_volumes(root);
+        runlog::kv("audio_volumes", &format!("sound={sound_volume} music={music_volume} source=KillingFloor.ini"));
+        Audio { _sink: sink, shared, voices: Vec::new(), next_id: 1, out_rate, muted: settings.muted, sound_volume, music_volume }
     }
 }
 
@@ -490,8 +591,9 @@ impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
         let root = app.world().resource::<crate::map::MapRequest>().install_root.clone();
         let settings = app.world().get_resource::<AudioSettings>().copied().unwrap_or_default();
+        let audio = Audio::open(settings, &root);
         app.insert_non_send(SoundBank::new(root))
-            .insert_resource(Audio::open(settings))
+            .insert_resource(audio)
             .add_message::<PlaySound>()
             .add_message::<PreloadSounds>()
             .add_systems(Update, test_sounds)
@@ -568,7 +670,7 @@ fn play_sounds(
             (Some(p), Some(e)) => p.distance(e) / crate::coords::SCALE,
             _ => 0.0,
         };
-        if req.emitter != Emitter::Listener && voice_gain(req.volume * distance_gain(distance, req.radius), SOUND_VOLUME) < MIN_AUDIBLE {
+        if req.emitter != Emitter::Listener && voice_gain(req.volume * distance_gain(distance, req.radius), audio.sound_volume) < MIN_AUDIBLE {
             runlog::kv("sound_skip", &format!("sound={} reason=too_quiet distance={distance:.0} radius={:.0}", req.sound, req.radius));
             continue;
         }
@@ -687,7 +789,7 @@ fn update_voices(
     let cam = listener.single().ok();
     let ear = cam.map(|t| t.translation());
     let speed = time.relative_speed() as f64;
-    let master = if audio.muted { 0.0 } else { SOUND_VOLUME };
+    let master = if audio.muted { 0.0 } else { audio.sound_volume };
     let out_rate = audio.out_rate as f64;
     // Gains first, then one short lock to hand them over.
     let mut updates = Vec::with_capacity(audio.voices.len());
