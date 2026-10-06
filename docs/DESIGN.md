@@ -3114,11 +3114,13 @@ voices together sample by sample. Each frame the game updates every
 voice's volume, left/right balance and pitch from the listener's position.
 If the machine has no sound device, the game logs it and runs silent.
 
-**Distance falloff (a guess, to be checked by ear).** OpenAL's
-"inverse distance clamped" model is what UE2's ALAudio used, with
-Rolloff 0.5 from the ini, and silence past the sound's Radius. Labelled a
-guess in the code until a side-by-side listen with the real game confirms
-it. Zed time: the voices' pitch is multiplied by the game speed (assumed
+**Distance falloff (a guess, to be checked by ear).** Since S4a: OpenAL's
+"inverse distance clamped" model, the sound's Radius as the reference
+distance and the ini's Rolloff 0.5: full volume inside the radius, then
+radius / (radius + 0.5 x (distance - radius)); no cut-off, but voices too
+quiet to hear (final gain under 0.002) are not started. S2 to S3 used a
+linear fade to silence at the radius; KF's small zed radii (footsteps
+100) showed that cannot be right. Zed time: the voices' pitch is multiplied by the game speed (assumed
 from how KF sounds in zed time; to be checked).
 
 **Steps** (each one logged as `sound_play` / `sound_stop` / `music` lines,
@@ -3205,8 +3207,34 @@ with a test you can run):
   quietly recorded select sounds, peak 0.18 against 0.99). An
   AmbientSound's SoundVolume counts 128 as 1.0 (KF ends a 255 loop with
   a tail at 255/127). Not used yet: the ini's AmbientVolume 0.5.
-- **S4. Zeds and the player.** Moans, attacks, pain, death, melee hits,
-  the player's pain and death, footsteps if KF's scripts do them.
+- **S4. Zeds and the player** (researched 2026-10-05; the full notes with
+  script quotes are in `work/s4-research.md`, untracked), in three parts:
+  - **S4a. Zed animation sounds, and the distance fade revisited** (done
+    2026-10-05; all 10 zed classes' notify sounds preload, 0 missing). Zed
+    footsteps, claw swishes, attack grunts, the Siren's scream, the
+    Husk's fireball, the Bloat's vomit, the burning walks: all plain
+    `AnimNotify_Sound` notifies in the zed animations (e.g. ClotWalk:
+    21 x Clot_StepDefault, volume 0.25, radius 100). Played on the zed,
+    SLOT_None (the native code's slot is not in the scripts: a guess).
+    KF's ranges are small (footsteps 100, moans 250, swishes 100), so the
+    S2 fade (silent at the radius) would make zeds inaudible past a few
+    metres, unlike the real game. New guess: OpenAL's inverse distance
+    clamped model with the ini's Rolloff 0.5 and the radius as the
+    reference distance: full volume inside the radius, then
+    radius / (radius + 0.5 x (distance - radius)). Sounds too quiet to
+    matter are not started.
+  - **S4b. Zed voices and loops.** KFMonster: moans (MoanVoice, SLOT_Misc,
+    MoanVolume 1.5, radius 250; first after 2 + 36 x rand s, then every
+    12 + 8 x rand s, whole seconds; never headless), pain (HitSound[0],
+    SLOT_Pain, 1.25, radius 400, at most every 0.35 s, not for fire
+    damage), death 0.2 s after dying (DeathSound / headless / gibbed),
+    decapitation, Impact_Skull on headshots, the melee hit on the player,
+    challenge sounds, AmbientSound loops (Scrake's chainsaw, Bloat,
+    Husk, Patriarch), and the Patriarch's own sounds.
+  - **S4c. The player.** Pain (Inf_Player Wounding, SLOT_Pain, 0.6,
+    radius 200, every 0.35 s at most), death, footsteps (CheckBob, about
+    every 0.375 s at full speed, per surface, 0.45, x 0.4 crouched or
+    walking), jump and landing, low-health breathing (under 25 %).
 - **S5. The world.** The map's AmbientSound actors, doors (open, close,
   weld), explosions, bullet impacts (bullet_fx's ImpactSound), pickups,
   trader and zed-time sounds.

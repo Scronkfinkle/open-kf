@@ -3822,3 +3822,39 @@ you listened is not recorded. The ZED Gun's alarm
 FireRate (0.08 s), each cutting the last: what the script says, may
 sound like a rattle; to compare with the real game.
 **Next:** S4, zeds and the player.
+
+## 2026-10-05 S4a: zed animation sounds; the distance fade changed
+
+**Changed:** `src/zed.rs`: each zed tracks how far each animation layer's
+sound notifies have played (`sounds_heard`, `overlay_sounds_heard`;
+`passed_sounds` handles new sequences, wraps and restarts) and plays the
+AnimNotify_Sound notifies on itself (SLOT_None, radius 0 -> 300: guesses,
+native code); each zed class's notify sounds are preloaded.
+`src/audio.rs`: the distance fade is now OpenAL's inverse distance
+clamped model (radius = reference distance, Rolloff 0.5 from the ini),
+and voices too quiet to hear (gain under 0.002) are skipped instead of
+"out of range". `src/weapon.rs`: a `PendingSwing` type alias (clippy).
+DESIGN (S4 plan in three parts from the research in
+`work/s4-research.md`; the fade paragraph), README.
+**Why:** S4a. The fade: KF's zed sounds have small radii (footsteps 100,
+moans 250, swishes 100); with S2's linear fade to silence at the radius
+a moan 6 m away would be silent, unlike the real game. The ini's
+Rolloff=0.5 is an OpenAL inverse-distance setting. Still a guess.
+**Tested how:** `--spawn clot` and `--spawn siren` runs (900-1100
+frames); 2 audio unit tests rewritten for the new fade; clippy (counted
+from the raw output); tests.
+**Result:** Clot: `Clot_StepDefault volume=0.25 radius=100` from 293
+units away as it walked in, then `Clot_Swish` (21), `Clot_Attack` (10),
+`Clot_Idle1Shot` (7) at 68 units while it attacked. Siren:
+`KFPlayerSound.SirenScream1 volume=255.00 radius=150` (capped by the
+mixer), `Siren_BitePlayer`, footsteps. All 10 zed classes' notify sounds
+preloaded, 0 missing. Tests 136 pass; clippy 0 warnings.
+**Correction:** the S3c and S3d entries say "clippy clean". That was
+wrong: a `type_complexity` warning from S3c was there; the rtk wrapper's
+filtered output and my `tail -1` hid it. Fixed in this step.
+**Still broken / not tested:** you played a wave and said it works
+(2026-10-05). The new fade changes
+how everything sounds at a distance, also the weapons and the S2 test
+shots (`sound_at:...@600` is now louder than before). AnimNotify_Sound's
+slot and radius handling are guesses. Zed voices and loops: S4b.
+**Next:** S4b.

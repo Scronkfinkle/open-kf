@@ -284,15 +284,27 @@ impl SoundBank {
     }
 }
 
-/// Volume over distance. **A guess**: Epic's Unreal audio document says
-/// sounds "diminish linearly according to distance and are culled" at
-/// their radius; UT2004's own OpenAL code (which has Rolloff=0.5 in the
-/// ini) is not public. To be compared by ear with the real game.
+/// KillingFloor.ini [ALAudio.ALAudioSubsystem] Rolloff.
+const ROLLOFF: f32 = 0.5;
+/// A voice quieter than this (final gain) is not started: it could not be
+/// heard, and would take one of the 32 voices.
+const MIN_AUDIBLE: f32 = 0.002;
+
+/// Volume over distance. **A guess** (UT2004's OpenAL code is not public):
+/// OpenAL's "inverse distance clamped" model, with the sound's radius as
+/// the reference distance and the ini's Rolloff 0.5 as the rolloff
+/// factor: full volume inside the radius, then radius / (radius + 0.5 x
+/// (distance - radius)). Until S4a (2026-10-05) this was a linear fade to
+/// silence at the radius (Epic's UE1 document), which made KF's zeds
+/// (footsteps radius 100, moans 250) silent past a few metres.
 fn distance_gain(distance: f32, radius: f32) -> f32 {
     if radius <= 0.0 {
         return 0.0;
     }
-    (1.0 - distance / radius).clamp(0.0, 1.0)
+    if distance <= radius {
+        return 1.0;
+    }
+    radius / (radius + ROLLOFF * (distance - radius))
 }
 
 /// A voice's final volume: the PlaySound volume x the distance fade x the
@@ -550,14 +562,14 @@ fn play_sounds(
                 stop_voice(&mut audio, id, "slot_override");
             }
         }
-        // Too far to hear: not started (KF culls them too).
+        // Too quiet to hear: not started.
         let at = emitter_position(req.emitter, ear, &positions);
         let distance = match (at, ear) {
             (Some(p), Some(e)) => p.distance(e) / crate::coords::SCALE,
             _ => 0.0,
         };
-        if req.emitter != Emitter::Listener && distance_gain(distance, req.radius) <= 0.0 {
-            runlog::kv("sound_skip", &format!("sound={} reason=out_of_range distance={distance:.0} radius={:.0}", req.sound, req.radius));
+        if req.emitter != Emitter::Listener && voice_gain(req.volume * distance_gain(distance, req.radius), SOUND_VOLUME) < MIN_AUDIBLE {
+            runlog::kv("sound_skip", &format!("sound={} reason=too_quiet distance={distance:.0} radius={:.0}", req.sound, req.radius));
             continue;
         }
         // All voices busy: drop the quietest if it is quieter than the new
@@ -718,11 +730,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn falloff_is_linear_to_the_radius() {
+    fn falloff_is_inverse_distance_past_the_radius() {
         assert_eq!(distance_gain(0.0, 300.0), 1.0);
-        assert_eq!(distance_gain(150.0, 300.0), 0.5);
-        assert_eq!(distance_gain(300.0, 300.0), 0.0);
-        assert_eq!(distance_gain(900.0, 300.0), 0.0);
+        assert_eq!(distance_gain(300.0, 300.0), 1.0);
+        assert_eq!(distance_gain(900.0, 300.0), 0.5);
+        assert!((distance_gain(2700.0, 300.0) - 0.2).abs() < 1e-6);
     }
 
     #[test]

@@ -1212,6 +1212,10 @@ enum NadePhase {
     Up,
 }
 
+/// A melee swing waiting for its damage moment: (seconds left, stats,
+/// weapon name, MeleeHitSounds, MeleeHitVolume).
+type PendingSwing = (f32, CombatStats, &'static str, std::sync::Arc<[String]>, f32);
+
 #[derive(Resource)]
 struct Weapons {
     defs: Vec<WeaponDef>,
@@ -1267,7 +1271,7 @@ struct Weapons {
     down_delayed: bool,
     /// Melee swings waiting for their damage moment: (seconds left,
     /// stats, weapon name). KFMeleeFire.ModeDoFire sets a timer per swing.
-    pending_swings: Vec<(f32, CombatStats, &'static str, std::sync::Arc<[String]>, f32)>,
+    pending_swings: Vec<PendingSwing>,
     /// Welder hits waiting for WeldFire.Timer: (seconds left, damage,
     /// range, unweld).
     pending_welds: Vec<(f32, f32, f32, bool)>,

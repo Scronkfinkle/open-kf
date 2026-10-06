@@ -539,6 +539,10 @@ pub struct Zed {
     sequence: Option<usize>,
     frame: f32,
     looping: bool,
+    /// How far each animation layer's sound notifies have played: (main
+    /// sequence, frame) and (upper-body sequence, frame).
+    sounds_heard: (Option<usize>, f32),
+    overlay_sounds_heard: Option<(usize, f32)>,
     meshes: Vec<Handle<Mesh>>,
     /// At a welded door (state DoorBashing).
     door_bash: Option<DoorBash>,
@@ -2510,6 +2514,8 @@ impl Zed {
             sequence: None,
             frame: 0.0,
             looping: true,
+            sounds_heard: (None, -1.0),
+            overlay_sounds_heard: None,
             meshes: Vec::new(),
         }
     }
@@ -2753,6 +2759,25 @@ fn death_launch(z: &Zed) -> Launch {
     }
 }
 
+/// The sound notifies of `seq` passed on the way from frame `prev` to
+/// `frame`: a sequence just started counts from before frame 0; a lower
+/// frame than before means it wrapped (looping) or restarted.
+fn passed_sounds(model: &SkinnedModel, seq: usize, prev: Option<f32>, frame: f32, looping: bool) -> Vec<ue_assets::skeletal::NotifySound> {
+    let len = model.length(seq);
+    let spans: &[(f32, f32)] = &match prev {
+        None => [(-1.0, frame), (0.0, 0.0)],
+        Some(p) if frame >= p => [(p, frame), (0.0, 0.0)],
+        Some(p) if looping => [(p, len), (-1.0, frame)],
+        Some(_) => [(-1.0, frame), (0.0, 0.0)],
+    };
+    model
+        .notifies(seq)
+        .iter()
+        .filter(|n| spans.iter().any(|&(a, b)| n.time * len > a && n.time * len <= b))
+        .filter_map(|n| n.sound.clone())
+        .collect()
+}
+
 fn start_anim(z: &mut Zed, seq: Option<usize>, looping: bool) {
     if z.sequence != seq {
         z.sequence = seq;
@@ -2916,6 +2941,8 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 sequence: None,
                 frame: 0.0,
                 looping: true,
+                sounds_heard: (None, -1.0),
+                overlay_sounds_heard: None,
                 meshes: handles.clone(),
             },
         ))
@@ -4437,10 +4464,20 @@ fn animate_zeds(
     bodies: Query<(&Transform, &LinearVelocity, Has<Sleeping>, &AngularVelocity), With<RagdollBody>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut log_timer: Local<f32>,
+    (mut sounds, mut preload, mut preloaded): (MessageWriter<crate::audio::PlaySound>, MessageWriter<crate::audio::PreloadSounds>, Local<bool>),
 ) {
     let Some(classes) = classes else {
         return;
     };
+    if !*preloaded {
+        *preloaded = true;
+        for c in &classes.0 {
+            let mut list = c.model.all_notify_sounds();
+            list.sort();
+            list.dedup();
+            preload.write(crate::audio::PreloadSounds { what: c.name.clone(), sounds: list });
+        }
+    }
     let dt = time.delta_secs();
     *log_timer += dt;
     let log_now = *log_timer >= 1.0;
@@ -4624,6 +4661,7 @@ fn animate_zeds(
             }
             continue;
         }
+        let mut heard = Vec::new();
         if let Some(s) = z.sequence {
             let len = c.model.length(s).max(1e-3);
             z.frame += time.delta_secs() * c.model.rate(s);
@@ -4635,6 +4673,9 @@ fn animate_zeds(
             if z.health <= 0.0 && Some(s) == c.death {
                 z.frame = z.frame.min(c.death_hold_frame);
             }
+            let prev = (z.sounds_heard.0 == Some(s)).then_some(z.sounds_heard.1);
+            heard.extend(passed_sounds(&c.model, s, prev, z.frame, z.looping));
+            z.sounds_heard = (Some(s), z.frame);
         }
         // Start a pending upper-body hit reaction (KnockDown is full body
         // and handled by the think system).
@@ -4666,6 +4707,18 @@ fn animate_zeds(
         if let Some((seq, f, root)) = z.overlay {
             let next = f + dt * c.model.rate(seq);
             z.overlay = (next < c.model.length(seq)).then_some((seq, next, root));
+            let reached = next.min(c.model.length(seq));
+            let prev = z.overlay_sounds_heard.filter(|(s, _)| *s == seq).map(|(_, f)| f);
+            heard.extend(passed_sounds(&c.model, seq, prev, reached, false));
+            z.overlay_sounds_heard = Some((seq, reached));
+        }
+        // AnimNotify_Sound: played on the zed. Its slot and radius handling
+        // are native (not in the scripts): SLOT_None and the default radius
+        // for 0 are guesses; volumes over 1 (Siren scream 255) are capped
+        // by the mixer.
+        for n in heard {
+            let radius = if n.radius > 0.0 { n.radius } else { crate::audio::DEFAULT_RADIUS };
+            sounds.write(crate::audio::PlaySound::new(n.sound, crate::audio::Emitter::Entity(entity)).volume(n.volume).radius(radius));
         }
         // Decapitated: the head (and anything under it) shrinks into the neck.
         let (skinned, bones) = c.model.pose_layered(z.sequence, z.frame, overlay, &collapse);

@@ -480,7 +480,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   (`kfpkg sounds`).
 - Sound output (S2, 2026-10-05): our own mixer plays KF's sounds through
   the sound card: random pick within sound groups, KF's slots, 32 voices,
-  fade with distance and left/right balance (the fade curve is a guess),
+  fade with distance (OpenAL-style inverse distance since S4a; a guess)
+  and left/right balance,
   pitch follows zed time. Test actions play any sound
   (`--input 200:sound:KF_9MMSnd.9mm_Fire`); `--mute` silences it. Logged
   as `sound_play` lines. Test shots heard by you (2026-10-05).
@@ -544,8 +545,11 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Zeds can wedge in tight spots and hang in the air (2 of 20 in a
   KF-WestLondon test); KF's stuck-zed cleanup removes them late in a wave.
 - No crouching. Ladders, water and swimming are not handled.
-- Sound is partly done: weapons only. Zeds, the player, the world and
-  music are steps S4-S6.
+- Zed animation sounds (S4a, 2026-10-05): footsteps, claw swishes and
+  attack grunts, the Siren's scream, the Husk's fireball, the Bloat's
+  vomit, burning screams. Heard by you (2026-10-05). Zed moans, pain, death,
+  decapitation and looping sounds (S4b), the player's sounds (S4c), the
+  world (S5) and music (S6) are still to come.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch
