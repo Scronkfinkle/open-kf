@@ -224,6 +224,11 @@ impl SoundBank {
         entry
     }
 
+    /// Actor.GetSoundDuration: seconds (a group: its first member).
+    pub fn duration(&mut self, name: &str) -> Option<f32> {
+        self.lookup(name).map(|e| e[0].0.duration())
+    }
+
     /// Adds a Sound's clip, or every member of a SoundGroup (groups may
     /// hold groups; depth-limited).
     fn collect(&self, h: &ObjectHandle, out: &mut Vec<(Arc<Clip>, f32)>, depth: u32) {

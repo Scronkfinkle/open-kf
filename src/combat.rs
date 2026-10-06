@@ -29,7 +29,7 @@ pub struct ShotFired {
 }
 
 /// A knife swing reaching its damage moment (KFMeleeFire).
-#[derive(Message, Clone, Copy, Debug)]
+#[derive(Message, Clone, Debug)]
 pub struct MeleeSwing {
     pub origin: Vec3,
     pub dir: Vec3,
@@ -41,6 +41,10 @@ pub struct MeleeSwing {
     pub min_dot: f32,
     pub headshot_mult: f32,
     pub weapon: &'static str,
+    /// KFMeleeFire.MeleeHitSounds (one at random per zed hit) and
+    /// MeleeHitVolume.
+    pub hit_sounds: std::sync::Arc<[String]>,
+    pub hit_volume: f32,
 }
 
 /// Damage to the player from a zed attack, or from the player's own
@@ -653,7 +657,17 @@ fn resolve_swings(
     mut kills: ResMut<KillCount>,
     spatial: SpatialQuery,
     (glass, mut glass_damage): (Query<&crate::glass::GlassCollider>, MessageWriter<crate::glass::GlassDamage>),
+    (mut sounds, mut rng): (MessageWriter<crate::audio::PlaySound>, Local<u32>),
 ) {
+    // Rand(MeleeHitSounds.Length): its own seeded stream.
+    let mut hit_sound = |swing: &MeleeSwing, at: crate::audio::Emitter| {
+        if swing.hit_sounds.is_empty() {
+            return;
+        }
+        *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        let pick = (*rng >> 16) as usize % swing.hit_sounds.len();
+        sounds.write(crate::audio::PlaySound::new(swing.hit_sounds[pick].clone(), at).volume(swing.hit_volume));
+    };
     for swing in swings.read() {
         let player = swing.origin - Vec3::Y * PLAYER_EYE_HEIGHT * SCALE;
         let range = swing.range * SCALE;
@@ -693,6 +707,8 @@ fn resolve_swings(
             );
             let source = HitSource { point: hit, attacker: player, melee: true, explosive: None, fire: None };
             damage_zed(&mut z, my_damage, head, swing.headshot_mult, swing.weapon, t, source, &mut kills);
+            // Weapon.PlaySound(MeleeHitSounds[Rand(..)], SLOT_None, MeleeHitVolume): on the weapon.
+            hit_sound(swing, crate::audio::Emitter::Listener);
         } else if let Some(t) = world_t {
             runlog::kv("melee_hit_world", &format!("weapon={} distance_unreal={:.0}", swing.weapon, t / SCALE));
             // KFMeleeFire.Timer: the traced actor takes the damage (a pane).
@@ -735,6 +751,8 @@ fn resolve_swings(
                 );
                 let source = HitSource { point, attacker: player, melee: true, explosive: None, fire: None };
                 damage_zed(&mut z, damage, head, swing.headshot_mult, swing.weapon, d.length(), source, &mut kills);
+                // Victims.PlaySound(...): on the zed.
+                hit_sound(swing, crate::audio::Emitter::Point(point));
             }
         }
         if main.is_none() && wide_hits == 0 {

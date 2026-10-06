@@ -3171,9 +3171,24 @@ with a test you can run):
     frame, the notifies between the last frame and this one (also
     across a loop's wrap; a new animation starts at -1 so time-0
     notifies play). 363 weapon sounds in all are preloaded, 0 missing.
-  - **S3c. Melee and specials.** Melee hits (KFMeleeFire
-    MeleeHitSounds), the chainsaw (idle, start, loop, end), the
-    flamethrower, Husk Gun charge, ZED Gun beam, welder and syringe.
+  - **S3c. Melee hits, chainsaw, flamethrower, Husk Gun** (done
+    2026-10-05). Melee: one of MeleeHitSounds (or MeleeHitSoundRefs) at
+    random per zed hit at MeleeHitVolume (1): the traced zed's on the
+    weapon (at the player), wide hits' on each zed (KFMeleeFire.Timer);
+    the chainsaw's held fire the same. The weapon attachment's
+    AmbientSound (`weapon_loop_sound`): fire loops for KFHighROFFire,
+    FlameBurstFire and ChainsawFire; the chainsaw plays FireStartSound
+    and starts its loop after GetSoundDuration, and after FireEndSound
+    is silent for its length, then idles (ChainsawAttachment's
+    AmbientSound Chainsaw_Idle1, SoundVolume 230, radius 300).
+    HuskGunFire: AmbientChargeUpSound while charging, AmbientFireSound
+    (ChargedLoop) at full charge (MaxChargeTime 3). 377 weapon sounds
+    preloaded, 0 missing.
+  - **S3d. The rest of the weapon sounds**: the ZED Gun (alt-fire beam
+    charge and loop, AlarmSound), grenade and pipe-bomb throws
+    (FragFire's ReloadSound, PipeBombFire's Axe_Fire), the
+    flamethrower's empty click, the welder and syringe (no sounds of
+    their own found in their fire classes so far).
 
   Two volume rules found in S3a (both **guesses**, labelled in
   `audio.rs`): a voice's final volume is volume x fade x master, capped

@@ -207,6 +207,10 @@ struct WeaponDef {
     /// (KFWeapon: 100; capped by the mixer).
     select_sound: Option<String>,
     select_volume: f32,
+    /// The third-person attachment's own AmbientSound (AttachmentClass
+    /// defaults: AmbientSound, SoundVolume, SoundRadius), playing while the
+    /// weapon is in hand: the chainsaw's idle engine.
+    idle_ambient: Option<AmbientSound>,
     /// Fire mode 1's own ammo when it uses another ammo class (the M4 203's
     /// M203Ammo): rounds left and MaxAmmo.
     alt_ammo: Option<(u32, u32)>,
@@ -355,13 +359,26 @@ struct FireSounds {
     /// KFFire family with bRandomPitchFireSound: RandomPitchAdjustAmt
     /// (pitch 1 +- up to this); 0 for none.
     random_pitch: f32,
-    /// KFHighROFFire in full auto: AmbientFireSound loops while held
+    /// KFHighROFFire, FlameBurstFire and ChainsawFire while held, and
+    /// HuskGunFire fully charged: AmbientFireSound loops
     /// (AmbientFireVolume 0-255, AmbientFireSoundRadius), then
     /// FireEndStereoSound (first person) at AmbientFireVolume / 127.
     ambient: Option<String>,
     end_stereo: Option<String>,
     ambient_volume: u8,
     ambient_radius: f32,
+    /// KFMeleeFire: MeleeHitSounds (or MeleeHitSoundRefs), one at random
+    /// per zed hit, at MeleeHitVolume (default 1).
+    melee_hits: std::sync::Arc<[String]>,
+    melee_hit_volume: f32,
+    /// ChainsawFire: FireStartSound when the loop starts; the loop sound
+    /// waits until it has played (Timer after GetSoundDuration), and after
+    /// FireEndSound the idle sound waits the same way.
+    fire_start: Option<String>,
+    chainsaw: bool,
+    /// HuskGunFire: AmbientChargeUpSound while charging, AmbientFireSound
+    /// once fully charged (MaxChargeTime).
+    charge_up: Option<String>,
 }
 
 /// A sound property as a full object path. KF's `XRef` strings (loaded by
@@ -376,6 +393,31 @@ fn sound_prop(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str) -> Opt
         Some((Value::Object(r @ ObjectRef::Import(_)), lp)) => Some(lp.pkg.object_path(r)),
         Some((Value::Object(r @ ObjectRef::Export(_)), lp)) => Some(format!("{}.{}", lp.name, lp.pkg.object_path(r))),
         _ => None,
+    }
+}
+
+/// An array of sounds as full paths: the `refs` strings (e.g.
+/// MeleeHitSoundRefs) win over the `prop` objects (MeleeHitSounds).
+fn sound_array(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str, refs: &str) -> Vec<String> {
+    if let Some((Value::Array { count, raw }, _)) = defaults.get(class, refs)
+        && count > 0
+    {
+        let mut r = ue_assets::reader::Reader::new(&raw);
+        return (0..count).filter_map(|_| r.fstring().ok()).filter(|s| !s.is_empty()).collect();
+    }
+    match defaults.get(class, prop) {
+        Some((Value::Array { count, raw }, lp)) => {
+            let mut r = ue_assets::reader::Reader::new(&raw);
+            (0..count)
+                .filter_map(|_| r.compact_index().ok().map(ObjectRef::from_raw))
+                .filter_map(|rf| match rf {
+                    ObjectRef::Import(_) => Some(lp.pkg.object_path(rf)),
+                    ObjectRef::Export(_) => Some(format!("{}.{}", lp.name, lp.pkg.object_path(rf))),
+                    ObjectRef::Null => None,
+                })
+                .collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -397,13 +439,22 @@ fn load_fire_sounds(defaults: &ClassDefaults, fm: &ObjectHandle) -> FireSounds {
         volume: float("TransientSoundVolume", 0.5),
         radius: float("TransientSoundRadius", 400.0),
         random_pitch,
-        ambient: defaults.is_a(fm, "KFHighROFFire").then(|| sound_prop(defaults, fm, "AmbientFireSound")).flatten(),
+        ambient: ["KFHighROFFire", "FlameBurstFire", "ChainsawFire", "HuskGunFire"]
+            .iter()
+            .any(|c| defaults.is_a(fm, c))
+            .then(|| sound_prop(defaults, fm, "AmbientFireSound"))
+            .flatten(),
         end_stereo: sound_prop(defaults, fm, "FireEndStereoSound").or(end),
         ambient_volume: match defaults.get(fm, "AmbientFireVolume") {
             Some((Value::Byte(b), _)) => b,
             _ => 255,
         },
         ambient_radius: float("AmbientFireSoundRadius", 500.0),
+        melee_hits: sound_array(defaults, fm, "MeleeHitSounds", "MeleeHitSoundRefs").into(),
+        melee_hit_volume: float("MeleeHitVolume", 1.0),
+        fire_start: sound_prop(defaults, fm, "FireStartSound"),
+        chainsaw: defaults.is_a(fm, "ChainsawFire"),
+        charge_up: sound_prop(defaults, fm, "AmbientChargeUpSound"),
     }
 }
 
@@ -1204,7 +1255,7 @@ struct Weapons {
     down_delayed: bool,
     /// Melee swings waiting for their damage moment: (seconds left,
     /// stats, weapon name). KFMeleeFire.ModeDoFire sets a timer per swing.
-    pending_swings: Vec<(f32, CombatStats, &'static str)>,
+    pending_swings: Vec<(f32, CombatStats, &'static str, std::sync::Arc<[String]>, f32)>,
     /// Welder hits waiting for WeldFire.Timer: (seconds left, damage,
     /// range, unweld).
     pending_welds: Vec<(f32, f32, f32, bool)>,
@@ -1731,6 +1782,25 @@ fn load_weapon(
         can_dry_fire: matches!(get("bModeZeroCanDryFire"), Some((Value::Bool(true), _))),
         select_sound: sound_prop(defaults, &class, "SelectSound"),
         select_volume: float("TransientSoundVolume", 0.3),
+        idle_ambient: match get("AttachmentClass") {
+            Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).and_then(|a| {
+                let sound = sound_prop(defaults, &a, "AmbientSound")?;
+                Some(AmbientSound {
+                    sound,
+                    volume: match defaults.get(&a, "SoundVolume") {
+                        Some((Value::Byte(b), _)) => b,
+                        _ => 128,
+                    },
+                    radius: match defaults.get(&a, "SoundRadius") {
+                        Some((Value::Float(f), _)) => f,
+                        _ => 64.0,
+                    },
+                    pitch: 64,
+                    at_listener: true,
+                })
+            }),
+            _ => None,
+        },
         scope,
         dual,
         toggles_on_alt: if class_name.eq_ignore_ascii_case("KSGShotgun") {
@@ -2137,10 +2207,11 @@ fn send_weapon_sounds(
     out.write_batch(w.sounds.drain(..));
     for def in &w.defs {
         if done.insert(def.class.clone()) {
-            let mut sounds: Vec<String> = def.select_sound.iter().cloned().collect();
+            let mut sounds: Vec<String> = def.select_sound.iter().cloned().chain(def.idle_ambient.as_ref().map(|a| a.sound.clone())).collect();
             for m in &def.modes {
                 let s = &m.sounds;
-                sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo].into_iter().flatten().cloned());
+                sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo, &s.fire_start, &s.charge_up].into_iter().flatten().cloned());
+                sounds.extend(s.melee_hits.iter().cloned());
             }
             sounds.extend(def.model.all_notify_sounds());
             sounds.sort();
@@ -2150,37 +2221,85 @@ fn send_weapon_sounds(
     }
 }
 
-/// KFHighROFFire's state FireLoop: AmbientFireSound on the weapon while a
-/// full-auto mode is held (on the weapon camera, at the listener), and
-/// FireEndStereoSound at AmbientFireVolume / 127 when it stops (released,
-/// empty, or the weapon put away).
-fn weapon_loop_sound(w: Option<ResMut<Weapons>>, mut commands: Commands, mut playing: Local<Option<(Entity, FireSounds)>>) {
+/// The weapon attachment's AmbientSound, which plays at the player:
+/// - a fire loop (KFHighROFFire, FlameBurstFire, ChainsawFire state
+///   FireLoop) while a full-auto mode is held: AmbientFireSound at
+///   AmbientFireVolume and AmbientFireSoundRadius. At its end
+///   FireEndStereoSound (else FireEndSound) at AmbientFireVolume / 127.
+///   The chainsaw first plays FireStartSound and starts the loop when that
+///   has played; after its FireEndSound it is silent until that has
+///   played, then idles again (ChainsawFire Timer, GetSoundDuration).
+/// - HuskGunFire while charging: AmbientChargeUpSound, then
+///   AmbientFireSound once HoldTime reaches MaxChargeTime.
+/// - otherwise the attachment's own sound (the chainsaw's idle engine).
+#[derive(Default)]
+struct WeaponAmbient {
+    fire_loop: Option<FireSounds>,
+    /// Game seconds left of the chainsaw's start or end sound.
+    wait: f32,
+    /// What is on the weapon camera entity now.
+    set: Option<AmbientSound>,
+}
+
+fn weapon_loop_sound(
+    w: Option<ResMut<Weapons>>,
+    mut commands: Commands,
+    time: Res<Time>,
+    mut bank: NonSendMut<crate::audio::SoundBank>,
+    mut st: Local<WeaponAmbient>,
+) {
     let Some(mut w) = w else {
         return;
     };
+    st.wait = (st.wait - time.delta_secs()).max(0.0);
     let def = &w.defs[w.current];
+    let actor = weapon_actor(def);
     let wanted = (0..2).find_map(|m| {
         let fm = &def.modes[m];
         (fm.high_rof && !fm.wait_for_release && w.firing[m] && fm.sounds.ambient.is_some()).then(|| fm.sounds.clone())
     });
-    let same = match (&*playing, &wanted) {
-        (Some((_, a)), Some(b)) => a.ambient == b.ambient,
-        (None, None) => true,
-        _ => false,
-    };
-    if same {
-        return;
-    }
-    if let Some((e, old)) = playing.take() {
-        commands.entity(e).remove::<AmbientSound>();
-        if let Some(end) = old.end_stereo {
-            w.sounds.push(PlaySound::new(end, Emitter::Listener).volume(old.ambient_volume as f32 / 127.0).radius(old.ambient_radius));
+    let loop_sound = |s: &FireSounds, sound: &str| AmbientSound { sound: sound.to_string(), volume: s.ambient_volume, radius: s.ambient_radius, pitch: 64, at_listener: true };
+    match (st.fire_loop.take(), wanted) {
+        (None, Some(s)) => {
+            st.wait = 0.0;
+            if let Some(start) = &s.fire_start {
+                w.sounds.push(PlaySound::new(start.clone(), Emitter::Listener).slot(SoundSlot::Interact).volume(s.ambient_volume as f32 / 127.0).radius(s.ambient_radius).actor(actor));
+                st.wait = bank.duration(start).unwrap_or(0.0);
+            }
+            st.fire_loop = Some(s);
         }
+        (Some(old), None) => {
+            st.wait = 0.0;
+            if let Some(end) = &old.end_stereo {
+                let slot = if old.chainsaw { SoundSlot::Interact } else { SoundSlot::None };
+                w.sounds.push(PlaySound::new(end.clone(), Emitter::Listener).slot(slot).volume(old.ambient_volume as f32 / 127.0).radius(old.ambient_radius).actor(actor));
+                if old.chainsaw {
+                    st.wait = bank.duration(end).unwrap_or(0.0);
+                }
+            }
+        }
+        (old, new) => st.fire_loop = new.or(old),
     }
-    if let Some(s) = wanted {
-        let e = w.camera;
-        commands.entity(e).insert(AmbientSound { sound: s.ambient.clone().unwrap_or_default(), volume: s.ambient_volume, radius: s.ambient_radius, pitch: 64, at_listener: true });
-        *playing = Some((e, s));
+    let def = &w.defs[w.current];
+    let charge = def.modes[0].charge.as_ref().map(|c| c.max_time);
+    let desired = if let Some(s) = &st.fire_loop {
+        // The chainsaw's loop waits for its start sound (the idle goes on).
+        if st.wait > 0.0 { st.set.clone() } else { s.ambient.as_deref().map(|a| loop_sound(s, a)) }
+    } else if let (Some(hold), Some(max)) = (w.charge_hold, charge) {
+        let s = &def.modes[0].sounds;
+        let sound = if hold < max { s.charge_up.as_deref() } else { s.ambient.as_deref() };
+        sound.map(|a| loop_sound(s, a))
+    } else if st.wait > 0.0 {
+        None
+    } else {
+        def.idle_ambient.clone()
+    };
+    if desired != st.set {
+        match &desired {
+            Some(a) => commands.entity(w.camera).insert(a.clone()),
+            None => commands.entity(w.camera).remove::<AmbientSound>(),
+        };
+        st.set = desired;
     }
 }
 
@@ -2924,7 +3043,7 @@ fn weapon_input(
                         fm.class, stats.damage_min, stats.range, stats.damage_delay, stats.min_dot
                     ),
                 );
-                w.pending_swings.push((stats.damage_delay, stats, item_name));
+                w.pending_swings.push((stats.damage_delay, stats, item_name, fm.sounds.melee_hits.clone(), fm.sounds.melee_hit_volume));
             }
             FireKind::Pellets if fm.spawn_delay.is_some() => {
                 let delay = fm.spawn_delay.unwrap_or(0.0);
@@ -3084,14 +3203,14 @@ fn weapon_input(
     // Melee: damage lands DamagedelayMin seconds into the swing.
     let dt = time.delta_secs();
     let mut landed = Vec::new();
-    w.pending_swings.retain_mut(|(t, stats, name)| {
+    w.pending_swings.retain_mut(|(t, stats, name, hit_sounds, hit_volume)| {
         *t -= dt;
         if *t <= 0.0 {
-            landed.push((*stats, *name));
+            landed.push((*stats, *name, hit_sounds.clone(), *hit_volume));
         }
         *t > 0.0
     });
-    for (stats, name) in landed {
+    for (stats, name, hit_sounds, hit_volume) in landed {
         if let Ok((cam, _)) = main_cam.single() {
             swings.write(MeleeSwing {
                 origin: cam.translation,
@@ -3101,6 +3220,8 @@ fn weapon_input(
                 min_dot: stats.min_dot,
                 headshot_mult: stats.headshot_mult,
                 weapon: name,
+                hit_sounds,
+                hit_volume,
             });
         }
     }

@@ -3759,3 +3759,37 @@ pass; clippy clean.
 **Still broken / not tested:** you listened (2026-10-05): working. Melee hits, chainsaw,
 flamethrower, welder, syringe, Husk Gun and ZED Gun sounds (S3c).
 **Next:** S3c.
+
+## 2026-10-05 S3c: melee hits, chainsaw, flamethrower, Husk Gun
+
+**Changed:** `src/weapon.rs`: fire modes read MeleeHitSounds /
+MeleeHitSoundRefs and MeleeHitVolume, FireStartSound,
+AmbientChargeUpSound; AmbientFireSound now also for FlameBurstFire,
+ChainsawFire and HuskGunFire; each weapon reads its attachment's
+AmbientSound, SoundVolume and SoundRadius. `weapon_loop_sound` rewritten
+as one state machine for the weapon attachment's AmbientSound (fire
+loops, the chainsaw's start/end waits, the Husk Gun's charge, the idle
+sound). Pending swings carry their hit sounds. `src/combat.rs`:
+`MeleeSwing` carries the hit sounds (no longer Copy); `resolve_swings`
+plays one per zed hit. `src/audio.rs`: `SoundBank::duration`
+(GetSoundDuration). DESIGN (S3c done, S3d planned), README.
+**Why:** S3c of the sound plan.
+**Tested how:** scripted runs: knife on a Clot (`--spawn clot`), Husk
+Gun charge and release, chainsaw idle / hold / release, flamethrower
+hold / release; `--give all --frames 400`; clippy; tests.
+**Result:** knife: `Knife_HitFlesh volume=1.00` at each of the hits
+(after fixing my property name: I first read `MeleeHitSound`, KF's is
+`MeleeHitSounds`, so hits were silent). Husk Gun: `ChargeUp` loop from
+the charge start, `HuskGun_FireST pitch=0.98` and the loop stopped at the
+release (hold 1.65 s). Chainsaw: `Chainsaw_Idle1 volume=230` from the
+select; fire_down: `RevLong_Start` (0.64 s), the `RevLong_Loop` 0.65 s
+later; fire_up: `RevLong_End` (1.05 s), the idle again 1.05 s later.
+Flamethrower: `FireLoop` while held, `FT_Fire1Shot volume=2.01` at the
+release. 44 weapons, 377 sounds preloaded, 0 missing. Tests 136 pass;
+clippy clean.
+**Still broken / not tested:** you said to go on (2026-10-05); whether you listened to
+these is not recorded. The chainsaw hitting a
+zed (its hit sound) not run. The Husk Gun's full-charge loop not run
+(held under 3 s). S3d: ZED Gun beam and alarm, grenade and pipe-bomb
+throw sounds, the flamethrower's empty click.
+**Next:** S3d.
