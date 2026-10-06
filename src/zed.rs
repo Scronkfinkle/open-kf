@@ -130,6 +130,12 @@ struct ZedSounds {
     /// ChainSawOffSound when he dies.
     saw_loop: Option<String>,
     chainsaw_off: Option<String>,
+    /// ZombieBoss: RocketFireSound, MeleeImpaleHitSound, MiniGunFireSound,
+    /// MiniGunSpinSound.
+    rocket_fire: Option<String>,
+    impale_hit: Option<String>,
+    mg_fire: Option<String>,
+    mg_spin: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +156,41 @@ pub enum ZedSound {
     MeleeHit,
     Moan,
     Challenge,
+    /// A sound written in the script (the Patriarch's speech, Kev_SaveMe),
+    /// with its PlaySound arguments.
+    Line(Line),
+    /// ZombieBoss: RocketFireSound (SLOT_Interact, 2.0, TransientSoundRadius).
+    Rocket,
+    /// ZombieBoss.ClawDamageTarget during MeleeImpale: MeleeImpaleHitSound.
+    ImpaleHit,
+    /// xPawn.Landed: GetSound(EST_Land) (Player_LandDirt for zeds),
+    /// SLOT_Interact, min(1, -0.3 x Velocity.Z / JumpZ).
+    Land(f32),
+}
+
+/// One PlaySound call written out in a zed script.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Line {
+    pub sound: &'static str,
+    pub slot: crate::audio::Slot,
+    pub volume: f32,
+    pub radius: f32,
+    pub no_override: bool,
+}
+
+/// ZombieBoss's speech functions, called by AnimNotify_Script notifies in
+/// his animations: PlaySound(SoundGroup'...', SLOT_Misc, 2.0, true, R).
+/// PatriarchRadialTaunt needs 3 players around him: never solo.
+fn boss_speech(function: &str) -> Option<Line> {
+    let (sound, radius) = match function {
+        "PatriarchKnockDown" => ("KF_EnemiesFinalSnd.Patriarch.Kev_KnockedDown", 500.0),
+        "PatriarchEntrance" => ("KF_EnemiesFinalSnd.Patriarch.Kev_Entrance", 500.0),
+        "PatriarchVictory" => ("KF_EnemiesFinalSnd.Patriarch.Kev_Victory", 500.0),
+        "PatriarchMGPreFire" => ("KF_EnemiesFinalSnd.Patriarch.Kev_WarnGun", 1000.0),
+        "PatriarchMisslePreFire" => ("KF_EnemiesFinalSnd.Patriarch.Kev_WarnRocket", 1000.0),
+        _ => return None,
+    };
+    Some(Line { sound, slot: crate::audio::Slot::Misc, volume: 2.0, radius, no_override: true })
 }
 
 struct ZedClass {
@@ -1118,6 +1159,14 @@ fn boss_busy(
     if b.knockdown.is_some() {
         b.tick(dt);
         if b.knockdown_step(dt) {
+            // State KnockDown, after the animation and CloakBoss.
+            z.sound_events.push(ZedSound::Line(Line {
+                sound: "KF_EnemiesFinalSnd.Patriarch.Kev_SaveMe",
+                slot: crate::audio::Slot::Misc,
+                volume: 2.0,
+                radius: 500.0,
+                no_override: false,
+            }));
             z.state = ZedState::Chase;
             z.sequence = None;
             // CloakBoss: not while zapped.
@@ -1162,6 +1211,7 @@ fn boss_busy(
         turn_toward(z, c, target, dt);
         match m.step(dt, anims[1].1) {
             Some(crate::boss::MissileEvent::Fire) => {
+                z.sound_events.push(ZedSound::Rocket);
                 shoot_fireball(z, c, t, crate::fireball::Projectile::BossRocket, bc.tip_bone, target, player_velocity, spatial, fireball);
                 z.sequence = None;
                 start_anim(z, Some(anims[1].0), false);
@@ -1811,6 +1861,10 @@ fn load_zed_sounds(defaults: &ClassDefaults, class: &ObjectHandle, kind: ZedKind
         ambient,
         saw_loop: sound_prop(defaults, class, "SawAttackLoopSound"),
         chainsaw_off: sound_prop(defaults, class, "ChainSawOffSound"),
+        rocket_fire: sound_prop(defaults, class, "RocketFireSound"),
+        impale_hit: sound_prop(defaults, class, "MeleeImpaleHitSound"),
+        mg_fire: sound_prop(defaults, class, "MiniGunFireSound"),
+        mg_spin: sound_prop(defaults, class, "MiniGunSpinSound"),
     }
 }
 
@@ -2926,13 +2980,27 @@ fn play_zed_sounds(commands: &mut Commands, entity: Entity, c: &ZedClass, z: &mu
                 Some(PlaySound::new(snd.challenge[pick].clone(), at).slot(Slot::Talk).volume(1.0).radius(500.0))
             }
             ZedSound::Challenge => None,
+            ZedSound::Line(l) => {
+                let p = PlaySound::new(l.sound, at).slot(l.slot).volume(l.volume).radius(l.radius);
+                Some(if l.no_override { p.no_override() } else { p })
+            }
+            ZedSound::Rocket => snd.rocket_fire.clone().map(|p| PlaySound::new(p, at).slot(Slot::Interact).volume(2.0).radius(500.0)),
+            ZedSound::ImpaleHit => snd.impale_hit.clone().map(|p| PlaySound::new(p, at).slot(Slot::Interact).volume(2.0).radius(500.0)),
+            ZedSound::Land(v) => Some(PlaySound::new("KF_PlayerGlobalSnd.Player_LandDirt", at).slot(Slot::Interact).volume(v).radius(500.0)),
         };
         if let Some(p) = play {
             out.write(p);
         }
     }
+    let mg = z.boss.as_ref().and_then(|b| b.chaingun).map(|g| g.sound);
     let want = if z.health > 0.0 && !z.decapitated {
         match (&snd.saw_loop, &snd.ambient) {
+            _ if mg == Some(crate::boss::MgSound::Fire) && snd.mg_fire.is_some() => {
+                snd.mg_fire.clone().map(|sound| AmbientLoop { sound, volume: 255, radius: 400.0 })
+            }
+            _ if mg == Some(crate::boss::MgSound::Spin) && snd.mg_spin.is_some() => {
+                snd.mg_spin.clone().map(|sound| AmbientLoop { sound, volume: 185, radius: 200.0 })
+            }
             (Some(saw), Some(a)) if z.sawing => Some(AmbientLoop { sound: saw.clone(), ..a.clone() }),
             (_, a) => a.clone(),
         }
@@ -2948,10 +3016,10 @@ fn play_zed_sounds(commands: &mut Commands, entity: Entity, c: &ZedClass, z: &mu
     }
 }
 
-/// The sound notifies of `seq` passed on the way from frame `prev` to
+/// The notifies of `seq` passed on the way from frame `prev` to
 /// `frame`: a sequence just started counts from before frame 0; a lower
 /// frame than before means it wrapped (looping) or restarted.
-fn passed_sounds(model: &SkinnedModel, seq: usize, prev: Option<f32>, frame: f32, looping: bool) -> Vec<ue_assets::skeletal::NotifySound> {
+fn passed_notifies(model: &SkinnedModel, seq: usize, prev: Option<f32>, frame: f32, looping: bool) -> Vec<ue_assets::skeletal::Notify> {
     let len = model.length(seq);
     let spans: &[(f32, f32)] = &match prev {
         None => [(-1.0, frame), (0.0, 0.0)],
@@ -2963,7 +3031,7 @@ fn passed_sounds(model: &SkinnedModel, seq: usize, prev: Option<f32>, frame: f32
         .notifies(seq)
         .iter()
         .filter(|n| spans.iter().any(|&(a, b)| n.time * len > a && n.time * len <= b))
-        .filter_map(|n| n.sound.clone())
+        .cloned()
         .collect()
 }
 
@@ -3934,7 +4002,8 @@ fn think_and_move(
                             zed_id: z.id,
                             kind: crate::combat::HurtKind::Plain,
                         });
-                        z.sound_events.push(ZedSound::MeleeHit);
+                        let impale = z.attack.is_some_and(|a| c.model.sequence_name(a.seq) == Some("MeleeImpale"));
+                        z.sound_events.push(if impale { ZedSound::ImpaleHit } else { ZedSound::MeleeHit });
                         let (from, to) = (ue_pos(z.centre), ue_pos(target));
                         let momentum = (to - from).normalize_or_zero() * BOSS_DAMAGE_FORCE * push_scale;
                         push.write(crate::walk::PlayerPush { momentum });
@@ -4581,6 +4650,9 @@ fn think_and_move(
             }
             if hit.is_some_and(|h| h.normal.y > 0.7) {
                 let impact = -z.vertical_speed / SCALE;
+                if z.health > 0.0 && impact > 0.0 {
+                    z.sound_events.push(ZedSound::Land((0.3 * impact / c.jump_z).min(1.0)));
+                }
                 z.pouncing = false; // Landed
                 z.vertical_speed = 0.0;
                 z.air_velocity = Vec3::ZERO;
@@ -4706,7 +4778,16 @@ fn animate_zeds(
         for c in &classes.0 {
             let mut list = c.model.all_notify_sounds();
             let v = &c.sounds;
-            list.extend([&v.moan, &v.pain, &v.death, &v.headless_death, &v.decapitation, &v.melee_hit, &v.saw_loop, &v.chainsaw_off].into_iter().flatten().cloned());
+            list.extend(
+                [&v.moan, &v.pain, &v.death, &v.headless_death, &v.decapitation, &v.melee_hit, &v.saw_loop, &v.chainsaw_off, &v.rocket_fire, &v.impale_hit, &v.mg_fire, &v.mg_spin]
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+            if c.boss.is_some() {
+                list.extend(["PatriarchKnockDown", "PatriarchEntrance", "PatriarchVictory", "PatriarchMGPreFire", "PatriarchMisslePreFire"].iter().filter_map(|f| boss_speech(f)).map(|l| l.sound.to_string()));
+                list.push("KF_EnemiesFinalSnd.Patriarch.Kev_SaveMe".into());
+            }
             list.extend(v.challenge.iter().cloned());
             list.extend(v.ambient.as_ref().map(|a| a.sound.clone()));
             list.sort();
@@ -4901,6 +4982,7 @@ fn animate_zeds(
             continue;
         }
         let mut heard = Vec::new();
+        let mut speech = Vec::new();
         if let Some(s) = z.sequence {
             let len = c.model.length(s).max(1e-3);
             z.frame += time.delta_secs() * c.model.rate(s);
@@ -4913,7 +4995,9 @@ fn animate_zeds(
                 z.frame = z.frame.min(c.death_hold_frame);
             }
             let prev = (z.sounds_heard.0 == Some(s)).then_some(z.sounds_heard.1);
-            heard.extend(passed_sounds(&c.model, s, prev, z.frame, z.looping));
+            let passed = passed_notifies(&c.model, s, prev, z.frame, z.looping);
+            heard.extend(passed.iter().filter_map(|n| n.sound.clone()));
+            speech.extend(passed.iter().filter(|_| c.boss.is_some()).filter_map(|n| boss_speech(&n.name)));
             z.sounds_heard = (Some(s), z.frame);
         }
         // Start a pending upper-body hit reaction (KnockDown is full body
@@ -4948,13 +5032,16 @@ fn animate_zeds(
             z.overlay = (next < c.model.length(seq)).then_some((seq, next, root));
             let reached = next.min(c.model.length(seq));
             let prev = z.overlay_sounds_heard.filter(|(s, _)| *s == seq).map(|(_, f)| f);
-            heard.extend(passed_sounds(&c.model, seq, prev, reached, false));
+            let passed = passed_notifies(&c.model, seq, prev, reached, false);
+            heard.extend(passed.iter().filter_map(|n| n.sound.clone()));
+            speech.extend(passed.iter().filter(|_| c.boss.is_some()).filter_map(|n| boss_speech(&n.name)));
             z.overlay_sounds_heard = Some((seq, reached));
         }
         // AnimNotify_Sound: played on the zed. Its slot and radius handling
         // are native (not in the scripts): SLOT_None and the default radius
         // for 0 are guesses; volumes over 1 (Siren scream 255) are capped
         // by the mixer.
+        z.sound_events.extend(speech.into_iter().map(ZedSound::Line));
         for n in heard {
             let radius = if n.radius > 0.0 { n.radius } else { crate::audio::DEFAULT_RADIUS };
             sounds.write(crate::audio::PlaySound::new(n.sound, crate::audio::Emitter::Entity(entity)).volume(n.volume).radius(radius));

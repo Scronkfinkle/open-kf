@@ -558,8 +558,13 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   speed), jump grunt, landing thud by fall speed, pain grunts, the death
   sound, low-health breathing, the zed time sounds. Confirmed by you (2026-10-05).
   Footsteps use the default surface everywhere (no per-material surfaces
-  yet). Still to come: the Patriarch's speech and guns, ragdoll bumps,
-  the Husk fireball's flight (S4b2), the world (S5), music (S6).
+  yet).
+- The Patriarch's speech (entrance, warnings, knocked down, "save me",
+  victory), his chaingun's fire and spin loops, the rocket launch, the
+  impale hit; the Husk fireball's and the rocket's flight and impact;
+  the Bloat's acid splash; corpses thudding; zeds landing (S4b2,
+  2026-10-05). Confirmed by you. Still to come: the world (S5) and
+  music (S6).
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch

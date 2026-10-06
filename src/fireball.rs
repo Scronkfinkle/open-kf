@@ -61,6 +61,11 @@ struct Spec {
     /// The trail points backward (PanzerfaustTrail: RelativeRotation pitch 32768).
     trail_backward: bool,
     impact: &'static str,
+    /// AmbientSound while flying (LAWProj SoundVolume 255, SoundRadius
+    /// 250) and ExplosionSound (Explode: PlaySound(ExplosionSound,,2.0),
+    /// TransientSoundRadius 500); from the class defaults.
+    flight_sound: &'static str,
+    explosion_sound: &'static str,
     decal: DecalKind,
     hurt: crate::combat::HurtKind,
 }
@@ -80,6 +85,8 @@ impl Projectile {
                 trail: "KFMod.FlameThrowerFlameB",
                 trail_backward: false,
                 impact: "KFMod.FlameImpact",
+                flight_sound: "KF_BaseHusk.Fire.husk_fireball_loop",
+                explosion_sound: "KF_EnemiesFinalSnd.Husk.Husk_FireImpact",
                 decal: DecalKind::Scorch,
                 hurt: crate::combat::HurtKind::Fire,
             },
@@ -93,6 +100,8 @@ impl Projectile {
                 trail: "ROEffects.PanzerfaustTrail",
                 trail_backward: true,
                 impact: "KFMod.LawExplosion",
+                flight_sound: "KF_LAWSnd.Rocket_Propel",
+                explosion_sound: "KF_LAWSnd.Rocket_Explode",
                 decal: DecalKind::RocketMark,
                 hurt: crate::combat::HurtKind::Plain,
             },
@@ -149,9 +158,14 @@ fn load_model(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut preload: MessageWriter<crate::audio::PreloadSounds>,
 ) {
     let set = PackageSet::new(&request.install_root);
     let defaults = ClassDefaults::new(&set);
+    preload.write(crate::audio::PreloadSounds {
+        what: "fireballs".into(),
+        sounds: Projectile::ALL.iter().flat_map(|k| [k.spec().flight_sound.to_string(), k.spec().explosion_sound.to_string()]).collect(),
+    });
     for kind in Projectile::ALL {
         let spec = kind.spec();
         let class_path = spec.class;
@@ -214,6 +228,7 @@ fn spawn_fireballs(
                     scale: Vec3::splat(scale),
                 },
                 Visibility::Visible,
+                crate::audio::AmbientSound { sound: spec.flight_sound.into(), volume: 255, radius: 250.0, pitch: 64, at_listener: false },
                 Fireball {
                     id: *next_id,
                     kind: r.kind,
@@ -272,7 +287,7 @@ fn move_fireballs(
     mut damage: MessageWriter<crate::combat::PlayerDamaged>,
     mut push: MessageWriter<crate::walk::PlayerPush>,
     mut decals: MessageWriter<SpawnDecal>,
-    (door_colliders, mut door_blasts): (Query<&crate::door::DoorCollider>, MessageWriter<crate::door::DoorBlast>),
+    (door_colliders, mut door_blasts, mut sounds): (Query<&crate::door::DoorCollider>, MessageWriter<crate::door::DoorBlast>, MessageWriter<crate::audio::PlaySound>),
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |c: Vec3| Vec3::new(-c.z, c.x, c.y) / SCALE;
@@ -338,6 +353,7 @@ fn move_fireballs(
         // Explode.
         let spec = f.kind.spec();
         let at = a + step * frac;
+        sounds.write(crate::audio::PlaySound::new(spec.explosion_sound, crate::audio::Emitter::Point(coords::pos(at.to_array()))).volume(2.0).radius(500.0));
         if let Some(lib) = library.as_deref() {
             particles::spawn_effect(&mut commands, lib, &mut meshes, spec.impact, at + normal * 20.0, axes_along(normal), f.id);
         }

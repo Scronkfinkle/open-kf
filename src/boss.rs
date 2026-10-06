@@ -170,10 +170,21 @@ pub enum MgEvent {
     Done,
 }
 
+/// The Patriarch's AmbientSound during the chaingun: FireMGShot sets
+/// MiniGunFireSound (SoundVolume 255, SoundRadius 400), a pause between
+/// bursts MiniGunSpinSound (185, 200); EndState (at FireEndMG) his own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MgSound {
+    Default,
+    Fire,
+    Spin,
+}
+
 /// State FireChaingun. Times are seconds since it started.
 #[derive(Clone, Copy, Debug)]
 pub struct Chaingun {
     pub clock: f32,
+    pub sound: MgSound,
     /// MGFireCounter: shots left.
     pub shots_left: i32,
     ending: bool,
@@ -194,6 +205,7 @@ impl Chaingun {
     pub fn start(shots: i32, prefire_seconds: f32) -> Chaingun {
         Chaingun {
             clock: 0.0,
+            sound: MgSound::Default,
             shots_left: shots,
             ending: false,
             anim_left: prefire_seconds,
@@ -256,9 +268,13 @@ impl Chaingun {
                 // Pause (the barrels spin): Sleep(0.5 + FRand() x 0.75).
                 self.loop_wait += 0.5 + 0.75 * rng();
                 self.new_burst = true;
+                if self.fire_at_will {
+                    self.sound = MgSound::Spin;
+                }
             } else {
                 if self.fire_at_will {
                     self.shots_left -= 1;
+                    self.sound = MgSound::Fire;
                     out.push(MgEvent::Shoot);
                 }
                 self.loop_wait += 0.05;
@@ -270,6 +286,7 @@ impl Chaingun {
     /// FireEndMG and GoToState('').
     fn end(&mut self, seconds: [f32; 3], mut out: Vec<MgEvent>) -> Vec<MgEvent> {
         self.ending = true;
+        self.sound = MgSound::Default;
         self.anim_left = seconds[2];
         out.push(MgEvent::Play(MgAnim::End));
         out

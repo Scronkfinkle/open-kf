@@ -3932,3 +3932,42 @@ default step, jump and land sounds. No quiet steps (no crouch or walk
 key). The headshot-on-player sound (impact_metal09) and the player's
 decapitation are not done (zeds do not aim for the head).
 **Next:** S4b2 (Patriarch and zed leftovers), then S5 (the world).
+
+## 2026-10-05 S4b2: the Patriarch's sounds and the zed leftovers
+
+**Changed:** `src/zed.rs`: the Patriarch's speech from the
+AnimNotify_Script functions his animations pass (PatriarchEntrance,
+KnockDown, Victory, MGPreFire, MisslePreFire: SLOT_Misc, 2.0, bNoOverride,
+radius 500 / 1000), Kev_SaveMe when a knockdown ends, RocketFireSound at
+the launch, MeleeImpaleHitSound for MeleeImpale hits, the chaingun's
+AmbientSound (MiniGunFireSound 255 / 400 while shooting, MiniGunSpinSound
+185 / 200 in the pauses); zeds landing (Player_LandDirt, min(1, 0.3 x
+fall speed / JumpZ)); `passed_notifies` replaces `passed_sounds`.
+`src/boss.rs`: `MgSound` in the chaingun state. `src/fireball.rs`: the
+Husk fireball and the Patriarch's rocket fly with their AmbientSound
+(husk_fireball_loop, Rocket_Propel) and play their ExplosionSound
+(Husk_FireImpact, Rocket_Explode) at 2.0; preloaded. `src/vomit.rs`:
+Bloat_AcidSplash where a glob lands (Actor defaults 0.3 / 300).
+`src/decals.rs`: ragdoll impacts play Zomb_BodyImpact (every 0.25 s per
+corpse at most, min(2, v^2 / 40000); KF's early return for nearby
+impacts kept). DESIGN, README.
+**Why:** S4b2.
+**Tested how:** `--mode waves --wave 5 --god` (3600-4200 frames; one run
+with `hurt_zeds` every 40 frames for the knockdowns); `--spawn husk`;
+`--spawn bloat`; `zed_drop` and a Clot shot dead; clippy (counted);
+tests.
+**Result:** Patriarch: `Kev_Entrance` at the entrance, `Kev_WarnGun`,
+`Kev_MG_GunfireLoop` / `Kev_MG_TurbineFireLoop` alternating with the
+bursts, `Kev_WarnRocket`, `Kev_FireRocket`, `Kev_HitPlayer_Impale` (two
+per impale, the animation's two hit notifies), `Kev_KnockedDown` then
+`Kev_SaveMe` 2 s later; at the second knockdown `Kev_KnockedDown` was
+skipped (slot_busy: Kev_SaveMe still playing; bNoOverride, as KF).
+Husk: `husk_fireball_loop` while flying, `Husk_FireImpact volume=2.00`
+on hitting me. Bloat: `Bloat_AcidSplash` as the vomit landed. Dropped
+Clot: `Player_LandDirt volume=0.55`. Dead Clot: `Zomb_BodyImpact` 0.73,
+then 0.02, then one too quiet to start. Tests 136 pass; clippy 0
+warnings.
+**Still broken / not tested:** you confirmed it working (2026-10-05). Gibbed deaths (none in
+our game). The radial-attack taunt (needs 3 players). LAWProj's
+AmbientVolumeScale (5) is not used (its meaning is native code).
+**Next:** S5, the world.

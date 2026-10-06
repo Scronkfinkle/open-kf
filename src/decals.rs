@@ -681,13 +681,15 @@ fn spawn_decals(
 fn ragdoll_streaks(
     mut starts: MessageReader<CollisionStart>,
     collisions: Collisions,
-    bodies: Query<(), With<crate::ragdoll::RagdollBody>>,
+    bodies: Query<&LinearVelocity, With<crate::ragdoll::RagdollBody>>,
     ragdolls: Query<(Entity, &crate::ragdoll::RagdollState)>,
     spatial: SpatialQuery,
     time: Res<Time>,
     mut decals: MessageWriter<SpawnDecal>,
-    // Per corpse: last streak time, last impact position (Unreal units).
-    mut memory: Local<HashMap<Entity, (f32, Vec3)>>,
+    mut sounds: MessageWriter<crate::audio::PlaySound>,
+    // Per corpse: last streak time, last impact position (Unreal units),
+    // last impact sound time (RagLastSoundTime).
+    mut memory: Local<HashMap<Entity, (f32, Vec3, f32)>>,
 ) {
     let now = time.elapsed_secs();
     for start in starts.read() {
@@ -707,10 +709,26 @@ fn ragdoll_streaks(
             continue;
         };
         let pos = to_ue(point);
-        let entry = memory.entry(corpse).or_insert((f32::MIN, Vec3::ZERO));
+        let entry = memory.entry(corpse).or_insert((f32::MIN, Vec3::ZERO, f32::MIN));
         let dist_sq = if entry.1 == Vec3::ZERO { 0.0 } else { (entry.1 - pos).length_squared() };
         entry.1 = pos;
-        if now <= entry.0 + 0.25 || dist_sq < 1400.0 {
+        // KF quirk, kept: an impact this close to the last one returns
+        // before the sound too.
+        if dist_sq < 1400.0 {
+            continue;
+        }
+        // KImpact's sound: at most every RagImpactSoundInterval (0.25 s),
+        // Zomb_BodyImpact at RagHitVolume = min(2, |velocity|^2 / 40000),
+        // SLOT_None, on the corpse (Actor radius default; KFMonster 500).
+        if now > entry.2 + 0.25
+            && let Ok(v) = bodies.get(part)
+        {
+            entry.2 = now;
+            let speed_sq = (v.0 / SCALE).length_squared();
+            let volume = (speed_sq / 40000.0).min(2.0);
+            sounds.write(crate::audio::PlaySound::new("KF_EnemyGlobalSnd.Zomb_BodyImpact", crate::audio::Emitter::Point(point)).volume(volume).radius(500.0));
+        }
+        if now <= entry.0 + 0.25 {
             continue;
         }
         // Trace(pos - impactNorm * 16, pos + impactNorm * 16).

@@ -3238,7 +3238,12 @@ with a test you can run):
     decapitation, Impact_Skull on headshots, the melee hit on the player,
     challenge sounds, AmbientSound loops (Scrake's chainsaw, Bloat,
     Husk, Patriarch).
-  - **S4b2. The rest of the zeds.** The Patriarch's own sounds (speech
+  - **S4b2. The rest of the zeds** (done 2026-10-05, except gibbed
+    deaths: our zeds are never gibbed whole). Speech comes from the
+    AnimNotify_Script notifies (their function names) passed in his
+    animations; the chaingun's loop from `boss::MgSound` (FireMGShot,
+    the pause, EndState); the projectiles carry LAWProj's AmbientSound
+    (255, 250) and play ExplosionSound at 2.0 (radius 500). The Patriarch's own sounds (speech
     from his AnimNotify_Script calls: KnockedDown, Entrance, Victory,
     WarnGun, WarnRocket, the taunts; Kev_SaveMe; the rocket; the
     chaingun's fire and spin loops; the impale hit), ragdoll bumps

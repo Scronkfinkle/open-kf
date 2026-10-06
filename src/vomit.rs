@@ -159,7 +159,7 @@ fn move_globs(
     player: Query<(&Transform, Option<&crate::walk::Walker>), (With<FlyCamera>, Without<Glob>)>,
     mut globs: Query<(Entity, &mut Glob, &mut Transform)>,
     mut damage: MessageWriter<crate::combat::PlayerDamaged>,
-    mut decals: MessageWriter<SpawnDecal>,
+    (mut decals, mut sounds): (MessageWriter<SpawnDecal>, MessageWriter<crate::audio::PlaySound>),
 ) {
     let dt = time.delta_secs().min(0.1);
     // The player's centre, Unreal units.
@@ -208,6 +208,9 @@ fn move_globs(
             let n = Vec3::new(-n_bevy.z, n_bevy.x, n_bevy.y);
             let at_bevy = from + *d * (h.distance - GLOB_RADIUS * SCALE).max(0.0);
             let at = Vec3::new(-at_bevy.z, at_bevy.x, at_bevy.y) / SCALE;
+            // KFBloatVomit.Landed: PlaySound(ImpactSound, SLOT_Misc) with the
+            // Actor defaults (volume 0.3, radius 300).
+            sounds.write(crate::audio::PlaySound::new("KF_EnemiesFinalSnd.Bloat.Bloat_AcidSplash", crate::audio::Emitter::Point(at_bevy)));
             decals.write(SpawnDecal {
                 kind: DecalKind::Vomit,
                 at,
