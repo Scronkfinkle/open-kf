@@ -4144,3 +4144,27 @@ the voice 0.6 s later. Tests 139 pass; clippy 0 warnings.
 **Still broken / not tested:** not heard by you. The vest sounds not
 run. The 20% / 80% checks run once a second, not at each kill.
 **Next:** your listening test of S4b2-S6 (see the handoff).
+
+## 2026-10-06 Music: the songs come from the map's .int file
+
+**Changed:** `src/music.rs`: the KFMusicTrigger's Song, CombatSong and
+WaveBasedSongs are replaced by the map's `System/<map>.int` section for
+the trigger (`int_section`, `parse_wave_songs`; 1 unit test). DESIGN,
+README, handoff corrected.
+**Why:** you said the real game plays DirgeDisunion1 on KF-WestLondon.
+My S6 entry claimed KFSIN8 is missing so waves are silent; that was
+wrong. The fields are `localized string`, and UE2 replaces them from the
+.int file (KF-WestLondon.int: CombatSong="DirgeDisunion1" and a 10-wave
+WaveBasedSongs list). I had not checked the localization files.
+**Tested how:** `--mode waves --no-vsync --fps 100` on KF-WestLondon;
+a survey of every map's songs after the .int; tests.
+**Result:** `music_localized file=KF-WestLondon.int
+section=KFMusicTrigger0 keys=[combatsong wavebasedsongs]`; trader time
+`KF_Wading`, wave 1 `DirgeDisunion1`. After the .int, 7 maps still name
+a missing fallback song (KF3, KFRock, KFSIN7, smoothjazz); the map's own
+per-wave songs may cover them (not checked). Tests 140 pass; clippy 0
+warnings.
+**Still broken / not tested:** not heard by you. Other localized
+properties in maps are not read from the .int files yet (we already take
+door messages from the map itself).
+**Next:** your listening test.

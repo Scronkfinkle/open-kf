@@ -3338,9 +3338,12 @@ with a test you can run):
   goes down linearly, stops under 0.1 of it, then the next starts with
   PlayMusic's fade-in (native; assumed linear). Songs are streamed from
   `Music/<name>.ogg` (rodio's Ogg Vorbis decoder, already in the build
-  through Bevy). Several maps name songs this install does not have
-  (KFSIN6/7/8, KFRock, KF3): nothing plays, as the engine's PlayMusic
-  with a missing file (`music_missing`). Volumes: SoundVolume and
+  through Bevy). The trigger's song fields are `localized`: the map's
+  `System/<map>.int` section ([KFMusicTrigger0]) replaces them (found
+  2026-10-06 after you heard DirgeDisunion1 in the real game: the map
+  stores KFSIN8, the .int says DirgeDisunion1 plus a per-wave list). A
+  name with no file still plays nothing (`music_missing`); left after
+  the .int: KF3, KFRock, KFSIN7, smoothjazz as fallbacks on 7 maps. Volumes: SoundVolume and
   MusicVolume are read from the install's KillingFloor.ini (read only;
   0.3 and 0.1 shipped). Music ignores zed time.
 

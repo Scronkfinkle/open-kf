@@ -589,9 +589,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Music (S6, 2026-10-05): the map's calm song in trader time, its combat
   song in waves (per-wave songs where the map has them), the Patriarch's
   KF_Abandon with a 1 s fade at his entrance. Volumes from your
-  KillingFloor.ini (music 0.1, sound 0.3). Not heard by you yet. Maps
-  whose combat song is not in this install (KF-WestLondon's KFSIN8,
-  KFRock, KF3, ...) are silent in waves, as the engine would be.
+  KillingFloor.ini (music 0.1, sound 0.3). The songs come from each
+  map's `.int` localization file where it has one (KF-WestLondon:
+  KF_Wading in trader time, DirgeDisunion1 in wave 1, ...). Not heard by
+  you yet.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch

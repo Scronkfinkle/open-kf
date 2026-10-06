@@ -80,12 +80,10 @@ KF-WestLondon (and once on KF-Farm), then:
    buzzing lights as you walk past them (they are silent beyond their
    own small radius: a guess, tell me if they carry too little or too
    far). KF-Farm: owls and creaking lamps now and then.
-2. Music: the calm song (KF_Mutagen) now; in a wave KF-WestLondon is
-   silent, because its combat song (KFSIN8) is not in your install (as
-   the real game would be, as far as the scripts show). KF-Crash has
-   music in waves too. `--wave 5`: KF_Abandon fades in at the
-   Patriarch's entrance. Volumes come from your KillingFloor.ini
-   (music 0.1).
+2. Music: KF-WestLondon plays KF_Wading in trader time and
+   DirgeDisunion1 in wave 1 (the songs come from the map's .int file, as
+   in the real game). `--wave 5`: KF_Abandon fades in at the Patriarch's
+   entrance. Volumes come from your KillingFloor.ini (music 0.1).
 3. Trader: the radio beep then "the shop is moving" at 20% of a wave,
    "almost open" at 80%, "shop's open" when the wave ends, "30 seconds",
    "10 seconds" (only in the shop), "closed" at the next wave. Buying

@@ -12,9 +12,13 @@
 //!   the old song's volume goes down linearly; under 0.1 of it, it stops
 //!   and the next starts (PlayMusic with the fade-in time). Otherwise the
 //!   old one stops at once.
+//! - The trigger's song fields are `localized`: the map's
+//!   `System/<map>.int` section for the trigger ([KFMusicTrigger0])
+//!   replaces what the map stores (KF-WestLondon: CombatSong KFSIN8 in the
+//!   map, DirgeDisunion1 and a WaveBasedSongs list in the .int), as UE2
+//!   does when it loads a localized property.
 //! - Songs are `Music/<name>.ogg`. A name with no file plays nothing, as
-//!   the engine's PlayMusic (several maps name songs this install does not
-//!   have: KFSIN8, KFRock, KF3, ...); logged `music_missing`.
+//!   the engine's PlayMusic; logged `music_missing`.
 
 use std::path::PathBuf;
 
@@ -112,7 +116,20 @@ fn load_song_handler(request: Res<crate::map::MapRequest>, mut music: ResMut<Mus
         Some(Value::StructArray(items)) => items.iter().map(|e| (text(e, "CombatSong"), text(e, "CalmSong"))).collect(),
         _ => Vec::new(),
     };
-    let h = SongHandler { song: text(&props, "Song"), combat_song: text(&props, "CombatSong"), fade_in: float("FadeInTime"), fade_out: float("FadeOutTime"), waves };
+    let mut h = SongHandler { song: text(&props, "Song"), combat_song: text(&props, "CombatSong"), fade_in: float("FadeInTime"), fade_out: float("FadeOutTime"), waves };
+    // Localized: the .int file's values win.
+    let section = pkg.object_name(ue_assets::package::ObjectRef::Export(i)).to_string();
+    let int_path = request.install_root.join("System").join(format!("{}.int", request.map));
+    let overrides = std::fs::read_to_string(&int_path).map(|t| int_section(&t, &section)).unwrap_or_default();
+    for (key, value) in &overrides {
+        match key.as_str() {
+            "song" => h.song = unquote(value),
+            "combatsong" => h.combat_song = unquote(value),
+            "wavebasedsongs" => h.waves = parse_wave_songs(value),
+            _ => {}
+        }
+    }
+    runlog::kv("music_localized", &format!("file={}.int section={section} keys=[{}]", request.map, overrides.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(" ")));
     runlog::kv(
         "music_handler",
         &format!(
@@ -125,6 +142,45 @@ fn load_song_handler(request: Res<crate::map::MapRequest>, mut music: ResMut<Mus
         ),
     );
     music.handler = Some(h);
+}
+
+/// The `key=value` lines of one `[section]` of a localization file (keys
+/// lowercase).
+fn int_section(text: &str, section: &str) -> Vec<(String, String)> {
+    let mut inside = false;
+    let mut out = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            inside = name.eq_ignore_ascii_case(section);
+        } else if inside && let Some((k, v)) = line.split_once('=') {
+            out.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
+    }
+    out
+}
+
+fn unquote(v: &str) -> String {
+    v.trim().trim_matches('"').to_string()
+}
+
+/// `((CombatSong="A",CalmSong="B"),(...))`: one (combat, calm) per wave.
+fn parse_wave_songs(v: &str) -> Vec<(String, String)> {
+    let inner = v.trim().strip_prefix('(').and_then(|x| x.strip_suffix(')')).unwrap_or("");
+    let mut waves = Vec::new();
+    for group in inner.split(')').map(|g| g.trim_start_matches(',').trim_start_matches('(')).filter(|g| !g.trim().is_empty()) {
+        let (mut combat, mut calm) = (String::new(), String::new());
+        for field in group.split(',') {
+            if let Some((k, val)) = field.split_once('=') {
+                match k.trim().to_ascii_lowercase().as_str() {
+                    "combatsong" => combat = unquote(val),
+                    "calmsong" => calm = unquote(val),
+                    _ => {}
+                }
+            }
+        }
+        waves.push((combat, calm));
+    }
+    waves
 }
 
 /// `Music/<name>.ogg`, ignoring case.
@@ -212,6 +268,15 @@ fn start(music: &mut Music, audio: &Audio, song: String, fade_in: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_localized_trigger_section() {
+        let text = "[KFMusicTrigger0]\nCombatSong=\"DirgeDisunion1\"\nWaveBasedSongs=((CombatSong=\"A\",CalmSong=\"B\"),(CombatSong=\"C\",CalmSong=\"\"))\n\n[KFUseTrigger0]\nMessage=\"Press USE Key\"\n";
+        let kv = int_section(text, "KFMusicTrigger0");
+        assert_eq!(kv.len(), 2);
+        assert_eq!(unquote(&kv[0].1), "DirgeDisunion1");
+        assert_eq!(parse_wave_songs(&kv[1].1), vec![("A".into(), "B".into()), ("C".into(), String::new())]);
+    }
 
     #[test]
     fn wave_songs_win_over_the_map_songs() {
