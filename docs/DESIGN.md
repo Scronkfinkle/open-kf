@@ -3184,11 +3184,20 @@ with a test you can run):
     HuskGunFire: AmbientChargeUpSound while charging, AmbientFireSound
     (ChargedLoop) at full charge (MaxChargeTime 3). 377 weapon sounds
     preloaded, 0 missing.
-  - **S3d. The rest of the weapon sounds**: the ZED Gun (alt-fire beam
-    charge and loop, AlarmSound), grenade and pipe-bomb throws
-    (FragFire's ReloadSound, PipeBombFire's Axe_Fire), the
-    flamethrower's empty click, the welder and syringe (no sounds of
-    their own found in their fire classes so far).
+  - **S3d. The rest** (done 2026-10-05). Frag (KFPawn.ThrowGrenade):
+    Frag.StartThrow plays FireMode[0].FireSound (Axe_Fire) and
+    ServerThrow, TossSpawnTime later, ThrowSound (Nade_Throw), both
+    SLOT_Interact at 2.0, so the second cuts the first. Pipe bomb:
+    PipeBombFire.Timer plays Sound'KF_AxeSnd.Axe_Fire' (written in the
+    script) when the bomb is placed. ZED Gun alt fire: AmbientChargeUp
+    then the charge loop after MaxChargeTime (1 s); at the end
+    PlayFireEnd plays StereoFireSound (the spin-down). Flamethrower
+    (FlameBurstFire.AllowFire): NoAmmoSound every FireRate while held
+    empty. Not done: the ZED Gun's AlarmSound (its motion detector is
+    not built); FragFire's ReloadSound in state LoadNext (only used when
+    the frag is fired as a weapon, which ours never is). The welder and
+    syringe have no fire sounds of their own (their animations'
+    notifies play).
 
   Two volume rules found in S3a (both **guesses**, labelled in
   `audio.rs`): a voice's final volume is volume x fade x master, capped

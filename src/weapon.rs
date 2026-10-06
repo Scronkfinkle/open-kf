@@ -211,6 +211,8 @@ struct WeaponDef {
     /// defaults: AmbientSound, SoundVolume, SoundRadius), playing while the
     /// weapon is in hand: the chainsaw's idle engine.
     idle_ambient: Option<AmbientSound>,
+    /// Frag.ThrowSound (ServerThrow), the grenade leaving the hand.
+    throw_sound: Option<String>,
     /// Fire mode 1's own ammo when it uses another ammo class (the M4 203's
     /// M203Ammo): rounds left and MaxAmmo.
     alt_ammo: Option<(u32, u32)>,
@@ -376,9 +378,16 @@ struct FireSounds {
     /// FireEndSound the idle sound waits the same way.
     fire_start: Option<String>,
     chainsaw: bool,
-    /// HuskGunFire: AmbientChargeUpSound while charging, AmbientFireSound
-    /// once fully charged (MaxChargeTime).
+    /// HuskGunFire and ZEDGunAltFire: AmbientChargeUpSound while charging,
+    /// AmbientFireSound once charged for MaxChargeTime (Husk 3 s, ZED 1 s).
     charge_up: Option<String>,
+    charge_max: f32,
+    /// PipeBombFire.Timer: Sound'KF_AxeSnd.Axe_Fire' (written in the
+    /// script) as the bomb is placed, SLOT_Interact, TransientSoundVolume.
+    placed: Option<String>,
+    /// FlameBurstFire.AllowFire: NoAmmoSound at TransientSoundVolume,
+    /// SLOT_Interact, at most every FireRate while held on empty.
+    empty_click: bool,
 }
 
 /// A sound property as a full object path. KF's `XRef` strings (loaded by
@@ -439,7 +448,7 @@ fn load_fire_sounds(defaults: &ClassDefaults, fm: &ObjectHandle) -> FireSounds {
         volume: float("TransientSoundVolume", 0.5),
         radius: float("TransientSoundRadius", 400.0),
         random_pitch,
-        ambient: ["KFHighROFFire", "FlameBurstFire", "ChainsawFire", "HuskGunFire"]
+        ambient: ["KFHighROFFire", "FlameBurstFire", "ChainsawFire", "HuskGunFire", "ZEDGunAltFire"]
             .iter()
             .any(|c| defaults.is_a(fm, c))
             .then(|| sound_prop(defaults, fm, "AmbientFireSound"))
@@ -455,6 +464,9 @@ fn load_fire_sounds(defaults: &ClassDefaults, fm: &ObjectHandle) -> FireSounds {
         fire_start: sound_prop(defaults, fm, "FireStartSound"),
         chainsaw: defaults.is_a(fm, "ChainsawFire"),
         charge_up: sound_prop(defaults, fm, "AmbientChargeUpSound"),
+        charge_max: float("MaxChargeTime", 0.0),
+        placed: defaults.is_a(fm, "PipeBombFire").then(|| "KF_AxeSnd.Axe_Fire".to_string()),
+        empty_click: defaults.is_a(fm, "FlameBurstFire"),
     }
 }
 
@@ -1279,6 +1291,8 @@ struct Weapons {
     dual_left: [bool; 2],
     /// Sounds started this frame, sent to the mixer by `send_weapon_sounds`.
     sounds: Vec<crate::audio::PlaySound>,
+    /// FlameBurstFire's LastClickTime (game seconds).
+    last_click: f32,
     /// Random pitch of fire sounds: its own stream, so the spread and
     /// damage rolls stay as they were before sound.
     sound_rng: u32,
@@ -1485,6 +1499,7 @@ fn load_weapons(
         hand_frames: Vec::new(),
         dual_left: [false; 2],
         sounds: Vec::new(),
+        last_click: -10.0,
         sound_rng: 0x1b87_3593,
     };
     set_action(&mut w, Action::Select);
@@ -1782,6 +1797,7 @@ fn load_weapon(
         can_dry_fire: matches!(get("bModeZeroCanDryFire"), Some((Value::Bool(true), _))),
         select_sound: sound_prop(defaults, &class, "SelectSound"),
         select_volume: float("TransientSoundVolume", 0.3),
+        throw_sound: sound_prop(defaults, &class, "ThrowSound"),
         idle_ambient: match get("AttachmentClass") {
             Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).and_then(|a| {
                 let sound = sound_prop(defaults, &a, "AmbientSound")?;
@@ -2207,10 +2223,11 @@ fn send_weapon_sounds(
     out.write_batch(w.sounds.drain(..));
     for def in &w.defs {
         if done.insert(def.class.clone()) {
-            let mut sounds: Vec<String> = def.select_sound.iter().cloned().chain(def.idle_ambient.as_ref().map(|a| a.sound.clone())).collect();
+            let mut sounds: Vec<String> =
+                def.select_sound.iter().chain(&def.throw_sound).cloned().chain(def.idle_ambient.as_ref().map(|a| a.sound.clone())).collect();
             for m in &def.modes {
                 let s = &m.sounds;
-                sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo, &s.fire_start, &s.charge_up].into_iter().flatten().cloned());
+                sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo, &s.fire_start, &s.charge_up, &s.placed].into_iter().flatten().cloned());
                 sounds.extend(s.melee_hits.iter().cloned());
             }
             sounds.extend(def.model.all_notify_sounds());
@@ -2281,13 +2298,14 @@ fn weapon_loop_sound(
         (old, new) => st.fire_loop = new.or(old),
     }
     let def = &w.defs[w.current];
-    let charge = def.modes[0].charge.as_ref().map(|c| c.max_time);
+    // The Husk Gun's hold (mode 0) or the ZED Gun's beam charge.
+    let beam_mode = (0..2).find(|&m| def.modes[m].beam.is_some()).unwrap_or(1);
+    let charging = w.charge_hold.map(|h| (h, &def.modes[0].sounds)).or_else(|| w.beam.map(|b| (b.charge_up, &def.modes[beam_mode].sounds)));
     let desired = if let Some(s) = &st.fire_loop {
         // The chainsaw's loop waits for its start sound (the idle goes on).
         if st.wait > 0.0 { st.set.clone() } else { s.ambient.as_deref().map(|a| loop_sound(s, a)) }
-    } else if let (Some(hold), Some(max)) = (w.charge_hold, charge) {
-        let s = &def.modes[0].sounds;
-        let sound = if hold < max { s.charge_up.as_deref() } else { s.ambient.as_deref() };
+    } else if let Some((hold, s)) = charging.filter(|(_, s)| s.charge_up.is_some()) {
+        let sound = if hold < s.charge_max { s.charge_up.as_deref() } else { s.ambient.as_deref() };
         sound.map(|a| loop_sound(s, a))
     } else if st.wait > 0.0 {
         None
@@ -2729,6 +2747,8 @@ fn weapon_input(
             if w.defs[cur].modes[mode].beam.is_some() && w.beam.take().is_some() {
                 w.firing[mode] = false;
                 play(&mut w, "ChargeDown", 1.0, false);
+                // ZEDGunAltFire.PlayFireEnd: the spin-down (StereoFireSound).
+                fire_sound(&mut w, mode);
                 runlog::kv("beam_stop", &format!("weapon={} reason=released", w.defs[cur].item_name));
                 w.press_waiting[mode] = false;
                 continue;
@@ -2835,6 +2855,7 @@ fn weapon_input(
                 w.beam = None;
                 w.firing[mode] = false;
                 play(&mut w, "ChargeDown", 1.0, false);
+                fire_sound(&mut w, mode);
                 runlog::kv("beam_stop", &format!("weapon={} reason=cannot_fire", w.defs[cur].item_name));
             }
             continue;
@@ -2906,6 +2927,15 @@ fn weapon_input(
                     start_reload(&mut w, "dry_fire");
                 }
                 continue;
+            }
+            // FlameBurstFire.AllowFire: held on an empty tank, NoAmmoSound
+            // at most every FireRate.
+            if fm.sounds.empty_click && held[mode] && mag == Some(0) && !reloading && now - w.last_click > fm.rate {
+                w.last_click = now;
+                if let Some(click) = fm.sounds.no_ammo.clone() {
+                    let actor = weapon_actor(&w.defs[cur]);
+                    w.sounds.push(PlaySound::new(click, Emitter::Listener).slot(SoundSlot::Interact).volume(fm.sounds.volume).actor(actor));
+                }
             }
             // Weapon.ReadyToFire: the other mode blocks only if either is
             // bModeExclusive.
@@ -3259,6 +3289,11 @@ fn weapon_input(
         } else {
             w.pending_spawn = None;
             let pf = w.defs[wi].modes[mode].pellets;
+            let snd = &w.defs[wi].modes[mode].sounds;
+            if let Some(placed) = snd.placed.clone() {
+                let (volume, radius, actor) = (snd.volume, snd.radius, weapon_actor(&w.defs[wi]));
+                w.sounds.push(PlaySound::new(placed, Emitter::Listener).slot(SoundSlot::Interact).volume(volume).radius(radius).actor(actor));
+            }
             if let Some(a) = w.defs[wi].ammo.as_mut() {
                 if a.mag > 0 {
                     a.mag -= 1;
@@ -3340,11 +3375,21 @@ fn weapon_input(
                             w.current = frag;
                             let (anim, _, spawn_at) = w.defs[frag].toss.clone().unwrap_or_default();
                             play(&mut w, &anim, 1.0, false);
+                            // Frag.StartThrow: PlaySound(FireMode[0].FireSound, SLOT_Interact, 2.0).
+                            if let Some(whoosh) = w.defs[frag].modes[0].sounds.fire.clone() {
+                                let actor = weapon_actor(&w.defs[frag]);
+                                w.sounds.push(PlaySound::new(whoosh, Emitter::Listener).slot(SoundSlot::Interact).volume(2.0).actor(actor));
+                            }
                             w.switch_timer = spawn_at;
                             w.action = Action::Grenade { phase: NadePhase::Toss { spawned: false }, back_to };
                         }
                         NadePhase::Toss { spawned: false } => {
-                            // Frag.ServerThrow: ConsumeAmmo, FragFire.DoFireEffect.
+                            // Frag.ServerThrow: ConsumeAmmo, FragFire.DoFireEffect,
+                            // PlaySound(ThrowSound, SLOT_Interact, 2.0).
+                            if let Some(throw) = w.defs[frag].throw_sound.clone() {
+                                let actor = weapon_actor(&w.defs[frag]);
+                                w.sounds.push(PlaySound::new(throw, Emitter::Listener).slot(SoundSlot::Interact).volume(2.0).actor(actor));
+                            }
                             if let Some(a) = w.defs[frag].ammo.as_mut() {
                                 if a.mag > 0 {
                                     a.mag -= 1;

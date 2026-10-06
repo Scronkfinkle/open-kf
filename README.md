@@ -492,8 +492,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   after each shot, melee swing whooshes. Heard by you (2026-10-05).
 - Melee hits, chainsaw (idle, rev up, cutting loop, rev down),
   flamethrower loop and end, Husk Gun charge (S3c, 2026-10-05). Not heard
-  by you yet. Still silent: the ZED Gun's beam and alarm, grenade and
-  pipe-bomb throws, the flamethrower's empty click (S3d).
+  by you yet.
+- Grenade throw, pipe-bomb placing, the ZED Gun's beam (charge, loop,
+  spin-down), the flamethrower's empty click (S3d, 2026-10-05). Not heard
+  by you yet. Not done: the ZED Gun's proximity alarm (no motion detector).
 - Map contents: all 40 maps load. That covers BSP level geometry, placed meshes,
   player starts, materials and textures, with 0 unresolved references.
 
@@ -542,8 +544,8 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
 - Zeds can wedge in tight spots and hang in the air (2 of 20 in a
   KF-WestLondon test); KF's stuck-zed cleanup removes them late in a wave.
 - No crouching. Ladders, water and swimming are not handled.
-- Sound is partly done: weapons only (minus a few, S3d). Zeds, the
-  player, the world and music are steps S4-S6.
+- Sound is partly done: weapons only. Zeds, the player, the world and
+  music are steps S4-S6.
 - Weapons (in progress, see DESIGN "Weapons"): every base-game weapon can be
   carried (`--give`), switched to and fired, but only melee weapons,
   bullet guns and shotguns deal damage. No crouching, so no crouch

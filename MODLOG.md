@@ -3793,3 +3793,32 @@ zed (its hit sound) not run. The Husk Gun's full-charge loop not run
 (held under 3 s). S3d: ZED Gun beam and alarm, grenade and pipe-bomb
 throw sounds, the flamethrower's empty click.
 **Next:** S3d.
+
+## 2026-10-05 S3d: grenade, pipe bomb, ZED Gun beam, flamethrower click
+
+**Changed:** `src/weapon.rs`: the frag throw plays the Frag's
+FireMode[0].FireSound at the toss start and its ThrowSound when the
+grenade leaves the hand (Frag.StartThrow / ServerThrow); the pipe bomb
+plays Axe_Fire when placed (PipeBombFire.Timer); the ZED Gun's beam
+gets its charge-up and charge loops (MaxChargeTime 1) and the spin-down
+at its end (ZEDGunAltFire.PlayFireEnd); the flamethrower clicks while
+held empty (FlameBurstFire.AllowFire). The Husk Gun's full charge now
+uses MaxChargeTime from its fire class (3, as before). DESIGN, README.
+**Why:** S3d, the last weapon sounds.
+**Tested how:** scripted runs: `nade`; ZED Gun altfire held 2.5 s;
+PipeBombExplosive fire; flamethrower held until empty; `--give all
+--frames 400`; clippy; tests.
+**Result:** frag: `Axe_Fire` then `Nade_Throw` 0.22 s later (slot
+override). ZED Gun: `ZedGunChargeUp` at the beam start,
+`ZedGunChargeLoop` 0.98 s later, `KF_WEP_ZED_Secondary_SpinDown_S` at
+the release (its animation also has a SpinUp notify, which plays). Pipe
+bomb: `Axe_Fire` 1.1 s after the click (also its animation's
+dryfire_rifle notify). Flamethrower: `FireLoop` until empty,
+`FT_Fire1Shot`, then `FT_DryFire` every 0.08 s while held. 44 weapons,
+380 sounds, 0 missing. Tests 136 pass; clippy clean.
+**Still broken / not tested:** you said to keep going (2026-10-05); whether
+you listened is not recorded. The ZED Gun's alarm
+(no motion detector). The empty flamethrower's clicks come every
+FireRate (0.08 s), each cutting the last: what the script says, may
+sound like a rattle; to compare with the real game.
+**Next:** S4, zeds and the player.
