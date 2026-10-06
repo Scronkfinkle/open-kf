@@ -31,7 +31,7 @@ pub(super) fn load_zed_classes(
                 runlog::kv(
                     "zed_class_loaded",
                     &format!(
-                        "class={} bones={} triangles={} draw_scale={} pre_pivot={:?} collision={}x{} ground_speed={} turn_rate={} melee_range={} idle={:?} walk={:?} melee={:?} death={:?} death_hold_frame={} health={} head_health={} head_radius={} head_bone={:?} melee_damage={} ext_collision={:?}",
+                        "class={} bones={} triangles={} draw_scale={} pre_pivot={:?} collision={}x{} ground_speed={} turn_rate={} melee_range={} idle={:?} walk={:?} melee={:?} death={:?} death_hold_frame={} health={} head_health={} head_radius={} head_bone={:?} melee_damage={} melee_dam_type={:?} ext_collision={:?}",
                         c.name,
                         c.model.mesh.bones.len(),
                         c.model.mesh.triangles.len(),
@@ -52,6 +52,7 @@ pub(super) fn load_zed_classes(
                         c.head_radius,
                         c.head_bone.map(|b| c.model.mesh.bones[b].name.clone()),
                         c.melee_damage,
+                        c.melee_dam_type,
                         c.ext_collision
                     ),
                 );
@@ -395,6 +396,10 @@ pub(super) fn load_class(
         head_offset: float("HeadHeight", 2.0) * head_scale,
         head_bone,
         melee_damage: solo_damage(float("MeleeDamage", 6.0)),
+        melee_dam_type: match get("ZombieDamType") {
+            Some((Value::Object(r), p)) if p.pkg.object_name(r).eq_ignore_ascii_case("DamTypeSlashingAttack") => crate::game::combat::DamType::Slashing,
+            _ => crate::game::combat::DamType::ZombieMelee,
+        },
         name: class_path.to_string(),
         draw_scale: float("DrawScale", 1.0),
         pre_pivot,

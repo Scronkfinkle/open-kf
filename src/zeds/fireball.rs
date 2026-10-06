@@ -389,6 +389,8 @@ fn move_fireballs(
                             armor_stops: true,
                             zed_id: f.zed_id,
                             kind: spec.hurt,
+                            // DamTypeBurned (Husk), DamTypeFrag (Patriarch rocket).
+                            dam_type: crate::game::combat::DamType::Other,
                         });
                     }
                     push.write(crate::player::walk::PlayerPush {

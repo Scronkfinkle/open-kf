@@ -4385,3 +4385,40 @@ NixOS-specific (`/run/opengl-driver/...`, override with `HEADLESS_ICD`).
 **Result:** —
 **Still broken / not tested:** —
 **Next:** —
+
+## 2026-10-06 E1: hit splashes and the poisoned health digits
+
+**Changed:** `src/game/combat.rs`: `DamType` (KF's damage class of a hit:
+ZombieMelee, Slashing, Vomit, SirenScream, Other) on `PlayerDamaged`; new
+message `PlayerHurt` (damage after armour, sent only when it hurts, the
+player lives and god mode is off); bile ticks are `DamType::Vomit`.
+Every place that hurts the player sets the type (`zeds/zed/think.rs`,
+`attacks.rs`, `vomit.rs`, `fireball.rs`, `weapons/projectile.rs`,
+`player/pain.rs`); zeds read theirs from ZombieDamType
+(`zeds/zed/load.rs`, `mod.rs`). `src/game/hud.rs`: loads HUDDamageTex /
+HUDTime of ZombieMeleeDamage, DamTypeSlashingAttack, DamTypeVomit,
+SirenScreamDamage and GoreSplashFB; `display_hit` (DisplayHit) and the
+full-screen splash quad (DrawDamageIndicators, alpha left / time x 200);
+VomOsc's wobble (TexOscillator, maths guessed); health digits (196, 206,
+0) for 0.8 s after vomit. Unit test `vomit_wobble`. DESIGN.md: the plan
+"Hit effects" (E1-E3).
+**Why:** you asked for the visual effects when hurt, vomited on and
+screamed at. E1 of 3.
+**Tested how:** `scripts/headless.sh --mode debug --spawn bloat|stalker|siren
+--frames 1500 --mute`, logs read; a Bloat run with `--screenshot
+400,430,460,490,520,560`; clippy (no warnings); tests (117 pass).
+**Result:** `hud_splashes`: all four textures found (HUDTime 0.9, vomit
+1.5, vomit wobble read from VomOsc: rates 1.5 / 0.5, amplitude 0.03,
+types stretch / pan), GoreSplashFB found. Bloat: vomit and every bile
+tick `hit_splash type=Vomit seconds=1.5`, claws `type=ZombieMelee
+seconds=0.9`, the killing hit none. Stalker: 27 `Slashing` 0.9. Siren: 12
+screams `SirenScream` 0.9, bites `Slashing`. `zed_class_loaded`: Stalker
+and Siren Slashing, the other 8 ZombieMelee. Screenshot 0.43 s after a
+bile tick: dark vomit spatters over the view, health digits
+yellow-green. A blunt splash 0.6 s old was faint (alpha about 64) and
+hard to see.
+**Still broken / not tested:** not looked at in play by you. The slash
+splash's blend (FinalBlend mode 3) is drawn as plain alpha (a guess);
+the oscillator maths is a guess. Gore splash (fire, explosions,
+chaingun) not seen in a run. No view shake or blur yet.
+**Next:** E2, view shake and the hit-blur timer.

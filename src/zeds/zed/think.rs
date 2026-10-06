@@ -663,6 +663,7 @@ pub(super) fn think_and_move(
                             armor_stops: true,
                             zed_id: z.id,
                             kind: crate::game::combat::HurtKind::Plain,
+                            dam_type: c.melee_dam_type,
                         });
                         let impale = z.attack.is_some_and(|a| c.model.sequence_name(a.seq) == Some("MeleeImpale"));
                         z.sound_events.push(if impale { ZedSound::ImpaleHit } else { ZedSound::MeleeHit });
@@ -722,6 +723,7 @@ pub(super) fn think_and_move(
                         armor_stops: true,
                         zed_id: z.id,
                         kind: crate::game::combat::HurtKind::Plain,
+                        dam_type: c.melee_dam_type,
                     });
                     // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
                     z.sound_events.push(ZedSound::MeleeHit);
@@ -1256,6 +1258,8 @@ pub(super) fn think_and_move(
                         armor_stops: true,
                         zed_id: z.id,
                         kind: crate::game::combat::HurtKind::Plain,
+                        // ZombieCrawler.Bump: class'KFmod.ZombieMeleeDamage'.
+                        dam_type: crate::game::combat::DamType::ZombieMelee,
                     });
                 z.pouncing = false;
                 runlog::kv("crawler_pounce_hit", &format!("id={} damage={amount:.1}", z.id));

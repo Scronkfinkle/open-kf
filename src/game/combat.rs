@@ -57,6 +57,34 @@ pub struct PlayerDamaged {
     /// The damage type's bArmorStops: false only for the Siren's scream
     /// and falling out of the world among ours (see armour.rs).
     pub armor_stops: bool,
+    pub dam_type: DamType,
+}
+
+/// The KF damage class of a hit on the player, as far as the hit effects
+/// care (HUDKillingFloor.DisplayHit). See DESIGN.md, "Hit effects".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamType {
+    /// ZombieMeleeDamage (KFMonster's ZombieDamType): blunt.
+    ZombieMelee,
+    /// DamTypeSlashingAttack (Stalker and Siren ZombieDamType).
+    Slashing,
+    /// DamTypeVomit: vomit and the bile ticks.
+    Vomit,
+    /// SirenScreamDamage.
+    SirenScream,
+    /// Not a DamTypeZombieAttack: fire, explosions, the Patriarch's
+    /// chaingun, the level.
+    Other,
+}
+
+/// A hit the player felt (Controller.NotifyTakeHit): sent after armour,
+/// only for damage over 0 that leaves the player alive, never in god mode
+/// (KFHumanPawn.TakeDamage returns first).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PlayerHurt {
+    /// actualDamage (after ReduceDamage and ShieldAbsorb).
+    pub damage: f32,
+    pub dam_type: DamType,
 }
 
 /// KFPawn.GiveHealth(HealAmount, HealMax): the Syringe and medic darts.
@@ -212,6 +240,7 @@ impl Plugin for CombatPlugin {
         app.add_message::<ShotFired>()
             .add_message::<MeleeSwing>()
             .add_message::<PlayerDamaged>()
+            .add_message::<PlayerHurt>()
             .add_message::<GiveHealth>()
             .init_resource::<PlayerHealth>()
             .init_resource::<AmmoDisplay>()
@@ -784,7 +813,10 @@ fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter
             amount,
             armor_stops: true,
             zed_id: bile.zed_id,
+            // TakeBileDamage: DamTypeVomit, but past KFPawn.TakeDamage, so
+            // it does not restart the bile.
             kind: crate::game::combat::HurtKind::Plain,
+            dam_type: DamType::Vomit,
         });
     }
 }
@@ -809,6 +841,7 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
         armor_stops: true,
         zed_id: burn.zed_id,
         kind: HurtKind::Plain,
+        dam_type: DamType::Other,
     });
 }
 
@@ -890,6 +923,7 @@ fn apply_player_damage(
     time: Res<Time>,
     mut armour: ResMut<crate::player::armour::Armour>,
     mut sounds: MessageWriter<crate::audio::player_sound::PlayerSoundEvent>,
+    mut hurt: MessageWriter<PlayerHurt>,
 ) {
     for hit in hits.read() {
         // KFPawn.TakeDamage reads the burn from the damage before
@@ -909,6 +943,7 @@ fn apply_player_damage(
             // god mode returns before it (KFHumanPawn.TakeDamage).
             if taken > 0.0 && health.health > 0.0 {
                 sounds.write(crate::audio::player_sound::PlayerSoundEvent::Hurt);
+                hurt.write(PlayerHurt { damage: taken, dam_type: hit.dam_type });
             }
         }
         // KFPawn.TakeDamage (and TakeBileDamage): healthToGive -= 5.
@@ -916,7 +951,7 @@ fn apply_player_damage(
         runlog::kv(
             "player_hit",
             &format!(
-                "zed={} damage={} damage_before_armour={damage_in} kind={:?} health_left={:.0} armour_before={armour_before:.2} armour={:.2} god={}",
+                "zed={} damage={} damage_before_armour={damage_in} kind={:?} type={:?} health_left={:.0} armour_before={armour_before:.2} armour={:.2} god={}",
                 match hit.zed_id {
                     SELF_DAMAGE => "self".to_string(),
                     LEVEL_DAMAGE => "level".to_string(),
@@ -924,6 +959,7 @@ fn apply_player_damage(
                 },
                 taken,
                 hit.kind,
+                hit.dam_type,
                 health.health.max(0.0),
                 armour.strength,
                 health.god

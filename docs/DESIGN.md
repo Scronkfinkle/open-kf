@@ -3404,6 +3404,134 @@ their texture's value). Actors have their own `Actor.SurfaceType` too
   static meshes' simplified collision models (we collide with the
   render triangles, so their materials).
 
+## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1 implemented)
+
+What the player sees when hurt, vomited on or screamed at. All from the
+scripts (KFHumanPawn, KFPawn, KFPlayerController, HUDKillingFloor,
+ZombieSiren, Engine.PlayerController, UnrealPlayer) and class defaults;
+the parts that are native code are marked.
+
+**Where it starts (Pawn.TakeDamage).** actualDamage = after ReduceDamage
+and armour (ShieldAbsorb). Then PlayHit (camera jar, below) and, if
+still alive, Controller.NotifyTakeHit (splash and damage shake). Both
+skip a hit of 0 damage, a hit that kills, and god mode
+(KFHumanPawn.TakeDamage returns at once with bGodMode). Bile ticks
+(TakeBileDamage) go through the same Pawn.TakeDamage, with
+DamTypeVomit. Ours: `apply_player_damage` sends one event per hit
+after armour, carrying the KF damage type.
+
+**Damage types (ZombieDamType defaults, the attack code).**
+ZombieMeleeDamage (blunt): KFMonster's default, so Clot, Gorefast,
+Crawler (and its pounce), Bloat, Husk, Scrake, Fleshpound, Patriarch
+melee. DamTypeSlashingAttack: Stalker, Siren melee. DamTypeVomit: vomit
+and bile ticks. SirenScreamDamage: the scream. Others (not
+DamTypeZombieAttack): Husk fireball and burning (DamTypeBurned),
+Patriarch rocket and our own explosives (DamTypeFrag), Patriarch
+chaingun (plain DamageType), pain volumes, falling out of the world.
+
+### E1. The hit splash (HUDKillingFloor.DisplayHit, DrawDamageIndicators)
+
+- DisplayHit: for a DamTypeZombieAttack, DamageStartTime = its HUDTime
+  (0.9; DamTypeVomit 1.5); else Clamp(Damage / 5, 0.2, 1.5).
+  DamageHUDTimer = now + DamageStartTime. Vomit also sets VomitHudTimer =
+  now + 0.8.
+- Drawn each frame over the whole screen, before the HUD widgets: white,
+  alpha Clamp(left / DamageStartTime x 200, 0, 200) (of 255).
+  Texture by type: HUDDamageTex (DamTypeZombieAttack and
+  SirenScreamDamage: KillingFloorHUD.BluntSplashNormal; Slashing:
+  SlashSplashNormalFB; Vomit: ClassMenu.VomitFB); not a zombie attack:
+  GoreSplashFB. The "uber" textures are never used: KF's DisplayHit
+  reads HudBase.DamageTime[0], which only HudBase.DisplayHit sets, and
+  KF's override never calls it.
+- The materials: GoreSplashFB and VomitFB are FinalBlends with alpha
+  blending (FrameBufferBlending 2). SlashSplashNormalFB uses blending 3
+  (AlphaModulate); drawn with plain alpha blending here (a guess; the
+  native blend for 3 is not in the scripts). VomitFB wobbles through
+  TexOscillator VomOsc: U stretches (OscillationType 1) at 1.5 Hz, V
+  pans at 0.5 Hz, both by 0.03 of the texture. The oscillator maths is
+  native: taken as offset = amplitude x sin(2 pi x rate x time) (a
+  guess).
+- Health digits: while VomitHudTimer runs they are (196, 206, 0)
+  instead of the usual colours ("poisoned").
+- Logs `hit_splash` (type, damage, seconds). Check: vomit at a Bloat
+  gives 1.5 s splashes and 0.8 s green digits on each bile tick.
+- As built (2026-10-06): `PlayerDamaged.dam_type` (combat.rs `DamType`;
+  the zed's from its ZombieDamType default, logged in
+  `zed_class_loaded`); `apply_player_damage` sends `PlayerHurt` (damage
+  after armour, alive, not god mode); hud.rs `display_hit` and the splash
+  quad, the first one drawn (under the widgets, over the vision
+  overlay). The textures and HUDTime come from the damage classes'
+  defaults (`hud_splashes` log). The splash goes over the vision
+  overlay; in KF DrawModOverlay runs in the same HUD pass, before or
+  after not checked.
+
+### E2. View shake and the hit-blur timer (render only; aim unchanged)
+
+KF adds ShakeRot / ShakeOffset and the ambient shake to the camera only
+(CalcFirstPersonView), never to the aim. Ours: added to the main and
+sky cameras after all gameplay systems, removed before the next frame.
+The first-person weapon is left unshaken (a guess: KF draws it at the
+unshaken view pose inside the shaken view, so it may jiggle on screen
+there; to compare in the game).
+
+- **ShakeView(RotMag, RotRate, RotTime, OffsetMag, OffsetRate,
+  OffsetTime)**: takes the new rotation shake only if VSize(RotMag) >
+  the running one's, same for the offset. **ViewShake** each frame: the
+  offset moves at its rate; **CheckShake** bounces it at the max and
+  shrinks the max (Time > 1: max x (1/Time - 1) if Time x |max/rate| <=
+  1, else -max; Time -= dt) until Time <= 1 ends it. Rotation the same,
+  in Unreal rotation units (65536 = a full turn), wrapped. Ported as
+  written (it depends on frame rate, as in KF).
+- **DamageShake(Damage)** on every NotifyTakeHit: rotation (30 x
+  Damage, 0, 0) at rate 120000 pitch for 0.15 + 0.005 x Damage; offset
+  (0, 0, 0.03 x Damage) at rate (1, 1, 1) for 0.2.
+- **PlayTakeHit jar** (KFHumanPawn, at most every 0.1 s: Pawn.PlayHit's
+  LastPainTime): direction = from the hit point to the player, flat,
+  turned into view space; JarrScale = Min(0.1 + Damage / 10, 1).
+  DoHitCamEffects(dir, JarrScale, 2.0, 1.0). Bile ticks also do
+  DoHitCamEffects(random 0..1 vector, 0.35, 2.0, 1.0).
+- **DoHitCamEffects(dir, jar, blurTime, durScale)**: AddBlur(blurTime,
+  0.8) (NewSchoolHitBlurIntensity, the PostFX path), then ShakeView with
+  rotation (1000 x -dir.X, 0, 1000 x dir.Y) x jar at rate (10000 x
+  -dir.X, 0, 10000 x dir.Y) x (2 - jar) for 4 x durScale; offset dir x 50
+  x jar at rate +-200 (sign of dir) x (2 - jar) for 3 x durScale
+  (JarrRotateMag/Rate/Duration, JarrMoveMag/Rate/Duration).
+- **Siren scream (ZombieSiren.DoShakeEffect)**, each scream pulse,
+  hit or not: within ScreamRadius 700 of the view: scale = (700 - dist) /
+  700, BlurScale = scale; behind a wall (FastTrace) both x 0.25, else
+  scale = 0.6 + 0.4 x scale (Lerp(scale, MinShakeEffectScale 0.6, 1)).
+  SetAmbientShake(now + 0.25, 2, OffsetMag (0, 5, 1) x scale, 500,
+  RotMag (150, 150, 150) x scale, 500); AddBlur(2, BlurScale x 0.85).
+  **Ambient shake** (CalcFirstPersonView): full until the falloff start,
+  then fades linearly over 2 s; offset = OffsetMag x falloff x
+  sin(time x 500 x 2 pi) in world axes; rotation the same.
+- **AddBlur(time, intensity)**: restarts the fade (BlurFadeOutTime =
+  StartingBlurFadeOutTime = time), intensity = the higher of old and
+  new. Each frame the blur amount = left / time x intensity. When the
+  fade reaches 0, StopHitCamEffects: intensity 0, blur off, **and the
+  view shake stops** (StopViewShaking). Dying does the same.
+- Logs `view_shake` (start: source, magnitudes), `hit_blur` (start,
+  end), and in `--frames` runs the per-frame shake offset and blur
+  amount every 10 frames. Check by numbers: a 10-damage Clot hit gives
+  pitch shake 300 units for 0.2 s, blur 0.8 fading to 0 over 2 s.
+
+### E3. The blur itself (native: PostFX blur, a guess)
+
+KFPlayerController.SetBlur(amount) turns on Red Orchestra's PostFX
+blur pass with parameter `amount` (0..1); the filter is native code,
+not in the scripts. The old non-PostFX fallback (UnderWaterBlur, a
+MotionBlur camera effect, BlurAlpha 35) is a blend with the previous
+frames. Ours: a full-screen pass after the scene and weapon, before
+the vision overlay and HUD: the frame mixed with a blurred copy by
+`amount`. The blur size is a guess, to be compared with the real game
+by you.
+
+Not planned here: the near-death look (HUDKillingFloor swaps the
+vision overlay for KFX.NearDeathShader below 25% health), the bloody
+skin on the player's third-person body (InjuredOverlay), the bullet
+whiz blur (HandleWhizSound; not checked whether the Patriarch's
+chaingun triggers it).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

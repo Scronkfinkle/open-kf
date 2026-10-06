@@ -67,6 +67,7 @@ pub(super) fn scream_pulse(
             armor_stops: false,
             zed_id: z.id,
             kind: crate::game::combat::HurtKind::Plain,
+            dam_type: crate::game::combat::DamType::SirenScream,
         });
     }
     let momentum = (to - from) / dist * (scale * force);
@@ -130,6 +131,8 @@ pub(super) fn boss_mg_shot(
             armor_stops: true,
             zed_id: z.id,
             kind: crate::game::combat::HurtKind::Plain,
+            // ZombieBoss chaingun: Class'DamageType'.
+            dam_type: crate::game::combat::DamType::Other,
         });
         push.write(crate::player::walk::PlayerPush { momentum: dir * crate::zeds::boss::MG_MOMENTUM });
         format!("player damage={amount}")

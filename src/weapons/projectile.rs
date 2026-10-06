@@ -1200,6 +1200,7 @@ fn flame_burst(
                     armor_stops: true,
                     zed_id: crate::game::combat::SELF_DAMAGE,
                     kind: crate::game::combat::HurtKind::Fire,
+                    dam_type: crate::game::combat::DamType::Other,
                 });
             }
         }
@@ -1463,6 +1464,7 @@ fn blast(
                     armor_stops: true,
                     zed_id: crate::game::combat::SELF_DAMAGE,
                     kind: crate::game::combat::HurtKind::Plain,
+                    dam_type: crate::game::combat::DamType::Other,
                 });
             }
         }

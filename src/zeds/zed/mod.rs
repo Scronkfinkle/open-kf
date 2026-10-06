@@ -236,6 +236,10 @@ struct ZedClass {
     head_offset: f32,
     head_bone: Option<usize>,
     melee_damage: f32,
+    /// ZombieDamType (the three entries are the same for every zed):
+    /// DamTypeSlashingAttack for the Stalker and Siren, ZombieMeleeDamage
+    /// for the rest.
+    melee_dam_type: crate::game::combat::DamType,
     /// KFMonster extended collision: (offset from centre, radius, half-height),
     /// Unreal units. A second cylinder at head height.
     ext_collision: Option<(Vec3, f32, f32)>,

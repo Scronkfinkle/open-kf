@@ -4,7 +4,9 @@
 //! welder, medic gun charge) and the cash. H2: KF's bitmap fonts and the
 //! weight, weapon name and trader distance texts. H3: the top-right
 //! circle. H4: KF's local messages (WaitingMessage, KFMainMessages)
-//! through HudBase's message list. See DESIGN.md, "KF's HUD".
+//! through HudBase's message list. See DESIGN.md, "KF's HUD". E1: the
+//! hit splash and poisoned health digits (DisplayHit,
+//! DrawDamageIndicators; DESIGN.md, "Hit effects").
 //!
 //! DrawSpriteWidget and DrawNumericWidget are native (not in the
 //! scripts). Their sizing is taken from DrawHudPassA's own weight-box
@@ -102,7 +104,70 @@ struct Hud {
     bio_circle: Option<usize>,
     /// WaitingFontArrayNames (KFFonts.KFBase02DS36, DS24).
     waiting_fonts: [Option<usize>; 2],
+    /// HUDDamageTex and HUDTime of the zombie-attack damage types, in
+    /// `SPLASH_CLASSES` order; GoreSplashFB for every other damage.
+    splashes: [Splash; 4],
+    gore_splash: Option<usize>,
     loaded: bool,
+}
+
+/// A DamTypeZombieAttack's hit splash (HUDDamageTex, HUDTime), and the
+/// TexOscillator under the texture, if any (VomitFB -> VomOsc).
+#[derive(Clone, Copy, Default, Debug)]
+struct Splash {
+    texture: Option<usize>,
+    time: f32,
+    wobble: Option<Oscillator>,
+}
+
+const SPLASH_CLASSES: [(crate::game::combat::DamType, &str); 4] = [
+    (crate::game::combat::DamType::ZombieMelee, "KFMod.ZombieMeleeDamage"),
+    (crate::game::combat::DamType::Slashing, "KFMod.DamTypeSlashingAttack"),
+    (crate::game::combat::DamType::Vomit, "KFMod.DamTypeVomit"),
+    (crate::game::combat::DamType::SirenScream, "KFMod.SirenScreamDamage"),
+];
+
+/// Engine.TexOscillator (rates in Hz, amplitudes in texture widths).
+/// Types: 0 OT_Pan, 1 OT_Stretch (2, 3 not used by the HUD).
+#[derive(Clone, Copy, Debug)]
+struct Oscillator {
+    rate: [f32; 2],
+    phase: [f32; 2],
+    amplitude: [f32; 2],
+    kind: [u8; 2],
+}
+
+impl Oscillator {
+    /// The texture rectangle at `time` for a `size` texture. Native code:
+    /// offset = amplitude x sin(2 pi (phase + rate x time)); a pan moves
+    /// the coordinates by it, a stretch scales them by 1 + it (about 0,
+    /// UOffset / VOffset being 0). A guess, matching the matrix M saved
+    /// in VomOsc (U scale 0.977, V shift -0.008).
+    fn uv(&self, time: f32, size: Vec2) -> Rect {
+        let mut min = Vec2::ZERO;
+        let mut max = size;
+        for axis in 0..2 {
+            let o = self.amplitude[axis] * (std::f32::consts::TAU * (self.phase[axis] + self.rate[axis] * time)).sin();
+            if self.kind[axis] == 1 {
+                max[axis] *= 1.0 + o;
+            } else {
+                min[axis] += o * size[axis];
+                max[axis] += o * size[axis];
+            }
+        }
+        Rect::from_corners(min, max)
+    }
+}
+
+/// HUDKillingFloor.DisplayHit's state: what hit last (HUDHitDamage), for
+/// how long (DamageStartTime), until when (DamageHUDTimer), and the
+/// poisoned health digits (VomitHudTimer).
+#[derive(Resource, Default)]
+struct HitDisplay {
+    dam_type: Option<crate::game::combat::DamType>,
+    start_time: f32,
+    until: f32,
+    vomit_until: f32,
 }
 
 /// The message classes we send (both CriticalEventPlus: bIsUnique,
@@ -248,9 +313,10 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hud>()
             .init_resource::<LocalMessages>()
+            .init_resource::<HitDisplay>()
             .add_message::<LocalMessage>()
             .add_systems(PostStartup, load_hud)
-            .add_systems(PostUpdate, (receive_messages, draw_hud).chain());
+            .add_systems(PostUpdate, (receive_messages, display_hit, draw_hud).chain());
     }
 }
 
@@ -326,6 +392,28 @@ impl Loader<'_> {
         }
         self.by_path.insert(path, loaded);
         loaded
+    }
+
+    /// The first TexOscillator down a material chain (FinalBlend and the
+    /// modifiers wrap one material in `Material`).
+    fn oscillator(&self, defaults: &ClassDefaults, pkg: &std::rc::Rc<LoadedPackage>, rf: ObjectRef) -> Option<Oscillator> {
+        let mut h = self.set.resolve(pkg, rf)?;
+        for _ in 0..8 {
+            let props = ue_assets::properties::read_export_properties(&h.package.pkg, h.export).ok()?;
+            if h.package.pkg.export_class_name(h.export) == "TexOscillator" {
+                let v = |n: &str| defaults.actor_value(&h.package, h.export, &props, n);
+                let f = |n: &str| float_of(v(n).as_ref());
+                return Some(Oscillator {
+                    rate: [f("UOscillationRate"), f("VOscillationRate")],
+                    phase: [f("UOscillationPhase"), f("VOscillationPhase")],
+                    amplitude: [f("UOscillationAmplitude"), f("VOscillationAmplitude")],
+                    kind: [byte_of(v("UOscillationType").as_ref()), byte_of(v("VOscillationType").as_ref())],
+                });
+            }
+            let Some(Value::Object(next)) = props.get(&h.package.pkg, "Material") else { return None };
+            h = self.set.resolve(&h.package, *next)?;
+        }
+        None
     }
 }
 
@@ -452,6 +540,28 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
     runlog::kv("hud_waiting_fonts", &format!("loaded={:?}", hud.waiting_fonts.map(|f| f.map(|i| hud.fonts[i].name.clone()))));
     hud.clock_circle = loader.texture_path("KillingFloorHUD.HUD.Hud_Bio_Clock_Circle");
     hud.bio_circle = loader.texture_path("KillingFloorHUD.HUD.Hud_Bio_Circle");
+    // DrawDamageIndicators: the damage type's HUDDamageTex, or
+    // FinalBlend'KillingfloorHUD.GoreSplashFB' for the others.
+    for (i, (_, path)) in SPLASH_CLASSES.iter().enumerate() {
+        let Some(c) = crate::zeds::gore::find_class(&set, path) else {
+            absent.push(path);
+            continue;
+        };
+        let (texture, wobble) = match defaults.get(&c, "HUDDamageTex") {
+            Some((Value::Object(r), pkg)) => (loader.texture(&pkg, r), loader.oscillator(&defaults, &pkg, r)),
+            _ => (None, None),
+        };
+        hud.splashes[i] = Splash { texture, time: float_of(defaults.get(&c, "HUDTime").map(|(v, _)| v).as_ref()), wobble };
+    }
+    hud.gore_splash = loader.texture_path("KillingFloorHUD.GoreSplashFB");
+    runlog::kv(
+        "hud_splashes",
+        &format!(
+            "{} gore={:?}",
+            SPLASH_CLASSES.iter().zip(&hud.splashes).map(|((t, _), s)| format!("{t:?}:texture={:?},time={},wobble={:?}", s.texture, s.time, s.wobble)).collect::<Vec<_>>().join(" "),
+            hud.gore_splash
+        ),
+    );
     // DrawHudPassA's weapon checks (IsA, so subclasses count).
     let is = |c: &ObjectHandle, names: &[&str]| names.iter().any(|n| defaults.is_a(c, n));
     let mut weapons = HashMap::new();
@@ -649,6 +759,25 @@ impl Canvas {
     }
 }
 
+/// HUDKillingFloor.DisplayHit (from UnrealPlayer.NewClientPlayTakeHit):
+/// a zombie attack shows for its HUDTime, other damage for Clamp(Damage /
+/// 5, 0.2, 1.5) s; vomit also poisons the health digits for 0.8 s.
+fn display_hit(mut hits: MessageReader<crate::game::combat::PlayerHurt>, mut shown: ResMut<HitDisplay>, hud: Res<Hud>, time: Res<Time>) {
+    let now = time.elapsed_secs();
+    for h in hits.read() {
+        shown.start_time = match SPLASH_CLASSES.iter().position(|(t, _)| *t == h.dam_type) {
+            Some(i) => hud.splashes[i].time,
+            None => (h.damage / 5.0).clamp(0.2, 1.5),
+        };
+        shown.dam_type = Some(h.dam_type);
+        shown.until = now + shown.start_time;
+        if h.dam_type == crate::game::combat::DamType::Vomit {
+            shown.vomit_until = now + 0.8;
+        }
+        runlog::kv("hit_splash", &format!("type={:?} damage={} seconds={}", h.dam_type, h.damage, shown.start_time));
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn draw_hud(
     mut commands: Commands,
@@ -663,6 +792,7 @@ fn draw_hud(
     mut slots: Query<(&HudSlot, &mut Node, &mut ImageNode, &mut Visibility)>,
     mut spawned: Local<bool>,
     mut messages: ResMut<LocalMessages>,
+    hit: Res<HitDisplay>,
 ) {
     if !hud.loaded {
         return;
@@ -694,11 +824,35 @@ fn draw_hud(
             c.numeric(n, value, if big { &hud.digits_big } else { &hud.digits_small }, tint, name);
         }
     };
-    // UpdateHud's health colour: under 50 it flashes yellow and red
-    // (SwitchDigitColorTime, 0.2 s each); else (255, 50, 50). The bile
-    // colour (VomitHudTimer) is not done.
+    let now = time.elapsed_secs();
+    // DrawDamageIndicators, before the widgets: the whole screen, white,
+    // alpha Clamp(left / DamageStartTime x 200, 0, 200).
+    if let Some(t) = hit.dam_type
+        && hit.until > now
+    {
+        let (texture, wobble) = match SPLASH_CLASSES.iter().position(|(d, _)| *d == t) {
+            Some(i) => (hud.splashes[i].texture, hud.splashes[i].wobble),
+            None => (hud.gore_splash, None),
+        };
+        if let Some(texture) = texture {
+            let size = hud.textures[texture].size;
+            let alpha = ((hit.until - now) / hit.start_time * 200.0).clamp(0.0, 200.0) as u8;
+            c.quads.push(Quad {
+                texture,
+                uv: wobble.map_or(Rect::from_corners(Vec2::ZERO, size), |w| w.uv(now, size)),
+                screen: Rect::from_corners(Vec2::ZERO, c.size),
+                tint: [255, 255, 255, alpha],
+                what: format!("DamageIndicator({t:?})"),
+            });
+        }
+    }
+    // UpdateHud's health colour: while VomitHudTimer runs, poisoned (196,
+    // 206, 0); under 50 it flashes yellow and red (SwitchDigitColorTime,
+    // 0.2 s each); else (255, 50, 50).
     let hp = health.health.max(0.0) as i32;
-    let hp_tint = if hp < 50 {
+    let hp_tint = if hit.vomit_until > now {
+        [196, 206, 0]
+    } else if hp < 50 {
         if (time.elapsed_secs() / 0.2) as i64 % 2 == 0 { [255, 200, 0] } else { [255, 0, 0] }
     } else {
         [255, 50, 50]
@@ -1087,5 +1241,19 @@ mod tests {
         let xs: Vec<f32> = c.quads.iter().map(|q| q.screen.min.x).collect();
         assert_eq!(xs, vec![0.0, 10.0, 20.0]);
         assert_eq!(c.quads[0].uv.min.x, 100.0);
+    }
+
+    /// VomOsc: U stretches by up to 3% at 1.5 Hz, V pans by up to 3% at 0.5 Hz.
+    #[test]
+    fn vomit_wobble() {
+        let o = Oscillator { rate: [1.5, 0.5], phase: [0.0; 2], amplitude: [0.03; 2], kind: [1, 0] };
+        let size = Vec2::splat(1024.0);
+        assert_eq!(o.uv(0.0, size), Rect::from_corners(Vec2::ZERO, size));
+        // A quarter period of U (1 / 6 s): stretched the most.
+        let r = o.uv(1.0 / 6.0, size);
+        assert!((r.max.x - 1024.0 * 1.03).abs() < 0.01 && r.min.x == 0.0);
+        // A quarter period of V (0.5 s): panned the most, size kept.
+        let r = o.uv(0.5, size);
+        assert!((r.min.y - 1024.0 * 0.03).abs() < 0.01 && (r.height() - 1024.0).abs() < 0.01);
     }
 }
