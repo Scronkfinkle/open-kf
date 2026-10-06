@@ -4503,3 +4503,22 @@ seen by you.
 **Next:** test the gore splash and the Siren behind a wall; whole-number
 damage.
 
+## 2026-10-06 Hit effects: the untested cases
+
+**Changed:** `src/player/hit_cam.rs`: DoShakeEffect's scale maths moved
+into `scream_scales` (no change in behaviour) with unit test
+`scream_scale_wall`.
+**Why:** the gore splash and a Siren behind a wall had not been seen.
+**Tested how:** `--mode debug --spawn husk --frames 1500` (log) and
+`--screenshot 40,48,56,64`; `--mode waves --wave 4 --god --frames 6000
+--no-vsync`, Siren screams counted; clippy (no warnings); tests (122
+pass).
+**Result:** Husk: fireball and burn hits show `hit_splash type=Other` for
+Clamp(damage / 5, 0.2, 1.5): 20 and 10 -> 1.5 s, 5 -> 1 s, 2 -> 0.4 s,
+1 -> 0.2 s; claws `ZombieMelee` 0.9 s. Screenshot after the fireball: red
+gore drops over the blurred view. Wave 4 (about 3 minutes): 12 Siren
+screams shook the view, all in sight (blocked=false). The behind-a-wall
+case (x 0.25) is checked only by the unit test.
+**Still broken / not tested:** a real blocked scream in a run.
+**Next:** whole-number damage to the player.
+

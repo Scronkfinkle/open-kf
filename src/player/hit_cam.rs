@@ -401,20 +401,11 @@ fn hit_cam_events(
         if dist >= s.radius {
             continue;
         }
-        let mut scale = (s.radius - dist) / s.radius * s.shake.effect_scalar;
         let blocked = Dir3::new(s.at - centre)
             .ok()
             .and_then(|d| spatial.cast_ray(centre, d, (s.at - centre).length(), true, &crate::world::collision::world_filter()))
             .is_some();
-        let blur_scale;
-        if blocked {
-            scale *= 0.25;
-            blur_scale = scale;
-        } else {
-            blur_scale = scale;
-            // Lerp(scale, MinShakeEffectScale, 1.0).
-            scale = s.shake.min_effect_scale + scale * (1.0 - s.shake.min_effect_scale);
-        }
+        let (scale, blur_scale) = scream_scales(dist, s.radius, blocked, &s.shake);
         cam.ambient = Ambient {
             enabled: true,
             falloff_start: now + s.shake.shake_fade_time,
@@ -429,6 +420,19 @@ fn hit_cam_events(
             "view_shake",
             &format!("source=siren_scream distance_unreal={dist:.0} blocked={blocked} scale={scale:.2} blur={:.2} for={}s", blur_scale * s.shake.blur_scale, s.shake.shake_time),
         );
+    }
+}
+
+/// DoShakeEffect's shake scale and BlurScale at `dist` (inside `radius`):
+/// (radius - dist) / radius x ShakeEffectScalar; behind a wall both x 0.25,
+/// else the shake is Lerp(scale, MinShakeEffectScale, 1) and the blur keeps
+/// the plain scale.
+fn scream_scales(dist: f32, radius: f32, blocked: bool, shake: &ScreamShake) -> (f32, f32) {
+    let scale = (radius - dist) / radius * shake.effect_scalar;
+    if blocked {
+        (scale * 0.25, scale * 0.25)
+    } else {
+        (shake.min_effect_scale + scale * (1.0 - shake.min_effect_scale), scale)
     }
 }
 
@@ -536,6 +540,27 @@ mod tests {
         check_shake(&mut max, &mut off, &mut rate, &mut time, 0.01);
         assert_eq!(off, 100.0);
         assert!((max + 75.0).abs() < 1e-3 && rate == -1000.0 && (time - 3.99).abs() < 1e-5);
+    }
+
+    /// A Siren 350 of 700 away: in sight, shake 0.6 + 0.5 x 0.4 = 0.8 and
+    /// blur scale 0.5; behind a wall both 0.125.
+    #[test]
+    fn scream_scale_wall() {
+        let shake = ScreamShake {
+            rot_mag: Vec3::splat(150.0),
+            rot_rate: 500.0,
+            offset_mag: Vec3::new(0.0, 5.0, 1.0),
+            offset_rate: 500.0,
+            shake_time: 2.0,
+            shake_fade_time: 0.25,
+            effect_scalar: 1.0,
+            min_effect_scale: 0.6,
+            blur_scale: 0.85,
+        };
+        let (s, b) = scream_scales(350.0, 700.0, false, &shake);
+        assert!((s - 0.8).abs() < 1e-6 && (b - 0.5).abs() < 1e-6);
+        let (s, b) = scream_scales(350.0, 700.0, true, &shake);
+        assert!((s - 0.125).abs() < 1e-6 && (b - 0.125).abs() < 1e-6);
     }
 
     /// The camera rotation survives the Bevy -> Unreal -> Bevy round trip.
