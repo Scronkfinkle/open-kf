@@ -4,6 +4,10 @@ A from-scratch Rust + Bevy reimplementation of Killing Floor (2009), reading the
 original game's files from an installed copy. Single-player, offline. No game
 assets are included in this repository.
 
+![Open KF on KF-WestLondon: wave 1, Clots coming out of the tunnel, KF's HUD](docs/images/kf-westlondon.jpg)
+
+*KF-WestLondon in Open KF: wave 1, shotgun in hand, the trader 29 m away.*
+
 See `docs/DESIGN.md` for how it works and the plan.
 
 ## Requirements

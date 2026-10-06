@@ -37,3 +37,6 @@ logs/
 !/STATUS-handoff.md
 !/STATUS.md
 !/docs/**/*.md
+
+# README screenshots (our renderer, saved small as JPEG)
+!/docs/images/*.jpg

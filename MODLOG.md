@@ -4308,3 +4308,16 @@ game runs (window, Vulkan, the sound device); VS Code starts (you).
 **Still broken / not tested:** an already-open direnv shell keeps the old
 LD_LIBRARY_PATH until it reloads (`direnv reload`).
 **Next:** —
+
+## 2026-10-06 README screenshot
+
+**Changed:** `docs/images/kf-westlondon.jpg` (your screenshot
+`work/screenshots/KF-WestLondon-1791323031-1.png`, 2556x1382 PNG 4.2 MB,
+saved as a 1600-wide JPEG, 225 KB, with ffmpeg); shown in README.md under
+the introduction with a caption. `.gitignore`: whitelist entry
+`!/docs/images/*.jpg`.
+**Why:** you asked for it before publishing.
+**Tested how:** looked at the JPEG; `git status` lists it (not ignored).
+**Result:** the README shows the image.
+**Still broken / not tested:** how GitHub renders it (not pushed yet).
+**Next:** —
