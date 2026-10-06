@@ -4522,3 +4522,21 @@ case (x 0.25) is checked only by the unit test.
 **Still broken / not tested:** a real blocked scream in a run.
 **Next:** whole-number damage to the player.
 
+## 2026-10-06 Whole-number damage to the player
+
+**Changed:** `src/game/combat.rs` `apply_player_damage`: the damage is
+cut to a whole number first (TakeDamage(int Damage)); the burn check uses
+it too. `src/zeds/zed/think.rs`: the raging Fleshpound's x 1.75 applies
+to the cut value (ZombieFleshPound's MeleeDamageTarget(int hitdamage)
+passes hitdamage x 1.75). DESIGN.md "Hit effects".
+**Why:** zed claws hurt by fractions (MeleeDamage x 0.95..1.05, e.g.
+4.19); KF passes an int.
+**Tested how:** `--mode debug --spawn clot|fleshpound --frames 900`, logs;
+clippy (no warnings); tests (122 pass).
+**Result:** Clot hits `damage=4` (were 3.85-4.20), Fleshpound 25, 12, 13,
+6. Already-whole damage (vomit, scream, fireballs, bile, burning, own
+explosives, pain volumes) is unchanged.
+**Still broken / not tested:** the raging Fleshpound's hit not seen in a
+run.
+**Next:** your play test.
+

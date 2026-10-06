@@ -3420,6 +3420,13 @@ skip a hit of 0 damage, a hit that kills, and god mode
 DamTypeVomit. Ours: `apply_player_damage` sends one event per hit
 after armour, carrying the KF damage type.
 
+**Whole numbers (2026-10-06).** Pawn.TakeDamage and
+MeleeDamageTarget take an int, so damage to the player loses its
+fraction there (`apply_player_damage`; a raging Fleshpound's x 1.75 is
+applied to the already cut value, as its MeleeDamageTarget override
+does). Before this, zed claws hurt by MeleeDamage x 0.95..1.05 with the
+fraction kept.
+
 **Damage types (ZombieDamType defaults, the attack code).**
 ZombieMeleeDamage (blunt): KFMonster's default, so Clot, Gorefast,
 Crawler (and its pounce), Bloat, Husk, Scrake, Fleshpound, Patriarch

@@ -941,9 +941,12 @@ fn apply_player_damage(
     mut hurt: MessageWriter<PlayerHurt>,
 ) {
     for hit in hits.read() {
+        // TakeDamage(int Damage): the fraction is cut off (zed claws pass
+        // MeleeDamage x 0.95..1.05 to MeleeDamageTarget(int hitdamage)).
+        let amount = hit.amount.trunc();
         // KFPawn.TakeDamage reads the burn from the damage before
         // ReduceDamage; the health loss is after it.
-        let mut taken = if hit.zed_id == SELF_DAMAGE { reduce_self_damage(hit.amount) } else { hit.amount };
+        let mut taken = if hit.zed_id == SELF_DAMAGE { reduce_self_damage(amount) } else { amount };
         let armour_before = armour.strength;
         let damage_in = taken;
         // Pawn.TakeDamage: ShieldAbsorb after ReduceDamage, if the damage
@@ -988,11 +991,11 @@ fn apply_player_damage(
         );
         // KFPawn.TakeDamage: DamTypeVomit -> BileCount 7.
         // KFPawn.TakeDamage: DamTypeBurned over 2 sets the player on fire.
-        if hit.kind == HurtKind::Fire && hit.amount > 2.0 {
-            if burn.burn_down > 0 && hit.amount > burn.last_damage {
+        if hit.kind == HurtKind::Fire && amount > 2.0 {
+            if burn.burn_down > 0 && amount > burn.last_damage {
                 burn.burn_down = 5;
             }
-            burn.last_damage = hit.amount;
+            burn.last_damage = amount;
             if burn.burn_down == 0 {
                 burn.burn_down = 5;
                 burn.next = time.elapsed_secs() + BURN_INTERVAL;

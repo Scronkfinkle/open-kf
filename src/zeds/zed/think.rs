@@ -717,7 +717,10 @@ pub(super) fn think_and_move(
                             _ => {}
                         }
                         if z.fp_rage.is_some() {
-                            amount *= 1.75;
+                            // MeleeDamageTarget(int hitdamage): the raging
+                            // override passes hitdamage x 1.75, cut again
+                            // in apply_player_damage.
+                            amount = amount.trunc() * 1.75;
                             z.fp_rage = None;
                             z.fp_frustrated = false;
                             z.cloak_dirty = true;
