@@ -36,6 +36,21 @@ A complete rewrite of the killing floor games engine to play with its assets
 - **Explain in plain language.** I am not the programmer here. If you use a term,
   explain it the first time.
 
+## Running the game for tests
+
+- **Use `scripts/headless.sh` for your own test runs and screenshots**, not
+  `cargo run`. It takes the same options as the game, runs it on a virtual
+  display (Xvfb) so no window opens on my screen, and enters `nix develop`
+  by itself. Example:
+  `scripts/headless.sh --map KF-WestLondon --fly --camera X,Y,Z,YAW,PITCH --screenshot 60`
+  (PNG goes to `work/screenshots/`).
+- Always pass `--screenshot` or `--frames` so the run ends. `HEADLESS_TIMEOUT`
+  (default 300 s) kills a stuck run; `HEADLESS_SOFTWARE=1` draws without the GPU.
+- The mouse does nothing on the virtual display: drive tests with `--camera`,
+  `--input` and `--autowalk`.
+- Logs and numbers stay the main check. You may look at screenshots to
+  confirm visual fixes. Saved views are in `docs/test-views.md`.
+
 ## Honesty
 
 - If something is not tested, write **"not tested"**. Never imply you verified

@@ -4373,3 +4373,15 @@ Xvfb (use `--camera` / `--input`). Audio still opens ALSA. The rpath gap
 above. Not tested on another machine; the default lavapipe path is
 NixOS-specific (`/run/opengl-driver/...`, override with `HEADLESS_ICD`).
 **Next:** look at why the rpath list is cut short.
+
+## 2026-10-06 CLAUDE.md: use the headless script for test runs
+
+**Changed:** `CLAUDE.md`: new section "Running the game for tests": use
+`scripts/headless.sh` (with `--screenshot` or `--frames`) instead of
+`cargo run`, the timeout and software settings, drive tests with
+`--camera` / `--input` / `--autowalk`, logs first and screenshots to confirm.
+**Why:** you asked for CLAUDE.md to know about headless runs.
+**Tested how:** docs only, nothing to run.
+**Result:** —
+**Still broken / not tested:** —
+**Next:** —
