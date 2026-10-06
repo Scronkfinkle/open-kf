@@ -4342,3 +4342,34 @@ warnings.
 **Still broken / not tested:** an old command with `--walk` now stops with
 "unknown argument: --walk".
 **Next:** —
+
+## 2026-10-06 Headless runs: `scripts/headless.sh`
+
+**Changed:** new `scripts/headless.sh`: builds the game, starts a virtual X
+display (Xvfb, a fake screen in memory), runs `open-kf` on it with all your
+options, then shuts the display down. `HEADLESS_SOFTWARE=1` uses Mesa's CPU
+Vulkan driver (lavapipe) instead of the GPU; `HEADLESS_TIMEOUT` (300 s)
+kills a stuck run; `HEADLESS_SCREEN` sets the display size. If started
+outside the dev shell it enters it itself. `flake.nix`: `pkgs.xvfb` added,
+and a new `OPEN_KF_LIBS` variable (the same library list as the rpath); the
+script sets `LD_LIBRARY_PATH` from it for the game process only.
+`.gitignore`: whitelists `scripts/*.sh`. README and `docs/test-views.md`
+mention it.
+**Why:** so screenshots and test runs don't open a window on your display.
+The investigation also found the built binary's rpath is missing
+vulkan-loader, libxkbcommon and the libX* folders (only alsa, systemd and
+wayland made it), so without `LD_LIBRARY_PATH` the game panicked under Xvfb
+(`libxkbcommon-x11.so.0` not found). The script works around it; the rpath
+itself is not fixed.
+**Tested how:** `scripts/headless.sh --map KF-WestLondon --mute --camera
+-3110,1313,-3768,-3.72,0 --screenshot 60`, from outside the dev shell; the
+same with `HEADLESS_SOFTWARE=1` and `--screenshot 30`.
+**Result:** GPU: adapter "NVIDIA GeForce RTX 3090", screenshot saved
+(1280x720, correct view with HUD and weapon), exit 0, no Xvfb left running.
+Software: adapter "llvmpipe", screenshot saved, exit 0, 10.7 s total. No
+window appeared.
+**Still broken / not tested:** mouse look and cursor grab do nothing under
+Xvfb (use `--camera` / `--input`). Audio still opens ALSA. The rpath gap
+above. Not tested on another machine; the default lavapipe path is
+NixOS-specific (`/run/opengl-driver/...`, override with `HEADLESS_ICD`).
+**Next:** look at why the rpath list is cut short.

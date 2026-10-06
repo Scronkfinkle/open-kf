@@ -38,6 +38,7 @@ cargo run --release -- --zed --always-sever   # test: killing shots on limbs alw
 cargo run --release -- --give all             # test: carry every base-game weapon (or --give AK47AssaultRifle,Shotgun)
 cargo run --release -- --input 200:sound:KF_9MMSnd.9mm_Fire,300:sound_at:KF_9MMSnd.9mm_Fire@600   # test: play a sound at you, then 600 units to your right
 cargo run --release -- --input 200:jump   # test action: jump (also "jump" in any --input list)
+scripts/headless.sh --fly --camera -4090,1300,-3650,-1.5708,0 --screenshot 60   # the same, on a virtual display: no window opens
 cargo run --release -- --no-vsync --frames 600   # test runs: frames do not wait for the display (a hidden window ran at 1 fps)
 cargo run --release -- --mute                 # no sound (still logged)
 cargo run --release -- --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)

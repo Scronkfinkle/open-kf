@@ -11,6 +11,11 @@ along Unreal +X, yaw -1.5708 along +Y, and yaw 1.5708 along -Y.
 Press F12 in the viewer to save a screenshot of any view; a `.txt` file next
 to it holds the command that recreates it.
 
+To take these without a window on your screen, swap `cargo run --release --`
+for `scripts/headless.sh` (same options). It runs the game on a virtual X
+display (Xvfb) with the GPU and removes the display afterwards.
+`HEADLESS_SOFTWARE=1` draws on the CPU instead (slower, no GPU needed).
+
 | Map | What it checks | Command | Expected |
 | --- | --- | --- | --- |
 | KF-WestLondon | Mirrored props (tunnel mesh has scale Y=-1) | `cargo run --release -- --fly --map KF-WestLondon --camera -4090,1300,-3650,-1.5708,0 --screenshot 60` | Curved brick tunnel shell between the rusty arches, bus inside. Broken if: black void between the arches. |

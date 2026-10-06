@@ -27,6 +27,9 @@ logs/
 !/crates/*/src/**/*.rs
 !/crates/*/tests/**/*.rs
 
+# Helper scripts
+!/scripts/*.sh
+
 # Docs
 !/LICENSE-MIT
 !/LICENSE-APACHE

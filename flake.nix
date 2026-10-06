@@ -34,6 +34,9 @@
 
         # Video recording (F9) pipes frames to ffmpeg
         pkgs.ffmpeg
+
+        # Virtual X display for scripts/headless.sh (runs the game off-screen)
+        pkgs.xvfb
     ];
 
     # System libraries Bevy needs on Linux: audio, input devices, GPU, windowing
@@ -60,6 +63,10 @@
       # (e.g. VS Code built against the system's older glibc failed to start
       # with this shell's alsa-lib).
       RUSTFLAGS = "-C link-arg=-Wl,-rpath,${pkgs.lib.makeLibraryPath bevyInputs}";
+
+      # The same library path as a plain variable, for scripts/headless.sh.
+      # It sets LD_LIBRARY_PATH from this for the game process only.
+      OPEN_KF_LIBS = pkgs.lib.makeLibraryPath bevyInputs;
 
       # Rust stdlib for language servers
       RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
