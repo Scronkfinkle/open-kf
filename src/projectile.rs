@@ -79,6 +79,7 @@ pub struct BoltPickedUp;
 pub struct ExplosiveStats {
     /// The projectile class (for its model).
     pub class: &'static str,
+    pub sounds: ProjectileSounds,
     pub speed: f32,
     /// HurtRadius: Damage, DamageRadius, MomentumTransfer.
     pub damage: f32,
@@ -114,6 +115,34 @@ pub struct ExplosiveStats {
     /// The trail: PanzerfaustTrail (turned backward), or the Husk Gun's
     /// FlameThrowerHusk_*.
     pub trail: Option<&'static str>,
+}
+
+/// A projectile class's sounds (S5c), as full object paths; see DESIGN.md,
+/// "Sound and music".
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProjectileSounds {
+    /// AmbientSound while flying, with SoundVolume and SoundRadius
+    /// (Projectile's SoundVolume default is 0: no loop).
+    pub flight: Option<(&'static str, u8, f32)>,
+    /// ExplodeSounds (one at random) or ExplosionSound, at its volume
+    /// (2.0, or ExplosionSoundVolume) and TransientSoundRadius.
+    pub explode: &'static [&'static str],
+    pub explode_volume: f32,
+    pub explode_radius: f32,
+    /// Nade / PipeBombProjectile ImpactSound (bounces faster than 50) at
+    /// TransientSoundVolume, SLOT_Misc.
+    pub bounce: Option<&'static str>,
+    pub bounce_volume: f32,
+    /// PipeBombProjectile.BeepSound.
+    pub beep: Option<&'static str>,
+    /// LAWProj / M79GrenadeProjectile duds: PTRD_deflect04 at 2.0.
+    pub dud: Option<&'static str>,
+}
+
+impl ProjectileSounds {
+    fn pick_explosion(&self, roll: u32) -> Option<&'static str> {
+        (!self.explode.is_empty()).then(|| self.explode[roll as usize % self.explode.len()])
+    }
 }
 
 /// Fire a projectile (KFShotgunFire.SpawnProjectile).
@@ -172,6 +201,18 @@ pub struct DartStats {
     pub life_span: f32,
     /// HealBoostAmount: what it gives a teammate it touches (none here).
     pub heal: f32,
+    /// AmbientSound while flying (MP7_DartFlyLoop, 128, 250).
+    pub flight: Option<(&'static str, u8, f32)>,
+}
+
+/// A projectile's flight loop (AmbientSound, SoundVolume, SoundRadius).
+fn flight_sound(flight: Option<(&'static str, u8, f32)>) -> Option<crate::audio::AmbientSound> {
+    flight.map(|(sound, volume, radius)| crate::audio::AmbientSound { sound: sound.into(), volume, radius, ..default() })
+}
+
+/// One sound at an Unreal-space point.
+fn sound_at(sound: &'static str, at: Vec3) -> crate::audio::PlaySound {
+    crate::audio::PlaySound::new(sound, crate::audio::Emitter::Point(coords::pos(at.to_array())))
 }
 
 /// A dart in flight. HealingProjectile flies straight at Speed (its
@@ -473,6 +514,9 @@ fn spawn_projectiles(
                 .spawn(PlayerDart { pos: origin, vel: dir * d.speed, stats: d, weapon: s.weapon, age: 0.0, id: *next_id })
                 .id();
             attach_model(&mut commands, &models, e, d.class, origin, dir);
+            if let Some(a) = flight_sound(d.flight) {
+                commands.entity(e).insert(a);
+            }
             runlog::kv("dart_fired", &format!("id={} weapon={} speed={} heal={}", *next_id, s.weapon, d.speed, d.heal));
             continue;
         }
@@ -519,6 +563,9 @@ fn spawn_projectiles(
                 id: *next_id,
             }).id();
             attach_model(&mut commands, &models, e, x.class, origin, dir);
+            if let Some(a) = flight_sound(x.sounds.flight) {
+                commands.entity(e).insert(a);
+            }
             runlog::kv(
                 "explosive_fired",
                 &format!(
@@ -772,7 +819,7 @@ fn move_explosives(
     mut decals: MessageWriter<crate::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
     mut door_blasts: MessageWriter<crate::door::DoorBlast>,
-    mut dramatic: MessageWriter<crate::zed_time::DramaticEvent>,
+    (mut dramatic, mut sounds, mut rng): (MessageWriter<crate::zed_time::DramaticEvent>, MessageWriter<crate::audio::PlaySound>, Local<u32>),
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -872,6 +919,14 @@ fn move_explosives(
             p.dud = Some(1.0);
             p.vel = Vec3::ZERO;
             p.pos = at;
+            // LAWProj: AmbientSound = none, PTRD_deflect04 at 2.0 (the M79
+            // family only on a pawn; on a wall it just drops).
+            commands.entity(entity).remove::<crate::audio::AmbientSound>();
+            if let Some(d) = p.stats.sounds.dud
+                && (zed.is_some() || p.stats.straight_time.is_none())
+            {
+                sounds.write(sound_at(d, at).volume(2.0));
+            }
             continue;
         }
         // HuskGunProjectile.ProcessTouch: ImpactDamage to the zed touched
@@ -887,6 +942,11 @@ fn move_explosives(
             let damage = if head { p.stats.impact_damage * head_mult } else { p.stats.impact_damage };
             runlog::kv("explosive_impact", &format!("id={} weapon={} zed={id} damage={damage:.1} headshot={head}", p.id, p.weapon));
             crate::combat::damage_zed(&mut z, damage, head, p.stats.impact_headshot_mult, p.weapon, t, source, &mut kills);
+        }
+        // Explode: PlaySound(ExplosionSound, , 2.0 or ExplosionSoundVolume).
+        *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        if let Some(snd) = p.stats.sounds.pick_explosion(*rng >> 16) {
+            sounds.write(sound_at(snd, at).volume(p.stats.sounds.explode_volume).radius(p.stats.sounds.explode_radius));
         }
         // Explode: the effect 20 units out, the decal, HurtRadius.
         let (zeds_hit, zeds_killed, self_damage) = blast(
@@ -1398,6 +1458,7 @@ fn blast(
 pub struct ThrownStats {
     /// The projectile class (for its model).
     pub class: &'static str,
+    pub sounds: ProjectileSounds,
     pub speed: f32,
     pub damage: f32,
     pub radius: f32,
@@ -1457,7 +1518,7 @@ fn move_thrown(
     mut decals: MessageWriter<crate::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::combat::PlayerDamaged>,
     mut door_blasts: MessageWriter<crate::door::DoorBlast>,
-    mut dramatic: MessageWriter<crate::zed_time::DramaticEvent>,
+    (mut dramatic, mut sounds, mut rng): (MessageWriter<crate::zed_time::DramaticEvent>, MessageWriter<crate::audio::PlaySound>, Local<u32>),
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1490,6 +1551,13 @@ fn move_thrown(
                         p.pos += dir_ue * (h.distance / SCALE) + n;
                         let v_norm = p.vel.dot(n) * n;
                         p.vel = -v_norm * p.stats.dampen_normal + (p.vel - v_norm) * p.stats.dampen_parallel;
+                        // HitWall: ImpactSound (SLOT_Misc, TransientSoundVolume)
+                        // when Speed > 50 after the damping.
+                        if p.vel.length() > 50.0
+                            && let Some(b) = p.stats.sounds.bounce
+                        {
+                            sounds.write(sound_at(b, p.pos).slot(crate::audio::Slot::Misc).volume(p.stats.sounds.bounce_volume));
+                        }
                         if let ThrownKind::Frag { fuse } = p.stats.kind
                             && !p.bounced
                         {
@@ -1532,11 +1600,19 @@ fn move_thrown(
                     p.timer -= dt;
                     if p.timer <= 0.0 {
                         if let Some(c) = p.countdown.as_mut() {
-                            // Fast beeps, then the explosion.
+                            // Fast beeps, then the explosion: while Countdown > 0
+                            // PlaySound(BeepSound, SLOT_Misc, 2.0, , 150).
                             *c = c.saturating_sub(1);
                             explode = *c == 0;
                             p.timer = 0.15;
+                            if !explode && let Some(b) = p.stats.sounds.beep {
+                                sounds.write(sound_at(b, p.pos).slot(crate::audio::Slot::Misc).volume(2.0).radius(150.0));
+                            }
                         } else {
+                            // Each check: PlaySound(BeepSound, , 0.5, , 50) first.
+                            if let Some(b) = p.stats.sounds.beep {
+                                sounds.write(sound_at(b, p.pos).volume(0.5).radius(50.0));
+                            }
                             // VisibleCollidingActors within DetectionRadius.
                             let at_bevy = coords::pos(p.pos.to_array());
                             let threat: f32 = zeds
@@ -1561,6 +1637,12 @@ fn move_thrown(
         }
         if !explode {
             continue;
+        }
+        // Nade.Explode: PlaySound(ExplodeSounds[rand(...)], , 2.0);
+        // PipeBombProjectile the same.
+        *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        if let Some(snd) = p.stats.sounds.pick_explosion(*rng >> 16) {
+            sounds.write(sound_at(snd, p.pos).volume(2.0).radius(p.stats.sounds.explode_radius));
         }
         let normal = Vec3::Z;
         let (zeds_hit, zeds_killed, self_damage) = blast(

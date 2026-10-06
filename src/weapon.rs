@@ -407,7 +407,7 @@ pub(crate) fn sound_prop(defaults: &ClassDefaults, class: &ObjectHandle, prop: &
 
 /// An array of sounds as full paths: the `refs` strings (e.g.
 /// MeleeHitSoundRefs) win over the `prop` objects (MeleeHitSounds).
-fn sound_array(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str, refs: &str) -> Vec<String> {
+pub(crate) fn sound_array(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str, refs: &str) -> Vec<String> {
     if let Some((Value::Array { count, raw }, _)) = defaults.get(class, refs)
         && count > 0
     {
@@ -710,12 +710,47 @@ fn husk_projectile(
         Some(n) if n.ends_with("_large") => DecalKind::BurnLarge,
         _ => DecalKind::BurnMedium,
     };
+    let sounds = projectile_sounds(defaults, class);
     crate::projectile::ExplosiveStats {
         class: leak(class.path()),
+        // The Husk Gun's three classes differ in ExplosionSoundVolume
+        // (1.25, 1.65, 2.0).
+        sounds: crate::projectile::ProjectileSounds { explode_volume: sounds.explode_volume, ..base.sounds },
         effect: path("ExplosionEmitter").map_or(base.effect, leak),
         trail: path("FlameTrailEmitterClass").map(leak).or(base.trail),
         decal,
         ..base
+    }
+}
+
+/// A projectile class's sounds (S5c): flight loop, explosion(s), bounce,
+/// pipe-bomb beep, dud.
+fn projectile_sounds(defaults: &ClassDefaults, pc: &ObjectHandle) -> crate::projectile::ProjectileSounds {
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let float = |p: &str, d: f32| match defaults.get(pc, p) {
+        Some((Value::Float(f), _)) => f,
+        _ => d,
+    };
+    let byte = |p: &str| match defaults.get(pc, p) {
+        Some((Value::Byte(b), _)) => b,
+        _ => 0,
+    };
+    let mut explode = sound_array(defaults, pc, "ExplodeSounds", "ExplodeSoundRefs");
+    if explode.is_empty() {
+        explode.extend(sound_prop(defaults, pc, "ExplosionSound"));
+    }
+    let explode: Vec<&'static str> = explode.into_iter().map(leak).collect();
+    let volume = byte("SoundVolume");
+    let law_or_m79 = defaults.is_a(pc, "LAWProj") || defaults.is_a(pc, "M79GrenadeProjectile");
+    crate::projectile::ProjectileSounds {
+        flight: sound_prop(defaults, pc, "AmbientSound").filter(|_| volume > 0).map(|s| (leak(s), volume, float("SoundRadius", 64.0))),
+        explode: Box::leak(explode.into_boxed_slice()),
+        explode_volume: float("ExplosionSoundVolume", 2.0),
+        explode_radius: float("TransientSoundRadius", 300.0),
+        bounce: sound_prop(defaults, pc, "ImpactSound").map(leak),
+        bounce_volume: float("TransientSoundVolume", 0.3),
+        beep: sound_prop(defaults, pc, "BeepSound").map(leak),
+        dud: law_or_m79.then_some("ProjectileSounds.PTRD_deflect04"),
     }
 }
 
@@ -987,6 +1022,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         };
         let explosive = (defaults.is_a(pc, "M79GrenadeProjectile") || is_law).then(|| crate::projectile::ExplosiveStats {
             class: projectile_path,
+            sounds: projectile_sounds(defaults, pc),
             speed: pfloat("Speed", 2000.0),
             damage: if is_zed_bolt { 0.0 } else { pfloat("Damage", 0.0) },
             radius: if is_zed_bolt { 0.0 } else { pfloat("DamageRadius", 0.0) },
@@ -1047,6 +1083,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
         let dt_mult = if is_bolt { class_mult("DamageTypeHeadShot") } else { dt_mult };
         let thrown = (defaults.is_a(pc, "Nade") || is_pipe).then(|| crate::projectile::ThrownStats {
             class: projectile_path,
+            sounds: projectile_sounds(defaults, pc),
             // FragFire.PostSpawnProjectile: a quick throw (HoldTime 0) at
             // mHoldSpeedMin; the pipe bomb at its own Speed.
             speed: if is_pipe { pfloat("Speed", 50.0) } else { ffloat("mHoldSpeedMin", 850.0) },
@@ -1094,6 +1131,7 @@ fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&
             speed: pfloat("Speed", 10000.0),
             life_span: pfloat("LifeSpan", 10.0),
             heal: pfloat("HealBoostAmount", 20.0),
+            flight: projectile_sounds(defaults, pc).flight,
         });
         let per_load = !["MP7MAltFire", "M7A3MAltFire", "ZEDMKIIAltFire"].iter().any(|c| defaults.is_a(fm_class, c));
         mode.pellets = Some(PelletFire {
@@ -4154,6 +4192,7 @@ mod tests {
 
     fn husk_charge() -> ChargeFire {
         let x = crate::projectile::ExplosiveStats {
+            sounds: Default::default(),
             class: "medium",
             speed: 1800.0,
             damage: 25.0,

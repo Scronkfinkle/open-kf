@@ -3290,7 +3290,17 @@ with a test you can run):
     items). Also in this step (ours, not KF's): player landings slower
     than 100 units/s are not played, because our walker leaves the
     ground for a frame on steps and edges (UE2 stays walking).
-  - **S5c. Explosions and projectiles.** **S5d. Bullet
+  - **S5c. Explosions and projectiles** (done 2026-10-05). Each
+    explosive, thrown and dart class's sounds (`ProjectileSounds`, read
+    from its defaults): the flight loop (AmbientSound with SoundVolume,
+    SoundRadius; Projectile's SoundVolume default 0 = none), the
+    explosion (ExplodeSounds at random, or ExplosionSound; at 2.0 or
+    ExplosionSoundVolume, e.g. the Husk Gun's 1.25 / 1.65 / 2.0), the
+    Nade / pipe bomb bounce (ImpactSound, SLOT_Misc, when faster than
+    50), the pipe bomb's beeps (each check 0.5 / radius 50; the
+    countdown SLOT_Misc 2.0 / 150), the LAW / M79 dud (PTRD_deflect04).
+    Not done: the flamethrower flames' and puddles' fire loops, the
+    Siren's "disintegrate" sound, the crossbow / M99 bolt hits (S5d). **S5d. Bullet
     impacts, glass, whiz.** **S5e. The trader** (buy sounds, too
     expensive / too heavy, the radio voice lines).
 - **S6. Music** (done 2026-10-05, `src/music.rs`). The map's

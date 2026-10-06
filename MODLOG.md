@@ -4070,3 +4070,29 @@ fields: clippy does not build tests, the test run caught it.)
 **Still broken / not tested:** not heard by you. Zed hits on welded
 doors and the welder sound not run in a test. Key-door unlock (no keys).
 **Next:** S5c, explosions and projectiles.
+
+## 2026-10-05 S5c: explosions and projectiles
+
+**Changed:** `src/projectile.rs`: `ProjectileSounds` in ExplosiveStats
+and ThrownStats, `flight` in DartStats; flight loops on rockets, Husk Gun
+fireballs and darts; explosions (random pick), duds, grenade / pipe bomb
+bounces, pipe bomb beeps (idle and countdown). `src/weapon.rs`:
+`projectile_sounds` reads them from the projectile class (and the Husk
+Gun's per-class ExplosionSoundVolume); `sound_array` crate-visible.
+DESIGN, README.
+**Why:** S5c.
+**Tested how:** `--give LAW,M79GrenadeLauncher,PipeBombExplosive`
+(M79 fired, LAW aimed and fired, pipe bomb placed), a frag (`nade`)
+with and without a zed in front; tests; clippy (counted).
+**Result:** M79: `Nade_Explode_1 volume=2.00 radius=500`. LAW:
+`Rocket_Propel volume=255 radius=250` while flying, `Rocket_Explode`
+at 2.0. Pipe bomb: `Nade_HitSurf` on landing, then `Keypad_beep01
+volume=0.50 radius=50` every second once armed. Frag: three
+`Nade_HitSurf` bounces, `Nade_Explode_1` after the fuse (a frag that
+hits a zed drops without a fast bounce: no bounce sound, as KF's
+ProcessTouch). Tests 139 pass; clippy 0 warnings (with `--all-targets`
+there is one old warning in boss.rs test code, not from this work).
+**Still broken / not tested:** not heard by you. The pipe bomb's
+countdown beeps and the Husk Gun's explosion volumes not run. Flame
+fire loops, the Siren's disintegrate sound: not done.
+**Next:** S5d, bullet impacts.

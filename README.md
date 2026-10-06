@@ -575,6 +575,10 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   breaking, the welder's sparks. Not heard by you yet. (Many of KF's
   wooden doors close silently in the real game too: WoodDoorShut is a
   silent placeholder sound.)
+- Explosions and projectiles (S5c, 2026-10-05): grenade bounces and
+  blasts, the LAW's rocket hiss and explosion, M79 / M32 / M203 blasts,
+  the Husk Gun's fireball, pipe bomb bounce and arming beeps, medic dart
+  flight, LAW / M79 duds. Not heard by you yet.
 - Music (S6, 2026-10-05): the map's calm song in trader time, its combat
   song in waves (per-wave songs where the map has them), the Patriarch's
   KF_Abandon with a 1 s fade at his entrance. Volumes from your
