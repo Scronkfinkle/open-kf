@@ -2329,10 +2329,46 @@ KFGameLength=0) is Short.
     drops to 0, the wave ends, WaveNum passes FinalWave and the next
     tick ends the game won. Not done: the double-length zed time (no
     zed time yet) and the death camera on him (G3b).
-- **G3b, the grand entrance (deferred until the trader core is in).** MakeGrandEntry: once he is spawned the
-  view switches to him in third person while he plays Entrance, and
-  BossBattleSong ("KF_Abandon") starts; back to the player when the
-  animation ends. Also the death view on him. Later.
+- **G3b, the grand entrance (done 2026-10-05).** From KFGameType's
+  boss-wave Timer, ZombieBoss (MakeGrandEntry, MakingEntrance,
+  InitialSneak, Died, SetBossLaught), KFGameType.BossLaughtIt and
+  PlayerController.CalcBehindView:
+  - Before MakeGrandEntry the Patriarch has no state (ZombieBoss has no
+    auto state): he hunts normally, uncloaked. Ours today starts him in
+    InitialSneak at spawn (the entrance skipped); that moves to after the
+    entrance. A Patriarch spawned outside the boss wave (debug Z / N or
+    `spawn_patriarch`) never gets MakeGrandEntry, so, as in KF, he never
+    starts with InitialSneak.
+  - The boss-wave Timer (once a game second), first time TotalMaxMonsters
+    <= 0 and NumMonsters > 0 (he has spawned): MakeGrandEntry: bShotAnim,
+    no movement, the Entrance animation (full body, waits), state
+    MakingEntrance (ignores RangedAttack) for GetAnimDuration('Entrance'),
+    then InitialSneak (cloak). The view goes to him (SetViewTarget,
+    bBehindView). BossBattleSong: no sound yet.
+  - Each later Timer while he is the view target: once bShotAnim is off
+    (the animation done), the view returns to the player's own.
+  - ZombieBoss.Died: the view goes to him in third person (with
+    DoBossDeath's 6 s zed time, done); it stays until the game is over
+    (ours: until the restart).
+  - The players lose in the boss wave (BossLaughtIt): a living Patriarch
+    plays VictoryLaugh (full body) and the view goes to him
+    (SetBossLaught sets bSpecialCalcView, but ZombieBoss has no
+    SpecialCalcView, so it is the plain behind view; copied).
+  - The behind view (CalcBehindView): rotation = the player's own view
+    rotation (mouse look still turns it, roll 0); location = his
+    Location + 12 up, then back along the view by Dist = CameraDist 9 x
+    his default CollisionRadius (26: 234 units), shortened to a 10-unit
+    box trace hitting the level. The player's own pawn still takes input
+    (KF does not stop it). The first-person weapon is not drawn in behind
+    view. Ours: the render camera's GlobalTransform is replaced after
+    transform propagation, so gameplay keeps the player's own view;
+    the weapon camera is switched off.
+  - Logs `boss_entrance` (start, end), `view_target` (boss / player,
+    reason).
+  - As built: the behind view's trace is a 10-unit box shape cast
+    against the level (World, TraceBlocking). Not done: BossBattleSong
+    (no sound), bBlockCloseCamera / CameraDeltaRotation (zero in KF's
+    defaults), the view's zone fog and sounds (they stay the player's).
 - **D5, doors respawn at wave end (done 2026-10-05).** KFDoorMover.RespawnDoor: back, shut
   (or open if it was), bStartSealed doors re-welded. Plan (from
   KFGameType.DoWaveEnd, KFDoorMover.RespawnDoor / DoOpen / DoClose /

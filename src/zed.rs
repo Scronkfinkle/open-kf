@@ -1017,6 +1017,26 @@ fn boss_busy(
         z.state = ZedState::Chase;
         return;
     };
+    // MakingEntrance: stand until Entrance is done, then InitialSneak
+    // (cloaked). The laugh: stand until VictoryLaugh is done.
+    if b.entrance.is_some() || b.laugh.is_some() {
+        b.tick(dt);
+        if b.entrance.is_some() && b.entrance_step(dt) {
+            z.state = ZedState::Chase;
+            z.sequence = None;
+            // CloakBoss: not while zapped.
+            z.cloaked = !z.zapped();
+            z.cloak_dirty = true;
+            z.router = Default::default();
+            runlog::kv("boss_entrance", &format!("id={} end next=InitialSneak", z.id));
+        } else if b.laugh.is_some() && b.laugh_step(dt) {
+            z.state = ZedState::Chase;
+            z.sequence = None;
+            runlog::kv("boss_entrance", &format!("id={} end of=VictoryLaugh", z.id));
+        }
+        z.boss = Some(b);
+        return;
+    }
     // State KnockDown: when the animation is done, cloak and escape.
     if b.knockdown.is_some() {
         b.tick(dt);
@@ -1517,7 +1537,8 @@ impl Plugin for ZedPlugin {
             .init_resource::<ZSpawn>()
             .insert_resource(ZedsActive(true))
             .add_systems(PostStartup, load_zed_classes)
-            .add_systems(Update, (spawn_zeds, think_and_move, burn_zeds, animate_zeds, apply_cloaks).chain());
+            .add_message::<BossAction>()
+            .add_systems(Update, (spawn_zeds, boss_actions, think_and_move, burn_zeds, animate_zeds, apply_cloaks).chain());
     }
 }
 
@@ -2518,6 +2539,11 @@ impl Zed {
     }
 
     /// Patriarch: knockdowns finished so far and SyringeCount.
+    /// The Patriarch's bShotAnim for his entrance and laugh.
+    pub fn boss_shot_anim(&self) -> bool {
+        self.boss.is_some_and(|b| b.shot_anim())
+    }
+
     pub fn boss_knockdowns(&self) -> Option<(u32, usize)> {
         self.boss.map(|b| (b.knockdowns_done, b.syringes))
     }
@@ -2878,10 +2904,12 @@ fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedCl
                 mg_flash: None,
                 mg_flash_shots: 0,
                 // ZombieStalker.PostBeginPlay: CloakStalker.
-                cloaked: c.cloak_material.is_some() || c.boss.is_some(),
+                // The Stalker spawns cloaked; the Patriarch only cloaks after
+                // his entrance (InitialSneak), see boss.rs.
+                cloaked: c.cloak_material.is_some() && c.boss.is_none(),
                 since_uncloak: f32::MAX,
                 cloak_check: 0.0,
-                cloak_dirty: c.cloak_material.is_some() || c.boss.is_some(),
+                cloak_dirty: c.cloak_material.is_some() && c.boss.is_none(),
                 yaw,
                 state: ZedState::Idle,
                 vertical_speed: 0.0,
@@ -3024,6 +3052,28 @@ fn spawn_zeds(
             _ => spawn_in_front(&mut commands, &mut meshes, &classes, &spatial, t, cam, class, *next_id, distance, lift, in_line),
         }
         *next_id += 1;
+    }
+}
+
+/// What the wave game asks of the Patriarch (KFGameType's boss-wave
+/// Timer: MakeGrandEntry; MatchOver: SetBossLaught).
+#[derive(Message, Clone, Copy, Debug)]
+pub enum BossAction {
+    Entrance(usize),
+    Laugh(usize),
+}
+
+/// Marks the asked zed; `think_and_move` starts the animation.
+fn boss_actions(mut actions: MessageReader<BossAction>, mut zeds: Query<&mut Zed>) {
+    for a in actions.read() {
+        let (BossAction::Entrance(id) | BossAction::Laugh(id)) = *a;
+        let Some(mut z) = zeds.iter_mut().find(|z| z.id == id) else { continue };
+        let Some(mut b) = z.boss else { continue };
+        match a {
+            BossAction::Entrance(_) => b.pending_entrance = true,
+            BossAction::Laugh(_) => b.pending_laugh = true,
+        }
+        z.boss = Some(b);
     }
 }
 
@@ -3351,6 +3401,31 @@ fn think_and_move(
                 runlog::kv("fleshpound_rage", &format!("id={} charging=true seconds={:.1}", z.id, z.fp_rage.unwrap_or(0.0)));
             }
             z.state = ZedState::Chase;
+        }
+        // Patriarch: MakeGrandEntry (Entrance) or SetBossLaught (VictoryLaugh)
+        // asked for by the wave game: full body, standing, waits.
+        if let (Some(bc), Some(mut b)) = (c.boss.as_ref(), z.boss)
+            && (b.pending_entrance || b.pending_laugh)
+            && !matches!(z.state, ZedState::Dead | ZedState::Falling)
+        {
+            let entrance = b.pending_entrance;
+            let anim = if entrance { bc.entrance_anim } else { bc.laugh_anim };
+            b.pending_entrance = false;
+            b.pending_laugh = false;
+            if let Some((seq, secs)) = anim {
+                if entrance {
+                    b.start_entrance(secs);
+                } else {
+                    b.start_laugh(secs);
+                }
+                z.attack = None;
+                z.overlay = None;
+                z.state = ZedState::BossBusy;
+                z.sequence = None;
+                start_anim(&mut z, Some(seq), false);
+                runlog::kv("boss_entrance", &format!("id={} start={} seconds={secs:.2}", z.id, if entrance { "Entrance" } else { "VictoryLaugh" }));
+            }
+            z.boss = Some(b);
         }
         // Patriarch: TakeDamage asked for a knockdown (full body, waits).
         if let (Some(bc), Some(mut b)) = (c.boss.as_ref(), z.boss)

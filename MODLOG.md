@@ -3601,3 +3601,42 @@ time", open question). All randomness here uses fixed seeds, so every
 run repeats; KF's FRand differs each game.
 **Next:** your call on the two findings; then G3b or the lighting
 leftovers.
+
+## 2026-10-05 G3b: the Patriarch's grand entrance, death and laugh views
+
+**Changed:** DESIGN.md: G3b plan. `boss.rs`: Entrance and VictoryLaugh
+animations; BossState starts in no state, uncloaked (ZombieBoss has no
+auto state), `start_entrance` / `entrance_step` (then InitialSneak,
+cloaked), `start_laugh` / `laugh_step`, `shot_anim`; tests updated (two
+assumed he spawned sneaking) and 1 added. `zed.rs`: the Patriarch spawns
+uncloaked; `BossAction` (Entrance / Laugh) from the wave game, started
+like the knockdown (full body, standing); `boss_shot_anim`. New
+`view_target.rs`: `ViewTarget` and KF's CalcBehindView (the player's
+view rotation; his centre + 12 up, back 9 x his radius, cut by a 10-unit
+box cast), drawn by replacing the camera's GlobalTransform after
+propagation; the weapon camera off meanwhile. `game.rs`: the boss-wave
+tick's MakeGrandEntry and view hand-back, the death view at once,
+BossLaughtIt on the first tick after the game ends, view reset on
+restart. `weapon.rs`: `WeaponCamera` public.
+**Why:** the last item on the handoff list.
+**Tested how:** read KFGameType's boss-wave Timer, MatchOver,
+BossLaughtIt, ZombieBoss (MakeGrandEntry, MakingEntrance, InitialSneak,
+Died, SetBossLaught, SpectatorSpecialCalcView), PlayerController
+(CalcBehindView, CameraDist). Logged runs with `--wave 5`: plain, with
+`kill_boss`, and without god (the boss kills you); a screenshot during
+the entrance.
+**Result:** spawned 8.37 s; next tick 9.38 s: `view_target zed0
+reason=entrance`, Entrance 5.87 s; 15.24 s end, InitialSneak; next tick
+15.37 s view back to the player; his sneak then ended on finding the
+player as before. Screenshot: third person behind him mid-entrance,
+uncloaked, no first-person gun. `kill_boss`: view on him at once, the
+6 s zed time 5.45 real s, game won. Killed by him: game lost at 21.51 s,
+next tick 22.17 s VictoryLaugh (5.37 s) with the view on him. Tests 128
+pass; clippy clean.
+**Still broken / not tested:** BossBattleSong (no sound). A Patriarch
+spawned outside the boss wave (debug) no longer starts with the
+initial sneak (KF: only MakeGrandEntry leads there). The death and
+laugh views not looked at in a screenshot. After a loss he keeps
+attacking our debug respawn (as before). Not played by you.
+**Next:** your call: the two open questions (1.1 speed, seeds), the
+end-of-game screen, or the lighting leftovers.

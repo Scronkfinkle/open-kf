@@ -1156,8 +1156,10 @@ impl Weapons {
     }
 }
 
+/// The first-person weapon's camera (view_target.rs switches it off in
+/// behind view).
 #[derive(Component)]
-struct WeaponCamera;
+pub struct WeaponCamera;
 
 #[allow(clippy::too_many_arguments)]
 fn load_weapons(

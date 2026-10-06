@@ -20,8 +20,8 @@ history is in `MODLOG.md`; the plans and rules are in `docs/DESIGN.md`
 2. ~~D5, doors respawn at wave end~~ (done on the new machine, 2026-10-05).
 3. ~~T2b, the trail and the HUD arrow~~ (done on the new machine,
    2026-10-05).
-4. **G3b, the grand entrance** (deferred until the trader core is in):
-   camera on the Patriarch during Entrance, BossBattleSong, death camera.
+4. ~~G3b, the grand entrance~~ (done on the new machine, 2026-10-05;
+   no boss music: no sound system yet).
 5. Lighting leftovers (deferred): BSP ~20% dark, sky layer order, terrain
    (L3), actors (L4), 3 maps with empty lightmap pages (L1b).
 

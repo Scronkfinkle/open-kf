@@ -105,6 +105,10 @@ pub struct BossClass {
     /// KnockDown and Heal: (sequence, seconds).
     pub knockdown_anim: Option<(usize, f32)>,
     pub heal_anim: Option<(usize, f32)>,
+    /// Entrance (MakeGrandEntry) and VictoryLaugh (SetBossLaught):
+    /// (sequence, seconds).
+    pub entrance_anim: Option<(usize, f32)>,
+    pub laugh_anim: Option<(usize, f32)>,
     /// Syrange1..3: hidden one per syringe used (PostNetReceive SetBoneScale 0).
     pub syringe_bones: [Option<usize>; 3],
 }
@@ -361,6 +365,14 @@ pub struct BossState {
     /// AddBossBuddySquad (if FinalSquadNum == SyringeCount); the wave code
     /// watches this count.
     pub knockdowns_done: u32,
+    /// State MakingEntrance (Entrance playing, seconds left), and
+    /// SetBossLaught's VictoryLaugh (seconds left): bShotAnim, standing.
+    pub entrance: Option<f32>,
+    pub laugh: Option<f32>,
+    /// Asked for by the wave game (MakeGrandEntry, SetBossLaught); started
+    /// by the zed code.
+    pub pending_entrance: bool,
+    pub pending_laugh: bool,
 }
 
 /// What RangedAttack decided this frame (beyond melee).
@@ -399,16 +411,14 @@ impl BossState {
             syringes: 0,
             healing_levels: [(health / 1.25).trunc(), (health / 2.0).trunc(), (health / 3.2).trunc()],
             healing_amount: (health / 4.0).trunc(),
-            // MakeGrandEntry -> InitialSneak: he arrives cloaked (we skip the
-            // Entrance animation), and LastSneakedTime is set when it ends.
+            // ZombieBoss has no auto state: until MakeGrandEntry he hunts in
+            // no state, uncloaked. The entrance then leads to InitialSneak
+            // (`entrance_step`); a Patriarch spawned outside the boss wave
+            // never gets it.
             charge: None,
-            sneak: Some(Sneak {
-                seconds: 0.0,
-                next_check: SNEAK_LOOP,
-                initial: true,
-            }),
+            sneak: None,
             since_sneak: f32::MAX,
-            cloaked: true,
+            cloaked: false,
             chaingun: None,
             missile: None,
             missile_wait: 0.0,
@@ -418,6 +428,10 @@ impl BossState {
             since_charge: f32::MAX,
             since_force_charge: f32::MAX,
             knockdowns_done: 0,
+            entrance: None,
+            laugh: None,
+            pending_entrance: false,
+            pending_laugh: false,
         }
     }
 }
@@ -527,6 +541,55 @@ impl BossState {
         self.end_chaingun(roll);
         self.missile = None;
         self.knockdown = Some(seconds);
+    }
+
+    /// MakeGrandEntry: bShotAnim, standing, Entrance for `seconds`
+    /// (state MakingEntrance).
+    pub fn start_entrance(&mut self, seconds: f32) {
+        self.pending_entrance = false;
+        self.entrance = Some(seconds);
+    }
+
+    /// MakingEntrance's Begin: Sleep(GetAnimDuration('Entrance')), then
+    /// GotoState('InitialSneak') (CloakBoss). True when that happens.
+    pub fn entrance_step(&mut self, dt: f32) -> bool {
+        let Some(left) = self.entrance.as_mut() else { return false };
+        *left -= dt;
+        if *left > 0.0 {
+            return false;
+        }
+        self.entrance = None;
+        self.sneak = Some(Sneak { seconds: 0.0, next_check: SNEAK_LOOP, initial: true });
+        self.cloaked = true;
+        true
+    }
+
+    /// SetBossLaught: GoToState(''), bShotAnim, standing, VictoryLaugh.
+    pub fn start_laugh(&mut self, seconds: f32) {
+        self.pending_laugh = false;
+        self.heal = None;
+        self.end_charge();
+        self.missile = None;
+        self.sneak = None;
+        self.escape = None;
+        self.laugh = Some(seconds);
+    }
+
+    /// The laugh's animation running; true when it ends.
+    pub fn laugh_step(&mut self, dt: f32) -> bool {
+        let Some(left) = self.laugh.as_mut() else { return false };
+        *left -= dt;
+        if *left > 0.0 {
+            return false;
+        }
+        self.laugh = None;
+        true
+    }
+
+    /// bShotAnim for the entrance and the laugh (what the wave game
+    /// watches to hand the view back).
+    pub fn shot_anim(&self) -> bool {
+        self.entrance.is_some() || self.laugh.is_some()
     }
 
     /// KnockDown's Begin: when the animation is done, CloakBoss and
@@ -742,6 +805,8 @@ impl BossClass {
             },
             knockdown_anim: model.sequence("KnockDown").map(|s| (s, model.length(s) / model.rate(s).max(1e-3))),
             heal_anim: model.sequence("Heal").map(|s| (s, model.length(s) / model.rate(s).max(1e-3))),
+            entrance_anim: model.sequence("Entrance").map(|s| (s, model.length(s) / model.rate(s).max(1e-3))),
+            laugh_anim: model.sequence("VictoryLaugh").map(|s| (s, model.length(s) / model.rate(s).max(1e-3))),
             syringe_bones: ["Syrange1", "Syrange2", "Syrange3"].map(|n| model.find_bone(n)),
         })
     }
@@ -783,6 +848,8 @@ mod tests {
             missile_anims: None,
             knockdown_anim: None,
             heal_anim: None,
+            entrance_anim: None,
+            laugh_anim: None,
             syringe_bones: [None; 3],
         }
     }
@@ -797,9 +864,29 @@ mod tests {
         }
     }
 
+    /// A Patriarch whose entrance has just ended (InitialSneak).
+    fn after_entrance() -> BossState {
+        let mut b = BossState::default();
+        b.start_entrance(1.0);
+        assert!(b.entrance_step(1.0));
+        b
+    }
+
+    #[test]
+    fn entrance_then_initial_sneak() {
+        // Spawned: no state, uncloaked, not sneaking.
+        let mut b = BossState::default();
+        assert!(!b.sneaking() && !b.cloaked && !b.shot_anim());
+        b.start_entrance(3.0);
+        assert!(b.shot_anim());
+        assert!(!b.entrance_step(2.9));
+        assert!(b.entrance_step(0.2));
+        assert!(!b.shot_anim() && b.sneaking() && b.cloaked);
+    }
+
     #[test]
     fn boss_initial_sneak_until_seen() {
-        let mut b = BossState::default();
+        let mut b = after_entrance();
         assert!(b.sneaking() && b.cloaked);
         // Escaping.RangedAttack: no other attacks while sneaking.
         assert_eq!(b.decide(900.0, false, &mut rolls(&[])), Decision::Nothing);
@@ -852,7 +939,7 @@ mod tests {
         b.start_knockdown(2.0, 0.5);
         assert!(!b.check_knockdown(3000.0));
         // KF quirk: not while sneaking (the sneak states extend Escaping).
-        let mut b = BossState::default();
+        let mut b = after_entrance();
         assert!(b.sneaking());
         assert!(!b.check_knockdown(100.0));
         // Not after three syringes, nor when dead.

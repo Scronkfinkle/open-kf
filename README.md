@@ -222,6 +222,13 @@ cargo run --release -p ue-assets --bin kfpkg -- terrain KF-Farm [X,Y]      # ter
   corner points at the shop at all times; its size is fitted to your
   real-game screenshot (matches it within a few pixels at 1280 x 960).
   `--window 1280x960` sets the window size for such comparisons.
+- The Patriarch's entrance (G3b, 2026-10-05): when he spawns in the
+  boss wave the view switches to a third-person camera on him while he
+  plays his entrance animation (about 6 s), then back to you, and he
+  starts his cloaked sneak. When he dies the view goes to him for his
+  slow-motion death; if you die in his wave he laughs (VictoryLaugh)
+  with the view on him. No boss music (no sound yet). Checked by logged
+  runs and a screenshot; not played by you.
 - Zed time (2026-10-05): KF's slow motion. A kill has a 2.5% chance
   (5% within 3 m), a headshot kill 3%, an explosion killing 2+ zeds 3%
   (4+: 5%); not within 10 s of the last one, more likely after 30 s

@@ -289,6 +289,10 @@ pub struct WaveGame {
     wave_end_time: f32,
     /// DoBossDeath has run.
     boss_killed: bool,
+    /// bHasSetViewYet (MakeGrandEntry asked) and MatchOver's
+    /// bBossHasSaidWord (BossLaughtIt done).
+    has_set_view: bool,
+    boss_laughed: bool,
     /// The boss's finished knockdowns already answered.
     boss_knockdowns_seen: u32,
     /// Counters other systems watch (dosh.rs): games restarted, DoWaveEnd
@@ -321,6 +325,8 @@ impl Default for WaveGame {
             final_squad_num: 0,
             wave_end_time: 0.0,
             boss_killed: false,
+            has_set_view: false,
+            boss_laughed: false,
             boss_knockdowns_seen: 0,
             restarts: 0,
             waves_ended: 0,
@@ -465,7 +471,12 @@ pub fn wave_timer(
     script: Res<crate::weapon::ScriptedInput>,
     (keys, mut clear, mut hud_messages): (Res<ButtonInput<KeyCode>>, MessageWriter<ClearZeds>, MessageWriter<crate::hud::LocalMessage>),
     (player, mut doors, mut kill_stuck, player_zone): (PlayerQuery, ResMut<crate::door::Doors>, MessageWriter<KillStuckZed>, Res<crate::zones::PlayerZone>),
-    (mut boss_died, mut respawn_doors): (MessageWriter<BossDied>, MessageWriter<crate::door::RespawnDoors>),
+    (mut boss_died, mut respawn_doors, mut view_target, mut boss_actions): (
+        MessageWriter<BossDied>,
+        MessageWriter<crate::door::RespawnDoors>,
+        ResMut<crate::view_target::ViewTarget>,
+        MessageWriter<crate::zed::BossAction>,
+    ),
     mut shops: ResMut<crate::trader::Shops>,
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
@@ -522,6 +533,7 @@ pub fn wave_timer(
             ..default()
         };
         clear.write(ClearZeds);
+        view_target.set(None, "restart");
         runlog::kv("game_start", &format!("mode=waves length={:?} final_wave={} countdown={} restart=true", options.length, g.final_wave, g.countdown));
     }
     if skip && g.phase == Phase::Countdown {
@@ -541,6 +553,13 @@ pub fn wave_timer(
     g.living = zeds.iter().filter(|z| !z.is_dead() && !z.braindead).count();
     if g.phase == Phase::BossWave {
         boss_rules(g, data, &zeds, &ctx, &mut spawns, &mut boss_died);
+    }
+    // ZombieBoss.Died: the view goes to him at once (behind view).
+    if g.boss_killed
+        && view_target.reason() != "boss_death"
+        && let Some(z) = zeds.iter().find(|z| z.boss_knockdowns().is_some() && z.is_dead())
+    {
+        view_target.set(Some(z.id), "boss_death");
     }
     // UpdateMonsterCount: no living player ends the game (solo: no respawn).
     if matches!(g.phase, Phase::Countdown | Phase::Wave | Phase::BossWave) && health.deaths > g.deaths_at_start.unwrap_or(0) {
@@ -563,6 +582,7 @@ pub fn wave_timer(
     // MatchInProgress.Timer, once a second.
     g.next_tick += 1.0;
     let num_monsters = g.living as i32;
+    boss_view_tick(g, &zeds, &mut view_target, &mut boss_actions);
     // Shop calls are made after the match (`ctx` borrows the doors).
     let mut shop_action = ShopAction::None;
     match g.phase {
@@ -912,6 +932,40 @@ fn boss_rules(
                 runlog::kv("boss_helpers", &format!("skipped=true final_squad_num={} syringes={syringes}", g.final_squad_num));
             }
         }
+    }
+}
+
+/// The boss-wave Timer's view rules and MatchOver's BossLaughtIt, once a
+/// game second: the first time he has spawned (TotalMaxMonsters <= 0,
+/// NumMonsters > 0), MakeGrandEntry and the view to him; then, once his
+/// bShotAnim is off, the view back to the player. After the match, a
+/// living Patriarch laughs (SetBossLaught) and the view goes to him.
+fn boss_view_tick(g: &mut WaveGame, zeds: &Query<&crate::zed::Zed>, view: &mut crate::view_target::ViewTarget, actions: &mut MessageWriter<crate::zed::BossAction>) {
+    let living_boss = || zeds.iter().find(|z| z.boss_knockdowns().is_some() && !z.is_dead());
+    match g.phase {
+        Phase::BossWave => {
+            if !g.has_set_view && g.total_max_monsters <= 0 && g.living > 0 {
+                g.has_set_view = true;
+                if let Some(z) = living_boss() {
+                    actions.write(crate::zed::BossAction::Entrance(z.id));
+                    // ClientSetMusic(BossBattleSong): no sound yet.
+                    view.set(Some(z.id), "entrance");
+                }
+            } else if view.reason() == "entrance"
+                && let Some(id) = view.zed()
+                && !zeds.iter().any(|z| z.id == id && z.boss_shot_anim())
+            {
+                view.set(None, "entrance_done");
+            }
+        }
+        Phase::Won | Phase::Lost if !g.boss_laughed => {
+            g.boss_laughed = true;
+            if let Some(z) = living_boss() {
+                actions.write(crate::zed::BossAction::Laugh(z.id));
+                view.set(Some(z.id), "victory_laugh");
+            }
+        }
+        _ => {}
     }
 }
 
