@@ -3404,7 +3404,7 @@ their texture's value). Actors have their own `Actor.SurfaceType` too
   static meshes' simplified collision models (we collide with the
   render triangles, so their materials).
 
-## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1 implemented)
+## Hit effects: splashes, view shake, blur (milestone 14, planned 2026-10-06; E1, E2 implemented)
 
 What the player sees when hurt, vomited on or screamed at. All from the
 scripts (KFHumanPawn, KFPawn, KFPlayerController, HUDKillingFloor,
@@ -3514,6 +3514,19 @@ there; to compare in the game).
   end), and in `--frames` runs the per-frame shake offset and blur
   amount every 10 frames. Check by numbers: a 10-damage Clot hit gives
   pitch shake 300 units for 0.2 s, blur 0.8 fading to 0 over 2 s.
+- As built (2026-10-06): `player/hit_cam.rs`. `PlayerDamaged.source`
+  (the zed, blast centre or muzzle; None for bile, burning, the level)
+  gives the jar direction; `PlayerHurt.bile_tick` the bile jar. The
+  Siren's settings load from her class defaults (`ScreamShake`) and each
+  scream pulse sends `SirenScreamShake`. The camera is shaken through
+  its GlobalTransform in PostUpdate and put back in First; rotation is
+  added in Unreal rotator units through the Unreal view matrix (roll
+  sign follows `coords::ue_rotation_matrix`). The pawn's Rotation for
+  the jar direction is the view's yaw (assumed). Found when testing: the
+  DamageShake kick (rate 120000) reaches its max inside one frame and
+  ends there (one-frame kick); the jar (bigger) usually wins; a jar
+  settles in about 0.8 s. Logs `view_shake`, `hit_blur`, and `hit_cam`
+  every 10 frames while active.
 
 ### E3. The blur itself (native: PostFX blur, a guess)
 

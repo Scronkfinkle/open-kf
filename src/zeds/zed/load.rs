@@ -333,6 +333,7 @@ pub(super) fn load_class(
             ZedKind::Bloat => BLOAT_CHARGE_CHANCE,
             _ => 0.0,
         },
+        scream_shake: (kind == ZedKind::Siren).then(|| crate::player::hit_cam::ScreamShake::load(defaults, &class)),
         scream: (kind == ZedKind::Siren).then(|| (solo_damage(float("ScreamDamage", 8.0)), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
         boss: if kind == ZedKind::Patriarch {
             match crate::zeds::boss::BossClass::load(&model, name_of("ChargingAnim").as_deref()) {

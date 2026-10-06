@@ -1201,6 +1201,7 @@ fn flame_burst(
                     zed_id: crate::game::combat::SELF_DAMAGE,
                     kind: crate::game::combat::HurtKind::Fire,
                     dam_type: crate::game::combat::DamType::Other,
+                    source: Some(at_bevy),
                 });
             }
         }
@@ -1465,6 +1466,7 @@ fn blast(
                     zed_id: crate::game::combat::SELF_DAMAGE,
                     kind: crate::game::combat::HurtKind::Plain,
                     dam_type: crate::game::combat::DamType::Other,
+                    source: Some(at_bevy),
                 });
             }
         }

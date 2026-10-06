@@ -32,8 +32,8 @@ pub(super) fn spawn_two_shots(z: &Zed, c: &ZedClass, target: Vec3, out: &mut Mes
 /// ScreamForce) on the player, if within the radius and in sight:
 /// damageScale = 1 - (distance - 20) / ScreamRadius, damage x scale (whole
 /// points), momentum damageScale x ScreamForce along the line from her to
-/// the player (negative: a pull toward her). Screen shake and blur
-/// (DoShakeEffect) not done.
+/// the player (negative: a pull toward her). The screen shake and blur
+/// (DoShakeEffect) are player/hit_cam.rs.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn scream_pulse(
     z: &Zed,
@@ -68,6 +68,7 @@ pub(super) fn scream_pulse(
             zed_id: z.id,
             kind: crate::game::combat::HurtKind::Plain,
             dam_type: crate::game::combat::DamType::SirenScream,
+            source: Some(z.centre),
         });
     }
     let momentum = (to - from) / dist * (scale * force);
@@ -133,6 +134,7 @@ pub(super) fn boss_mg_shot(
             kind: crate::game::combat::HurtKind::Plain,
             // ZombieBoss chaingun: Class'DamageType'.
             dam_type: crate::game::combat::DamType::Other,
+            source: Some(origin),
         });
         push.write(crate::player::walk::PlayerPush { momentum: dir * crate::zeds::boss::MG_MOMENTUM });
         format!("player damage={amount}")

@@ -47,7 +47,7 @@ pub(super) struct ZedWorld<'w, 's> {
     boss_death: MessageReader<'w, 's, crate::game::waves::BossDied>,
 }
 
-#[allow(clippy::too_many_arguments)] // Bevy system parameters
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
 pub(super) fn think_and_move(
     mut commands: Commands,
     time: Res<Time>,
@@ -57,11 +57,12 @@ pub(super) fn think_and_move(
     player: Query<(&Transform, Option<&Walker>), With<FlyCamera>>,
     mut zeds: Query<(Entity, &mut Zed, &mut Transform, Option<&RagdollState>), Without<FlyCamera>>,
     mut player_damage: MessageWriter<crate::game::combat::PlayerDamaged>,
-    (mut vomit, mut push, mut fireball, mut bullet_fx): (
+    (mut vomit, mut push, mut fireball, mut bullet_fx, mut scream_shake): (
         MessageWriter<crate::zeds::vomit::SpawnVomit>,
         MessageWriter<crate::player::walk::PlayerPush>,
         MessageWriter<crate::zeds::fireball::SpawnFireball>,
         MessageWriter<crate::weapons::bullet_fx::BulletFx>,
+        MessageWriter<crate::player::hit_cam::SirenScreamShake>,
     ),
     mut kills: ResMut<crate::game::combat::KillCount>,
     mut pinned: ResMut<crate::game::combat::PlayerPinned>,
@@ -582,6 +583,10 @@ pub(super) fn think_and_move(
                     if let Some((damage, radius, force)) = c.scream {
                         // ZombieSiren.SpawnTwoShots: nothing while zapped.
                         if !z.zapped() {
+                            // DoShakeEffect, hit or not.
+                            if let Some(shake) = c.scream_shake {
+                                scream_shake.write(crate::player::hit_cam::SirenScreamShake { at: z.centre, radius, shake });
+                            }
                             scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
                             // ZombieSiren.HurtRadius reaches doors too (any
                             // non-zed actor in sight within ScreamRadius).
@@ -664,6 +669,7 @@ pub(super) fn think_and_move(
                             zed_id: z.id,
                             kind: crate::game::combat::HurtKind::Plain,
                             dam_type: c.melee_dam_type,
+                            source: Some(z.centre),
                         });
                         let impale = z.attack.is_some_and(|a| c.model.sequence_name(a.seq) == Some("MeleeImpale"));
                         z.sound_events.push(if impale { ZedSound::ImpaleHit } else { ZedSound::MeleeHit });
@@ -724,6 +730,7 @@ pub(super) fn think_and_move(
                         zed_id: z.id,
                         kind: crate::game::combat::HurtKind::Plain,
                         dam_type: c.melee_dam_type,
+                        source: Some(z.centre),
                     });
                     // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
                     z.sound_events.push(ZedSound::MeleeHit);
@@ -1260,6 +1267,7 @@ pub(super) fn think_and_move(
                         kind: crate::game::combat::HurtKind::Plain,
                         // ZombieCrawler.Bump: class'KFmod.ZombieMeleeDamage'.
                         dam_type: crate::game::combat::DamType::ZombieMelee,
+                        source: Some(z.centre),
                     });
                 z.pouncing = false;
                 runlog::kv("crawler_pounce_hit", &format!("id={} damage={amount:.1}", z.id));

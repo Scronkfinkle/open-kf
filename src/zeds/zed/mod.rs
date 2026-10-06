@@ -345,6 +345,8 @@ struct ZedClass {
     burst_bone: Option<usize>,
     /// Siren: ScreamDamage, ScreamRadius, ScreamForce.
     scream: Option<(f32, f32, f32)>,
+    /// Siren: DoShakeEffect's view shake and blur settings.
+    scream_shake: Option<crate::player::hit_cam::ScreamShake>,
     /// Patriarch: his own attacks (`boss.rs`).
     boss: Option<crate::zeds::boss::BossClass>,
 }

@@ -4422,3 +4422,38 @@ splash's blend (FinalBlend mode 3) is drawn as plain alpha (a guess);
 the oscillator maths is a guess. Gore splash (fire, explosions,
 chaingun) not seen in a run. No view shake or blur yet.
 **Next:** E2, view shake and the hit-blur timer.
+
+## 2026-10-06 E2: view shake and the hit-blur timer
+
+**Changed:** new `src/player/hit_cam.rs`: Engine.PlayerController's
+ShakeView / ViewShake / CheckShake / UpdateShakeRotComponent and ambient
+shake (CalcFirstPersonView), KFPlayerController.DamageShake,
+KFHumanPawn.PlayTakeHit / DoHitCamEffects / AddBlur / Tick /
+StopHitCamEffects (blur amount, not drawn yet), ZombieSiren.DoShakeEffect.
+The main and sky cameras' GlobalTransform is shaken after propagation and
+restored in First (aim unaffected). `combat.rs`: `PlayerDamaged.source`,
+`PlayerHurt.source` / `bile_tick`, `PlayerDamageSet`. Sources set at every
+damage site. `zeds/zed`: Siren `scream_shake` from class defaults, a
+`SirenScreamShake` message per scream pulse. Unit tests: one-frame damage
+kick, jar bounce shrink, view matrix round trip. DESIGN.md E2 as built.
+**Why:** E2 of the hit effects; you said keep going after E1.
+**Tested how:** headless `--mode debug --spawn clot|siren|bloat --frames
+1100`; `--spawn clot --input 130:kill_zeds --frames 400` (one hit, then
+quiet); `--spawn siren --screenshot 92,96`; clippy (no warnings); tests
+(120 pass).
+**Result:** Clot in front: `dir=(-1,0,0)` (pushed back), jar 485-520
+pitch units with a 24-26 unit pull back, settling in about 0.8 s;
+DamageShake (115-126) not taken (smaller). Single hit: blur 0.772 -> 0.109
+over 2 s, `hit_blur end=true reason=faded` at +2.007 s. Bloat: bile ticks
+give an empty PlayTakeHit jar (no direction), the DamageShake, then the
+random bile jar. Siren: `siren_scream distance_unreal=47..179
+scale=0.90..0.97`, ambient yaw and roll equal (RotMag 150 each), largest
+drawn rotation 1000 units (5.5 degrees). Screenshot mid-scream: the view
+and sky draw normally.
+**Still broken / not tested:** not felt in play by you. Roll direction,
+the unshaken weapon, the jar direction from the view's yaw are guesses.
+A Siren behind a wall (blocked=true) not seen in a run. Damage is still
+fractional (zed MeleeDamage x 0.95-1.05; KF passes an int), which slightly
+changes jar sizes.
+**Next:** E3, drawing the blur.
+

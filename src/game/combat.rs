@@ -58,6 +58,11 @@ pub struct PlayerDamaged {
     /// and falling out of the world among ours (see armour.rs).
     pub armor_stops: bool,
     pub dam_type: DamType,
+    /// Where the hit came from (Bevy world): the attacking zed, the
+    /// blast centre, the chaingun's muzzle. KF's HitLocation is on the
+    /// player's side facing it (MeleeDamageTarget's trace, HurtRadius).
+    /// None: hit at the player's own Location (bile, burning, the level).
+    pub source: Option<Vec3>,
 }
 
 /// The KF damage class of a hit on the player, as far as the hit effects
@@ -85,6 +90,9 @@ pub struct PlayerHurt {
     /// actualDamage (after ReduceDamage and ShieldAbsorb).
     pub damage: f32,
     pub dam_type: DamType,
+    pub source: Option<Vec3>,
+    /// A bile tick (TakeBileDamage), which adds its own camera jar.
+    pub bile_tick: bool,
 }
 
 /// KFPawn.GiveHealth(HealAmount, HealMax): the Syringe and medic darts.
@@ -235,6 +243,10 @@ const TRACE_RANGE: f32 = 10000.0;
 
 pub struct CombatPlugin;
 
+/// Where damage reaches the player's health (`PlayerHurt` is sent here).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlayerDamageSet;
+
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ShotFired>()
@@ -250,7 +262,7 @@ impl Plugin for CombatPlugin {
             .init_resource::<Burning>()
             .add_systems(Startup, spawn_hud)
             .add_systems(Update, (toggle_god, toggle_debug_line))
-            .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage, give_health, add_health, update_hud).chain());
+            .add_systems(Update, (resolve_shots, resolve_swings, bile_burn, fire_burn, apply_player_damage.in_set(PlayerDamageSet), give_health, add_health, update_hud).chain());
     }
 }
 
@@ -817,6 +829,8 @@ fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter
             // it does not restart the bile.
             kind: crate::game::combat::HurtKind::Plain,
             dam_type: DamType::Vomit,
+            // TakeBileDamage hits at Location: no direction.
+            source: None,
         });
     }
 }
@@ -842,6 +856,7 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
         zed_id: burn.zed_id,
         kind: HurtKind::Plain,
         dam_type: DamType::Other,
+        source: None,
     });
 }
 
@@ -943,7 +958,13 @@ fn apply_player_damage(
             // god mode returns before it (KFHumanPawn.TakeDamage).
             if taken > 0.0 && health.health > 0.0 {
                 sounds.write(crate::audio::player_sound::PlayerSoundEvent::Hurt);
-                hurt.write(PlayerHurt { damage: taken, dam_type: hit.dam_type });
+                hurt.write(PlayerHurt {
+                    damage: taken,
+                    dam_type: hit.dam_type,
+                    source: hit.source,
+                    // Only bile ticks are Vomit without the bile restart.
+                    bile_tick: hit.dam_type == DamType::Vomit && hit.kind == HurtKind::Plain,
+                });
             }
         }
         // KFPawn.TakeDamage (and TakeBileDamage): healthToGive -= 5.

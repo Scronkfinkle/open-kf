@@ -391,6 +391,7 @@ fn move_fireballs(
                             kind: spec.hurt,
                             // DamTypeBurned (Husk), DamTypeFrag (Patriarch rocket).
                             dam_type: crate::game::combat::DamType::Other,
+                            source: Some(coords::pos(at.to_array())),
                         });
                     }
                     push.write(crate::player::walk::PlayerPush {

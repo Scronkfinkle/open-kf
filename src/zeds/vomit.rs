@@ -198,6 +198,7 @@ fn move_globs(
                         zed_id: g.zed_id,
                         kind: crate::game::combat::HurtKind::Vomit,
                         dam_type: crate::game::combat::DamType::Vomit,
+                        source: Some(coords::pos(end.to_array())),
                     });
                 }
                 runlog::kv("vomit_touch", &format!("glob={} player=true", g.id));
@@ -226,6 +227,7 @@ fn move_globs(
                     zed_id: g.zed_id,
                     kind: crate::game::combat::HurtKind::Vomit,
                     dam_type: crate::game::combat::DamType::Vomit,
+                    source: Some(at_bevy),
                 });
             }
             runlog::kv(
