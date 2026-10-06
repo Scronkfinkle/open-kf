@@ -76,6 +76,8 @@ kf-rs/                     Cargo workspace root
     render/                skinned meshes, particles, decals, vision overlay, lighting
     player/                walking, pawn collision, pain flash, armour
     weapons/               first-person weapons, firing, projectiles, bullet effects
+      weapon/              the weapon in hand (mod.rs: types), load, input (firing,
+                           reloading, switching), animate, inventory (and shop), sounds
     zeds/                  the specimens, the Patriarch, gore, ragdolls, vomit, fireballs
       zed/                 the Zed component (mod.rs: types), load, spawn, think (AI),
                            boss_ai, attacks, animate, effects, sounds, methods

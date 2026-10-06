@@ -4243,3 +4243,27 @@ twice, comparing event kinds with the baseline.
 the baseline's 161 kinds plus `zed_corpse` (logged once a second only
 while a dead zed has no ragdoll yet: timing); run 2: exactly the 161.
 **Next:** clean-up 3, weapons/weapon.rs.
+
+## 2026-10-06 Clean-up 3: weapons/weapon.rs split into a folder
+
+**Changed:** `src/weapons/weapon.rs` (4336 lines) is now
+`src/weapons/weapon/`: `mod.rs` (types, constants, the plugin; 936 lines),
+`load.rs` (weapon and fire-mode classes, 1162), `input.rs` (input, firing,
+reloading, switching, aiming, welding, syringe; 1381, mostly the one
+weapon_input function, not split), `animate.rs`, `inventory.rs` (slots,
+weight, giving weapons, the shop requests), `sounds.rs`. Same method as
+clean-up 2 (a reusable splitter script: moved code unchanged, types stay
+in mod.rs, moved functions `pub(super)`; `sound_prop`, `sound_array`
+and `trader_refusal` stay reachable as `crate::weapons::weapon::...`).
+DESIGN "Architecture".
+**Why:** clean-up step 3 of 3.
+**Tested how:** build, clippy (counted), tests; the scripted wave run
+twice with this build, and twice with the build before it (stash).
+**Result:** no logic changed. Tests 140 pass; clippy 0 warnings. Both
+runs: the baseline's 161 kinds plus `ragdoll_rested` (logged when a
+corpse settles inside the run); the previous build logged it too in one
+of its two runs, so it is timing, not the split.
+**Still broken / not tested:** nothing new. The two big systems
+(zeds' think_and_move, weapon_input) are still single long functions;
+splitting their logic is a separate, riskier job.
+**Next:** your inspection; then pushing to GitHub.
