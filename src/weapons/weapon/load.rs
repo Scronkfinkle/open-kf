@@ -718,6 +718,10 @@ pub(super) fn load_weapons(
     if defs.is_empty() {
         return;
     }
+    // The Welder's screen (welder_screen.rs).
+    if defs.iter().any(|d| d.class.eq_ignore_ascii_case("KFMod.Welder")) {
+        commands.insert_resource(super::welder_screen::load(&set, &defaults, &mut images, &mut materials));
+    }
     // Start with the 9mm, as KF does (the dual 9mms if they replaced it).
     let current = ["KFMod.Single", "KFMod.Dualies"]
         .iter()

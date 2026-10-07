@@ -2235,6 +2235,26 @@ Log line `door_damage` (by=zedN or player). Test spot note: on
 KF-Manor the floor steps up 42 units just in front of KFDoorMover5 on
 the -2075 side; shoot from the flat side (x -1980, yaw 0).
 
+**The Welder's screen (added 2026-10-06).** KF draws the weld percent on
+the Welder model itself: Welder.InitMaterials puts a 256 x 256
+ScriptedTexture (in a full-bright Shader) on Skins[3], and
+Welder.RenderTexture draws the WelderScreen tile tinted BackColor
+(128, 128, 128), then "Integrity:" at Y 50 and `ScreenWeldPercent@"%"`
+(e.g. "42.50 %") at Y 85, centred, in NameFont (ROBtsrmVr24), coloured
+R = 255 - 2p, G = 2.55p, B = 20 + p; "-" in white when there is no
+target or the percent is 0. The target is WeldFire.LastHitActor of the
+fire mode in use (set when a weld or unweld lands, not by aiming),
+counted while within weaponRange x 1.5 = 135 units of the player.
+`weapons/weapon/welder_screen.rs` does the same on the CPU: draws into an
+image (redrawn only when the text or colour changes) and swaps the
+Welder's slot-3 part to an unlit material showing it. `door.rs`
+`WeldView.last_hit` holds each mode's LastHitActor (doors only: a hit on
+a wall or nothing counts as no target). Assumed (native canvas code):
+text width = glyph widths + Kerning, glyphs blended by the font page's
+alpha, DrawTile's colour multiplies. The 2 decimals are UE2's float to
+string ("%.2f", found in Core.dll). The welder's fuel is not on the
+screen in KF (it is the HUD's bar).
+
 Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
 (HUD milestone), door respawn (waves milestone), other movers.

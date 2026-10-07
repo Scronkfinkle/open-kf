@@ -770,6 +770,10 @@ fn move_doors(time: Res<Time>, mut doors: ResMut<Doors>, mut transforms: Query<&
 #[derive(Resource, Default)]
 pub struct WeldView {
     pub door: Option<WeldDoor>,
+    /// WeldFire.LastHitActor of each Welder fire mode (0 weld, 1 unweld):
+    /// the door the last weld or unweld trace hit, None if it hit no door.
+    /// The Welder's screen reads it (welder_screen.rs).
+    pub last_hit: [Option<usize>; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -921,6 +925,7 @@ fn weld_hits(
     spatial: SpatialQuery,
     colliders: Query<&DoorCollider>,
     mut doors: ResMut<Doors>,
+    mut view: ResMut<WeldView>,
     mut commands: Commands,
     library: Option<Res<crate::render::particles::EffectLibrary>>,
     (mut meshes, mut sounds): (ResMut<Assets<Mesh>>, MessageWriter<crate::audio::mixer::PlaySound>),
@@ -928,7 +933,11 @@ fn weld_hits(
 ) {
     for h in hits.read() {
         let mode = if h.unweld { "unweld" } else { "weld" };
-        let Some((i, distance, at, normal)) = ray_door(&spatial, &colliders, h.origin, h.dir, h.range) else {
+        let hit = ray_door(&spatial, &colliders, h.origin, h.dir, h.range);
+        // WeldFire.Timer: LastHitActor = HitActor. KF keeps any actor the
+        // trace hits (a wall gives the LevelInfo); only doors are kept here.
+        view.last_hit[usize::from(h.unweld)] = hit.map(|(i, ..)| i);
+        let Some((i, distance, at, normal)) = hit else {
             runlog::kv("weld_hit", &format!("mode={mode} door=none"));
             continue;
         };

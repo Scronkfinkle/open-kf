@@ -4549,3 +4549,33 @@ run.
 **Result:** Before: 32 FPStepLeft thuds at gain 1.0 from zeds 1500 units away. After: FPStepLeft max gain 0.109 (271 units away), 0.046 at 715 units; Player_LandDirt max 0.133; Clot_Challenge still 0.3 up close; 9mm_Select still 1.0. Clippy 0 warnings, tests 146 pass.
 **Still broken / not tested:** Glass was not broken in a test run; it goes through the same code path (glass at 1000 units: gain about 0.044, was 1.0). Other world sounds above volume 1 now fade sooner (zed moans 1.5, hit-player 2.0, Siren scream 255): not listened to. Zeds also log a landing for small drops (94 Player_LandDirt in 25 s for about 20 zeds), possibly more often than KF, where walking pawns step down without falling; not changed.
 **Next:** The user listens to a wave start and a breaking window.
+
+## 2026-10-06 The Welder's screen (weld percent on the weapon)
+
+**Changed:** new `src/weapons/weapon/welder_screen.rs` (Welder.Tick's
+target check and Welder.RenderTexture, drawn on the CPU into a 256 x 256
+image shown on the Welder's Skins[3] part); `weapons/weapon/mod.rs`
+(module, system in the weapon chain); `weapons/weapon/load.rs` (loads the
+screen when the Welder is in the inventory); `world/door.rs`
+(`WeldView.last_hit`: each fire mode's WeldFire.LastHitActor, set by
+`weld_hits`). DESIGN.md, Doors: "The Welder's screen".
+**Why:** in KF the Welder's little screen shows "Integrity:" and the weld
+percent of the door you weld.
+**Tested how:** unit tests (text and colours, the 135-unit range);
+headless KF-Manor runs at KFDoorMover0 (`--camera
+-1000,-1100,-4420,-1.5708,0 --input 20:5,40:5,100:fire_down,400:fire_up
+--screenshot 90,250,420`, then weld 100-180 and alt-fire 220-500);
+`cargo test --release --workspace`, `cargo clippy --release --workspace`.
+**Result:** `welder_screen_ready background=256x256 back_color=[128, 128,
+128, 255] font=true font_pages_loaded=5 weapon_range=90`,
+`welder_screen_skin part=3 slot=3`; "-" before welding, then per hit
+`text="2.50 %" color=[250, 6, 22, 255]` ... `text="77.50 %" color=[100,
+197, 97, 255]` (weld 310 of 400); unwelding counted down to 3.75 % and
+then "-" at 0. Screenshots show "Integrity:" and the green "77.50 %" on
+the Welder's screen. Tests 118 + 24 pass; clippy no warnings.
+**Still broken / not tested:** walking out of the 135-unit range (unit
+test only, no run); a weld trace that hits a wall or a zed counts as no
+target here (KF keeps that actor; minor); the canvas blending and text
+width are assumptions (native code); not compared with a real-game
+screenshot of the welder screen.
+**Next:** —

@@ -26,10 +26,12 @@ mod input;
 mod animate;
 mod inventory;
 mod sounds;
+mod welder_screen;
 pub(crate) use load::*;
 use input::*;
 use animate::*;
 use inventory::*;
+use welder_screen::update_welder_screen;
 pub(crate) use sounds::*;
 
 /// Render layer seen only by the weapon camera.
@@ -127,7 +129,7 @@ impl Plugin for WeaponPlugin {
             .add_systems(Update, shop_requests.before(weapon_input))
             .add_systems(
                 Update,
-                (weapon_input, animate_weapon, weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
+                (weapon_input, animate_weapon, update_welder_screen, weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
                     .chain()
                     .after(crate::engine::camera::follow_sky),
             );
