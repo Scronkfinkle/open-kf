@@ -4985,3 +4985,12 @@ player body is merged.
 **Result:** `character_change name=DAR`, `body_reloaded character=DAR bodies_respawned=1`, `body_spawned character=DAR`; the screenshot after Ready shows the DAR robot holding the 9mm. Plain run: `lobby_skipped reason=not_waves_mode`. Tests 152 + 24 pass, clippy 0 warnings.
 **Still broken / not tested:** the perk page's 3D View is still the empty placeholder (the body could now fill it). Not played by you.
 **Next:** fill the 3D View with the body model.
+
+## 2026-10-06 Fix: Escape (pause) threw the player out of the map
+
+**Changed:** `src/player/walk.rs`: the walk step returns at once when the game-time step is 0 (paused).
+**Why:** the user pressed Escape: the player was teleported out of the map, a loud sound played and they died. The pause menu stops game time (`Time<Virtual>` paused), so the walk's frame time was 0 and its sub-steps divided by 0 (`(moved - center) / h`): the position became NaN, the player fell out of the world and was killed.
+**Tested how:** `scripts/headless.sh --map KF-WestLondon --mute --input 120:pause_menu,200:pause_menu --frames 320` before; after, the same with `--spawn clot` and a shot at frame 260.
+**Result:** before: `pause paused=false frame=200`, then `walk center_unreal=(NaN, NaN, -3818)`, falling to -9992 (43 NaN lines). After: 0 NaN lines, the position stays (-3110, 1313, -3812) on the ground through the pause, no death.
+**Still broken / not tested:** other systems were only checked through this run's log (zeds, a shot): no NaN. Not played by you.
+**Next:** —

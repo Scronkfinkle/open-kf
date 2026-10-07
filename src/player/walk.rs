@@ -384,9 +384,14 @@ fn walk(
     let ground_speed = effects
         .as_ref()
         .map_or(kf::GROUND_SPEED, |e| (kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus) * e.perk_speed_mult);
+    let dt = time.delta_secs().min(0.1);
+    // Paused (the pause menu stops game time): nothing moves. The sub-steps
+    // below divide by their length, which would be 0.
+    if dt <= 0.0 {
+        return;
+    }
     // KFFire.ModeDoFire: a shot scales the walking velocity (on the ground).
     let fire_scale = effects.as_mut().and_then(|e| e.fire_velocity_scale.take());
-    let dt = time.delta_secs().min(0.1);
     let steps = (dt * 120.0).ceil().max(1.0) as usize;
     let h = dt / steps as f32;
     let me = |centre: Vec3| Cylinder {
