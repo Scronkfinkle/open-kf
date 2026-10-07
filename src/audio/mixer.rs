@@ -343,12 +343,14 @@ fn radius_gain(distance: f32, radius: f32, full_volume: bool) -> f32 {
     }
 }
 
-/// A voice's final volume: the PlaySound volume x the distance fade x the
-/// master volume, capped at 1. **A guess**: OpenAL (which KF's audio used)
-/// caps each source's gain at 1 by default (AL_MAX_GAIN), and KF's scripts
-/// pass volumes far above 1 (guns 1.8, reload notifies 2.5, KFWeapon's
-/// TransientSoundVolume 100 for the select sound, which is recorded quiet:
-/// peak 0.18 against 0.99 for the 9mm shot).
+/// A PlaySound volume as ALAudio uses it: capped at 1 (see `play_sounds`).
+fn play_volume(volume: f32) -> f32 {
+    volume.clamp(0.0, 1.0)
+}
+
+/// A voice's final volume: the PlaySound volume (already capped at 1 in
+/// `play_sounds`, as KF's ALAudio does) x the distance fade x the master
+/// volume, capped at 1.
 fn voice_gain(loudness: f32, master: f32) -> f32 {
     (loudness * master).min(1.0)
 }
@@ -717,8 +719,8 @@ impl Plugin for AudioPlugin {
 /// Test actions: `sound:Package.Name` plays at the listener;
 /// `sound_at:Package.Name@DIST` plays DIST Unreal units to the listener's
 /// right (to hear the falloff and the panning). Both at volume 1.8, KF's
-/// gunshot volume (SingleFire TransientSoundVolume), so they are easy to
-/// hear; the default 0.3 is quiet.
+/// gunshot volume (SingleFire TransientSoundVolume; it plays like 1, see
+/// `play_volume`), so they are easy to hear; the default 0.3 is quiet.
 fn test_sounds(
     script: Res<crate::weapons::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
@@ -777,15 +779,15 @@ fn play_sounds(
                 stop_voice(&mut audio, id, "slot_override");
             }
         }
-        // A sound in the world: its volume capped at 1 before the distance
-        // fade. **A guess** (native code): KF's data has volumes far above
-        // 1 on world sounds (KFHitEmitter glass TransientSoundVolume 150,
-        // the zeds' landing AnimNotify_Sound FPStepLeft 255). Multiplied
-        // into the fade and capped only at the end, they played at full
-        // volume at any distance, louder than the 0.3 master volume allows
-        // other sounds. The player's own sounds (at the listener) keep
-        // theirs: the 9mm select sound needs its 100 (recorded quiet).
-        let volume = if req.emitter == Emitter::Listener { req.volume } else { req.volume.min(1.0) };
+        // Every sound's volume is capped at 1 before the master volume and
+        // the distance fade. KF's ALAudio.dll does this (read from its
+        // machine code, 2026-10-07: UALAudioSubsystem::PlaySound clamps
+        // the volume to 0..1, multiplies it by SoundVolume, clamps again),
+        // so KF's volumes above 1 (guns 1.8, the trader's 2, the radio
+        // beep 10, pickups 100) all play like 1. Until 2026-10-07 the
+        // player's own sounds (at the listener) were not capped, which
+        // made the trader's radio up to 3.3 times louder than KF.
+        let volume = play_volume(req.volume);
         // Too quiet to hear: not started.
         let at = emitter_position(req.emitter, ear, &positions);
         let distance = match (at, ear) {
@@ -1038,6 +1040,13 @@ mod tests {
     fn gain_is_capped_at_one() {
         assert!((voice_gain(1.8, 0.3) - 0.54).abs() < 1e-6);
         assert_eq!(voice_gain(100.0, 0.3), 1.0);
+        // ALAudio caps the PlaySound volume at 1 before the master volume:
+        // the trader's line (2), the radio beep (10) and a gunshot (1.8)
+        // all end at the 0.3 master volume.
+        for v in [1.8, 2.0, 10.0] {
+            assert!((voice_gain(play_volume(v), 0.3) - 0.3).abs() < 1e-6);
+        }
+        assert!((voice_gain(play_volume(0.5), 0.3) - 0.15).abs() < 1e-6);
     }
 
     #[test]

@@ -5729,3 +5729,49 @@ are not stopped when Effects changes (KF does "stopsounds"; ours keeps
 them). Not play-tested by you.
 **Next:** Your listening test; merge the worktree branch (the launcher
 change is one new box under the map list and three new saved lines).
+
+## 2026-10-07 Trader's radio too loud: cap every sound volume at 1, as KF's ALAudio does
+
+**Changed:** `src/audio/mixer.rs`: new `play_volume` caps every
+PlaySound volume at 1 (it was capped for sounds in the world only; the
+player's own sounds, played at the listener, kept volumes up to 100);
+unit test `gain_is_capped_at_one` extended. `src/audio/trader_voice.rs`:
+test action `trader:N` (`--input FRAME:trader:N` makes the trader say
+line N) and a doc note. `docs/DESIGN.md` ("Sound and music"): new
+paragraph "Volume cap". `work/loudness.py` (untracked test helper):
+output peak / RMS per `sound_play` line from a recording.
+**Why:** You reported the trader's voice is very loud next to other
+sounds. Cause: our mixer let listener sounds above volume 1 through, so
+with SoundVolume 0.3 the trader's line (ShoutVolume 2) played at gain
+0.6 and its radio beep (volume 10) at 1.0, against 0.46 for a 9mm shot
+and at most 0.3 for any zed. KF's ALAudio.dll (read-only disassembly of
+the install's file with objdump, nothing saved):
+`UALAudioSubsystem::PlaySound` does gain = clamp(clamp(Volume, 0, 1) x
+SoundVolume, 0, 1) before OpenAL's distance fade, for every sound
+(Engine.dll's ClientHearSound passes only flags 0 / 0x10 "not 3D", so
+the VoiceVolume branch (flag 0x100) is not used by game sounds). So in
+KF the trader's line, the beep and the guns all play at gain 0.3.
+**Tested how:** `KF_ROOT=... scripts/headless.sh --map KF-BioticsLab
+--mode debug --mute --fps 30 --input
+260:record,280:trader:2,380:fire,440:sound_at:KF_BaseClot.Speech.Clot_Talk1@0,520:record
+--frames 560`, before and after, then `python3 work/loudness.py LOG MP4`
+(first 1 s of each sound in the recorded output). `cargo test --release
+--workspace`; `rtk proxy cargo clippy --release --workspace`.
+**Result:** sound_play gain / output RMS, before -> after: radio beep
+1.000 / 0.497 -> 0.300 / 0.166; trader line (Radio_ShopsOpen) 0.600 /
+0.356 -> 0.300 / 0.140; 9mm shot 0.459 / 0.153 -> 0.300 / 0.100; clot
+talking at point blank 0.300 / 0.111 -> 0.300 / 0.112. The line was
+7.3 dB louder than the shot and 10.1 dB louder than the clot; now 2.9
+and 2.0 dB (the rest is the recordings: trader lines are recorded loud,
+RMS about 0.3 over the whole file, `kfpkg sounds Sounds/KF_Trader.uax`;
+the beep 0.54). Tests 216 + 24 pass; clippy 0 warnings.
+**Still broken / not tested:** Not heard by you. Other player sounds
+above volume 1 get quieter too (faithful to the same rule): guns
+(-3.7 dB measured for the 9mm), the weapon select sounds (100: gain 1.0
+-> 0.3), pickups, KF-WestLondon's plane take-off trigger sound (255:
+1.0 -> 0.3). The trader refusals (TooExpensive / TooHeavy, volume 2)
+follow the same rule (gain 0.6 -> 0.3), not run. Ambient loops
+(SoundVolume / 128) are unchanged. The disassembly reading is mine and
+not checked against a second source.
+**Next:** Your listen test; if guns now feel too quiet next to zeds,
+compare with KF itself before changing anything.

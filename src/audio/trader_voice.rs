@@ -8,6 +8,8 @@
 //! 0.6 s later (SLOT_Interface, ShoutVolume 2, bNoOverride, pitch 1.1 /
 //! TimeDilation, not attenuated); the text line's TeamMessage also plays
 //! the chat beep (KFPlayerController.PlayBeepSound: bullethitflesh2).
+//! Volumes 10 and 2 play like 1: the mixer caps every volume at 1, as
+//! KF's ALAudio does (DESIGN.md, "Volume cap").
 
 use bevy::prelude::*;
 
@@ -35,7 +37,18 @@ pub struct TraderVoicePlugin;
 
 impl Plugin for TraderVoicePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<TraderSpeech>().add_systems(Update, trader_voice);
+        app.add_message::<TraderSpeech>().add_systems(Update, (test_trader_speech, trader_voice).chain());
+    }
+}
+
+/// Test action `trader:N` (`--input FRAME:trader:N`): the trader says line
+/// N (0-6) as if the wave game had sent it, to check its sound without
+/// playing a wave.
+fn test_trader_speech(script: Res<crate::weapons::weapon::ScriptedInput>, frames: Res<bevy::diagnostic::FrameCount>, mut out: MessageWriter<TraderSpeech>) {
+    for (_, action) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+        if let Some(n) = action.strip_prefix("trader:").and_then(|n| n.parse::<u8>().ok()) {
+            out.write(TraderSpeech(n));
+        }
     }
 }
 

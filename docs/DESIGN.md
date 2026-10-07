@@ -3407,7 +3407,20 @@ distance and the ini's Rolloff 0.5: full volume inside the radius, then
 radius / (radius + 0.5 x (distance - radius)); no cut-off, but voices too
 quiet to hear (final gain under 0.002) are not started. S2 to S3 used a
 linear fade to silence at the radius; KF's small zed radii (footsteps
-100) showed that cannot be right. Zed time: the voices' pitch is multiplied by the game speed (assumed
+100) showed that cannot be right.
+
+**Volume cap (read from KF's ALAudio.dll, 2026-10-07).** Not a guess
+any more: `UALAudioSubsystem::PlaySound` clamps the PlaySound volume to
+0..1, multiplies it by the ini's SoundVolume (0.3), clamps again; the
+distance fade comes after. So every volume of 1 or more plays the same:
+guns (1.8), the trader's lines (ShoutVolume 2), the radio beep (10) and
+pickups (100) all end at gain 0.3. `mixer.rs` (`play_volume`) does
+this for every sound. Until 2026-10-07 the player's own sounds were not
+capped (only world sounds were), which made the trader's line play at
+0.6 and the radio beep at 1.0, two to three times louder than in KF.
+(Engine.dll's ClientHearSound passes only the flag "not 3D" for normal
+sounds, so the other two scales in that function, VoiceVolume and
+"none", are not used by game sounds.) Zed time: the voices' pitch is multiplied by the game speed (assumed
 from how KF sounds in zed time; to be checked).
 
 **Steps** (each one logged as `sound_play` / `sound_stop` / `music` lines,
@@ -3491,7 +3504,9 @@ with a test you can run):
   Two volume rules found in S3a (both **guesses**, labelled in
   `audio.rs`): a voice's final volume is volume x fade x master, capped
   at 1 (OpenAL's AL_MAX_GAIN; KF passes 1.8 for guns and 100 for the
-  quietly recorded select sounds, peak 0.18 against 0.99). An
+  quietly recorded select sounds, peak 0.18 against 0.99). (Replaced
+  2026-10-07: KF caps the volume at 1 *before* the master volume, see
+  "Volume cap" above.) An
   AmbientSound's SoundVolume counts 128 as 1.0 (KF ends a 255 loop with
   a tail at 255/127). Not used yet: the ini's AmbientVolume 0.5.
 - **S4. Zeds and the player** (researched 2026-10-05; the full notes with
