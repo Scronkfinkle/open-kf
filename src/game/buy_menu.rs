@@ -291,7 +291,7 @@ fn spawn_menu_text(mut commands: Commands) {
 /// mouse motion and wheel are cleared after the menu has read them, so
 /// nothing else (walking, looking, firing, doors) sees them.
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
-fn menu_input(
+pub(crate) fn menu_input(
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     mut motion: ResMut<AccumulatedMouseMotion>,
@@ -343,7 +343,8 @@ fn menu_input(
         return;
     }
     // BootPlayers closes the menu (ClientCloseMenu); so does leaving.
-    if wave_running || !in_shop || use_pressed || keys.just_pressed(KeyCode::Backspace) {
+    // Escape closes the top menu page (KF: the buy menu is a GUI page).
+    if wave_running || !in_shop || use_pressed || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::Escape) {
         menu.open = false;
         runlog::kv("buy_menu", &format!("open=false wave_running={wave_running} in_shop={in_shop}"));
     } else {

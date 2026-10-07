@@ -119,6 +119,7 @@ fn toggle_behind_view(
 /// traced back hits the level. The target is a zed, or the player's own
 /// pawn in behind view.
 #[allow(clippy::type_complexity)] // Bevy system parameters
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn behind_view(
     time: Res<Time>,
     view: Res<ViewTarget>,
@@ -128,11 +129,13 @@ fn behind_view(
         With<FlyCamera>,
     >,
     mut weapon_cams: Query<&mut Camera, With<crate::weapons::weapon::WeaponCamera>>,
+    menus: Res<crate::game::menus::MenuState>,
     spatial: SpatialQuery,
     mut last_log: Local<f32>,
 ) {
     let target = view.zed.and_then(|id| zeds.iter().find(|z| z.id == id));
-    let first_person = target.is_none() && !view.behind_self();
+    // The lobby and its perk page: no pawn yet, so no first-person weapon.
+    let first_person = target.is_none() && !view.behind_self() && !menus.hides_hud();
     for mut c in &mut weapon_cams {
         if c.is_active != first_person {
             c.is_active = first_person;

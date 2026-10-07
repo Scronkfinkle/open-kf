@@ -34,6 +34,9 @@ pub struct PlayerRecord {
     pub face_skin: String,
     /// The Karma ragdoll name (KFPawn.Setup: RagdollOverride = rec.Ragdoll).
     pub ragdoll: String,
+    /// The portrait texture, e.g. `KFPortraits.gasmask_portrait` (the
+    /// lobby and the perk page show it).
+    pub portrait: String,
 }
 
 /// The chosen character, resolved.
@@ -65,6 +68,7 @@ pub fn parse_upl(text: &str) -> Vec<PlayerRecord> {
                 "bodyskin" => &mut rec.body_skin,
                 "faceskin" => &mut rec.face_skin,
                 "ragdoll" => &mut rec.ragdoll,
+                "portrait" => &mut rec.portrait,
                 _ => continue,
             };
             *slot = value;
@@ -199,6 +203,20 @@ pub fn choose(set: &PackageSet, defaults: &ClassDefaults, install_root: &Path, r
     })
 }
 
+/// The records KFPawn.Setup would accept (a SPECIES_KFMaleHuman species),
+/// sorted by name: the choices of the perk page's "Change Character".
+pub fn selectable_records(set: &PackageSet, defaults: &ClassDefaults, install_root: &Path) -> Vec<PlayerRecord> {
+    read_records(install_root)
+        .into_iter()
+        .filter(|r| set.find_object(&r.species, Some("Class")).is_some_and(|c| defaults.is_a(&c, "SPECIES_KFMaleHuman")))
+        .collect()
+}
+
+/// The character asked for at runtime (the perk page's SAVE): weapons
+/// swap their sleeves (weapons/weapon/load.rs).
+#[derive(Message, Clone, Debug)]
+pub struct ChangeCharacter(pub String);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +233,7 @@ mod tests {
                 body_skin: "KF_Soldier_Trip_T.Uniforms.Officeworker_cmb".into(),
                 face_skin: "KF_Soldier_Trip_T.heads.Officeworker_head_diff".into(),
                 ragdoll: "British_Soldier1".into(),
+                portrait: String::new(),
             }]
         );
     }

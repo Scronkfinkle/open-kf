@@ -4929,3 +4929,59 @@ placement. Turning, pitch and blend values are guesses (labelled).
 Strafing / backwards running not tested (only `--autowalk` forward).
 **Next:** your look in behind view (F4); then decide on the ragdoll
 (needs a joint-limit fix for this skeleton) or the grenade throw anims.
+
+## 2026-10-06 Menus: KF's lobby, perk page and pause menu
+
+**Changed:** new `src/game/menus/` (gui.rs: KF's GUI boxes read from
+System/KFGui.u, styles, fonts, DrawTileStretched; perk_panel.rs: the
+perk list / Perk Effects / Next Level Requirements widget shared by the
+perk page and the pause menu; lobby.rs, profile.rs, pause.rs; mod.rs:
+page stack, mouse and `--input` actions, pause). main.rs: `--lobby`,
+`--no-lobby`, `--name`. hud.rs: canvas types shared, HUD hidden in the
+lobby. view_target.rs: no first-person weapon in the lobby. waves.rs:
+the wave timer waits for Ready. perks.rs: lobby picks do not use up the
+once-per-wave change; `NewPawn` message. buy_menu.rs: Escape closes it.
+character.rs: portraits, `selectable_records`, `ChangeCharacter`.
+weapons/weapon: `sleeve.rs` (sleeve swap at runtime), `SleeveNum` kept,
+`new_pawn_inventory` (start items of the perk chosen in the lobby).
+music.rs: `int_section` shared. DESIGN.md: "Menus" section.
+**Why:** your request: KF's lobby and perk selection screens, then the
+pause menu, faithful to the scripts and your three screenshots.
+**Tested how:** headless runs at 2560 x 1440 (`HEADLESS_SCREEN=2560x1440x24
+... --window 2560x1440 --mute`), screenshots of the lobby, the perk page
+(3D view and portrait) and the pause menu compared with
+references/lobby.png, perk_selection.png, pause_menu.jpg; scripted
+flows read from logs/latest.log; cargo test (145 + 24 pass), clippy 0
+warnings.
+**Result:** `menu_layout components=73 missing_components=[]`. Lobby:
+Select Perk (row 1 = Support) -> pick Medic -> Change Character (DAR)
+-> SAVE: `perk_change ... result=Now ... changed_this_wave=false`,
+`character_change name=DAR ... weapons_swapped=[Knife Single Frag
+Syringe Welder BoomStick]`; Ready: `game_start` 0.01 s later,
+`new_pawn_inventory had=Support:6 now=Medic:6 removed=[BoomStick]
+given=[MP7MMedicGun:sell225] armour=100`. Pause menu: `pause
+paused=true`, picking Firebug in trader time: Now; mid-wave pick of
+Medic: AtWaveEnd; a 1.04 s pause delayed wave 1 by 1.04 s (game_start
+9.10 + 10 s countdown -> wave_start 20.15). Disconnect and Exit Game
+quit. Runs with --frames / --input / --screenshot, and debug mode, log
+`lobby_skipped` and start in the game as before; `--mode waves` alone
+opens the lobby (`menu_open page=Lobby reason=waves_mode`).
+**Still broken / not tested:** not played by you; mouse clicks not
+tested (the virtual display has no mouse: all tests used --input).
+Placeholders: the 3D View (waits for the player body), the movie
+(black: Bink cannot be played), Options / Settings / Spectate (inert),
+Communication and Help tabs (empty), chat (inert). Progress bars empty
+and requirement numbers "?" / "not tracked yet" (perks stage 2). Only
+2560 x 1440 compared with the screenshots. Pause menu bottom buttons
+about 15% wider than KF's.
+**Next:** your look at the three screens; fill the 3D View after the
+player body is merged.
+
+## 2026-10-06 Merge: the body follows a character change in the lobby
+
+**Changed:** `src/player/body/load.rs`: `reload_on_character_change` (when `CharacterChoice` changes after startup, the body model is loaded again and the bodies respawn); `src/player/body/mod.rs` registers it. `src/engine/view_target.rs`: clippy allow (the merge gave `behind_view` 8 parameters).
+**Why:** the lobby/perk page (Change Character, SAVE) and the third-person body were built in parallel; the menus swapped the first-person sleeves but the body stayed the startup character.
+**Tested how:** `scripts/headless.sh --map KF-WestLondon --mode waves --length short --lobby --behind-view --behind-yaw 150 --mute --input 40:lobby_select_perk,60:change_character,80:lobby_save,100:lobby_ready --screenshot 30,250`; plain `--map KF-WestLondon --frames 150`.
+**Result:** `character_change name=DAR`, `body_reloaded character=DAR bodies_respawned=1`, `body_spawned character=DAR`; the screenshot after Ready shows the DAR robot holding the 9mm. Plain run: `lobby_skipped reason=not_waves_mode`. Tests 152 + 24 pass, clippy 0 warnings.
+**Still broken / not tested:** the perk page's 3D View is still the empty placeholder (the body could now fill it). Not played by you.
+**Next:** fill the 3D View with the body model.

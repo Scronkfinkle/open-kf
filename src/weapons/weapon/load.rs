@@ -1174,6 +1174,7 @@ pub(super) fn load_weapon(
         modes,
         model,
         entities: Vec::new(),
+        sleeve_num: int("SleeveNum", 1).max(0) as usize,
         view_offset: coords::pos(view_offset),
         display_fov,
         iron,

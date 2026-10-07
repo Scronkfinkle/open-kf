@@ -65,9 +65,9 @@ struct DigitSet {
 }
 
 /// A loaded texture: its image and size in texels.
-struct HudTexture {
-    image: Handle<Image>,
-    size: Vec2,
+pub(crate) struct HudTexture {
+    pub(crate) image: Handle<Image>,
+    pub(crate) size: Vec2,
 }
 
 /// What a weapon shows in the ammo boxes (DrawHudPassA's class checks,
@@ -288,10 +288,10 @@ fn message_style(m: &LocalMessage) -> Option<MessageStyle> {
 }
 
 /// A Font with its pages loaded (indices into `Hud::textures`).
-struct HudFont {
-    name: String,
-    font: ue_assets::font::Font,
-    pages: Vec<Option<usize>>,
+pub(crate) struct HudFont {
+    pub(crate) name: String,
+    pub(crate) font: ue_assets::font::Font,
+    pub(crate) pages: Vec<Option<usize>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -365,17 +365,17 @@ fn tint0(pkg: &LoadedPackage, props: &PropertyList) -> [u8; 4] {
     }
 }
 
-struct Loader<'a> {
-    set: &'a PackageSet,
-    images: &'a mut Assets<Image>,
-    textures: Vec<HudTexture>,
-    by_path: HashMap<String, Option<usize>>,
-    missing: Vec<String>,
+pub(crate) struct Loader<'a> {
+    pub(crate) set: &'a PackageSet,
+    pub(crate) images: &'a mut Assets<Image>,
+    pub(crate) textures: Vec<HudTexture>,
+    pub(crate) by_path: HashMap<String, Option<usize>>,
+    pub(crate) missing: Vec<String>,
 }
 
 impl Loader<'_> {
     /// A material by its full path ("Package.Group.Name").
-    fn texture_path(&mut self, path: &str) -> Option<usize> {
+    pub(crate) fn texture_path(&mut self, path: &str) -> Option<usize> {
         let Some(h) = self.set.find_object(path, None) else {
             self.missing.push(path.to_string());
             return None;
@@ -384,7 +384,7 @@ impl Loader<'_> {
     }
 
     /// A material reference from `pkg` -> its texture, loaded once.
-    fn texture(&mut self, pkg: &std::rc::Rc<LoadedPackage>, rf: ObjectRef) -> Option<usize> {
+    pub(crate) fn texture(&mut self, pkg: &std::rc::Rc<LoadedPackage>, rf: ObjectRef) -> Option<usize> {
         if rf == ObjectRef::Null {
             return None;
         }
@@ -666,12 +666,12 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
 }
 
 /// One textured rectangle to draw, in window pixels.
-struct Quad {
-    texture: usize,
-    uv: Rect,
-    screen: Rect,
-    tint: [u8; 4],
-    what: String,
+pub(crate) struct Quad {
+    pub(crate) texture: usize,
+    pub(crate) uv: Rect,
+    pub(crate) screen: Rect,
+    pub(crate) tint: [u8; 4],
+    pub(crate) what: String,
 }
 
 /// EDrawPivot: the point of the box that sits at the position.
@@ -689,20 +689,20 @@ fn pivot_shift(pivot: u8, size: Vec2) -> Vec2 {
     }
 }
 
-struct Canvas {
+pub(crate) struct Canvas {
     /// Window size in logical pixels (what the UI nodes use).
-    size: Vec2,
+    pub(crate) size: Vec2,
     res: Vec2,
     alpha: u8,
     /// Physical pixels per logical pixel. KF's fonts are fixed pixel sizes
     /// on its canvas (physical pixels): text is laid out in physical
     /// pixels and divided by this.
-    scale_factor: f32,
-    quads: Vec<Quad>,
+    pub(crate) scale_factor: f32,
+    pub(crate) quads: Vec<Quad>,
 }
 
 impl Canvas {
-    fn new(size: Vec2, alpha: u8) -> Self {
+    pub(crate) fn new(size: Vec2, alpha: u8) -> Self {
         Canvas { size, res: Vec2::new(size.x / 640.0, size.y / 480.0), alpha, scale_factor: 1.0, quads: Vec::new() }
     }
 
@@ -713,7 +713,7 @@ impl Canvas {
 
     /// Canvas.StrLen: the text's size in physical pixels (glyph sizes plus
     /// Kerning, times the font scale; native, assumed).
-    fn text_size(font: &HudFont, text: &str, scale: f32) -> Vec2 {
+    pub(crate) fn text_size(font: &HudFont, text: &str, scale: f32) -> Vec2 {
         let mut w = 0.0f32;
         let mut h = 0.0f32;
         for ch in text.chars() {
@@ -726,7 +726,7 @@ impl Canvas {
     }
 
     /// Canvas.DrawText at a physical pixel position (SetPos), tinted.
-    fn text(&mut self, font: &HudFont, text: &str, at: Vec2, scale: f32, tint: [u8; 4], what: &str) {
+    pub(crate) fn text(&mut self, font: &HudFont, text: &str, at: Vec2, scale: f32, tint: [u8; 4], what: &str) {
         let mut x = at.x;
         for ch in text.chars() {
             let Some(g) = font.font.glyph(ch) else { continue };
@@ -832,6 +832,7 @@ fn draw_hud(
     mut messages: ResMut<LocalMessages>,
     hit: Res<HitDisplay>,
     vet: Res<crate::game::perks::Veterancy>,
+    menus: Res<crate::game::menus::MenuState>,
 ) {
     if !hud.loaded {
         return;
@@ -851,6 +852,13 @@ fn draw_hud(
         return;
     }
     let Ok(win) = window.single() else { return };
+    // The lobby and the perk page: KF has no pawn yet, so no HUD.
+    if menus.hides_hud() {
+        for (_, _, _, mut vis) in &mut slots {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
     let mut c = Canvas::new(Vec2::new(win.width(), win.height()), hud.alpha);
     c.scale_factor = win.scale_factor();
     let sprite = |c: &mut Canvas, name: &str| {

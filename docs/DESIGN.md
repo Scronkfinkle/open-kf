@@ -4322,6 +4322,174 @@ separate HUD drawing path; next step.
 - With teammates gone (solo), healing teammates cannot be earned: KF
   has the same problem solo; decide then whether self heals count.
 
+## Menus: the lobby, the perk page, the pause menu (planned and built 2026-10-06: M1-M4)
+
+KF's pre-game lobby (`KFGui.LobbyMenu` with `LobbyFooter`), its
+"Select Perk" page (`KFGui.KFProfilePage` holding `KFTab_Profile`) and
+the in-game pause menu (`KFGui.KFInvasionLoginMenu` with
+`KFTab_MidGamePerks`). Reference screenshots (untracked):
+`references/lobby.png` (2497 x 1420), `references/perk_selection.png`
+(2552 x 1427), `references/pause_menu.jpg` (2560 x 1440).
+
+**Where the layout comes from.** Every GUI component of these pages is
+a subobject in `System/KFGui.u` (e.g. `LobbyMenu.BGPerk`) with its own
+`WinTop`, `WinLeft`, `WinWidth`, `WinHeight`, captions, colours and
+textures; we read them at startup (log `menu_layout`). Values up to 1
+are fractions of the parent (the screen, or the tab panel for
+`KFTab_*`), as UE2's GUI does. Captions come from `KFGui.int`, perk
+texts (`LevelEffects`, `Requirements`) from `KFMod.int`, the map's
+title and description from `<map>.int` `[LevelSummary]` (else the
+`.ucl` FallbackDesc: `KFMapStoryLabel.LoadStoryText` reads the map
+record), character portraits from the `.upl` records, biographies from
+`KFGui.int` `[DecoText]` (`KFTab_Profile.UpdateScroll`).
+
+**Styles and fonts.** KF's style table (`KFGUIController`
+DefaultStyleNames) maps a component's StyleName to a style class:
+SquareButton = `KF_SquareButton`, FooterButton = `KF_FooterButton`,
+TabButton = `KF_TabButton` (textures `KF_InterfaceArt_tex.Menu.Button`,
+`button_Highlight`, `button_pressed`), Footer = `ROSTY_Footer`
+(`Thin_border`), TextLabel = `KF_TextLabel` (200,200,200,200),
+CheckBox = `ROSTY2CheckBox`, EditBox = `KF_EditBox` (`Innerborder`),
+Header = `KF_Header` (`Tabdark`). Section boxes
+(`GUISectionBackground`) draw `HeaderBase` =
+`Med_border_SlightTransparent` (`AltSectionBackground`:
+`Thin_border_SlightTransparent`). Fonts by name (GUI2K4.int):
+UT2SmallFont = ROBtsrmVr7/8/10/12/14, UT2MenuFont = Vr8/10/12/14/16,
+UT2DefaultFont = Vr10, picked by screen width; the perk lists use
+`ROHUD.GetSmallMenuFont` (ROEngine.int MenuFontArrayNames: Vr18 at
+1600+ wide, Vr14, 12, 9, 7).
+
+**Native parts (not in the scripts), guessed and checked against the
+screenshots:** `GUIFont.GetFont` (which size for which width: assumed
+index 0-4 for widths under 640 / 800 / 1024 / 1280 / above);
+`Canvas.DrawTileStretched` (assumed UE2's rule: the four corners at the
+texture's own size, half the texture each, edges and middle stretched;
+smaller boxes scale the corners down); `GUISectionBackground`'s caption
+place; button auto-sizing (`ButtonFooter`, `KFTab_MidGamePerks`
+autosize: fitted to the screenshots). Each is labelled in the code.
+
+**Drawing.** The HUD's 2D canvas (hud.rs: textured quads in a pool of
+Bevy UI image nodes, KF's bitmap fonts) is shared; the menus get their
+own pool, drawn above the HUD. While the lobby or the perk page is open
+the HUD and the first-person weapon are hidden (KF: the player has no
+pawn yet). The pause menu draws over the HUD.
+
+**One shared perk widget.** The perk list (`KFPerkSelectList.DrawPerk`:
+icon box, name bar, "Lv N", progress bar; the selected row uses the
+`_Highlighted` textures), "Perk Effects" (`LevelEffects[level]`, lines
+split at `|`) and "Next Level Requirements" (`KFPerkProgressList`) are
+one module used by both the perk page and the pause menu. Clicking a
+row only highlights it; KF commits on SAVE (perk page) or "Select Perk"
+(pause menu), both through `perks.rs` (`PerkRequest`) and its change
+rules. Perk levels are chosen, not earned (perks stage 2 not built), and
+KF's level thresholds are native: progress bars stay empty, the
+requirement texts show "?" for the number (`%x` is the native
+threshold) and "not tracked yet" where KF prints "14002/25000". The
+number of requirement rows is taken as the number of `Requirements`
+strings (native `GetPerkProgressDetailsCount`: a guess).
+
+**Lobby flow (KF's solo flow).** The game opens in the lobby, the
+player is not spawned, the wave timer does not run (KF only enters
+MatchInProgress when everyone is ready). Ready
+(`LobbyFooter.OnFooterClick`: SendSelectedVeterancyToServer, then
+ServerRestartPlayer) closes the lobby and starts the match: the wave
+timer starts ("game_start"), and the pawn gets the current perk's
+starting items (`AddDefaultInventory`; if the perk changed in the lobby
+the start items are swapped). In the lobby a perk change does not use up
+the once-per-wave change (`bMatchHasBegun` is false). Select Perk opens
+the perk page; SAVE (`KFTab_Profile.SaveSettings`) applies the perk and
+the character and returns. Options is drawn but inert (no settings
+page). Disconnect quits the game (KF returns to the main menu: we have
+none). The chat line is drawn; typing does nothing (offline). The
+player list is a list (`LobbyPlayers`) so more players can be added
+later; solo: the local player, named from `--name`, else KF's
+fresh-install default `[DefaultPlayer] Name=KFPlayer` (defuser.ini).
+The wave circle shows "1/4" (WaveNumber + 1 / FinalWave). The video
+panel (`LobbyMenu.DrawPerk` plays a random `Movies/MovieN.bik`): Bink
+video cannot be played with what we have; the panel is drawn black.
+
+**When the lobby opens (rule).** `--lobby` forces it, `--no-lobby`
+skips it. Otherwise it opens only in `--mode waves` when none of
+`--frames`, `--screenshot`, `--input` is given (test runs keep starting
+straight in the game; plain `cargo run --release -- --mode waves`
+opens the lobby). Debug mode (the default) never opens it by itself.
+
+**Perk page.** "3D View" box: KF draws the character model there
+(`KFSpinnyWeap`); **placeholder** until the player's third-person body
+exists (another branch). "Portrait" (KF: toggles 3D view / portrait)
+shows the portrait texture there. "Change Character" (KF: opens
+`KFModelSelect`, a portrait grid, not built) steps to the next
+character record (our stand-in); SAVE applies it: the first-person
+sleeves of every weapon are swapped at once (character.rs). Biography
+from `[DecoText]`.
+
+**Pause menu.** Escape (KFPlayerController.ShowMidGameMenu) opens it;
+in single player KF pauses the game (`SetPause(true)` when
+`Level.NetMode == NM_StandAlone`; closing turns pause off). We pause
+Bevy's virtual time (game time, physics, zeds, timers stop; log
+`pause`). Escape while the buy menu is open closes the buy menu
+instead (it is the top menu page in KF). Window title: the map name
+(`SetTitle`, standalone: GetURLMap). Tabs, as `KFInvasionLoginMenu`
+leaves them: Perks, Communication, Help. Perks tab: the shared perk
+widget, "Select Perk" (a mid-wave pick waits for the wave end, as
+perks.rs already does), Settings (inert: no settings page), Spectate
+(inert: no spectating), Forfeit (KF: DISCONNECT, back to the main menu;
+ours: quits, no main menu), Exit Game (KF asks "Are you sure?" in
+KFQuitPage; ours quits at once). Communication and Help tabs: drawn,
+contents not built.
+
+**Test actions** (`--input FRAME:ACTION`): `lobby_ready`,
+`lobby_select_perk`, `perk_pick:NAME` (highlight a row on the perk page
+or the pause menu's Perks tab), `lobby_save`, `change_character`,
+`toggle_portrait`, `pause_menu` (Escape), `pause_tab:NAME`,
+`pause_select_perk`, `menu_dump` (logs every drawn box). Logs:
+`menu_layout`, `menu_open` / `menu_close` (which page, why),
+`lobby_ready`, `lobby_player`, `perk_page` (picked row, effects shown),
+`character_change`, `pause`.
+
+Steps: M1 shared canvas + GUI drawing + layout reading; M2 lobby screen
+and its flow; M3 perk page; M4 pause menu; each checked by screenshot
+against the reference and by logs.
+
+**As built (code: `src/game/menus/`: `gui.rs` drawing and layout,
+`perk_panel.rs` the shared perk widget, `lobby.rs`, `profile.rs`,
+`pause.rs`, `mod.rs` state, input, pause).**
+- The reference screenshots are crops of 2560 x 1440 frames (lobby: about
+  52 px cut on the left, 11 on the right, about 14-20 at the top; perk
+  page: about 4 px each side). Compared at `--window 2560x1440`, every
+  box lands where the screenshot has it once the crop is allowed for.
+- Fonts at 2560 wide: UT2MenuFont = ROBtsrmVr16, UT2SmallFont = Vr14,
+  perk lists Vr18 (GetSmallMenuFont); sizes match the screenshots, so
+  the GetFont guess holds at this width (other widths not compared).
+- Fits (labelled in the code): the section caption 22 px in and centred
+  in the 24-texel header strip; the story text 20 px in, 25 px down;
+  footer buttons: longest caption + Padding x footer height, 5 px apart;
+  the pause menu's tab buttons: caption + 44 px; its bottom buttons:
+  caption "Server Browser" + 0.01 x width (ours about 15% wider than the
+  screenshot's), 1.5 x the text height.
+- The lobby's player names are drawn in the TextLabel colour (200 grey):
+  the data says LabelColor (10,10,10,210) but the screenshot shows light
+  text (a guess that the style wins).
+- moCheckBox rows use StandardHeight (0.03 of the screen) from their
+  top, which centres the names and check boxes on the bars as in the
+  screenshot.
+- Changing character during the game swaps the sleeve material of every
+  loaded weapon at once (`weapons/weapon/sleeve.rs`, log
+  `character_change`); KF would only do it for the next pawn.
+- Ready gives the pawn the current perk's start items: the start items
+  of the command-line perk are removed if the new perk does not give
+  them, the new ones added with their SellValue, armour set (log
+  `new_pawn_inventory`).
+- Quirk found: `PackageSet::find_object("KFGui.LobbyMenu.X")` missed
+  most subobjects; the menus load `System/KFGui.u` by its file instead
+  (the name KFGui also fits `Textures/KFGui.utx`; cause not looked into).
+- Not done: the movie (Bink); the 3D character (placeholder); KFModelSelect
+  (Change Character steps to the next record instead); the Options /
+  Settings pages; Spectate; KFQuitPage's "Are you sure?"; the
+  Communication and Help tabs' contents; the window's close box; chat
+  typing (offline); scrolling text boxes; the lobby countdown
+  ("Game will auto-commence in"); keyboard focus / tabbing.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

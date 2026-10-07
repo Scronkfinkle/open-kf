@@ -29,6 +29,7 @@ mod sounds;
 mod welder_screen;
 mod torch;
 mod perk;
+mod sleeve;
 pub(crate) use load::*;
 use input::*;
 use animate::*;
@@ -130,7 +131,8 @@ impl Plugin for WeaponPlugin {
             )
             .insert_non_send(WeaponAssets::default())
             .add_systems(PostStartup, load_weapons.after(crate::engine::camera::spawn_camera))
-            .add_systems(Update, (sync_perk, shop_requests).chain().before(weapon_input))
+            .add_message::<crate::player::character::ChangeCharacter>()
+            .add_systems(Update, (sync_perk, new_pawn_inventory, shop_requests, sleeve::change_character).chain().before(weapon_input))
             .add_systems(
                 Update,
                 (weapon_input, torch_update, animate_weapon, update_welder_screen, torch_beam.in_set(crate::weapons::flashlight::FlashlightBeamSet), weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
@@ -229,6 +231,8 @@ struct WeaponDef {
     modes: [FireMode; 2],
     model: SkinnedModel,
     entities: Vec<Entity>,
+    /// KFWeapon.SleeveNum: the skin slot the character's sleeves go on.
+    sleeve_num: usize,
     /// PlayerViewOffset, Bevy space, before the CalcDrawOffset FOV factor.
     view_offset: Vec3,
     display_fov: f32,

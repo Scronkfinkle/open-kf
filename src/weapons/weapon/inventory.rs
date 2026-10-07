@@ -381,3 +381,67 @@ pub(super) fn shop_requests(
         })
         .collect();
 }
+
+/// The lobby's Ready spawns the pawn (KFHumanPawn.AddDefaultInventory with
+/// the perk chosen in the lobby). Our weapons were loaded at startup with
+/// the perk of the command line (`had`): the start items of that perk
+/// that the new one does not give go, the new perk's are given (with its
+/// SellValue), and the start armour follows the new perk.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+pub(super) fn new_pawn_inventory(
+    mut spawned: MessageReader<crate::game::perks::NewPawn>,
+    weapons: Option<ResMut<Weapons>>,
+    assets: NonSend<WeaponAssets>,
+    mut commands: Commands,
+    (mut meshes, mut images, mut materials): MeshAssets,
+    vet: Res<crate::game::perks::Veterancy>,
+    mut armour: ResMut<crate::player::armour::Armour>,
+    effects: Option<ResMut<WeaponEffects>>,
+) {
+    let Some(had) = spawned.read().last().map(|n| n.had) else { return };
+    let Some(mut w) = weapons else { return };
+    let w = &mut *w;
+    let now = vet.vet;
+    let difficulty = crate::game::dosh::GAME_DIFFICULTY;
+    let (old_items, old_armour) = had.default_inventory(difficulty);
+    let (new_items, new_armour) = now.default_inventory(difficulty);
+    let mut removed = Vec::new();
+    for (class, _) in &old_items {
+        if new_items.iter().any(|(c, _)| c.eq_ignore_ascii_case(class)) {
+            continue;
+        }
+        if let Some(i) = owned_index(w, class) {
+            w.defs[i].gone = true;
+            removed.push(class.to_string());
+            if i == w.current {
+                let next = step_weapon(&slots(&w.defs), w.current, false).unwrap_or(0);
+                force_change(w, next);
+            }
+        }
+    }
+    let mut given = Vec::new();
+    for (class, sell) in &new_items {
+        if owned_index(w, class).is_some() {
+            continue;
+        }
+        match give_weapon(w, class, &assets, &mut commands, &mut meshes, &mut images, &mut materials) {
+            Ok(i) => {
+                w.defs[i].sell_value = Some(*sell);
+                given.push(format!("{class}:sell{sell}"));
+            }
+            Err(e) => runlog::kv("perk_start_weapon", &format!("weapon={class} load_failed={e}")),
+        }
+    }
+    if new_armour {
+        armour.strength = crate::player::armour::MAX_ARMOUR;
+    } else if old_armour {
+        armour.strength = 0.0;
+    }
+    if let Some(mut fx) = effects {
+        fx.weight_speed_mult = weight_speed_mult(carried_weight(w), &now);
+    }
+    runlog::kv(
+        "new_pawn_inventory",
+        &format!("had={} now={} removed=[{}] given=[{}] armour={}", had.label(), now.label(), removed.join(" "), given.join(" "), armour.strength),
+    );
+}

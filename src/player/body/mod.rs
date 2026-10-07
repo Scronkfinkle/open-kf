@@ -166,7 +166,7 @@ impl Plugin for BodyPlugin {
             .add_systems(PostStartup, load::load_body_models)
             .add_systems(
                 Update,
-                (add_local_pawn_state, feed_local_pawn, load::load_attachments, animate::spawn_bodies, animate::animate_bodies)
+                (add_local_pawn_state, feed_local_pawn, load::reload_on_character_change, load::load_attachments, animate::spawn_bodies, animate::animate_bodies)
                     .chain()
                     .after(crate::player::walk::WalkSystems)
                     .after(crate::weapons::weapon::PublishPawnWeapon),

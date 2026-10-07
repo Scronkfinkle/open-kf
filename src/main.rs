@@ -76,6 +76,26 @@ struct Args {
     behind_yaw: f32,
     /// `--perk NAME` and `--perk-level N` (0-6).
     perk: perks::PerkOptions,
+    /// `--lobby` (Some(true)) / `--no-lobby` (Some(false)); else the rule
+    /// in `lobby_settings`.
+    lobby: Option<bool>,
+    /// `--name NAME`: the player's name in the lobby.
+    name: Option<String>,
+}
+
+/// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
+/// `--no-lobby` decide; otherwise only in waves mode and only when no test
+/// flag (`--frames`, `--screenshot`, `--input`) is given, so test runs
+/// still start straight in the game.
+fn lobby_settings(args: &Args) -> game::menus::LobbySettings {
+    let (open, reason) = match args.lobby {
+        Some(true) => (true, "flag_lobby"),
+        Some(false) => (false, "flag_no_lobby"),
+        None if args.game.mode != waves::GameMode::Waves => (false, "not_waves_mode"),
+        None if args.frames.is_some() || !args.screenshot.is_empty() || !args.input.is_empty() => (false, "test_run"),
+        None => (true, "waves_mode"),
+    };
+    game::menus::LobbySettings { open, reason, name: args.name.clone() }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -150,6 +170,9 @@ fn parse_args() -> Result<Args, String> {
                 }
                 args.perk.level = l;
             }
+            "--lobby" => args.lobby = Some(true),
+            "--no-lobby" => args.lobby = Some(false),
+            "--name" => args.name = Some(it.next().ok_or("--name needs a player name")?),
             "--mute" => args.mute = true,
             "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
@@ -192,7 +215,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -250,6 +273,7 @@ fn main() -> AppExit {
         runlog::kv("frame_limit", &format!("fps={fps}"));
     }
     let game_options = args.game;
+    let lobby = lobby_settings(&args);
     let veterancy = perks::Veterancy::from_options(args.perk);
     runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
     let walk_settings = walk::WalkSettings {
@@ -308,8 +332,9 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin))
-        .add_plugins((perks::PerksPlugin, player::body::BodyPlugin))
+        .add_plugins((perks::PerksPlugin, player::body::BodyPlugin, game::menus::MenusPlugin))
         .insert_resource(view_target::ViewTarget::starting_behind(behind_view, behind_yaw))
+        .insert_resource(lobby)
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)

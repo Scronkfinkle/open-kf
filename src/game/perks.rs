@@ -862,12 +862,21 @@ pub fn select_veterancy(v: &mut Veterancy, perk: Perk, wave: bool, match_begun: 
 #[derive(Message, Clone, Copy, Debug)]
 pub struct PerkRequest(pub Perk);
 
+/// The lobby's Ready: the pawn spawns now with the current perk
+/// (AddDefaultInventory). `had` is the perk whose start items were given
+/// when the weapons were loaded.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct NewPawn {
+    pub had: Vet,
+}
+
 pub struct PerksPlugin;
 
 impl Plugin for PerksPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Veterancy>()
             .add_message::<PerkRequest>()
+            .add_message::<NewPawn>()
             .add_systems(Startup, log_perk)
             .add_systems(Update, (perk_requests, wave_end_change));
     }
@@ -927,6 +936,7 @@ fn perk_requests(
     options: Res<crate::game::waves::GameOptions>,
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     mut messages: MessageWriter<crate::game::hud::LocalMessage>,
+    menus: Res<crate::game::menus::MenuState>,
 ) {
     let scripted: Vec<Perk> = script
         .0
@@ -942,7 +952,8 @@ fn perk_requests(
         })
         .collect();
     let wave = matches!(game.phase, crate::game::waves::Phase::Wave | crate::game::waves::Phase::BossWave);
-    let match_begun = options.mode == crate::game::waves::GameMode::Waves;
+    // GRI.bMatchHasBegun: not while the lobby waits for Ready.
+    let match_begun = options.mode == crate::game::waves::GameMode::Waves && !menus.lobby_open();
     for perk in requests.read().map(|r| r.0).chain(scripted) {
         let before = v.vet;
         let result = select_veterancy(&mut v, perk, wave, match_begun);

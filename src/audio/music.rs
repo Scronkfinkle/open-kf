@@ -146,7 +146,7 @@ fn load_song_handler(request: Res<crate::world::map::MapRequest>, mut music: Res
 
 /// The `key=value` lines of one `[section]` of a localization file (keys
 /// lowercase).
-fn int_section(text: &str, section: &str) -> Vec<(String, String)> {
+pub(crate) fn int_section(text: &str, section: &str) -> Vec<(String, String)> {
     let mut inside = false;
     let mut out = Vec::new();
     for line in text.lines().map(str::trim) {

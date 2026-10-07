@@ -499,9 +499,10 @@ pub fn wave_timer(
         ResMut<crate::engine::view_target::ViewTarget>,
         MessageWriter<crate::zeds::zed::BossAction>,
     ),
-    (mut shops, mut restart_requests): (ResMut<crate::game::trader::Shops>, MessageReader<crate::game::end_game::RestartGame>),
+    (mut shops, mut restart_requests, menus): (ResMut<crate::game::trader::Shops>, MessageReader<crate::game::end_game::RestartGame>, Res<crate::game::menus::MenuState>),
 ) {
-    if options.mode != GameMode::Waves || frames.0 < 10 {
+    // The lobby: KF only enters MatchInProgress once everyone is ready.
+    if options.mode != GameMode::Waves || frames.0 < 10 || menus.lobby_open() {
         return;
     }
     // Test action "next_wave": the countdown ends at the next tick.

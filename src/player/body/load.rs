@@ -395,3 +395,43 @@ fn load_attachment(
         model,
     })
 }
+
+type RenderAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<StandardMaterial>>);
+
+/// A character change after startup (the perk page's Change Character,
+/// then SAVE: `CharacterChoice` is set by the weapon code's sleeve swap):
+/// the body model is loaded again and every body is despawned, so
+/// `spawn_bodies` gives the pawns the new one. KF swaps the character with
+/// the next pawn (the lobby's Ready spawns it); ours already exists.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reload_on_character_change(
+    mut commands: Commands,
+    kept: NonSend<BodyPackages>,
+    mut models: ResMut<BodyModels>,
+    request: Res<MapRequest>,
+    character: Res<crate::player::character::CharacterChoice>,
+    bodies: Query<(Entity, &super::PawnBody)>,
+    (mut meshes, mut images, mut materials): RenderAssets,
+) {
+    if !character.is_changed() || character.is_added() {
+        return;
+    }
+    let Some(set) = kept.0.as_ref() else { return };
+    let wanted = character.0.as_deref();
+    if models.characters.first().is_some_and(|b| wanted.is_some_and(|w| b.name.eq_ignore_ascii_case(w))) {
+        return;
+    }
+    let defaults = ClassDefaults::new(set);
+    match load_body(set, &defaults, &request, wanted, &mut meshes, &mut images, &mut materials) {
+        Ok(b) => {
+            runlog::kv("body_reloaded", &format!("character={} bodies_respawned={}", b.name, bodies.iter().count()));
+            models.characters.clear();
+            models.characters.push(b);
+            for (e, body) in &bodies {
+                commands.entity(body.root).despawn();
+                commands.entity(e).remove::<super::PawnBody>();
+            }
+        }
+        Err(e) => runlog::kv("body_error", &format!("error=\"{e}\" reason=character_change")),
+    }
+}
