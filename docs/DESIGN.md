@@ -4813,10 +4813,167 @@ box** is a map spot with a box of ammo (KFAmmoPickup).
 - Not done: the pickup shine (UV2Texture overlay) and AmbientGlow, so
   dark guns on dark floors are hard to see; the random tilt of spawned
   items; bots' interest in pickups (no bots); KF's InventorySpot
-  navigation marks; dropped weapons and tossed dosh (core ready, not
-  used yet). Found while testing, not changed: on KF-WestLondon the
+  navigation marks. (Dropped weapons and tossed dosh: next section.)
+  Found while testing, not changed: on KF-WestLondon the
   walking player falls through the road at about (-2769, 883, -3858)
   (a hole in our walking collision there; rays do hit the road).
+
+### Tossed dosh and dropped weapons (planned 2026-10-07)
+
+Words: **tossing dosh** is throwing some of your cash on the floor (KF's
+TossCash); **dropping / throwing a weapon** puts the gun in your hands
+on the floor (KF's ThrowWeapon). Both become pickups (above) that
+anybody can walk into.
+
+What KF does (scripts and class defaults):
+
+- **Keys** (User.ini): `B=TossCash`, `Backslash=ThrowWeapon`.
+- **TossCash** (KFPawn.TossCash, no amount given): 50 per press, no
+  minimum kept and no rate limit (one toss per key press). The cash is
+  first cut to a whole number; with 0 or less nothing happens; else
+  min(50, cash) is tossed. The CashPickup appears at the pawn's centre +
+  0.8 x CollisionRadius forward - 0.5 x CollisionRadius right (16 ahead,
+  10 to the left), flying at view direction x (pawn velocity along it +
+  500) + 200 up. Its CashAmount is the amount; the cash leaves the
+  player. With more than one player the "dosh" voice line plays (not
+  done: no voice lines yet).
+- **CashPickup**: 22Patch.BankNote at DrawScale 0.4, cylinder 20 x 5,
+  KF_InventorySnd.Cash_Pickup at volume 150. Anyone can take it,
+  the thrower too (bOnlyOwnerCanPickup is false by default). Taking it
+  adds the amount to the taker's cash; the message is
+  "Found (50) Pounds." (CashPickup.GetLocalString). It does not
+  come back.
+- **Falling and fading** (Pickup.InitDroppedPickupFor, states
+  FallingPickup, Pickup, FadeOut): it falls (PHYS_Falling, gravity 950)
+  and can already be taken while falling, but not by a player it was
+  touching when it appeared (a touch is the start of an overlap); when
+  it lands, anyone standing on it takes it (CheckTouching). LifeSpan
+  16 s from the toss; 8 s after landing (or after 8 s still falling) it
+  fades out: 1 s spinning (yaw rate 60000) and shrinking (DrawScale goes
+  down by its default per second), then it is gone. It can still be
+  taken while fading.
+- **ThrowWeapon** (PlayerController.ServerThrowWeapon, KFWeapon.CanThrow):
+  not for bKFNeverThrow weapons (Knife, 9mm, Frag, Syringe, Welder), not
+  while reloading, switching or before the next shot is allowed. Velocity:
+  view direction x (pawn velocity along it + 150) + 100 up, plus the
+  pawn's facing x 100 (KFWeapon.DropFrom; the dual pistols' DropFrom
+  does not add it). Same start spot as the cash. Then the best weapon
+  comes up (ClientSwitchToBestWeapon).
+- **The dropped weapon** (KFWeaponPickup.InitDroppedPickupFor): keeps the
+  magazine (MagAmmoRemaining), the ammo (AmmoAmount[0] and [1]) and the
+  SellValue. Taking it (KFWeapon.GiveTo / GiveAmmo): the magazine as it
+  was; the ammo as it was if it was **thrown** by a living player
+  (bThrown); a weapon dropped by a dying player gives the class's fresh
+  starting ammo instead (bThrown false), with the dead player's
+  magazine. The taker's sell value is the pickup's.
+- **Dual pistols** (Dualies / DualDeagle / Dual44Magnum /
+  DualMK23Pistol.DropFrom): a living player keeps one pistol with half
+  the ammo (total / 2, magazine / 2); the pickup gets the rest. The
+  Dual 9mms drop a DualiesPickup; the others drop the single pistol's
+  pickup (DeaglePickup, Magnum44Pickup, MK23Pickup).
+- **Dropped weapons do not fade** (KFWeaponPickup overrides
+  InitDroppedPickupFor without the 16 s LifeSpan and empties FadeOut).
+  All dropped items, cash and weapons, are destroyed when the trader
+  closes (KFGameType.CloseShops, at the next wave's start).
+- **Death** (KFPawn.Died -> TossWeapon -> DropFrom): the weapon in hand
+  is dropped, whatever it is (only bCanThrow is checked, which KF's
+  weapons leave true: the knife or 9mm drop too), flying at view
+  direction x (velocity along it + 500) + 200 up (+ facing x 100). KF
+  does not drop dosh on death (only the 5% x difficulty loss, dosh.rs).
+- **Perk change** (KFHumanPawn.VeterancyChanged): over the new carry
+  limit, weapons (not bKFNeverThrow) are dropped in inventory order until
+  the weight fits, each from the pawn centre + a random 10 units, at the
+  pawn's velocity + facing x 100.
+
+Our design:
+
+- **Pickup core** (`src/game/pickups/`): `DropRequest` (pickup class,
+  what it gives, start, velocity, yaw, why: toss / throw / perk / death)
+  is turned into a pickup by the game that owns the pickups (single
+  player or the host). The flight is worked out once when it is
+  dropped (`drop.rs`, no Bevy in the step code: 30 steps a second,
+  gravity 950, rays against the level; a wall stops the sideways
+  motion; a floor (normal up >= 0.7) ends it) and stored with the pickup
+  as a list of points, so every game draws the same arc. The pickup's
+  `location` is where it lands. `fading` is set when the fade-out
+  starts. Clients replay the arc from when they first see the pickup.
+- **Timers** (host / single player): cash fades 8 s after landing (or
+  8 s after the toss if still falling), is gone 1 s later, at most 16 s
+  after the toss; weapons stay. All dropped items go when the trader
+  closes (the wave start) and on a restart.
+- **Touch** while falling uses the point on the arc; a player it
+  overlapped when it appeared is not touched until the pickup lands on
+  them (CheckTouching on landing).
+- **Inventory side** (`src/weapons/weapon/drop.rs`): the keys B and
+  Backslash (test inputs `toss_cash`, `throw_weapon`), the death drop
+  and the perk drop build the requests (amount, magazine, ammo, sell
+  value, the dual split). The cash or weapon leaves the inventory only
+  when the pickup core answers "done" (`DropDone`): at once in single
+  player and on the host, after the host's answer on a client. While a
+  request waits, its cash is reserved and the same weapon cannot be
+  thrown again.
+- **Network**: a client's request goes to the host (`DropRequest`
+  message); the host checks it (the player's pawn exists, the start
+  is within 300 units of where the host draws it; a dead player only for
+  the death drop), makes the pickup (host-owned, sent like the others)
+  and answers `Dropped { token, id }` or a refusal with the reason. The
+  scoreboard's cash follows (every game sends its own dosh).
+- **Solo restart**: since a death now drops the gun, a restart after a
+  loss gives the starting inventory again (as KF's map reload does).
+- **Guesses**: the pickup's yaw is the player's yaw (KF spawns it with
+  the spawner's rotation; we lay it flat); the "best weapon" after a
+  throw is the highest Priority one (RateWeapon is close to it for
+  players); pawn Rotation is taken as yaw only (the pawn's facing);
+  our rays treat the pickup as a point with its collision height below
+  it and a few units to the side, not a full cylinder.
+
+As built (2026-10-07; headless runs, not played by you):
+
+- Files: `src/game/pickups/drop.rs` (new: the arc, the timers, KF's
+  velocities, 7 unit tests), `src/game/pickups/mod.rs` (`DropRequest`,
+  `DropItem`, `DropDone`, `spawn_dropped`, landing / fading / expiry,
+  trader-close and restart cleanup, touch on the arc, drawing the arc
+  and the fade), `src/game/pickups/classes.rs` (`CarriedWeapon.thrown`,
+  `.alt`), `src/weapons/weapon/drop.rs` (new: keys, death drop, perk
+  drop, applying `DropDone`), `src/weapons/weapon/{pickup,perk,load,mod}.rs`,
+  `src/game/end_game.rs` (solo restart gives the starting inventory),
+  `src/net/{pickups,protocol,mod}.rs` (`DropRequest` message,
+  `PickupNotice::Dropped`, `PROTOCOL_ID` `0x4F4B_4600_0007`).
+- Toss (KF-WestLondon, standing): `drop_request ... gives=cash:50
+  velocity=(-500, 9, 200)`, the bundle lands 284 units ahead after 0.57 s
+  (`pickup_spawned ... flight=0.57s fade_at=+8.57s gone_at=+9.57s`), the
+  thrower is not touched when it appears (`pickup_touch_skipped
+  reason=inside_when_dropped`), `dosh=250->200`; walking onto it:
+  `dosh=200->250`, "Found (50) Pounds."; left alone: `pickup_fading`
+  8.0 s after landing, `pickup_hidden why=expired` 1.0 s later.
+- Throw: Shotgun `velocity=(-250, 5, 100)`, lands 109 units ahead in
+  0.43 s, `ammo=8+16`, the 9mm comes up; taken back: `ammo=8+16`. The
+  Hunting Shotgun of a level 6 Support (sell value 225) thrown and taken
+  back: `sell_value=Some(225.0)`. The 9mm: `drop_refused
+  reason=never_throw`.
+- Dual Handcannons thrown: a DeaglePickup with `mag8:total24`, the
+  player keeps a Handcannon with `8+16`.
+- Perk change (Support 6 with an AA12 and Dual Handcannons, weight 25,
+  to Medic, limit 15): `perk_drop dropping=[DualDeagle, AA12AutoShotgun]`,
+  weight 25 -> 13. The DeaglePickup falls at the player's feet (no
+  velocity: KF's Dualies.DropFrom) and is taken back on landing (KF's
+  CheckTouching does the same), so the player ends with the Dual
+  Handcannons and weight 15; the AA12 is refused "too heavy".
+- Death (no god mode, Hunting Shotgun in hand): `why=Death
+  velocity=(-600, 11, 200) ... sell225:died`; the restart then gives
+  the starting inventory (`respawn_inventory`).
+- Trader close: a tossed bundle removed at the wave 2 start
+  (`pickup_hidden ... why=close_shops`). A wave run with `aim_zed` /
+  `fire` still earns dosh (19 kills, wave-end pot 237).
+- Screenshots (untracked): `work/screenshots/KF-WestLondon-drop-c-*-1.png`
+  (the dosh bundle on the floor), `KF-WestLondon-drop-d-*-1.png` (the
+  thrown Hunting Shotgun).
+- Network: docs/multiplayer-prototype.md, "Dosh and weapons dropped".
+- Not done: the "dosh" voice line with other players (no voice lines
+  yet); story-mode carried items (TossCarriedItems); the
+  WeaponPickup.FallingPickup rule that a thrower running after his own
+  rising weapon does not catch it (rare; our "inside when it appeared"
+  rule covers the usual case); the dropped item's shadow and shine.
 
 ## Later milestones (rough order, to be planned in detail when reached)
 

@@ -47,7 +47,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0006;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0007;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.

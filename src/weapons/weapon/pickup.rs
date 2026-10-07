@@ -82,12 +82,15 @@ fn ammo_plan(w: &Weapons) -> Vec<(usize, bool, u32, bool)> {
     out
 }
 
-/// A dropped weapon's state onto the given copy (KFWeapon.GiveAmmo with
-/// bThrown: the pickup's AmmoAmount; Dualies.GiveTo adds the single's).
+/// A dropped weapon's state onto the given copy (fresh, with the perk's
+/// starting ammo): KFWeapon.GiveTo takes the pickup's MagAmmoRemaining
+/// (up to MagCapacity); GiveAmmo the pickup's AmmoAmount if it was thrown
+/// (bThrown), else the fresh ammo; Dualies.GiveTo adds the single's.
 fn apply_carried(a: &mut Ammo, c: CarriedWeapon, single: Option<Ammo>) {
     let (extra_mag, extra_total) = single.map_or((0, 0), |s| (s.mag, s.mag + s.spare));
-    let mag = (c.mag + extra_mag).min(a.capacity);
-    let total = (c.total + extra_total).min(a.max_total).max(mag);
+    let base = if c.thrown { c.total } else { a.mag + a.spare };
+    let total = (base + extra_total).min(a.max_total);
+    let mag = (c.mag + extra_mag).min(a.capacity).min(total);
     a.mag = mag;
     a.spare = total - mag;
 }
@@ -111,8 +114,14 @@ pub(super) fn pickup_inventory(
     let mut effects = effects;
     let now = time.elapsed_secs();
     for u in uses.read() {
+        // CashPickup.GetLocalString: "Found (N) Pounds." instead of the
+        // class's PickupMessage.
+        let message = match u.gives {
+            PickupGives::Cash { amount } => Some(format!("Found ({amount}) Pounds.")),
+            _ => None,
+        };
         let mut answer = |ok: bool, detail: String| {
-            answers.write(PickupUsed { id: u.id, class: u.class.clone(), apply: u.apply, ok, detail });
+            answers.write(PickupUsed { id: u.id, class: u.class.clone(), apply: u.apply, ok, detail, message: message.clone() });
         };
         if health.dead {
             answer(false, "dead".into());
@@ -159,6 +168,12 @@ pub(super) fn pickup_inventory(
                         (None, Some(s)) => *a = merge_dual_ammo(s, *a),
                         (None, None) => {}
                     }
+                }
+                // AmmoAmount[1] of a thrown weapon (the M4 203's grenades).
+                if let (Some(c), Some(alt)) = (carried.filter(|c| c.thrown), w.defs[i].alt_ammo.as_mut())
+                    && let Some(n) = c.alt
+                {
+                    alt.0 = n.min(alt.1);
                 }
                 if let Some(si) = single {
                     w.defs[si].gone = true;

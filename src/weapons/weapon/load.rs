@@ -1227,6 +1227,10 @@ pub(super) fn load_weapon(
         select_sound: sound_prop(defaults, &class, "SelectSound"),
         select_volume: float("TransientSoundVolume", 0.3),
         throw_sound: sound_prop(defaults, &class, "ThrowSound"),
+        pickup_class: match get("PickupClass") {
+            Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).map(|pc| pc.path()),
+            _ => None,
+        },
         pickup_sound: match get("PickupClass") {
             Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).and_then(|pc| sound_prop(defaults, &pc, "PickupSound")),
             _ => None,

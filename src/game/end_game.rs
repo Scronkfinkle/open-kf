@@ -167,6 +167,7 @@ fn follow_match(
     (mut health, mut armour, spawn): (ResMut<crate::game::combat::PlayerHealth>, ResMut<crate::player::armour::Armour>, Res<crate::world::map::SpawnPoint>),
     mut player: Query<(&mut Transform, Option<&mut crate::player::walk::Walker>), With<crate::engine::camera::FlyCamera>>,
     mut view: ResMut<crate::engine::view_target::ViewTarget>,
+    mut respawned: MessageWriter<crate::game::perks::RespawnPawn>,
 ) {
     let now = time.elapsed_secs();
     let ended = matches!(game.phase, Phase::Won | Phase::Lost);
@@ -197,6 +198,9 @@ fn follow_match(
                 health.health = 100.0;
                 health.to_give = 0.0;
                 *armour = crate::player::armour::Armour::default();
+                // The starting inventory again (the dead pawn dropped its
+                // weapon in hand: drop.rs).
+                respawned.write(crate::game::perks::RespawnPawn);
                 if let Ok((mut t, walker)) = player.single_mut() {
                     t.translation = spawn.position;
                     if let Some(mut w) = walker {

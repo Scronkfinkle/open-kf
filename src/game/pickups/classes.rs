@@ -20,25 +20,44 @@ pub enum PickupGives {
     Ammo,
     /// A ShieldPickup (the Vest): ShieldAmount armour.
     Armour { amount: f32 },
-    /// A CashPickup (dosh tossed by a player): CashPickup.Touch. Nothing
-    /// makes these yet.
+    /// A CashPickup (dosh tossed by a player, KFPawn.TossCash):
+    /// CashPickup.GiveCashTo adds CashAmount to the taker's cash.
     Cash { amount: i32 },
 }
 
 /// A dropped weapon's state (KFWeaponPickup MagAmmoRemaining,
-/// AmmoAmount[0], SellValue).
+/// AmmoAmount[0] and [1], SellValue, WeaponPickup.bThrown).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct CarriedWeapon {
     pub mag: u32,
+    /// The ammo, magazine included (AmmoAmount[0]).
     pub total: u32,
     /// None: -1 (never bought).
     pub sell_value: Option<f32>,
+    /// Thrown by a living player (bThrown): the taker gets `total` and
+    /// `alt`; dropped by a dying one: the class's fresh ammo (KFWeapon.GiveAmmo)
+    /// with this magazine (KFWeapon.GiveTo).
+    #[serde(default)]
+    pub thrown: bool,
+    /// The second fire mode's own ammo (AmmoAmount[1], the M4 203's grenades).
+    #[serde(default)]
+    pub alt: Option<u32>,
 }
 
 impl PickupGives {
     pub fn label(&self) -> String {
         match self {
-            PickupGives::Weapon { weapon, weight, carried } => format!("weapon:{weapon}:weight{weight}{}", if carried.is_some() { ":dropped" } else { "" }),
+            PickupGives::Weapon { weapon, weight, carried } => match carried {
+                Some(c) => format!(
+                    "weapon:{weapon}:weight{weight}:dropped:mag{}:total{}{}:sell{}:{}",
+                    c.mag,
+                    c.total,
+                    c.alt.map_or(String::new(), |a| format!(":alt{a}")),
+                    c.sell_value.map_or("-1".into(), |v| format!("{v:.0}")),
+                    if c.thrown { "thrown" } else { "died" }
+                ),
+                None => format!("weapon:{weapon}:weight{weight}"),
+            },
             PickupGives::Ammo => "ammo".into(),
             PickupGives::Armour { amount } => format!("armour:{amount}"),
             PickupGives::Cash { amount } => format!("cash:{amount}"),

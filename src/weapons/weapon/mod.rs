@@ -31,6 +31,7 @@ mod torch;
 mod perk;
 mod sleeve;
 mod pickup;
+mod drop;
 pub(crate) use load::*;
 use input::*;
 use animate::*;
@@ -142,6 +143,9 @@ impl Plugin for WeaponPlugin {
             )
             .add_systems(Update, publish_pawn_weapon.in_set(PublishPawnWeapon).after(weapon_input))
             .add_systems(Update, pickup::pickup_inventory.after(crate::game::pickups::PickupSystems::Touch).before(crate::game::pickups::PickupSystems::Answer))
+            .init_resource::<drop::WeaponDrops>()
+            .add_systems(Update, drop::drop_input.after(weapon_input).before(crate::game::pickups::PickupSystems::Rules))
+            .add_systems(Update, drop::drop_results.after(crate::game::pickups::PickupSystems::Rules).before(crate::game::pickups::PickupSystems::Touch))
             .add_plugins(crate::weapons::flashlight::FlashlightPlugin);
     }
 }
@@ -269,6 +273,8 @@ struct WeaponDef {
     /// (KFWeapon: 100; capped by the mixer).
     select_sound: Option<String>,
     select_volume: f32,
+    /// PickupClass (full path): what a thrown or dropped copy becomes.
+    pickup_class: Option<String>,
     /// The pickup class's PickupSound, played when bought
     /// (KFTab_BuyMenu.MakeSomeBuyNoise).
     pickup_sound: Option<String>,
