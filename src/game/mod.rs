@@ -8,6 +8,7 @@ pub mod trader_path;
 pub mod trader_arrow;
 pub mod shopkeeper;
 pub mod buy_menu;
+pub mod numenu;
 pub mod hud;
 pub mod zed_time;
 pub mod end_game;

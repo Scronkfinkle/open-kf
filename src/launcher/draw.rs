@@ -176,11 +176,19 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         map_list(p, l, list, menu);
     }
 
-    // Column 3: Game, then Display and sound.
-    let game_h = section_height(3, rh, gap);
+    // Column 3: Game, then Display, sound, menus (3 + 5 rows). On a short
+    // window its rows get a little smaller so both fit above the bottom row.
+    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(5, h, g);
+    let (rh3, gap3) = if need(rh, gap) <= c.height() {
+        (rh, gap)
+    } else {
+        let s = ((c.height() - 90.0 - gap) / (8.0 * (rh + gap))).max(0.5);
+        ((rh * s).floor(), (gap * s).floor())
+    };
+    let game_h = section_height(3, rh3, gap3);
     let game = Rect::new(c.min.x, c.min.y, c.max.x, c.min.y + game_h);
     p.section(game, "Game", false, "Game");
-    let mut rows = Rows::new(Painter::section_client(game, [0.0; 4]), rh, gap, 0.4);
+    let mut rows = Rows::new(Painter::section_client(game, [0.0; 4]), rh3, gap3, 0.4);
     if join {
         let (lab, ctl) = rows.next();
         note(p, Rect::new(lab.min.x, lab.min.y, ctl.max.x, ctl.max.y), "Set by the host.", small, DIM, "GameJoin");
@@ -197,9 +205,9 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         spinner(p, "wave", ctl, &c_.start_wave.map_or("First".into(), |w| w.to_string()), c_.waves, menu);
     }
 
-    let disp = Rect::new(c.min.x, game.max.y + gap, c.max.x, game.max.y + gap + section_height(4, rh, gap));
-    p.section(disp, "Display and sound", false, "Display");
-    let mut rows = Rows::new(Painter::section_client(disp, [0.0; 4]), rh, gap, 0.4);
+    let disp = Rect::new(c.min.x, game.max.y + gap3, c.max.x, game.max.y + gap3 + section_height(5, rh3, gap3));
+    p.section(disp, "Display, sound, menus", false, "Display");
+    let mut rows = Rows::new(Painter::section_client(disp, [0.0; 4]), rh3, gap3, 0.4);
     let (lab, ctl) = rows.next();
     label(p, lab, "Window", menu);
     spinner(p, "window", ctl, &c_.window.map_or("Default".into(), |(w, h)| format!("{w} x {h}")), true, menu);
@@ -212,6 +220,9 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
     let (lab, ctl) = rows.next();
     label(p, lab, "Sound", menu);
     spinner(p, "sound", ctl, if c_.sound { "On" } else { "Off (muted)" }, true, menu);
+    let (lab, ctl) = rows.next();
+    label(p, lab, "Trader menu", menu);
+    spinner(p, "trader", ctl, if c_.trader == crate::game::buy_menu::MenuKind::Nu { "NuMenu (new)" } else { "KF classic" }, true, menu);
 
 
     // The bottom rows.

@@ -693,6 +693,7 @@ fn draw_menus(
     mut shown: Local<usize>,
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     net: Res<crate::net::lobby::NetLobby>,
+    mut nu: crate::game::numenu::NuDraw,
 ) {
     if !gui.loaded {
         return;
@@ -739,6 +740,8 @@ fn draw_menus(
             model_select::draw(&mut p, &ctx, previews(crate::player::body::PREVIEW_MODEL_SELECT));
         }
         Some(Page::Pause) => pause::draw(&mut p, &ctx),
+        // The trader's NuMenu (game/numenu.rs) uses the same painter.
+        None if nu.showing() => crate::game::numenu::draw(&mut p, &mut nu),
         None => {}
     }
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "menu_dump") {

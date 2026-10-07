@@ -2,6 +2,7 @@
 //! the `key=value` text the choices are saved as. No Bevy here, so it is
 //! all unit-tested. See DESIGN.md, "The launcher".
 
+use crate::game::buy_menu::MenuKind;
 use crate::game::perks::Perk;
 use crate::player::character::DEFAULT_CHARACTER;
 
@@ -47,8 +48,8 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 16] = [
-    "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "sound", "extra",
+pub const FIELDS: [&str; 17] = [
+    "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "sound", "trader", "extra",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +75,8 @@ pub struct Choices {
     pub fps: Option<u32>,
     pub vsync: bool,
     pub sound: bool,
+    /// The trader's menu (`--trader-menu`): NuMenu (default) or KF's.
+    pub trader: MenuKind,
     /// More options typed by hand (e.g. `--god`).
     pub extra: String,
 }
@@ -96,6 +99,7 @@ impl Default for Choices {
             fps: None,
             vsync: true,
             sound: true,
+            trader: MenuKind::Nu,
             extra: String::new(),
         }
     }
@@ -132,6 +136,7 @@ impl Choices {
             "fps" => self.fps.map_or("none".into(), |f| f.to_string()),
             "vsync" => on_off(self.vsync).into(),
             "sound" => on_off(self.sound).into(),
+            "trader" => self.trader.word().into(),
             "extra" => self.extra.clone(),
             _ => String::new(),
         }
@@ -186,6 +191,7 @@ impl Choices {
             "fps" => self.fps = if v.eq_ignore_ascii_case("none") { None } else { Some(num(v)?.clamp(1, 1000)) },
             "vsync" => self.vsync = parse_bool(v)?,
             "sound" => self.sound = parse_bool(v)?,
+            "trader" => self.trader = MenuKind::parse(v).ok_or(format!("not nu/kf: {v}"))?,
             "extra" => self.extra = v.trim().into(),
             _ => return Err(format!("unknown choice: {field}")),
         }
@@ -228,6 +234,7 @@ impl Choices {
             }
             "vsync" => self.vsync = !self.vsync,
             "sound" => self.sound = !self.sound,
+            "trader" => self.trader = if self.trader == MenuKind::Nu { MenuKind::Kf } else { MenuKind::Nu },
             _ => {}
         }
     }
@@ -294,6 +301,10 @@ impl Choices {
         }
         if !self.sound || mute {
             push(&["--mute"]);
+        }
+        // NuMenu is the game's default: only the KF menu needs the option.
+        if self.trader == MenuKind::Kf {
+            push(&["--trader-menu", "kf"]);
         }
         a.extend(split_words(&self.extra)?);
         Ok(a)
@@ -432,6 +443,7 @@ mod tests {
         c.fps = Some(144);
         c.vsync = false;
         c.sound = false;
+        c.trader = MenuKind::Kf;
         c.extra = "--god --give all".into();
         let (back, bad) = Choices::from_text(&c.to_text());
         assert!(bad.is_empty(), "{bad:?}");
@@ -461,6 +473,20 @@ mod tests {
         assert_eq!(c.character, "A");
         c.step("window", 1, &[]);
         assert_eq!(c.window, WINDOW_SIZES[1]);
+    }
+
+    #[test]
+    fn trader_menu_choice() {
+        let mut c = Choices::default();
+        assert_eq!(c.get("trader"), "nu");
+        assert!(!c.to_args(false).unwrap().contains(&"--trader-menu".to_string()));
+        c.step("trader", 1, &[]);
+        assert_eq!(c.trader, MenuKind::Kf);
+        let a = c.to_args(false).unwrap();
+        assert!(a.windows(2).any(|w| w == ["--trader-menu", "kf"]));
+        assert!(c.set("trader", "wizard").is_err());
+        c.set("trader", "nu").unwrap();
+        assert_eq!(c.trader, MenuKind::Nu);
     }
 
     #[test]

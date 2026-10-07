@@ -91,6 +91,8 @@ struct Args {
     net: net::NetMode,
     /// `--log FILE` (read before parsing, see runlog::path_from_args).
     log: Option<String>,
+    /// `--trader-menu nu|kf`: our NuMenu (default) or the KF-style list.
+    trader_menu: buy_menu::MenuKind,
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -209,6 +211,10 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
             }
             "--log" => args.log = Some(it.next().ok_or("--log needs a file name")?),
             "--mute" => args.mute = true,
+            "--trader-menu" => {
+                let n = it.next().ok_or("--trader-menu needs nu or kf")?;
+                args.trader_menu = buy_menu::MenuKind::parse(&n).ok_or(format!("bad --trader-menu value: {n} (nu or kf)"))?;
+            }
             "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
             "--give" => args.give = Some(it.next().ok_or("--give needs \"all\" or weapon class names")?),
@@ -260,7 +266,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--log FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -325,6 +331,8 @@ fn main() -> AppExit {
         runlog::kv("frame_limit", &format!("fps={fps}"));
     }
     let game_options = args.game;
+    let trader_menu = args.trader_menu;
+    runlog::kv("trader_menu", &format!("kind={}", trader_menu.word()));
     let lobby = lobby_settings(&args);
     let veterancy = perks::Veterancy::from_options(args.perk);
     let net_plugin = net::NetPlugin {
@@ -396,6 +404,7 @@ fn main() -> AppExit {
         .insert_resource(game_options)
         .insert_resource(veterancy)
         .insert_resource(scripted)
+        .insert_resource(buy_menu::BuyMenu::with_kind(trader_menu))
         .insert_resource(loadout)
         .insert_resource(character)
         .insert_resource(zed_settings)

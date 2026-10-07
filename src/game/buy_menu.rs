@@ -28,6 +28,35 @@ pub struct ShopItem {
     pub buy_clip_size: i32,
     /// The weapon's bKFNeverThrow: never listed for sale, cannot be sold.
     pub never_throw: bool,
+    /// Numbers to compare weapons by (NuMenu's details panel only).
+    pub stats: ShopStats,
+}
+
+/// A weapon's comparable numbers from its class defaults (display only;
+/// no game rule reads these): FireModeClass[0]'s damage (MeleeDamage,
+/// else its ProjectileClass's Damage, else DamageMax), ProjPerFire,
+/// FireRate; the weapon's MagCapacity; the ammo class's MaxAmmo.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShopStats {
+    pub damage: f32,
+    pub per_fire: i32,
+    /// Seconds between shots.
+    pub fire_rate: f32,
+    pub mag: i32,
+    pub max_ammo: i32,
+    pub melee: bool,
+}
+
+impl ShopStats {
+    /// Damage of one shot (all its pellets).
+    pub fn shot_damage(&self) -> f32 {
+        self.damage * self.per_fire.max(1) as f32
+    }
+
+    /// Shots per second.
+    pub fn shots_per_second(&self) -> f32 {
+        if self.fire_rate > 0.0 { 1.0 / self.fire_rate } else { 0.0 }
+    }
 }
 
 /// The perk filter's lists, in KF's order (BuyMenuFilterIndex 0-7).
@@ -108,6 +137,7 @@ pub fn load_catalogue(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
             weight: num("Weight", 0.0),
             buy_clip_size: num("BuyClipSize", 0.0) as i32,
             never_throw: matches!(defaults.get(&wc, "bKFNeverThrow"), Some((Value::Bool(true), _))),
+            stats: read_stats(set, defaults, &wc),
             weapon,
         });
     }
@@ -156,7 +186,59 @@ pub fn load_catalogue(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
             cat.items.iter().map(|i| format!("{}:{}/{}/w{}", i.weapon.trim_start_matches("KFMod."), i.cost, i.ammo_cost, i.weight)).collect::<Vec<_>>().join(" ")
         ),
     );
+    runlog::kv(
+        "shop_stats",
+        &cat.items
+            .iter()
+            .map(|i| {
+                let s = &i.stats;
+                format!("{}:dmg={}x{}/rate={}/mag={}/ammo={}{}", i.weapon.trim_start_matches("KFMod."), s.damage, s.per_fire, s.fire_rate, s.mag, s.max_ammo, if s.melee { "/melee" } else { "" })
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
     cat
+}
+
+/// `ShopStats` from a weapon class's defaults.
+fn read_stats(set: &PackageSet, defaults: &ClassDefaults, wc: &ObjectHandle) -> ShopStats {
+    let num = |h: &ObjectHandle, p: &str| match defaults.get(h, p) {
+        Some((Value::Int(i), _)) => Some(i as f32),
+        Some((Value::Float(f), _)) => Some(f),
+        Some((Value::Byte(b), _)) => Some(b as f32),
+        _ => None,
+    };
+    let mut st = ShopStats { mag: num(wc, "MagCapacity").unwrap_or(0.0) as i32, per_fire: 1, ..Default::default() };
+    let fm = match defaults.get_at(wc, "FireModeClass", 0) {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
+        _ => None,
+    };
+    let Some(fm) = fm else { return st };
+    st.fire_rate = num(&fm, "FireRate").unwrap_or(0.0);
+    st.per_fire = num(&fm, "ProjPerFire").unwrap_or(1.0).max(1.0) as i32;
+    let melee = num(&fm, "MeleeDamage").unwrap_or(0.0);
+    let instant = num(&fm, "DamageMax").unwrap_or(0.0);
+    let proj = match defaults.get(&fm, "ProjectileClass") {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).and_then(|p| num(&p, "Damage")),
+        _ => None,
+    };
+    if melee > 0.0 {
+        st.melee = true;
+        st.damage = melee;
+        st.per_fire = 1;
+        st.mag = 0;
+    } else if let Some(d) = proj.filter(|d| *d > 0.0) {
+        st.damage = d;
+    } else {
+        st.damage = instant;
+    }
+    if !st.melee
+        && let Some((Value::Object(r), rp)) = defaults.get(&fm, "AmmoClass")
+        && let Some(ac) = set.resolve(&rp, r)
+    {
+        st.max_ammo = num(&ac, "MaxAmmo").unwrap_or(0.0) as i32;
+    }
+    st
 }
 
 /// What the menu asks of the inventory (weapon.rs carries it out).
@@ -201,10 +283,39 @@ impl Default for ShopInventory {
 /// KFHumanPawn MaxCarryWeight.
 pub const MAX_CARRY_WEIGHT: f32 = 15.0;
 
+/// Which trader menu draws and reads the keys (`--trader-menu`): our
+/// NuMenu (numenu.rs, the default) or the KF-style text list (this file).
+/// Both send the same requests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MenuKind {
+    #[default]
+    Nu,
+    Kf,
+}
+
+impl MenuKind {
+    pub fn parse(s: &str) -> Option<MenuKind> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "nu" | "numenu" => Some(MenuKind::Nu),
+            "kf" | "classic" => Some(MenuKind::Kf),
+            _ => None,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            MenuKind::Nu => "nu",
+            MenuKind::Kf => "kf",
+        }
+    }
+}
+
 /// KF opens on your perk's list; without perks, the first (Medic).
 #[derive(Resource, Default)]
 pub struct BuyMenu {
     pub open: bool,
+    /// Which menu is shown (opening and closing are shared).
+    pub kind: MenuKind,
     /// 0 "For sale", 1 "Yours".
     tab: usize,
     cursor: [usize; 2],
@@ -212,28 +323,50 @@ pub struct BuyMenu {
     filter: usize,
 }
 
+impl BuyMenu {
+    pub fn with_kind(kind: MenuKind) -> Self {
+        BuyMenu { kind, ..Default::default() }
+    }
+}
+
 /// A row of the "For sale" list: item, price and weight as shown
 /// (KFBuyMenuSaleList.PopulateBuyables: int(Cost x GetCostScaling /
 /// DualDivider)).
 fn sale_rows(cat: &ShopCatalogue, inv: &ShopInventory, filter: usize, vet: &crate::game::perks::Vet) -> Vec<(usize, i32, f32)> {
-    let owns = |w: &str| inv.owned.iter().any(|o| o.weapon.eq_ignore_ascii_case(w));
     let Some((_, list)) = cat.lists.get(filter) else { return Vec::new() };
     list.iter()
         .filter_map(|&i| {
             let it = &cat.items[i];
-            if it.never_throw || owns(&it.weapon) {
+            if it.never_throw || inv.owns(&it.weapon) || single_hidden(inv, &it.weapon) {
                 return None;
             }
-            // A single while its duals are owned.
-            if DUAL_SINGLES.iter().any(|(d, s)| s.eq_ignore_ascii_case(&it.weapon) && owns(d)) {
-                return None;
-            }
-            let half = HALF_PRICE_DUALS.iter().any(|(d, s)| d.eq_ignore_ascii_case(&it.weapon) && owns(s));
-            let divider = if half { 2.0 } else { 1.0 };
-            let price = (it.cost as f32 * vet.cost_scaling(&it.pickup) / divider) as i32;
-            Some((i, price, it.weight / divider))
+            let (price, weight) = shop_price(it, inv, vet);
+            Some((i, price, weight))
         })
         .collect()
+}
+
+impl ShopInventory {
+    pub fn owns(&self, weapon: &str) -> bool {
+        self.owned.iter().any(|o| o.weapon.eq_ignore_ascii_case(weapon))
+    }
+}
+
+/// A single is not sold while its duals are owned (both menus).
+pub fn single_hidden(inv: &ShopInventory, weapon: &str) -> bool {
+    DUAL_SINGLES.iter().any(|(d, s)| s.eq_ignore_ascii_case(weapon) && inv.owns(d))
+}
+
+/// A weapon's price and weight as the menus show them
+/// (KFBuyMenuSaleList.PopulateBuyables: int(Cost x GetCostScaling /
+/// DualDivider); a dual whose single is owned costs and weighs half).
+/// The purchase itself is priced by weapon.rs (`shop_requests`) with the
+/// same rule.
+pub fn shop_price(it: &ShopItem, inv: &ShopInventory, vet: &crate::game::perks::Vet) -> (i32, f32) {
+    let half = HALF_PRICE_DUALS.iter().any(|(d, s)| d.eq_ignore_ascii_case(&it.weapon) && inv.owns(s));
+    let divider = if half { 2.0 } else { 1.0 };
+    let price = (it.cost as f32 * vet.cost_scaling(&it.pickup) / divider) as i32;
+    (price, it.weight / divider)
 }
 
 /// Ammo prices as KFBuyMenuInvList shows them: (clip price, fill price)
@@ -257,6 +390,7 @@ impl Plugin for BuyMenuPlugin {
             .init_resource::<ShopCatalogue>()
             .init_resource::<ShopInventory>()
             .add_message::<ShopRequest>()
+            .add_plugins(crate::game::numenu::NuMenuPlugin)
             .add_systems(Startup, spawn_menu_text)
             .add_systems(PreUpdate, menu_input.after(bevy::input::InputSystems))
             .add_systems(Update, draw_menu);
@@ -337,7 +471,7 @@ pub(crate) fn menu_input(
                 menu.filter = p.index().min(cat.lists.len().saturating_sub(1));
                 menu.cursor[0] = 0;
             }
-            runlog::kv("buy_menu", &format!("open=true filter={}", cat.lists.get(menu.filter).map_or("", |l| l.0)));
+            runlog::kv("buy_menu", &format!("open=true filter={} kind={}", cat.lists.get(menu.filter).map_or("", |l| l.0), menu.kind.word()));
             keys.reset_all();
         }
         return;
@@ -347,7 +481,8 @@ pub(crate) fn menu_input(
     if wave_running || !in_shop || use_pressed || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::Escape) {
         menu.open = false;
         runlog::kv("buy_menu", &format!("open=false wave_running={wave_running} in_shop={in_shop}"));
-    } else {
+    } else if menu.kind == MenuKind::Kf {
+        // The KF-style list's keys (NuMenu reads its own: numenu.rs).
         // "Yours" ends with the vest row (KFBuyMenuInvList adds it last).
         // KFQuickPerkSelect (the perk icons in the buy menu): keys 1-7
         // pick a perk, KF's PerkIndex order.
@@ -419,7 +554,8 @@ fn draw_menu(
     mut text: Query<(&mut Text, &mut Node), With<MenuText>>,
 ) {
     let Ok((mut t, mut node)) = text.single_mut() else { return };
-    if !menu.open {
+    // NuMenu draws itself (numenu.rs).
+    if !menu.open || menu.kind != MenuKind::Kf {
         node.display = Display::None;
         return;
     }
@@ -497,6 +633,7 @@ mod tests {
             weight,
             buy_clip_size: 0,
             never_throw: weapon == "KFMod.Single",
+            stats: ShopStats::default(),
         }
     }
 

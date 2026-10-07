@@ -5142,3 +5142,43 @@ JPEG (213 KB). Already covered by the `!/docs/images/*.jpg` whitelist line.
 **Result:** Docs only.
 **Still broken / not tested:** How GitHub renders it (not pushed).
 **Next:** —
+
+## 2026-10-07 NuMenu: our own trader menu, the new default (NU1-NU4)
+
+**Changed:** new `src/game/numenu.rs` (the screen, its keys / mouse /
+test actions, logs, 4 unit tests); `src/game/buy_menu.rs` (`MenuKind` and
+`BuyMenu.kind`; the KF list's keys and text only when the kind is `kf`;
+shared helpers `shop_price`, `single_hidden`, `ShopInventory::owns` (the
+KF list now uses them, same results); `ShopStats` per weapon read from
+the class defaults, logged as `shop_stats`); `src/game/menus/mod.rs`
+(draws NuMenu with the menus' painter); `src/main.rs` (`--trader-menu
+nu|kf`, default nu; logs `trader_menu kind=`); `src/game/waves.rs` (test
+action `end_wave`); launcher `choices.rs` / `draw.rs` / `mod.rs`
+("Trader menu" row, saved as `trader=nu|kf`, adds `--trader-menu kf`;
+column 3's rows shrink on short windows so it fits at 720p);
+`README.md`; `docs/DESIGN.md` (plan, layout, controls, as built).
+**Why:** You asked for a new trader menu of our own design, made the
+default, with the KF one kept behind an option and the buying rules
+shared.
+**Tested how:** headless KF-WestLondon, waves, `next_wave`, `end_wave`,
+`warp_shop`, `add_dosh`, `buy_menu`, then `nu:` actions, at 1280x720 and
+1920x1080 (screenshots looked at); the same KF-menu script before and
+after the change with `--trader-menu kf` (logs diffed); a host game
+(`--host 7791`); launcher `--dry-run` toggling the row; `cargo test
+--release --workspace`; clippy (raw output counted).
+**Result:** Support 3: group first with -40%, AA12 bought (`numenu_buy
+weapon=KFMod.AA12AutoShotgun price=2400 dosh_after=2988 weight_after=11/19`),
+M99 and LAW refused as too heavy, M32 refused as too expensive (each
+also `shop_refused` from the shared logic), AA12 sold for 1800, refill
+all 3 requests for 370 (as shown), armour 0 -> 100 for 300, grenade
+refused when full, perk changed by clicking its icon. KF menu: the same
+nine shop lines before and after; only `buy_menu open=true` gains
+`kind=kf`. Wave start and E close NuMenu. Host game: buy, refill all,
+armour, CLOSE all work. Tests 206 + 24 pass; clippy 0 warnings.
+**Still broken / not tested:** real keys and mouse (the virtual display
+has none; the same commands are driven by `nu:` actions and `nu:click:`
+on the drawn boxes); the cursor freeing / recapture; a joining client's
+shopping; HUD messages show faintly through the backdrop. Not played by
+you. (Note: rtk's `diff` said "Files are identical" for files that
+differed; `rtk proxy diff` is right.)
+**Next:** your play test; then decide whether to drop the KF list.

@@ -59,6 +59,7 @@ cargo run --release -- --input 200:jump   # test action: jump (also "jump" in an
 scripts/headless.sh --fly --camera -4090,1300,-3650,-1.5708,0 --screenshot 60   # the same, on a virtual display: no window opens
 cargo run --release -- --no-vsync --frames 600   # test runs: frames do not wait for the display (a hidden window ran at 1 fps)
 cargo run --release -- --mute                 # no sound (still logged)
+cargo run --release -- --trader-menu kf       # the trader's old KF-style text menu instead of NuMenu (the default)
 cargo run --release -- --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
 cargo run --release -- --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
@@ -92,6 +93,7 @@ Saved views for checking the viewer are listed in `docs/test-views.md`.
 | F2 | zed time now (debug) |
 | F3 | show / hide the debug line at the top |
 | Space (walking) | jump |
+| E (in an open shop, between waves) | the trader's menu (NuMenu): mouse, or Up/Down, Tab, Enter/B buy, S sell, R fill ammo, A refill all, V armour, G grenade, Esc close |
 
 Each run writes `logs/latest.log`: what was loaded (counts, load time), camera
 position once per second (Bevy metres and Unreal units), frame timings, and

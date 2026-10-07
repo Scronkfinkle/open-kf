@@ -5239,6 +5239,193 @@ planned, with these details:
   (fields as in the saved file), `type:TEXT`, `key:tab|enter|escape|backspace`,
   `dump`. Values cannot contain commas (`--input` splits on them).
 
+## NuMenu: our own trader menu (planned 2026-10-07: NU1-NU4)
+
+The trader's buy menu so far is a text list standing in for KF's
+GUIBuyMenu (`buy_menu.rs`). It works, but it is hard to read: one long
+text block, the sale list shows one perk at a time (Left/Right to page),
+"For sale" and "Yours" are two lists you Tab between, and you only learn
+that something is too heavy or too expensive from a word at the end of
+the line. KF's own GUI has the same two side-by-side lists, small
+power/speed/range bars and no "what happens if I buy this".
+
+**NuMenu** is a new design of our own (not a copy of KF's) and becomes
+the default. The old menu stays: `--trader-menu kf` (default `nu`), also
+a "Trader menu" choice in the launcher.
+
+### What is shared, what differs
+
+Buying already goes through one path: a menu only *asks*
+(`ShopRequest::Buy / Sell / Ammo` messages, `armour::BuyVest`), and
+`weapons/weapon/inventory.rs` (`shop_requests`) and `player/armour.rs`
+(`buy_vest`) decide, with KF's rules (CanBuyNow, price x perk scaling,
+half-price duals, weight limit, partial ammo, refusal sounds). So the
+split is small; no rule moves:
+
+- Shared (unchanged): the requests and their handling, prices
+  (`ammo_prices`, `armour::menu_row`, the sale price rule), opening and
+  closing (E in an open shop with no wave; the wave start, leaving the
+  shop, E / Escape / Backspace close it) in `buy_menu::menu_input`, the
+  input freeze while open, the `buy:C`-style test actions.
+- New shared helper: `buy_menu::shop_price(item, inv, vet)` (price and
+  weight as shown, the half-price dual rule); `sale_rows` uses it, so the
+  KF list shows exactly what it showed before.
+- Per menu: the screen and its navigation. `BuyMenu.kind` says which one
+  draws and reads the keys. The KF text menu's code is untouched except
+  that it stands aside when `kind` is NuMenu.
+- The catalogue gains comparable stats per weapon, read from the class
+  defaults like the rest (`ShopStats`: damage per hit and hits per shot
+  from FireModeClass[0]'s DamageMax / MeleeDamage / ProjectileClass Damage
+  and ProjPerFire, FireRate, the weapon's MagCapacity, the ammo class's
+  MaxAmmo). Display only; no game rule reads them.
+
+Multiplayer: every player buys on their own game with their own dosh;
+no shop message goes over the network (MULTIPLAYER.md, net/). So both
+menus behave the same in solo and network games.
+
+### Layout (1280x720 and up; sizes scale with the screen height)
+
+```
++----------------------------------------------------------------------------------+
+| TRADER   wave 2/4 starts in 0:42   [perk icons 1-7, yours lit]   CLOSE (Esc)     |
+| DOSH £ 1250        CARRY [#########------]  9 / 15 kg                            |
++-------------------------+------------------------------+-------------------------+
+| YOUR GEAR               | SHOP                         | SELECTED                |
+| 9mm Tactical            | * SUPPORT  your perk  -30%   | AA12 Shotgun            |
+|   ammo [####--] 120/240 |   Shotgun        £350   8 kg | Support  -30%: £2800    |
+|   fill £80   sell --    |   AA12 Shotgun  £2800  10 kg | Damage    [####--] 40x10|
+| Knife                   |   ...                        | Fire rate [###---] 5/s  |
+| Frag grenades  3/5      |   MEDIC                      | Magazine  [##----] 20   |
+|   +1 £40                |   MP7M Medic Gun £825  3 kg  | Total ammo[###---] 80   |
+| Combat armour  25/100   |   ...   (OWNED, TOO HEAVY,   | Weight    [######] 10kg |
+|   fill £225             |    NEED £ marks per row)     | Price     [####--] £2800|
+|                         |                              | After: £1250 -> £-1550  |
+| [REFILL ALL  £245  A]   |                              |  carry 9 -> 19 / 15 kg  |
+| [ARMOUR      £225  V]   |                              | [ BUY  Enter/B ]        |
+| [GRENADE     £40   G]   |                              |                         |
++-------------------------+------------------------------+-------------------------+
+| last action: "Bought Shotgun for £350"      keys: Up/Down Tab 1-8 B S R C A V G   |
++----------------------------------------------------------------------------------+
+```
+
+- **Top bar:** wave and countdown, dosh in large type, the carry weight
+  as a bar (green when there is room, amber when 2 kg or less are left,
+  red when full), the seven perk icons (click or Shift+1-7 to change
+  perk, KF's rule: once per trader time), CLOSE.
+- **Your gear (left):** every owned weapon with its ammo as a bar
+  (current / max), the fill-ammo price ("FULL" when full) and the sell
+  value ("--" when it cannot be sold); grenades show "+1 £x"; the
+  armour row with points / 100 and its fill price. Below: three buttons
+  REFILL ALL (the sum of every fill price), ARMOUR (fill price),
+  GRENADE (one grenade).
+- **Shop (middle):** every weapon for sale, grouped by perk. Your perk's
+  group comes first, starred, with its discount ("-30%"); the other
+  groups follow in KF's order (Medic ... Demolitions, Neutral). Each row:
+  name, price after discount, weight. A row's state shows as colour and
+  a tag:
+  - can buy: bone-white name, green price;
+  - OWNED: dim, tag "OWNED" (selecting it shows sell / refill);
+  - too expensive: price in red, tag "NEED £x" (how much is missing);
+  - too heavy: weight in amber, tag "TOO HEAVY" (when both, too heavy
+    is shown, because selling may fix the dosh but not the weight).
+  Singles are hidden while their duals are owned (as KF). The list
+  scrolls (wheel, or following the selection).
+- **Selected (right):** the weapon's name, perk group and discount, then
+  bars that compare it with the whole shop: damage per shot (damage x
+  pellets), fire rate (shots per second), magazine, total ammo, weight,
+  price. Bars use the square root of value / largest value in the shop,
+  so a pistol is still visible next to the L.A.W.; the real number is
+  printed next to each bar. Then "after buying": dosh before -> after and
+  carry weight before -> after (red when it does not fit). Then the
+  action buttons: BUY (not owned), or SELL / FILL AMMO / +1 MAG (owned).
+  With the armour row selected: armour points and the fill price.
+- **Footer:** the last action's result in plain words (green done, red
+  refused, with the reason) and the key help.
+
+Colours: a near-black translucent backdrop over the game, panels
+slightly lighter, thin dark-red rules, KF's bitmap fonts (ROBtsrmVr)
+and perk icons, bone-white text; green / amber / red only for states.
+
+### Controls
+
+| Key | Action |
+| --- | --- |
+| Up / Down | move the selection (in the focused column) |
+| Tab, Left / Right | switch column (gear <-> shop) |
+| PageUp / PageDown | previous / next perk group in the shop |
+| 1-8 | jump to the shop's n-th group (1 = your perk's) |
+| Enter or B | buy the selected shop weapon (on gear: fill its ammo) |
+| S | sell the selected weapon |
+| R | fill the selected weapon's ammo |
+| C | buy one magazine for the selected weapon |
+| A | refill all ammo |
+| V | buy / fill armour |
+| G | buy one grenade |
+| Shift+1-7 | change perk (as the KF menu's 1-7) |
+| E, Escape, Backspace | close (shared with the KF menu) |
+| Mouse | click a row to select it, click buttons, wheel scrolls the shop |
+
+While the menu is open the mouse cursor is shown and freed; it is
+captured again when the menu closes (if it was before).
+
+### Test actions and logs
+
+Scripted (`--input FRAME:ACTION`): `nu:up`, `nu:down`, `nu:tab`,
+`nu:enter`, `nu:group:N`, `nu:prev_group`, `nu:next_group`,
+`nu:select:CLASS` (select a shop weapon by class, e.g.
+`nu:select:Shotgun`; an owned weapon not in the shop selects its gear
+row), `nu:buy`, `nu:sell`, `nu:fill`, `nu:clip`, `nu:fill_all`,
+`nu:armour`, `nu:grenade`, `nu:close`, `nu:click:ID` (as a mouse click on
+a box drawn last frame: `nu.buy`, `nu.sell`, `nu.fill`, `nu.clip`,
+`nu.fill_all`, `nu.armour`, `nu.grenade`, `nu.close`, `nu.shop:N`,
+`nu.gear:N`, `nu.group:N`, `nu.perk:N`), `nu:wheel:N`. The menus'
+`menu_dump` logs every box drawn.
+`end_wave` (waves.rs, for tests): the running wave ends now (no more
+spawns, every zed dies), so the trader opens a few seconds later.
+
+Log lines: `numenu_open` (dosh, weight, perk, discount, rows),
+`numenu_select`, `numenu_buy weapon= price= dosh_after= weight_after=`
+(written the frame after the request, from the real result),
+`numenu_sell`, `numenu_ammo`, `numenu_fill_all count= cost=`,
+`numenu_armour`, `numenu_refused action= weapon= reason=` (reason from
+the same rules: too_expensive, too_heavy, owned, full, not_sellable,
+or `unknown` when the shared logic refused for another reason),
+`numenu_close`, `numenu_layout` (font sizes, panel boxes).
+
+### Steps
+
+- **NU1** `--trader-menu`, `BuyMenu.kind`, `shop_price`, catalogue
+  stats, `end_wave` test action. KF menu unchanged (check: same log
+  lines as before with `--trader-menu kf`).
+- **NU2** NuMenu screen (drawn with the menus' painter and node pool).
+- **NU3** NuMenu input: keys, mouse, test actions, logs.
+- **NU4** Launcher choice "Trader menu" (saved as `trader=nu|kf`).
+
+### As built (2026-10-07; headless runs, not played by you)
+
+- `src/game/numenu.rs`: the model (`model`: groups, rows, states;
+  `fill_all_plan`), the input system (PreUpdate, before
+  `buy_menu::menu_input`, which still clears the keys afterwards), the
+  drawing (called from `menus/mod.rs` `draw_menus` with the menus' painter
+  and node pool, so it uses KF's fonts and perk icons and sits above the
+  HUD). `buy_menu.rs`: `MenuKind`, `BuyMenu.kind`, `shop_price`,
+  `single_hidden`, `ShopStats` (+ a `shop_stats` log line at map load).
+  `main.rs`: `--trader-menu`. `waves.rs`: test action `end_wave`.
+  Launcher: "Trader menu" row in "Display, sound, menus" (column 3's rows
+  shrink a little on short windows so it fits at 720p).
+- REFILL ALL fills every weapon's ammo, the grenades and the M4 203's
+  grenades (one `ShopRequest::Ammo { fill: true }` each, in inventory
+  order); short of dosh, the shared logic buys what it can, in that order.
+- Prices are shown as KF shows them (int of the float): 500 x 0.6 shows
+  £299 and charges 299.99997, as KF (so `numenu_buy price=300` after
+  rounding the dosh difference).
+- The KF menu's log lines are identical before and after, except
+  `buy_menu open=true` now ends with `kind=kf|nu`.
+- Not tested: real keys and a real mouse (the virtual display has none:
+  the keys go through the same commands as the `nu:` actions, the clicks
+  through the same boxes as `nu:click:`); the cursor being freed and
+  captured again; a joining client's shopping (a host game was run).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

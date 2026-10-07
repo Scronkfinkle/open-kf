@@ -657,6 +657,14 @@ pub fn wave_timer(
         g.countdown = 1;
         runlog::kv("wave_countdown", "skipped=true");
     }
+    // Test action "end_wave" (ours): the running wave ends now (no more
+    // spawns, every zed dies), so the trader opens at the next ticks.
+    if g.phase == Phase::Wave && script.0.iter().any(|(f, a)| *f == frames.0 && a == "end_wave") {
+        g.total_max_monsters = 0;
+        g.next_squad.clear();
+        clear.write(ClearZeds);
+        runlog::kv("wave_end_test", &format!("wave={} living={}", g.wave_num + 1, g.living));
+    }
     if g.deaths_at_start.is_none() {
         g.deaths_at_start = Some(health.deaths);
         g.final_wave = data.waves.len();
