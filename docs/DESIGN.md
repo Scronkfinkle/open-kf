@@ -74,7 +74,8 @@ open-kf/                   Cargo workspace root (the repository)
     world/                 map loading, collision, zones, navigation, spawn volumes,
                            doors, breakable glass
     render/                skinned meshes, particles, decals, vision overlay, lighting
-    player/                walking, pawn collision, pain flash, armour
+    player/                walking, pawn collision, pain flash, armour, character,
+                           body/ (the third-person body: load, animate)
     weapons/               first-person weapons, firing, projectiles, bullet effects
       weapon/              the weapon in hand (mod.rs: types), load, input (firing,
                            reloading, switching), animate, inventory (and shop), sounds
@@ -3191,8 +3192,9 @@ What we do:
   Enter / test action `restart_game` (ours, kept). KF's RestartGame
   travels to the next map of the map list (bChangeLevels=True); we
   restart the waves on the same map (as before).
-- Not done: KF's behind view of your own body (we draw no player model:
-  the view stays where it was), the scoreboard ("Your squad survived!" /
+- The view goes behind the player's own body (ClientSetBehindView; see
+  "The player's third-person body").
+- Not done: the scoreboard ("Your squad survived!" /
   "Squad eliminated." from HUDBase, only when the scoreboard key is
   held: no scoreboard yet).
 
@@ -3781,9 +3783,170 @@ loading puts that material on slot SleeveNum of every weapon (start
 inventory and bought ones). Logged: `character` once, `weapon_sleeve`
 per weapon.
 
-Not done: the character's third-person body (we have none), voice packs.
-We do not read the user's own `User.ini` choice (KF would use it); the
-user asked for KF's default unless `--character` is given.
+Not done: voice packs (the body: next section). We do not read the
+user's own `User.ini` choice (KF would use it); the user asked for KF's
+default unless `--character` is given.
+
+## The player's third-person body (planned and built 2026-10-06; TP1-TP3 implemented, TP4 switched off)
+
+The player had only first-person arms. KF gives every player pawn a full
+body, hidden from its own first-person view but seen by everyone else,
+and by the player in behind view (the end of the match, F4).
+
+**What KF does (scripts and class defaults, checked 2026-10-06).**
+- **Body.** KFPawn.Setup -> SpeciesType.Setup: `LinkMesh(rec.Mesh)` and
+  SetTeamSkin: `Skins[0] = rec.BodySkin`, `Skins[1] = rec.FaceSkin`
+  (Corporal_Lewis: `KF_Soldier_Trip.British_Soldier1`,
+  `KF_Soldier_Trip_T.Uniforms.brit_soldier_I_cmb`,
+  `KFCharacters.GasMaskShader`). Team skins exist only for
+  Sergeant_Powers (not done: we use BodySkin). Pawn values: KFPawn
+  PrePivot (0,0,0), DrawScale 1, KFHumanPawn CollisionHeight 50 (the
+  actor's Location is the cylinder centre).
+- **Animation sets come from the weapon.** Inventory.AttachToPawn spawns
+  the weapon's `AttachmentClass` and attaches it to the bone
+  `KFPawn.GetWeaponBoneFor` = `WeaponR_Bone`. KFPawn.SetWeaponAttachment
+  then copies the attachment's names into the pawn: MovementAnims[0-3]
+  (forward, back, left, right; KF's are the `Jog*_<weapon>` runs),
+  TurnLeft/RightAnim, Crouch*, Walk*, Air/Takeoff/Land/Dodge, idles,
+  FireAnims / FireAltAnims / FireCrouch* [4], HitAnims[4],
+  PostFireBlendStand/CrouchAnim. The attachment mesh is its `Mesh`
+  default, or `MeshRef` (KFWeaponAttachment.PreloadAssets);
+  KFWeaponAttachment DrawScale 1; no relative offset.
+- **Firing** (KFWeaponAttachment.ThirdPersonEffects -> KFPawn.StartFiringX):
+  FireAnims[Rand(4)] (FireAltAnims for mode 1) on channel 1, alpha 1,
+  from FireRootBone (`CHR_Spine1`): PlayAnim once, or LoopAnim while
+  firing if the attachment's bRapidFire (bAltRapidFire). AnimEnd(1):
+  after a single shot, PostFireBlendStandAnim (tween 0.1), then
+  AnimBlendToAlpha(1, 0, 0.12).
+- **Reload.** KFWeapon.ReloadMeNow: `Instigator.SetAnimAction(
+  WeaponReloadAnim)` (a weapon class default): channel 1 from
+  FireRootBone, tween 0.1, FireState Ready -> blends out at its end.
+- **Weapon change.** Pawn.ChangedWeapon -> PlayWeaponSwitch ->
+  SetAnimAction('Weapon_Switch'): channel 1, blended out after its length
+  + 0.1 s (KFPawn.SetAnimAction).
+- **Hits.** Pawn.PlayHit -> xPawn.PlayTakeHit -> KFPawn.PlayDirectionalHit:
+  the direction to the hit location in the pawn's axes; dot X > 0.7
+  HitAnims[0], < -0.7 HitAnims[1], dot Y > 0 HitAnims[3], else [2];
+  PlayAnim tween 0.1.
+- **Death.** KF uses a Karma ragdoll (rec.Ragdoll, e.g.
+  `British_Soldier1`); xPawn.PlayDyingAnimation's fallback without one
+  is PlayDirectionalDeath: DeathB / DeathF / DeathL / DeathR by the
+  velocity or hit direction, tween 0.2.
+- **Movement, idle, turning, falling, aim pitch: native code** (Pawn's
+  bPhysicsAnimUpdate; "channels 2 through 11 are used for animation
+  updating"). Only the inputs are in the scripts: MovementAnims[4],
+  BlendChangeTime 0.25 (xPawn), TurnLeft/RightAnim "scaled by turn
+  speed", AirAnims / TakeoffAnims / LandAnims [Get4WayDirection],
+  AirStillAnim, TakeoffStillAnim, IdleWeaponAnim, bDoTorsoTwist and
+  `SetTwistLook(0, 256 x ViewPitch)` with SpineBone1 / SpineBone2
+  (`CHR_Spine2`, `CHR_Spine3`).
+- **Behind view.** KFGameType.CheckEndGame: ClientSetBehindView(true)
+  for every player. PlayerController.CalcBehindView: the view rotation,
+  the pawn's Location + 12 up, CameraDist (9) x CollisionRadius (20) =
+  180 units back, shortened by a 10-unit box trace. The `BehindView` /
+  `ToggleBehindView` commands work in standalone games; KF's User.ini
+  binds `F4=ToggleBehindView`.
+
+**What we do.**
+- `src/player/body/`: the body is a component on the pawn, not on the
+  camera. `PawnState` (on the pawn entity) holds what KF replicates to
+  draw a pawn: Location, Velocity, on the ground, view yaw and pitch
+  (Rotation, ViewPitch), the weapon class (the attachment), the shot
+  counter and firing mode (FlashCount / FiringMode), reload and weapon
+  switch counters (AnimAction), the last hit location and count
+  (TakeHitLocation), dead. `PawnBody` holds the animation state and the
+  drawn entities. The body systems read only `PawnState`; for the local
+  player, small "feed" systems copy the walker, the camera's look
+  angles, the weapon state and the hits into it. A remote player would
+  fill `PawnState` from the network instead (no networking written).
+  Today the local pawn is the camera entity (it carries the `Walker`);
+  the body's drawn root is a separate entity placed at the pawn's
+  Location with the pawn's yaw.
+- Reuses `SkinnedModel` (render/skinned.rs) with new functions to sample
+  a sequence's bone locals, blend locals (whole body or from a bone), and
+  pose from locals with extra bone turns (the aim pitch).
+- **Owner no-see.** The body and its weapon are hidden while the pawn is
+  the local player's own first-person view; shown in behind view and
+  when the view is on a zed.
+- **Behind view.** view_target.rs puts the camera behind the player's
+  pawn by CalcBehindView's rule (now, not only for zeds). Turned on by
+  the end of the match (as before), by F4 (KF's binding), by the test
+  flag `--behind-view` and the test action `behind_view` (toggle).
+
+Our guesses for the native parts (labelled in the code):
+- Movement: the four MovementAnims blended by the velocity's direction
+  in the pawn's axes (weights = the positive parts of forward / right,
+  normalised), all at one shared phase; play rate = speed / 200
+  (KFHumanPawn GroundSpeed), clamped 0.4 to 1.5; idle below 10 units/s;
+  switching between idle / moving / air crossfades over BlendChangeTime
+  0.25 s.
+- Turning in place: TurnLeft/RightAnim while standing and the yaw
+  changes faster than 4000 units/s (about 22 degrees/s); no torso twist
+  (the body faces the view yaw).
+- Aim pitch: the view pitch shared equally by SpineBone1 and SpineBone2,
+  turning around the pawn's right axis; clamped to +-60 degrees.
+- Jump and fall: TakeoffAnims[dir] (TakeoffStillAnim under 50 units/s)
+  once when leaving the ground going up, then AirAnims[dir] /
+  AirStillAnim; on landing LandAnims[dir] once (cut short by moving).
+- Hit reactions only when standing, over the whole body. KF plays them
+  on channel 0, under the native movement channels; we assume those
+  cover them while moving (not in the scripts).
+- Channel 1 has no tween in (anims start at full weight). A looping fire
+  animation's loop end counts as AnimEnd only once firing has stopped
+  (otherwise sustained fire would fade out each loop).
+- Rand(4) for the fire animation uses our own fixed-seed random numbers.
+
+Steps:
+- TP1 (done): the body (record mesh and skins), idle / 4-way run, the
+  weapon attachment in the right hand, owner no-see, behind view (end
+  screen, F4, `--behind-view`).
+- TP2 (done): firing, reloading, weapon switch, hit reactions.
+- TP3 (done): jump / fall / land, turning in place, aim pitch.
+- TP4 (tried, switched off): the death ragdoll. The zeds' ragdoll code
+  is reused (`zeds::ragdoll::spawn` with rec.Ragdoll `British_Soldier1`
+  from KF_Characters_Trip.ka, which loads: 16 parts, 15 joints). It does
+  not settle: in two attempts the body kept shaking and sliding (about
+  300 units in 5 s, parts at 1000-3000 units/s, joints pulled 20-30
+  units apart). Cause found, not fixed: at death the joints are already
+  past their limits (arm collars 19-23 degrees against a 6 degree cone,
+  right upper arm 50 against 45), and still 15-18 degrees past with the
+  collars put back to the mesh's reference pose. This ragdoll's joint
+  axes also disagree with the bones by up to 30 degrees at load (the
+  Clot's: 0), so it may have been made for another skeleton. Switched
+  off by `PLAYER_RAGDOLL` (animate.rs). The soldier meshes have no
+  DeathF/B/L/R (xPawn's fallback), so a dead body is hidden.
+- Not done: crouch (we have no crouching), walking (no walk key),
+  dual pistols' second gun (DualiesAttachment), the grenade throw anims
+  (KFPawn.HandleNadeThrowAnim's Frag_<weapon>), the attachment's own
+  effects (muzzle flash, shells, tracers from the third-person gun), team
+  skins (Sergeant_Powers), the torso twist, foot placement
+  (SPECIES_KFMaleHuman FeetBones), the attached emitter
+  (rec.AttachedEmitter), the face skin (the soldier meshes have one
+  material slot, so Skins[1] is unused), animations for other pawns
+  (only the local player has a `PawnState` today).
+
+**At the end of the match.** Lost: the view goes behind where the
+player died; the body is hidden (no ragdoll, see TP4). Won: KF's view is
+still on the dead Patriarch (ZombieBoss.Died sets it, ClientSetBehindView
+does not change the view target), so the player's own body is seen only
+if it is in that view, as in KF.
+
+Test tools: `--behind-view`, `--behind-yaw DEG` (KF's free camera,
+CameraDeltaRotation.Yaw, "for checking out player models and
+animations": 180 = from the front), test actions `behind_view`
+(toggle) and `turn:DEG` (turns the view DEG degrees over 1 s).
+
+Logs: `body_record` (record mesh and skins found), `body_loaded` (mesh,
+bones, scale, bones used, sequences), `body_anims_missing` (names the
+data asks for that the mesh lacks), `body_attachment` (per weapon class:
+attachment class, mesh, anim set), `body_attachment_held`, `body_anim`
+(each base or channel 1 change, with the reason), `body_state` (once a
+second: location, speed, base anim and weights, channel 1, pitch, turn
+rate, visible, hand and attachment bounds in actor space),
+`body_visible`, `behind_view` (on / off and why), `behind_view_camera`
+(once a second: distance), `scripted_turn`; with the ragdoll on:
+`body_ragdoll_loaded`, `body_ragdoll_started`,
+`body_ragdoll_limits_at_death`, `body_ragdoll` (every 0.5 s).
 
 ## Weapon flashlights (FL1 implemented 2026-10-06)
 

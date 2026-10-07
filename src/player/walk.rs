@@ -92,6 +92,10 @@ pub struct PlayerAddVelocity {
 /// KFPawn Mass.
 const PLAYER_MASS: f32 = 400.0;
 
+/// The walking systems (the pawn's movement for this frame).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WalkSystems;
+
 pub struct WalkPlugin;
 
 impl Plugin for WalkPlugin {
@@ -106,6 +110,7 @@ impl Plugin for WalkPlugin {
                 Update,
                 (toggle_mode, walk)
                     .chain()
+                    .in_set(WalkSystems)
                     .after(crate::engine::camera::look)
                     .before(crate::engine::camera::follow_sky),
             );

@@ -60,8 +60,33 @@ impl Plugin for FlyCameraPlugin {
         // Runs after map loading so the spawn point is known.
         app.init_resource::<ViewFov>()
             .add_systems(PostStartup, spawn_camera)
-            .add_systems(Update, (grab_cursor, look, fly, follow_sky, log_camera).chain());
+            .add_systems(Update, (grab_cursor, look, scripted_turn, fly, follow_sky, log_camera).chain());
     }
+}
+
+/// Test action `turn:DEG`: turns the view by DEG degrees over one second
+/// (positive = right, as Unreal yaw), as a mouse would; e.g. to see the
+/// body's turning-in-place animation.
+fn scripted_turn(
+    time: Res<Time>,
+    script: Res<crate::weapons::weapon::ScriptedInput>,
+    frames: Res<bevy::diagnostic::FrameCount>,
+    mut cams: Query<(&mut Transform, &mut FlyCamera)>,
+    mut turning: Local<Option<(f32, f32)>>,
+) {
+    for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+        if let Some(deg) = a.strip_prefix("turn:").and_then(|d| d.parse::<f32>().ok()) {
+            *turning = Some((deg.to_radians(), 1.0));
+            runlog::kv("scripted_turn", &format!("degrees={deg} seconds=1"));
+        }
+    }
+    let Some((rate, left)) = *turning else { return };
+    let dt = time.delta_secs().min(left);
+    for (mut t, mut cam) in &mut cams {
+        cam.yaw -= rate * dt;
+        t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
+    }
+    *turning = (left - dt > 0.0).then_some((rate, left - dt));
 }
 
 /// The player's field of view as KF defines it: horizontal degrees at 4:3

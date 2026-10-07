@@ -68,6 +68,12 @@ struct Args {
     game: waves::GameOptions,
     /// `--character NAME`: a KF character (System/*.upl); default Corporal_Lewis.
     character: Option<String>,
+    /// `--behind-view`: start in behind view (KF's BehindView command; F4
+    /// toggles), to see the player's own body.
+    behind_view: bool,
+    /// `--behind-yaw DEG`: turn the behind-view camera around the pawn
+    /// (KF's free camera, CameraDeltaRotation.Yaw; 180 = from the front).
+    behind_yaw: f32,
     /// `--perk NAME` and `--perk-level N` (0-6).
     perk: perks::PerkOptions,
 }
@@ -122,6 +128,11 @@ fn parse_args() -> Result<Args, String> {
                 args.game.start_wave = Some(n.parse().map_err(|_| format!("bad --wave value: {n}"))?);
             }
             "--fly" => args.fly = true,
+            "--behind-view" => args.behind_view = true,
+            "--behind-yaw" => {
+                let n = it.next().ok_or("--behind-yaw needs degrees")?;
+                args.behind_yaw = n.parse().map_err(|_| format!("bad --behind-yaw value: {n}"))?;
+            }
             "--character" => args.character = Some(it.next().ok_or("--character needs a name, e.g. Mr_Foster")?),
             "--perk" => {
                 let n = it.next().ok_or("--perk needs a name (medic, support, sharpshooter, commando, berserker, firebug, demolitions)")?;
@@ -181,7 +192,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--perk NAME] [--perk-level 0-6]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -246,6 +257,7 @@ fn main() -> AppExit {
         autowalk: args.autowalk,
     };
 
+    let (behind_view, behind_yaw) = (args.behind_view, args.behind_yaw);
     let window_size = args.window;
     let present_mode = if args.no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
     let mut app = App::new();
@@ -296,7 +308,8 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin))
-        .add_plugins(perks::PerksPlugin)
+        .add_plugins((perks::PerksPlugin, player::body::BodyPlugin))
+        .insert_resource(view_target::ViewTarget::starting_behind(behind_view, behind_yaw))
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)

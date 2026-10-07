@@ -425,17 +425,7 @@ pub(super) fn mesh_frame(c: &ZedClass, actor: &Transform) -> MeshFrame {
 
 /// Mesh space -> actor-local Unreal space for a zed class.
 pub(super) fn mesh_to_actor(c: &ZedClass) -> impl Fn(Vec3) -> Vec3 + '_ {
-    let r = c.model.mesh.rot_origin;
-    // Applied as stored: checked on the Clot, whose feet point along mesh +Y;
-    // RotOrigin yaw -16384 turns that to +X, the actor's forward.
-    let rot = coords::ue_rotation_matrix(Rotator {
-        pitch: r[0],
-        yaw: r[1],
-        roll: r[2],
-    });
-    let scale = Vec3::from_array(c.model.mesh.scale);
-    let origin = Vec3::from_array(c.model.mesh.origin);
-    move |p| c.pre_pivot + c.draw_scale * (rot * ((p - origin) * scale))
+    c.model.mesh_to_actor(c.pre_pivot, c.draw_scale)
 }
 
 /// KFMonster.PlayDyingAnimation's start motion: 0.6 x the zed's horizontal

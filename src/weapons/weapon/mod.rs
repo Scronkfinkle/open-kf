@@ -137,8 +137,41 @@ impl Plugin for WeaponPlugin {
                     .chain()
                     .after(crate::engine::camera::follow_sky),
             )
+            .add_systems(Update, publish_pawn_weapon.in_set(PublishPawnWeapon).after(weapon_input))
             .add_plugins(crate::weapons::flashlight::FlashlightPlugin);
     }
+}
+
+/// `publish_pawn_weapon`, for ordering.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PublishPawnWeapon;
+
+/// The weapon's part of the local pawn's `PawnState` (what KF's weapon
+/// attachment replicates): the class in hand (Pawn.ChangedWeapon ->
+/// AttachToPawn), the shot counter and firing mode (FlashCount /
+/// FiringMode; FlashCount is zeroed when firing stops), and reload starts
+/// (KFWeapon.ReloadMeNow: SetAnimAction(WeaponReloadAnim)).
+fn publish_pawn_weapon(
+    w: Option<Res<Weapons>>,
+    mut pawns: Query<&mut crate::player::body::PawnState, With<FlyCamera>>,
+    mut was_reloading: Local<bool>,
+) {
+    let (Some(w), Ok(mut s)) = (w, pawns.single_mut()) else { return };
+    let class = w.defs.get(w.current).map(|d| d.class.clone());
+    if s.weapon_class != class {
+        s.weapon_class = class;
+    }
+    let shots = w.fire_count as u32;
+    if shots != s.flash_count {
+        s.firing_mode = if w.firing[1] && !w.firing[0] { 1 } else { 0 };
+        s.flash_count = shots;
+    }
+    s.firing = w.firing[0] || w.firing[1];
+    let reloading = w.action == Action::Reload;
+    if reloading && !*was_reloading {
+        s.reloads = s.reloads.wrapping_add(1);
+    }
+    *was_reloading = reloading;
 }
 
 /// Scripted input for tests: at frame N do an action ("fire", "fire_down" /

@@ -422,6 +422,83 @@ impl SkinnedModel {
         self.mesh.tags.iter().find(|t| t.bone.eq_ignore_ascii_case(name)).map(|t| t.alias.as_str())
     }
 
+    /// Each bone's local rotation and position (relative to its parent,
+    /// Unreal mesh space) for `seq` at `frame`; the bind pose for bones the
+    /// animation lacks, or with no sequence. Used for blending several
+    /// sequences (the player's body).
+    pub fn sample_locals(&self, seq: Option<usize>, frame: f32) -> Vec<(Quat, Vec3)> {
+        self.mesh
+            .bones
+            .iter()
+            .enumerate()
+            .map(|(i, b)| match (seq, self.anim.as_ref(), self.bone_track[i]) {
+                (Some(s), Some(a), Some(t)) => {
+                    let seq = &a.sequences[s];
+                    let (q, p) = sample(&seq.tracks[t], frame, seq.track_time);
+                    (if i == 0 { q } else { q.conjugate() }, p)
+                }
+                _ => (bone_quat(i, b.rotation), Vec3::from_array(b.position)),
+            })
+            .collect()
+    }
+
+    /// Blends `other` into `into` by `alpha` (0 keeps `into`, 1 takes
+    /// `other`), for every bone, or only `root` and the bones under it
+    /// (UE2 AnimBlendParams from a bone).
+    pub fn blend_locals(&self, into: &mut [(Quat, Vec3)], other: &[(Quat, Vec3)], alpha: f32, root: Option<usize>) {
+        if alpha <= 0.0 {
+            return;
+        }
+        let alpha = alpha.min(1.0);
+        for (i, (dst, src)) in into.iter_mut().zip(other).enumerate() {
+            if root.is_some_and(|r| !self.is_under(i, r)) {
+                continue;
+            }
+            *dst = if alpha >= 1.0 { *src } else { (dst.0.slerp(src.0, alpha), dst.1.lerp(src.1, alpha)) };
+        }
+    }
+
+    /// Bone transforms in mesh space from local transforms, with extra
+    /// turns: `(bone, rotation)` rotates that bone and everything under it
+    /// about the bone's origin, the rotation given in mesh space (e.g. the
+    /// aim pitch on the spine).
+    pub fn pose_from_locals(&self, locals: &[(Quat, Vec3)], turns: &[(usize, Quat)]) -> Vec<(Quat, Vec3)> {
+        let mut out: Vec<(Quat, Vec3)> = Vec::with_capacity(locals.len());
+        for (i, b) in self.mesh.bones.iter().enumerate() {
+            let (lq, lp) = locals[i];
+            let (mut q, p) = if i == 0 {
+                (lq, lp)
+            } else {
+                let (pq, pp) = out[b.parent];
+                (pq * lq, pp + pq * lp)
+            };
+            for (bone, turn) in turns {
+                if *bone == i {
+                    q = *turn * q;
+                }
+            }
+            out.push((q, p));
+        }
+        out
+    }
+
+    /// UE2's mesh-to-actor transform (Unreal units, actor axes):
+    /// PrePivot + DrawScale x RotOrigin-rotation of ((point - Origin) x
+    /// Scale). Shared by zeds and the player's body.
+    pub fn mesh_to_actor(&self, pre_pivot: Vec3, draw_scale: f32) -> impl Fn(Vec3) -> Vec3 + use<> {
+        let r = self.mesh.rot_origin;
+        // Applied as stored: checked on the Clot, whose feet point along mesh +Y;
+        // RotOrigin yaw -16384 turns that to +X, the actor's forward.
+        let rot = crate::engine::coords::ue_rotation_matrix(ue_assets::properties::Rotator {
+            pitch: r[0],
+            yaw: r[1],
+            roll: r[2],
+        });
+        let scale = Vec3::from_array(self.mesh.scale);
+        let origin = Vec3::from_array(self.mesh.origin);
+        move |p| pre_pivot + draw_scale * (rot * ((p - origin) * scale))
+    }
+
     /// Bone transforms in mesh space for the reference (bind) pose.
     pub fn bind_pose(&self) -> Vec<(Quat, Vec3)> {
         self.pose_collapsed(None, 0.0, &[]).1

@@ -4884,3 +4884,48 @@ pan/oscillation not animated. Headless Stalkers still glow for a
 Commando (that is KF's script).
 **Next:** the Commando's zed health bars (KFVetCommando.SpecialHUDInfo,
 levels 1-6, 160-800 units), a separate HUD path.
+
+## 2026-10-06 The player's third-person body (TP1-TP3; ragdoll TP4 tried and switched off)
+
+**Changed:** new `src/player/body/` (mod.rs: `PawnState` / `PawnBody` and
+the local-player feed; load.rs: the record's mesh and skins, the pawn
+class's names and bones, each weapon's AttachmentClass; animate.rs: the
+animation rules, posing, the gun on WeaponR_Bone, owner no-see).
+`render/skinned.rs`: sample / blend bone locals, pose from locals with
+bone turns, `mesh_to_actor` (zeds now use it). `player/character.rs`:
+records keep Mesh, BodySkin, FaceSkin, Ragdoll; `pick` (no logging) split
+from `choose`. `engine/view_target.rs`: behind view on the player's own
+pawn (end of match, F4, `--behind-view`, `--behind-yaw DEG`, test action
+`behind_view`). `engine/camera.rs`: test action `turn:DEG`.
+`weapons/weapon/mod.rs`: `publish_pawn_weapon` (class in hand, shot
+counter, firing mode, reload starts). `player/walk.rs`: `WalkSystems`
+set. `main.rs`: the flags. DESIGN.md: "The player's third-person body".
+**Why:** your request: a full third-person body owned by the pawn (ready
+for other players later), seen in behind view and at the end of the match.
+**Tested how:** headless runs on KF-WestLondon read from
+`logs/latest.log` (`body_*`, `behind_view*`) and screenshots from behind,
+the side and the front (`--behind-yaw`), with Corporal_Lewis and
+Mr_Foster, the 9mm, the AK47 and the knife, standing, `--autowalk`,
+jumping, turning, looking up, firing, reloading, a Clot hitting, the
+lost and won end screens. 145 + 24 unit tests pass (3 new); clippy 0
+warnings.
+**Result:** body and skins load (Corporal_Lewis: 55 bones, 5740
+triangles, the gas mask in the body texture). Walking forward:
+`base=Move weights=[1,0,0,0]` at speed 198, JogF_Single9mm; standing:
+Idle_Single9mm; the 9mm in the right hand (actor space x 24-40, y 10-13,
+z 23-33). AK47: Weapon_Switch, Fire_AK47 looped while held (bRapidFire)
+then Blend_AK47, Reload_AK47. Knife: Attack2_Knife then Blend_Knife.
+Jump: JumpF_Takeoff, JumpF_Mid, JumpF_Land. Turning 90 degrees in 1 s:
+TurnR_Single9mm, back to idle 0.15 s after. Clot in front: HitF_Single9mm
+per hit (none in god mode, as in KF). Hidden in first person, shown after
+F4 (test action), hidden again after the second.
+**Still broken / not tested:** not played by you. The death ragdoll
+shakes and slides (two attempts, cause in DESIGN.md), so it is off and a
+dead body is hidden: the "wiped out" screen shows the spot, no corpse.
+After a won match the view stays on the dead Patriarch, as in KF. Not
+done: crouch, walk key, second gun of dual pistols, grenade throw
+anims, third-person muzzle flashes, team skins, torso twist, foot
+placement. Turning, pitch and blend values are guesses (labelled).
+Strafing / backwards running not tested (only `--autowalk` forward).
+**Next:** your look in behind view (F4); then decide on the ragdoll
+(needs a joint-limit fix for this skeleton) or the grenade throw anims.
