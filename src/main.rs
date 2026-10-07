@@ -66,6 +66,8 @@ struct Args {
     no_vsync: bool,
     /// `--mode waves|debug` and `--length short|normal|long`.
     game: waves::GameOptions,
+    /// `--character NAME`: a KF character (System/*.upl); default Corporal_Lewis.
+    character: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -118,6 +120,7 @@ fn parse_args() -> Result<Args, String> {
                 args.game.start_wave = Some(n.parse().map_err(|_| format!("bad --wave value: {n}"))?);
             }
             "--fly" => args.fly = true,
+            "--character" => args.character = Some(it.next().ok_or("--character needs a name, e.g. Mr_Foster")?),
             "--mute" => args.mute = true,
             "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
@@ -160,7 +163,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -202,6 +205,7 @@ fn main() -> AppExit {
     };
     let scripted = weapon::ScriptedInput(args.input.clone());
     let loadout = args.give.as_deref().map(weapon::WeaponLoadout::parse).unwrap_or_default();
+    let character = player::character::CharacterChoice(args.character.clone());
     let zed_settings = zed::ZedSettings {
         spawn_at_start: args.zed,
         gorefast_at_start: args.gorefast,
@@ -278,6 +282,7 @@ fn main() -> AppExit {
         .insert_resource(game_options)
         .insert_resource(scripted)
         .insert_resource(loadout)
+        .insert_resource(character)
         .insert_resource(zed_settings)
         .insert_resource(combat::PlayerHealth {
             god: args_god,

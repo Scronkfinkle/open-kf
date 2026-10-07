@@ -113,7 +113,7 @@ pub(super) fn give_weapon(
     };
     let started = std::time::Instant::now();
     let defaults = ClassDefaults::new(set);
-    let mut def = load_weapon(set, &defaults, class, meshes, images, materials)?;
+    let mut def = load_weapon(set, &defaults, class, assets.1.as_ref(), meshes, images, materials)?;
     spawn_parts(commands, &mut def, w.camera);
     let i = match w.defs.iter().position(|d| d.gone && d.class.eq_ignore_ascii_case(class)) {
         Some(i) => {

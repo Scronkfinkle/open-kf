@@ -586,10 +586,15 @@ pub(super) fn load_weapons(
     mut materials: ResMut<Assets<StandardMaterial>>,
     main_cam: Query<(Entity, &Transform), With<FlyCamera>>,
     loadout: Res<WeaponLoadout>,
+    character: Res<crate::player::character::CharacterChoice>,
 ) {
     let started = std::time::Instant::now();
     let set = PackageSet::new(&request.install_root);
     let defaults = ClassDefaults::new(&set);
+    // The player's character gives every weapon its sleeves.
+    let chosen = crate::player::character::choose(&set, &defaults, &request.install_root, character.0.as_deref());
+    let character_name = chosen.as_ref().map_or("none".to_string(), |c| c.name.clone());
+    let sleeve = chosen.and_then(|c| c.sleeve);
     let Ok((_, main_t)) = main_cam.single() else {
         return;
     };
@@ -627,7 +632,7 @@ pub(super) fn load_weapons(
     let mut defs = Vec::new();
     let mut failed = Vec::new();
     for class_path in &classes {
-        match load_weapon(&set, &defaults, class_path, &mut meshes, &mut images, &mut materials) {
+        match load_weapon(&set, &defaults, class_path, sleeve.as_ref(), &mut meshes, &mut images, &mut materials) {
             Ok(mut def) => {
                 spawn_parts(&mut commands, &mut def, cam);
                 runlog::kv(
@@ -706,7 +711,7 @@ pub(super) fn load_weapons(
     runlog::kv(
         "inventory",
         &format!(
-            "loaded={} failed={} failed_classes={:?} weight={weight} max_carry_weight={MAX_CARRY_WEIGHT} over_limit={} given_by_test_flag={} order={:?}",
+            "character={character_name} loaded={} failed={} failed_classes={:?} weight={weight} max_carry_weight={MAX_CARRY_WEIGHT} over_limit={} given_by_test_flag={} order={:?}",
             defs.len(),
             failed.len(),
             failed,
@@ -781,12 +786,14 @@ pub(super) fn load_weapons(
     runlog::kv("weapons_ready", &format!("seconds={:.2}", started.elapsed().as_secs_f64()));
     drop(defaults);
     kept.0 = Some(set);
+    kept.1 = sleeve;
 }
 
 pub(super) fn load_weapon(
     set: &PackageSet,
     defaults: &ClassDefaults,
     class_path: &str,
+    sleeve: Option<&ObjectHandle>,
     meshes: &mut Assets<Mesh>,
     images: &mut Assets<Image>,
     materials: &mut Assets<StandardMaterial>,
@@ -939,6 +946,19 @@ pub(super) fn load_weapon(
         _ => Vec::new(),
     };
 
+    // KFWeapon.BringUp -> HandleSleeveSwapping: Skins[SleeveNum] = the
+    // character's SleeveTexture (after PreloadAssets set the SkinRefs).
+    let mut named = named;
+    if let Some(sleeve) = sleeve {
+        let slot = int("SleeveNum", 1).max(0) as usize;
+        if named.len() <= slot {
+            named.resize(slot + 1, None);
+        }
+        named[slot] = Some(sleeve.clone());
+        runlog::kv("weapon_sleeve", &format!("class={class_path} sleeve_num={slot} texture={}", sleeve.path()));
+    } else {
+        runlog::kv("weapon_sleeve", &format!("class={class_path} sleeve_num=none texture=weapon_default"));
+    }
     let model = SkinnedModel::load(
         set,
         &mesh_h,

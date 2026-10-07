@@ -4704,3 +4704,43 @@ resets besides health, armour, dosh and zeds, e.g. weapons, not checked);
 the Patriarch's laugh after you die in the boss wave not tested; the
 scoreboard text ("Squad eliminated.") is not done.
 **Next:** you look at both screens in a real window.
+
+## 2026-10-06 The player's character: the same sleeves on every weapon
+
+**Changed:** new `src/player/character.rs` (reads KF's character records,
+`System/*.upl`, picks the character as KFPawn.Setup does, reads the
+species' SleeveTexture); `src/weapons/weapon/load.rs` (every weapon gets
+that texture on its SleeveNum slot, as KFWeapon.HandleSleeveSwapping
+does; logs `character` and `weapon_sleeve`), `inventory.rs` and `mod.rs`
+(bought weapons get it too); `src/main.rs` (`--character NAME`);
+`docs/DESIGN.md` (new section), `README.md`.
+**Why:** switching weapons changed the arms and sleeves: each weapon drew
+its own default skin. In KF the sleeves come from the player's
+character.
+**Tested how:** headless runs on KF-WestLondon: `--give all` (48
+weapons) logging the texture drawn on each weapon's sleeve slot;
+`--character Mr_Foster`, `baddest_santa` (lower case) and `Nobody`
+(unknown); one run per character for all 56 characters on KF-Farm;
+screenshots of the 9mm, shotgun and syringe (Mr_Foster and the
+default) and the ZED Gun. `cargo clippy --release --workspace`, `cargo
+test --release --workspace`.
+**Result:** default: `character name=Corporal_Lewis
+species=kfmod.SoldierSpecies
+sleeve_texture=KF_Weapons_Trip_T.hands.hands_1stP_military_diff`; all
+48 weapons draw that texture on their sleeve slot (SleeveNum 1, 2 or 3
+by weapon; 0 weapons without the slot). Mr_Foster: all 7 carried weapons draw
+`KF_Weapons2_Trip_T.hands.Office_Worker_Hands_1st_P`. Unknown name: a
+warning listing the 56 valid names, then Corporal_Lewis
+(`fallback=default`). All 56 characters resolve a sleeve texture, no
+fallbacks. Screenshots: camouflage sleeves and fingerless gloves on the
+9mm, shotgun and syringe (default); dark suit sleeves on all with
+Mr_Foster; the ZED Gun's hands show the default gloves (README said
+its sleeves drew white; that note is removed, not checked by you). Clippy 0 warnings;
+tests 118 + 24 pass.
+**Still broken / not tested:** not play-tested by you; the character's
+third-person body and voice are not used (we have no player body); the
+character you picked in KF's own menu (User.ini, Mr_Foster on this
+machine) is not read: KF's default is used unless `--character` is
+given, as you asked. Weapons not looked at in screenshots: all but the
+9mm, shotgun, syringe and ZED Gun.
+**Next:** —

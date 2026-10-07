@@ -804,9 +804,10 @@ impl WeaponDef {
 }
 
 /// The package set `load_weapons` used, kept to load weapons bought later
-/// (it holds `Rc`s: a non-send resource).
+/// (it holds `Rc`s: a non-send resource), and the character's sleeve
+/// texture every weapon gets (KFWeapon.HandleSleeveSwapping).
 #[derive(Default)]
-pub struct WeaponAssets(Option<PackageSet>);
+pub struct WeaponAssets(Option<PackageSet>, Option<ObjectHandle>);
 
 type MeshAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<StandardMaterial>>);
 

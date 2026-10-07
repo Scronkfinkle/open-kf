@@ -3748,6 +3748,43 @@ skin on the player's third-person body (InjuredOverlay), the bullet
 whiz blur (HandleWhizSound; not checked whether the Patriarch's
 chaingun triggers it).
 
+## The player's character and first-person sleeves (implemented 2026-10-06)
+
+Bug: each weapon drew its arms with its own default skin, so switching
+weapons changed the sleeves. In KF the sleeves come from the player's
+character.
+
+**How KF does it.**
+- Characters are records in `System/*.upl` files (xUtil.PlayerRecord):
+  `Player=(DefaultName="Corporal_Lewis",...,Species=KFmod.SoldierSpecies,...)`.
+  56 files, one record each. The name the player picked is
+  `[DefaultPlayer] Character=` in the user's ini.
+- KFPawn.Setup: if the record has no species, or the species is not a
+  SPECIES_KFMaleHuman, use `GetDefaultCharacter()` = "Corporal_Lewis"
+  (also the value in defuser.ini, KF's fresh-install defaults).
+  FindPlayerRecord compares names ignoring case; an unknown name gives an
+  empty record, so the default character.
+- Each species class has `SleeveTexture` (KFSpeciesType, default
+  `KF_Weapons_Trip_T.hands.hands_1stP_military_diff`; e.g.
+  CivilianSpeciesThree, Mr_Foster's, sets
+  `KF_Weapons2_Trip_T.hands.Office_Worker_Hands_1st_P`).
+- KFWeapon.BringUp calls HandleSleeveSwapping: `Skins[SleeveNum] =
+  SleeveTexture` (SleeveNum defaults to 1 in KFWeapon; weapons override
+  it). It runs after PreloadAssets has set the SkinRefs skins, so the
+  sleeve wins.
+
+**How we do it.** `src/player/character.rs` reads the .upl records and
+picks the character (`--character NAME`, else Corporal_Lewis; an unknown
+name logs the valid names and falls back to the default, as KF would).
+It reads the species' SleeveTexture through the class defaults. Weapon
+loading puts that material on slot SleeveNum of every weapon (start
+inventory and bought ones). Logged: `character` once, `weapon_sleeve`
+per weapon.
+
+Not done: the character's third-person body (we have none), voice packs.
+We do not read the user's own `User.ini` choice (KF would use it); the
+user asked for KF's default unless `--character` is given.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

@@ -1,8 +1,9 @@
 //! The player's body: walking and jumping, pawn collision, the pain flash, armour,
-//! the hit camera (view shake, hit blur).
+//! the hit camera (view shake, hit blur), the character (sleeves).
 
 pub mod walk;
 pub mod pawn_collision;
 pub mod pain;
 pub mod armour;
 pub mod hit_cam;
+pub mod character;
