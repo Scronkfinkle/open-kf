@@ -4579,3 +4579,40 @@ target here (KF keeps that actor; minor); the canvas blending and text
 width are assumptions (native code); not compared with a real-game
 screenshot of the welder screen.
 **Next:** —
+
+## 2026-10-06 T4a: the trader woman in each shop
+
+**Changed:** new `src/game/shopkeeper.rs` (loads and animates her);
+`src/world/map.rs` (the map loader calls it, every mode);
+`src/game/mod.rs`, `src/main.rs` (module and plugin);
+`docs/DESIGN.md` (T4 plan and as built), `docs/map-audit.md`
+(WeaponLocker row), `README.md` (works list).
+**Why:** the shops had no trader. In KF she is a WeaponLocker actor the
+map places in each shop (mesh KF_Soldier_Trip.ShopKeeper_Trip); her
+script loops `Idle` forever (the shop-open `Gesture` is commented out in
+KF's script) and she is never hidden, only culled beyond the map's
+CullDistance for her.
+**Tested how:** headless runs (`scripts/headless.sh`) on KF-WestLondon,
+KF-Suburbia, KF-Departed, KF-Farm, KF-Manor, KF-FilthsCross,
+KF-Hospitalhorrors, KF-MoonBase (logs); a wave-mode run on
+KF-WestLondon; screenshots on KF-WestLondon (two, 120 frames apart)
+and KF-FilthsCross. `cargo clippy --release --workspace`, `cargo test
+--release --workspace`.
+**Result:** `shopkeepers_ready count=4` on KF-WestLondon (5 Farm, 5
+Manor, 5 FilthsCross, 6 Hospitalhorrors, 4 Suburbia, 4 Departed, 0
+MoonBase, which has none). Her model: 55 bones, one sequence Idle (301
+frames at 30/s). Map outfits load (`skins=["SuburbiaTrader_DIF"]`;
+FilthsCross 5 different ones); KF-Departed's 1.1 scale is applied. Feet
+1-6 units above the bottom of her collision cylinder (Manor 14 below,
+its own smaller cylinder). `shop_traders ShopVolume3:[WeaponLocker2@41]
+ShopVolume1:[WeaponLocker0@36] ShopVolume4:[WeaponLocker3@121]
+ShopVolume0:[WeaponLocker1@37]`: one trader per shop. `shopkeeper_anim`
+shows the frame advancing and `drawn=false` beyond 1000 units. The
+screenshots show her standing upright behind the counter, facing the
+customer, in a different pose in the second shot; on KF-FilthsCross in
+the map's red outfit. Clippy 0 warnings; tests 140 pass.
+**Still broken / not tested:** her collision cylinder (you can walk
+through her where the map leaves it on); she is lit like the zeds, not
+by the map's baked light (L4); the HUD trader portrait. Not looked at by
+you; not checked against the real game (pose, height, brightness).
+**Next:** T4b, her collision cylinder.

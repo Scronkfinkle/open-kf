@@ -2665,6 +2665,56 @@ KFGameLength=0) is Short.
       ArmorDigits = ShieldStrength always, as an int).
     - Logs: `shop_vest` (bought, cost, armour), `shop_refused`
       (request=vest), and `player_hit` gains armour before / after.
+- **T4, the trader woman (T4a done 2026-10-06).** The woman behind each shop's counter. Plan
+  (from WeaponLocker, ShopVolume, KFPlayerController
+  .ClientLocationalVoiceMessage, KFVoicePack, checked 2026-10-06):
+  - She is a **WeaponLocker** actor the level designer placed in each
+    shop (`placeable`, extends Actor). Every map with shops has them:
+    KF-WestLondon 4, KF-Manor 5, KF-Farm 5, ... (a scan of all 39 map
+    files: 35 maps have them; KF-MoonBase and KF-A-AliensTunnelBeta1-2
+    have shops but no trader, KF-Menu and KFintro no shops). The other
+    class, KFMod.Trader (a Decoration with the KFMapObjects.Trader
+    mesh), is placed in no map: not used.
+  - Class defaults: Mesh KF_Soldier_Trip.ShopKeeper_Trip (55 bones, one
+    material, one animation), DrawType Mesh, collision cylinder 15 x 50
+    (bCollideActors, bBlockActors). Per actor the maps set Location,
+    Rotation, CullDistance (most 1000; 300 to 7000), sometimes
+    DrawScale3D (KF-Departed, KF-Steamland 1.1), Skins (KF-FilthsCross,
+    KF-Hospitalhorrors, KF-Suburbia: other outfits), and often
+    bCollideActors / bBlockActors false.
+  - Behaviour: PostBeginPlay and AnimEnd: `LoopAnim('Idle')`, so she
+    idles forever. SetOpen (a player touching the open shop) only
+    flips bClientTrigger; ClientTrigger's `PlayAnim('Gesture')` is
+    commented out in KF's script, so nothing visible changes. She is
+    never hidden: visible in waves and trader time alike, open shop or
+    not. PreBeginPlay: every ShopVolume within 1000 units (visible from
+    her) gets her as MyTrader (used for the buy menu's tag and the
+    locational voice).
+  - Voice: she says nothing herself. The radio lines are not
+    locational; the in-shop Welcome (message 7, the only locational
+    one, played at MyTrader's location) has no sender pawn and, by our
+    reading (S5e), plays nothing. So no sound work in T4.
+  - **T4a (done):** load her mesh, skins and Idle, spawn one per
+    WeaponLocker (all modes: she is map content), placed like a zed
+    (RotOrigin, mesh Origin and Scale, DrawScale x DrawScale3D, PrePivot,
+    the actor's full Rotation), loop Idle at its own rate, hide beyond
+    CullDistance (as the map decals do; distance to the actor's
+    Location). Skinned on the CPU only while within CullDistance.
+    Logs `shopkeeper_model`, `shopkeeper_spawned` (with her feet height
+    against the floor of her collision cylinder), `shopkeepers_ready`,
+    `shop_traders` (MyTrader per shop, distance only: the sight test is
+    not done) and `shopkeeper_anim` every 5 s.
+    As built (`game/shopkeeper.rs`, called from the map loader): her
+    mesh has one sequence, Idle (301 frames at 30 a second, 10 s), mesh
+    Origin (0, 0, 44.5), RotOrigin yaw -16384. Her feet come out 1 to 6
+    units above the bottom of her collision cylinder on most maps
+    (KF-Manor: 14 below; there the map shrinks her CollisionHeight).
+    One model is loaded per distinct (mesh, Skins) pair. Bevy's
+    VisibilityRange measures from the camera to the mesh entity, close
+    to KF's distance to her Location (assumed equivalent).
+  - **Later (T4b):** her collision cylinder (blocks the player where the
+    map leaves it on), baked actor lighting (L4: she is lit like the
+    zeds for now), the HUD's trader portrait (DisplayTraderPortrait).
 
 **G1 as built (`game.rs`).** `load_game_data` (called by the map loader
 in wave mode) reads the length's WaveInfo array (WaveMask int,

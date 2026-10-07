@@ -32,7 +32,8 @@ inside static meshes.
 
 | Emitter (placed) | 34 / 988 | fires, smoke, ambient effects | M5: loaded from the map and running |
 | Projector, KFBloodSplatter | 22 / 322, 29 / 1176 | placed decals: blood, scorch marks, light patterns | M6: built at load; only on solid surfaces |
-| ShopVolume, KFTraderDoor, Teleporter, KFTraderTeleporter | 34 maps | trader rooms open between waves; players left inside are teleported out | T2a (2026-10-05): chosen, opened and closed as KF; doors move and block; boot to the shop's teleporters. Not yet: the trail, the arrow, the trader (WeaponLocker) animation, buying (T3). KF-Transit has 2 shops without teleporters (KF cannot boot there either); KF-Suburbia's shops also trigger event counters (event system not simulated) |
+| ShopVolume, KFTraderDoor, Teleporter, KFTraderTeleporter | 34 maps | trader rooms open between waves; players left inside are teleported out | T2a (2026-10-05): chosen, opened and closed as KF; doors move and block; boot to the shop's teleporters. The trail, the arrow and buying: T2b, T3. KF-Transit has 2 shops without teleporters (KF cannot boot there either); KF-Suburbia's shops also trigger event counters (event system not simulated) |
+| WeaponLocker (the trader woman) | 35 maps (not KF-MoonBase, KF-A-AliensTunnelBeta1-2) | stands in each shop looping Idle, always shown; blocks pawns where the map leaves her collision on | T4a (2026-10-06): mesh, map skins, DrawScale3D, Idle loop, CullDistance. Not yet: her collision cylinder (15 x 50) |
 
 ## Not simulated, by how much it matters
 

@@ -574,6 +574,8 @@ fn load_map(
         commands.insert_resource(crate::game::trader::load_shops(&class_defaults, &lp));
         commands.insert_resource(crate::game::buy_menu::load_catalogue(&set, &class_defaults, &lp));
     }
+    // The trader woman in each shop (WeaponLocker): map content, every mode.
+    crate::game::shopkeeper::spawn_shopkeepers(&mut commands, &set, &class_defaults, &lp, &mut meshes, &mut images, &mut materials);
     let mut nav = crate::world::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg));
     nav.add_jump_pads(&lp.pkg);
     commands.insert_resource(nav);
