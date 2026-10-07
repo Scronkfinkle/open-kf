@@ -5474,3 +5474,29 @@ console window. No app icon. No GitHub Actions.
 **Next:** Optionally GitHub Actions that run these builds on a tag and
 attach the files to a release.
 
+## 2026-10-07 Find Killing Floor through Steam (steamlocate)
+
+**Changed:** `crates/ue-assets`: new dependency steamlocate 2.1.1;
+`install.rs` searches `KF_ROOT`, then `references/killing_floor`, then app
+1250 in every Steam install's libraries (replaces the fixed Steam paths);
+`InstallError::NotFound` also reports what each Steam install said.
+`packaging/flatpak/open-kf-wrapper.sh` no longer sets `KF_ROOT`. README and
+`docs/DESIGN.md` ("Release builds") updated.
+**Why:** Players should not need environment variables; Steam libraries on
+other drives were not found.
+**Tested how:** Ran the game headless from `work/tmp/steamtest` (no
+`references/` there). Ran with HOME set to an empty folder. Rebuilt the
+Flatpak and ran it with a test home holding only a copy of
+`libraryfolders.vdf` and the real library granted read-only. Built the
+Windows exe and ran it under Wine (no Steam there). `cargo test -p
+ue-assets`, clippy.
+**Result:** Native: `install="/home/jesse/.local/share/Steam/steamapps/common/KillingFloor"`,
+`exit=Success`. Empty home: "Steam: not found". Flatpak: same install path
+found through the library list, `exit=Success`. Wine: "Steam: not found
+(Failed locating the steam dir ...)", no crash. Tests 24/24, 0 clippy
+warnings.
+**Still broken / not tested:** Steam on real Windows (registry lookup). A
+real library on another drive (the Flatpak test imitates one). Flatpak
+needs `flatpak override` for libraries outside the Steam folders.
+**Next:** GitHub Actions for releases, if wanted.
+

@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 # Only used by the kfpkg tool to write PNGs for inspection.
 png = "0.18.1"
+steamlocate = "2.1.1"

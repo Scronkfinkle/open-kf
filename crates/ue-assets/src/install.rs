@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 /// Environment variable that overrides install discovery.
 pub const ROOT_ENV: &str = "KF_ROOT";
 
+/// Killing Floor's Steam app id.
+pub const STEAM_APP_ID: u32 = 1250;
+
+/// Install used during development, relative to the current directory.
+const DEV_ROOT: &str = "references/killing_floor";
+
 /// A located Killing Floor install.
 #[derive(Debug, Clone)]
 pub struct Install {
@@ -18,8 +24,8 @@ pub struct Install {
 pub enum InstallError {
     /// `KF_ROOT` was set but does not point at a valid install.
     BadOverride(PathBuf),
-    /// No candidate path held a valid install.
-    NotFound(Vec<PathBuf>),
+    /// No valid install: the paths tried, and what the Steam search found.
+    NotFound { tried: Vec<PathBuf>, steam: Vec<String> },
 }
 
 impl fmt::Display for InstallError {
@@ -30,10 +36,13 @@ impl fmt::Display for InstallError {
                 "{ROOT_ENV}={} does not contain System/Build.ini",
                 p.display()
             ),
-            InstallError::NotFound(tried) => {
+            InstallError::NotFound { tried, steam } => {
                 write!(f, "Killing Floor install not found. Tried:")?;
                 for p in tried {
                     write!(f, "\n  {}", p.display())?;
+                }
+                for note in steam {
+                    write!(f, "\n  Steam: {note}")?;
                 }
                 write!(f, "\nSet {ROOT_ENV} to the install folder.")
             }
@@ -45,17 +54,26 @@ impl std::error::Error for InstallError {}
 
 impl Install {
     /// Checks `KF_ROOT` first, then `references/killing_floor` in the current
-    /// directory, then the usual Steam library locations.
+    /// directory, then every Steam install and library that has Killing Floor
+    /// (found with steamlocate: native, Flatpak and Snap Steam on Linux, the
+    /// registry on Windows, and library folders on other drives).
     pub fn discover() -> Result<Install, InstallError> {
         if let Some(root) = std::env::var_os(ROOT_ENV) {
             let root = PathBuf::from(root);
             return Install::open(&root).ok_or(InstallError::BadOverride(root));
         }
-        let candidates = default_candidates();
-        candidates
-            .iter()
-            .find_map(|p| Install::open(p))
-            .ok_or(InstallError::NotFound(candidates))
+        let mut tried = vec![PathBuf::from(DEV_ROOT)];
+        if let Some(install) = Install::open(&tried[0]) {
+            return Ok(install);
+        }
+        let (steam_dirs, steam) = steam_candidates();
+        for dir in steam_dirs {
+            if let Some(install) = Install::open(&dir) {
+                return Ok(install);
+            }
+            tried.push(dir);
+        }
+        Err(InstallError::NotFound { tried, steam })
     }
 
     /// Returns `Some` if `root` looks like a Killing Floor install.
@@ -74,18 +92,32 @@ impl Install {
     }
 }
 
-fn default_candidates() -> Vec<PathBuf> {
-    let mut out = vec![PathBuf::from("references/killing_floor")];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        for steam in [".steam/steam", ".local/share/Steam"] {
-            out.push(home.join(steam).join("steamapps/common/KillingFloor"));
+/// Killing Floor folders in every Steam install found, plus notes on
+/// Steam installs that do not have it (for the error message).
+fn steam_candidates() -> (Vec<PathBuf>, Vec<String>) {
+    let mut dirs = Vec::new();
+    let mut notes = Vec::new();
+    let steams = match steamlocate::locate_all() {
+        Ok(steams) => steams,
+        Err(e) => {
+            notes.push(format!("not found ({e})"));
+            return (dirs, notes);
+        }
+    };
+    if steams.is_empty() {
+        notes.push("not found".to_string());
+    }
+    for steam in steams {
+        match steam.find_app(STEAM_APP_ID) {
+            Ok(Some((app, library))) => dirs.push(library.resolve_app_dir(&app)),
+            Ok(None) => notes.push(format!(
+                "{}: Killing Floor (app {STEAM_APP_ID}) is not installed",
+                steam.path().display()
+            )),
+            Err(e) => notes.push(format!("{}: {e}", steam.path().display())),
         }
     }
-    out.push(PathBuf::from(
-        r"C:\Program Files (x86)\Steam\steamapps\common\KillingFloor",
-    ));
-    out
+    (dirs, notes)
 }
 
 #[cfg(test)]

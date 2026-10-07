@@ -5451,7 +5451,8 @@ or `unknown` when the shared logic refused for another reason),
 Goal: build files we can attach to a GitHub release, for several platforms,
 from this Linux machine. Releases contain only our program. Killing Floor's
 files are never bundled: the game finds the player's own install at run time
-(`KF_ROOT`, then the Steam folders, see `crates/ue-assets/src/install.rs`).
+(`KF_ROOT`, then `references/killing_floor`, then Steam, see
+`crates/ue-assets/src/install.rs`).
 
 - **R1, Linux Nix package** (`nix build .#open-kf`): the game built by Nix,
   with the window/sound/GPU libraries written into its library path (rpath),
@@ -5492,12 +5493,21 @@ Results (2026-10-07):
   listing monitor modes (`has_flag(mode.dmFields, REQUIRED_FIELDS)`) because
   of Wine's fake display modes. In a Wine virtual desktop
   (`wine explorer /desktop=kf,1920x1080 open-kf.exe`) it runs.
-- The Flatpak uses runtime 26.08. Bundle 23 MB. The Steam Flatpak's folder
-  is not in the game's install search, so the wrapper sets `KF_ROOT` to it
-  when it exists. Symlinks outside the granted folders do not resolve in
+- The Flatpak uses runtime 26.08. Bundle 23 MB. Symlinks outside the granted folders do not resolve in
   the sandbox (a test with `references/killing_floor` failed until the
   real path was given).
 - `scripts/headless.sh` takes `HEADLESS_BIN=path` to test a release build.
+
+Steam install search (2026-10-07): after `KF_ROOT` and
+`references/killing_floor`, `Install::discover` asks the steamlocate crate
+for every Steam install (Linux: native, Flatpak, Snap; Windows: the
+registry) and looks up app 1250 in each one's library list
+(`libraryfolders.vdf`), so libraries on other drives are found. This
+replaced the fixed list of Steam paths and the Flatpak wrapper's `KF_ROOT`
+setting. If nothing is found, the error lists each Steam install and why
+(not installed, or no Steam). Inside the Flatpak, a library outside the
+granted Steam folders cannot be read until the player grants it with
+`flatpak override`.
 
 ## Later milestones (rough order, to be planned in detail when reached)
 

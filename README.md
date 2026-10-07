@@ -14,8 +14,9 @@ See `docs/DESIGN.md` for how it works and the plan.
 ## Requirements
 
 - An installed copy of Killing Floor (Steam). Found automatically at
-  `references/killing_floor` or the usual Steam folders. Set `KF_ROOT` to
-  override. **This will not work if you don't have the original game assets**
+  `references/killing_floor`, or through Steam (every Steam library,
+  including the Steam Flatpak and libraries on other drives). Set `KF_ROOT`
+  to override. **This will not work if you don't have the original game assets**
 - Nix with flakes. `direnv allow` or `nix develop` gives you Rust and the system
   libraries Bevy needs. The flake files must be tracked by git (`git add flake.nix
   flake.lock`) or Nix will not see them.
@@ -114,7 +115,9 @@ Ports, what is shared, and known limits: [MULTIPLAYER.md](MULTIPLAYER.md).
 ## Building releases
 
 Release files contain only Open KF. Players need their own Killing Floor
-install (found in the Steam folders, or set `KF_ROOT` to its folder).
+install (found through Steam, or set `KF_ROOT` to its folder). The Flatpak
+can only read the usual Steam folders; for a Steam library elsewhere, run
+`flatpak override --user --filesystem=/path/to/library:ro io.github.scronkfinkle.OpenKF`.
 
 ```sh
 nix build .#open-kf                    # Linux (Nix): result/bin/open-kf
