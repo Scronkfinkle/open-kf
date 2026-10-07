@@ -14,9 +14,9 @@ A complete rewrite of the killing floor games engine to play with its assets
    current task requires.
 4. **Do not touch anything outside this project folder** unless I explicitly name
    the path. This includes my game installs: read them, never write to them.
-5. **Single-player and offline only.** If this touches online play, anti-cheat, or
-   DRM, stop and tell me. Offline play with anti-cheat switched off through the
-   game's own option is fine. Bypassing anti-cheat is never fine.
+5. **No anti-cheat or DRM bypassing.** If something touches anti-cheat or DRM,
+   stop and tell me. Switching anti-cheat off through the game's own option is
+   fine. Bypassing anti-cheat is never fine.
 6. **Never put credentials in the repo or in any file you can read:** no API keys,
    no tokens, no passwords.
 
