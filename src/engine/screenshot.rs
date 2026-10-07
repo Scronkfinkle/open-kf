@@ -81,7 +81,11 @@ pub fn take_screenshots(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     *counter += 1;
-    let name = format!("{}-{stamp}-{}", request.map, *counter);
+    // Two games running at once (network tests) add their log's tag.
+    let name = match runlog::tag() {
+        Some(tag) => format!("{}-{tag}-{stamp}-{}", request.map, *counter),
+        None => format!("{}-{stamp}-{}", request.map, *counter),
+    };
     let png = dir.join(format!("{name}.png"));
     let args = camera_args(t, cam);
     let repro = format!("cargo run --release -- --map {} --camera {args} --screenshot 60", request.map);

@@ -60,6 +60,11 @@ impl Default for ZedTime {
 }
 
 impl ZedTime {
+    /// The game speed zed time asks for (1.0 outside zed time).
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
     fn frand(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 17;

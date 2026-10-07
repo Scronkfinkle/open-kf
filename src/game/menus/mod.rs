@@ -261,6 +261,7 @@ fn menu_input(
     data: Res<MenuData>,
     mut exit: MessageWriter<AppExit>,
     mut start_vet: Local<Option<crate::game::perks::Vet>>,
+    (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
 ) {
     // The perk the weapons were loaded with (start items), for Ready.
     let had = *start_vet.get_or_insert(vet.vet);
@@ -289,11 +290,16 @@ fn menu_input(
     }
     let was_open = !state.stack.is_empty();
     for id in ids {
-        apply(&id, &mut state, &vet, &data, had, &mut perk_requests, &mut new_pawn, &mut change_char, &mut exit, &mut cursor);
+        apply(&id, &mut state, &vet, &data, had, &mut perk_requests, &mut new_pawn, &mut change_char, &mut exit, &mut cursor, &mut net);
+    }
+    // Network game: the server started the match and this player is ready.
+    if net_start.read().count() > 0 && state.lobby_open() {
+        start_match(&mut state, &vet, &data, had, &mut new_pawn, &mut cursor, "net_match_started");
     }
     // KF pauses a single-player game while the mid-game menu is open
     // (SetPause(true) when NetMode is NM_StandAlone; closing it unpauses).
-    let paused = state.stack.contains(&Page::Pause);
+    // A network game never pauses.
+    let paused = state.stack.contains(&Page::Pause) && !net.active;
     if paused != virt.is_paused() {
         if paused {
             virt.pause();
@@ -322,6 +328,7 @@ fn apply(
     change_char: &mut MessageWriter<crate::player::character::ChangeCharacter>,
     exit: &mut MessageWriter<AppExit>,
     cursor: &mut CursorOptions,
+    net: &mut crate::net::lobby::NetLobby,
 ) {
     let top = state.top();
     let on = |p: Page| top == Some(p);
@@ -346,16 +353,19 @@ fn apply(
             }
             runlog::kv("menu_close", "page=Pause reason=escape");
         }
+        "lobby.ready" if on(Page::Lobby) && net.active => {
+            // LobbyFooter.OnFooterClick in a network game: Ready
+            // (bReadyToPlay, sent to the server) or, when ready, Unready
+            // (ServerUnreadyPlayer). The lobby stays until the server
+            // starts the match (net/lobby.rs sends StartLocalMatch).
+            net.want_ready = !net.local_ready;
+            runlog::kv("lobby_ready", &format!("player=\"{}\" perk={} ready={} net=true", data.player_name, vet.vet.label(), net.want_ready));
+        }
         "lobby.ready" if on(Page::Lobby) => {
             // LobbyFooter.OnFooterClick: SendSelectedVeterancyToServer(true),
             // ServerRestartPlayer (the pawn spawns), bReadyToPlay; solo: the
             // match starts and the menu closes.
-            state.stack.retain(|p| *p != Page::Lobby);
-            new_pawn.write(crate::game::perks::NewPawn { had });
-            cursor.grab_mode = CursorGrabMode::Locked;
-            cursor.visible = false;
-            runlog::kv("lobby_ready", &format!("player=\"{}\" perk={} ", data.player_name, vet.vet.label()));
-            runlog::kv("menu_close", "page=Lobby reason=ready");
+            start_match(state, vet, data, had, new_pawn, cursor, "ready");
         }
         "lobby.perks" if on(Page::Lobby) => {
             // KFProfilePage: the list starts on the selected perk.
@@ -368,7 +378,7 @@ fn apply(
         "lobby.disconnect" if on(Page::Lobby) => {
             // KF: DISCONNECT and back to the main menu; we have none.
             runlog::kv("menu_quit", "button=Disconnect");
-            exit.write(AppExit::Success);
+            quit(exit, net);
         }
         "profile.save" if on(Page::Profile) => {
             // KFTab_Profile.SaveSettings: ChangeCharacter if sChar changed,
@@ -406,7 +416,7 @@ fn apply(
             // Forfeit: DISCONNECT, back to the main menu (none here); Exit
             // Game: KFQuitPage asks first (not built). Both quit.
             runlog::kv("menu_quit", &format!("button={id}"));
-            exit.write(AppExit::Success);
+            quit(exit, net);
         }
         _ => {
             if let Some(i) = id.strip_prefix("profile.perk:").and_then(|n| n.parse::<usize>().ok()).filter(|_| on(Page::Profile)) {
@@ -429,6 +439,37 @@ fn apply(
     }
 }
 
+/// Quits; a network game first says goodbye (net/lobby.rs `leave`).
+fn quit(exit: &mut MessageWriter<AppExit>, net: &mut crate::net::lobby::NetLobby) {
+    if net.active {
+        net.quit_requested = true;
+    } else {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// The lobby closes and the match starts for this player: the pawn gets
+/// the perk's start items, the wave timer runs (waves.rs waits for the
+/// lobby to close).
+fn start_match(
+    state: &mut MenuState,
+    vet: &crate::game::perks::Veterancy,
+    data: &MenuData,
+    had: crate::game::perks::Vet,
+    new_pawn: &mut MessageWriter<crate::game::perks::NewPawn>,
+    cursor: &mut CursorOptions,
+    reason: &str,
+) {
+    state.stack.retain(|p| !matches!(p, Page::Lobby | Page::Profile));
+    new_pawn.write(crate::game::perks::NewPawn { had });
+    cursor.grab_mode = CursorGrabMode::Locked;
+    cursor.visible = false;
+    if reason == "ready" {
+        runlog::kv("lobby_ready", &format!("player=\"{}\" perk={} ", data.player_name, vet.vet.label()));
+    }
+    runlog::kv("menu_close", &format!("page=Lobby reason={reason}"));
+}
+
 /// What the page drawers read.
 pub(crate) struct DrawCtx<'a> {
     pub state: &'a MenuState,
@@ -437,6 +478,11 @@ pub(crate) struct DrawCtx<'a> {
     pub players: Vec<LobbyPlayer>,
     /// WaveNumber + 1 and FinalWave (None: no game data, "?/?").
     pub wave: Option<(usize, usize)>,
+    /// The Ready button's caption (LobbyFooter: "Unready" when ready in a
+    /// network game).
+    pub ready_caption: &'static str,
+    /// KFGRI.LobbyTimeout: above 0, "Game will auto-commence in: N".
+    pub lobby_timeout: i32,
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
@@ -451,6 +497,7 @@ fn draw_menus(
     mut hits: ResMut<MenuHits>,
     mut shown: Local<usize>,
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
+    net: Res<crate::net::lobby::NetLobby>,
 ) {
     if !gui.loaded {
         return;
@@ -463,13 +510,21 @@ fn draw_menus(
         state: &state,
         data: &data,
         vet: &vet,
-        players: vec![LobbyPlayer {
-            name: data.player_name.clone(),
-            perk: vet.selected,
-            level: vet.level,
-            ready: !state.lobby_open(),
-        }],
+        // A network game: every connected player (net/lobby.rs); solo:
+        // the local player only.
+        players: if net.active {
+            net.players.clone()
+        } else {
+            vec![LobbyPlayer {
+                name: data.player_name.clone(),
+                perk: vet.selected,
+                level: vet.level,
+                ready: !state.lobby_open(),
+            }]
+        },
         wave: game_data.as_ref().map(|d| (game.wave_num + 1, d.waves.len())),
+        ready_caption: if net.active && net.local_ready { "Unready" } else { "Ready" },
+        lobby_timeout: if net.active { net.lobby_timeout } else { -1 },
     };
     match state.top() {
         Some(Page::Lobby) => lobby::draw(&mut p, &ctx),

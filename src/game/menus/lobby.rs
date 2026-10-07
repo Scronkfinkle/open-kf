@@ -20,9 +20,11 @@ pub(super) fn draw(p: &mut Painter, c: &DrawCtx) {
     let white = [255, 255, 255, 255];
     let menu_font = named_font("UT2MenuFont", w);
 
-    // label_TimeOutCounter (Timer: LobbyTimeout <= 0 -> WaitingForOtherPlayers).
+    // label_TimeOutCounter (LobbyMenu.Timer: LobbyTimeout <= 0 ->
+    // WaitingForOtherPlayers, else AutoCommence$":" @ LobbyTimeout; KFGui.int).
     let l = gui.comp("LobbyMenu.TimeOutCounter");
-    p.text_in(menu_font, "Waiting for players to be ready...", l.rect(screen), l.text_align(), true, l.color.unwrap_or(white), "TimeOutCounter");
+    let status = if c.lobby_timeout > 0 { format!("Game will auto-commence in: {}", c.lobby_timeout) } else { "Waiting for players to be ready...".to_string() };
+    p.text_in(menu_font, &status, l.rect(screen), l.text_align(), true, l.color.unwrap_or(white), "TimeOutCounter");
 
     // The six player rows: first the players not ready, then the rest
     // (InternalOnPreDraw), empty rows after.
@@ -146,7 +148,7 @@ pub(super) fn draw(p: &mut Painter, c: &DrawCtx) {
     let buttons = [("lobby.perks", "LobbyFooter.Perks"), ("lobby.options", "LobbyFooter.Options"), ("lobby.ready", "LobbyFooter.ReadyButton"), ("lobby.disconnect", "LobbyFooter.Cancel")];
     let captions: Vec<String> = buttons
         .iter()
-        .map(|(id, comp)| if *id == "lobby.ready" { "Ready".to_string() } else { gui.comp(comp).caption })
+        .map(|(id, comp)| if *id == "lobby.ready" { c.ready_caption.to_string() } else { gui.comp(comp).caption })
         .collect();
     footer_buttons(p, foot, &buttons.iter().map(|(id, _)| *id).collect::<Vec<_>>(), &captions, 0.035);
 }

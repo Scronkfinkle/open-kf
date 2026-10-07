@@ -20,6 +20,11 @@ avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32"
 ue-assets = { path = "crates/ue-assets" }
 # Sound output (already used by Bevy's audio): our mixer in src/audio.rs feeds it.
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "lewton"] }
+# Networking (experimental multiplayer, src/net/): listen server and clients
+# over UDP with netcode.io connections. Prediction and interpolation are
+# compiled in for the next steps (pawns, zeds).
+lightyear = { version = "0.30.1", default-features = false, features = ["std", "client", "server", "replication", "prediction", "interpolation", "netcode", "udp"] }
+serde = { version = "1", features = ["derive"] }
 
 # Bevy is very slow when built without optimisation. Optimise dependencies
 # fully and our own code a little, so debug builds stay usable.

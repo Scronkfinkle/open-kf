@@ -6,6 +6,7 @@ mod weapons;
 mod zeds;
 mod game;
 mod audio;
+mod net;
 
 use engine::{camera, record, runlog, screenshot, view_target};
 use world::{collision, door, glass, map, nav, zones};
@@ -81,6 +82,10 @@ struct Args {
     lobby: Option<bool>,
     /// `--name NAME`: the player's name in the lobby.
     name: Option<String>,
+    /// `--host [PORT]` / `--join ADDR[:PORT]` (experimental multiplayer).
+    net: net::NetMode,
+    /// `--log FILE` (read before parsing, see runlog::path_from_args).
+    log: Option<String>,
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -89,6 +94,9 @@ struct Args {
 /// still start straight in the game.
 fn lobby_settings(args: &Args) -> game::menus::LobbySettings {
     let (open, reason) = match args.lobby {
+        // A network game always starts in the lobby (parse_args refuses
+        // --no-lobby with --host / --join).
+        _ if args.net.active() => (true, "net_game"),
         Some(true) => (true, "flag_lobby"),
         Some(false) => (false, "flag_no_lobby"),
         None if args.game.mode != waves::GameMode::Waves => (false, "not_waves_mode"),
@@ -100,7 +108,7 @@ fn lobby_settings(args: &Args) -> game::menus::LobbySettings {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args::default();
-    let mut it = std::env::args().skip(1);
+    let mut it = std::env::args().skip(1).peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--map" => args.map = Some(it.next().ok_or("--map needs a name")?),
@@ -173,6 +181,28 @@ fn parse_args() -> Result<Args, String> {
             "--lobby" => args.lobby = Some(true),
             "--no-lobby" => args.lobby = Some(false),
             "--name" => args.name = Some(it.next().ok_or("--name needs a player name")?),
+            "--host" => {
+                // The port is optional: take the next argument only if it is a number.
+                let port = match it.peek().map(|n| n.parse::<u16>()) {
+                    Some(Ok(p)) => {
+                        it.next();
+                        Some(p)
+                    }
+                    _ => None,
+                };
+                if args.net.active() {
+                    return Err("--host and --join cannot be used together".into());
+                }
+                args.net = net::NetMode::host(port);
+            }
+            "--join" => {
+                let a = it.next().ok_or("--join needs an address, e.g. 127.0.0.1 or 192.168.1.20:7707")?;
+                if args.net.active() {
+                    return Err("--host and --join cannot be used together".into());
+                }
+                args.net = net::NetMode::join(&a)?;
+            }
+            "--log" => args.log = Some(it.next().ok_or("--log needs a file name")?),
             "--mute" => args.mute = true,
             "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
@@ -204,18 +234,22 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    if args.net.active() && args.lobby == Some(false) {
+        return Err("--no-lobby cannot be used with --host / --join (a network game starts in the lobby)".into());
+    }
     Ok(args)
 }
 
 fn main() -> AppExit {
-    if let Err(e) = runlog::init() {
-        eprintln!("warning: could not create {}: {e}", runlog::LOG_PATH);
+    let log_path = runlog::path_from_args(&std::env::args().collect::<Vec<_>>());
+    if let Err(e) = runlog::init(&log_path) {
+        eprintln!("warning: could not create {log_path}: {e}");
     }
 
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--log FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -275,6 +309,7 @@ fn main() -> AppExit {
     let game_options = args.game;
     let lobby = lobby_settings(&args);
     let veterancy = perks::Veterancy::from_options(args.perk);
+    let net_plugin = net::NetPlugin { mode: args.net.clone() };
     runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
     let walk_settings = walk::WalkSettings {
         start_walking: !args.fly,
@@ -332,7 +367,7 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin))
-        .add_plugins((perks::PerksPlugin, player::body::BodyPlugin, game::menus::MenusPlugin))
+        .add_plugins((perks::PerksPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, net_plugin))
         .insert_resource(view_target::ViewTarget::starting_behind(behind_view, behind_yaw))
         .insert_resource(lobby)
         .insert_resource(auto_shot)

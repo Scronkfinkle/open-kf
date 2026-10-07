@@ -84,6 +84,9 @@ open-kf/                   Cargo workspace root (the repository)
                            boss_ai, attacks, animate, effects, sounds, methods
     game/                  waves, damage and health, dosh, trader and shop, HUD, zed time
     audio/                 the mixer, music, map / player / trader sounds
+    net/                   experimental multiplayer (branch multiplayer-lightyear):
+                           --host / --join, the lobby over the network (lightyear);
+                           see docs/multiplayer-prototype.md
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
   work/        (ignored)   extracted data for study
