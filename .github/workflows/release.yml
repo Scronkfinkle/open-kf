@@ -1,0 +1,85 @@
+# Release builds (docs/DESIGN.md, "Release CI on GitHub").
+# A tag v* on a commit that is on main: build the Windows zip and the
+# Flatpak, then publish a GitHub release with them.
+# Run by hand (workflow_dispatch): build only, files on the run page.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Tagged commit is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
+
+  windows:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#windows -o result-windows -L
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: result-windows/open-kf-windows-x86_64.zip
+          if-no-files-found: error
+
+  flatpak:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      # Ubuntu's AppArmor stops bubblewrap from Nix creating its sandbox.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: nix run .#flatpak
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak
+          path: work/flatpak/open-kf.flatpak
+          if-no-files-found: error
+
+  # Only checks the Nix package builds; it runs only where Nix is installed,
+  # so it is not attached to the release.
+  nix:
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#open-kf -L
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, flatpak, nix]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Open KF $GITHUB_REF_NAME" --generate-notes \
+            dist/open-kf-windows-x86_64.zip dist/open-kf.flatpak

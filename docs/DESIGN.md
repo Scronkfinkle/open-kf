@@ -5509,6 +5509,36 @@ setting. If nothing is found, the error lists each Steam install and why
 granted Steam folders cannot be read until the player grants it with
 `flatpak override`.
 
+## Release CI on GitHub (planned 2026-10-07: C1-C3)
+
+Goal: pushing a version tag (e.g. `v0.2.0`) on a commit that is on `main`
+builds the release files and publishes a GitHub release with them.
+Workflow: `.github/workflows/release.yml` (GitHub Actions: GitHub's own
+build machines, which run the steps in that file).
+
+- **C1, check:** runs on `push` of tags `v*`. Fails unless the tagged commit
+  is on `main` (`git merge-base --is-ancestor`), so a tag on a side branch
+  publishes nothing.
+- **C2, build (three jobs side by side, Ubuntu machines with Nix installed):**
+  - `windows`: `nix build .#windows`, uploads `open-kf-windows-x86_64.zip`.
+  - `flatpak`: `nix run .#flatpak`, uploads `open-kf.flatpak`. Ubuntu
+    24.04 blocks the sandbox tool (bubblewrap) from Nix by default
+    (AppArmor's user-namespace restriction), so the job switches that
+    restriction off first with `sysctl`.
+  - `nix`: `nix build .#open-kf`, only to check it still builds. Not
+    attached to the release: the binary only runs on machines with Nix (its
+    libraries are paths in `/nix/store`). Linux players use the Flatpak; Nix
+    users can `nix run github:Scronkfinkle/open-kf`.
+- **C3, release:** after all builds pass, `gh release create <tag>` with
+  both files and GitHub's generated notes (the commit list since the last
+  release).
+- Also runnable by hand (`workflow_dispatch`, "Run workflow" on GitHub or
+  `gh workflow run release.yml`): builds and uploads the files to the run
+  page, but publishes no release. For testing the workflow.
+- No build cache between runs at first (each run builds from scratch,
+  about 10-15 minutes per job). Can add one later if it is too slow.
+- `.gitignore` allows `.github/workflows/*.yml`.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

@@ -30,6 +30,9 @@ logs/
 # Helper scripts
 !/scripts/*.sh
 
+# Release CI (GitHub Actions)
+!/.github/workflows/*.yml
+
 # Release packaging (Flatpak manifest, desktop file, wrapper)
 !/packaging/flatpak/*.yml
 !/packaging/flatpak/*.desktop
