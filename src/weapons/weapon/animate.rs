@@ -18,6 +18,7 @@ pub(super) fn animate_weapon(
     mut weapon_parts: Query<&mut Transform, (Without<FlyCamera>, Without<WeaponCamera>)>,
     bob: Res<crate::player::walk::ViewBob>,
     mut view_fov: ResMut<crate::engine::camera::ViewFov>,
+    graphics: Res<crate::engine::graphics::GraphicsSettings>,
     mut log_timer: Local<f32>,
     mut scope_request: ResMut<crate::weapons::scope::ScopeRequest>,
     scope_view: Option<Res<crate::weapons::scope::ScopeView>>,
@@ -44,12 +45,14 @@ pub(super) fn animate_weapon(
         }
     }
     let def = &w.defs[w.current];
+    // The player's DefaultFOV (`--fov`); iron sights blend to their own.
+    let base_fov = graphics.fov;
     let (display_fov, player_fov) = match &def.iron {
         Some(iron) => (
             def.display_fov + (iron.display_fov - def.display_fov) * w.zoom,
-            crate::engine::camera::DEFAULT_FOV + (iron.player_fov - crate::engine::camera::DEFAULT_FOV) * w.zoom,
+            base_fov + (iron.player_fov - base_fov) * w.zoom,
         ),
-        None => (def.display_fov, crate::engine::camera::DEFAULT_FOV),
+        None => (def.display_fov, base_fov),
     };
     if view_fov.0 != player_fov {
         view_fov.0 = player_fov;

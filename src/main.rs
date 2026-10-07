@@ -9,7 +9,7 @@ mod audio;
 mod net;
 mod launcher;
 
-use engine::{camera, record, runlog, screenshot, view_target};
+use engine::{camera, graphics, record, runlog, screenshot, view_target};
 use world::{collision, door, glass, map, nav, zones};
 use render::{decals, overlay, particles};
 use player::{armour, pain, walk};
@@ -66,6 +66,16 @@ struct Args {
     /// `--no-vsync`: frames do not wait for the display (test runs while
     /// the window cannot be shown, e.g. a locked screen, ran at 1 fps).
     no_vsync: bool,
+    /// `--display windowed|borderless|fullscreen` (engine/graphics.rs).
+    display: graphics::DisplayMode,
+    /// `--fov DEG`: the player's field of view (KF's degrees at 4:3).
+    fov: Option<u32>,
+    /// `--brightness PERCENT`: the 3D view's light (100: unchanged).
+    brightness: Option<u32>,
+    /// `--msaa 0|2|4|8`: anti-aliasing samples (0: off).
+    msaa: Option<u32>,
+    /// `--anisotropy 1|2|4|8|16`: map texture filtering.
+    anisotropy: Option<u16>,
     /// `--mode waves|debug` and `--length short|normal|long`.
     game: waves::GameOptions,
     /// Were `--mode` / `--length` typed (a joiner takes the host's and
@@ -220,6 +230,14 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 args.trader_menu = buy_menu::MenuKind::parse(&n).ok_or(format!("bad --trader-menu value: {n} (nu or kf)"))?;
             }
             "--no-vsync" => args.no_vsync = true,
+            "--display" => {
+                let n = it.next().ok_or("--display needs windowed, borderless or fullscreen")?;
+                args.display = graphics::DisplayMode::parse(&n).ok_or(format!("bad --display value: {n} (windowed, borderless or fullscreen)"))?;
+            }
+            "--fov" => args.fov = Some(graphics::parse_fov(&it.next().ok_or("--fov needs degrees")?)?),
+            "--brightness" => args.brightness = Some(graphics::parse_brightness(&it.next().ok_or("--brightness needs a percentage")?)?),
+            "--msaa" => args.msaa = Some(graphics::parse_msaa(&it.next().ok_or("--msaa needs 0, 2, 4 or 8")?)?),
+            "--anisotropy" => args.anisotropy = Some(graphics::parse_anisotropy(&it.next().ok_or("--anisotropy needs 1, 2, 4, 8 or 16")?)?),
             "--god" => args.god = true,
             "--give" => args.give = Some(it.next().ok_or("--give needs \"all\" or weapon class names")?),
             "--zed" => args.zed = true,
@@ -270,7 +288,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE] [--settings FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE] [--settings FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -350,32 +368,29 @@ fn main() -> AppExit {
     };
 
     let (behind_view, behind_yaw) = (args.behind_view, args.behind_yaw);
-    let window_size = args.window;
-    let present_mode = if args.no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() };
+    let graphics_settings = graphics::GraphicsSettings {
+        display: args.display,
+        resolution: args.window,
+        vsync: !args.no_vsync,
+        fov: args.fov.unwrap_or(graphics::DEFAULT_FOV) as f32,
+        brightness: args.brightness.unwrap_or(graphics::DEFAULT_BRIGHTNESS),
+        msaa: args.msaa.unwrap_or(graphics::DEFAULT_MSAA),
+        anisotropy: args.anisotropy.unwrap_or(graphics::DEFAULT_ANISOTROPY),
+    };
+    graphics_settings.log(args.fps);
     let mut app = App::new();
     if let Some(c) = camera_override {
         app.insert_resource(c);
     }
     let exit = app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(match window_size {
-                Some((w, h)) => Window {
-                    title: "Open KF".into(),
-                    resolution: bevy::window::WindowResolution::new(w, h).with_scale_factor_override(1.0),
-                    resizable: false,
-                    present_mode,
-                    ..default()
-                },
-                None => Window {
-                    title: "Open KF".into(),
-                    present_mode,
-                    ..default()
-                },
-            }),
+            primary_window: Some(graphics_settings.window()),
             ..default()
         })
         // Our own mixer (audio/mixer.rs) replaces Bevy's player.
         .disable::<bevy::audio::AudioPlugin>())
+        .insert_resource(graphics_settings)
+        .add_plugins(graphics::GraphicsPlugin)
         .insert_resource(audio::mixer::AudioSettings { muted: args.mute, settings: args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into() })
         .insert_resource(args)
         .insert_resource(request)

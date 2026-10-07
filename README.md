@@ -80,6 +80,8 @@ cargo run --release -- --no-vsync --frames 600   # test runs: frames do not wait
 cargo run --release -- --mute                 # no sound (still logged)
 cargo run --release -- --trader-menu kf       # the trader's old KF-style text menu instead of NuMenu (the default)
 cargo run --release -- --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
+cargo run --release -- --window 1600x900 --display fullscreen   # graphics (also in the launcher): --display windowed|borderless|fullscreen,
+                                              # --window WxH, --fov 80-120, --brightness 50-200 (%), --msaa 0|2|4|8, --anisotropy 1|2|4|8|16
 cargo run --release -- --zed --zed-at -4512,-230,-3816   # test: the zed starts at a map position (Unreal X,Y,Z)
 ```
 

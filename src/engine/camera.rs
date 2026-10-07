@@ -147,7 +147,8 @@ fn scripted_turn(
 }
 
 /// The player's field of view as KF defines it: horizontal degrees at 4:3
-/// (DefaultFOV 90; iron sights lower it). Applied to the main and sky cameras.
+/// (DefaultFOV 90, or `--fov`; iron sights lower it). Applied to the main
+/// and sky cameras.
 #[derive(Resource)]
 pub struct ViewFov(pub f32);
 
@@ -157,7 +158,8 @@ impl Default for ViewFov {
     }
 }
 
-/// KFPlayerController DefaultFOV.
+/// KFPlayerController DefaultFOV (at 4:3). The player's own value is
+/// `GraphicsSettings::fov` (`--fov`, engine/graphics.rs).
 pub const DEFAULT_FOV: f32 = 90.0;
 
 /// Vertical field of view for a KF horizontal FOV. KF uses
@@ -167,9 +169,9 @@ pub fn vertical_fov(horizontal_deg: f32) -> f32 {
     2.0 * ((horizontal_deg / 2.0).to_radians().tan() * 0.75).atan()
 }
 
-fn kf_projection() -> Projection {
+fn kf_projection(fov: f32) -> Projection {
     Projection::from(PerspectiveProjection {
-        fov: vertical_fov(DEFAULT_FOV),
+        fov: vertical_fov(fov),
         ..default()
     })
 }
@@ -179,7 +181,11 @@ pub fn spawn_camera(
     spawn: Res<SpawnPoint>,
     sky: Res<SkyInfo>,
     over: Option<Res<CameraOverride>>,
+    settings: Res<crate::engine::graphics::GraphicsSettings>,
+    mut view_fov: ResMut<ViewFov>,
 ) {
+    // The player's field of view (`--fov`); iron sights zoom from it.
+    view_fov.0 = settings.fov;
     let f = spawn.forward.normalize_or(Vec3::NEG_Z);
     let (mut yaw, mut pitch) = ((-f.x).atan2(-f.z), f.y.clamp(-1.0, 1.0).asin());
     let mut position = spawn.position;
@@ -202,7 +208,7 @@ pub fn spawn_camera(
             },
             ..default()
         },
-        kf_projection(),
+        kf_projection(settings.fov),
         // UE2 had no tonemapping: colours go to the screen as computed
         // (Bevy's default film curve darkened and greyed KF's lighting).
         bevy::core_pipeline::tonemapping::Tonemapping::None,
@@ -213,7 +219,7 @@ pub fn spawn_camera(
         commands.spawn((
             Camera3d::default(),
             Camera { order: -1, ..default() },
-            kf_projection(),
+            kf_projection(settings.fov),
             bevy::core_pipeline::tonemapping::Tonemapping::None,
             Transform::from_translation(sky_pos).with_rotation(rotation),
             RenderLayers::layer(SKY_LAYER),
@@ -223,8 +229,9 @@ pub fn spawn_camera(
     runlog::kv(
         "camera_spawned",
         &format!(
-            "position={position} yaw={yaw:.3} pitch={pitch:.3} vertical_fov_deg={:.2} sky_camera={:?}",
-            vertical_fov(DEFAULT_FOV).to_degrees(),
+            "position={position} yaw={yaw:.3} pitch={pitch:.3} fov_deg={} vertical_fov_deg={:.2} sky_camera={:?}",
+            settings.fov,
+            vertical_fov(settings.fov).to_degrees(),
             sky.camera_position
         ),
     );

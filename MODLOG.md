@@ -5775,3 +5775,85 @@ follow the same rule (gain 0.6 -> 0.3), not run. Ambient loops
 not checked against a second source.
 **Next:** Your listen test; if guns now feel too quiet next to zeds,
 compare with KF itself before changing anything.
+
+## 2026-10-07 GX1-GX3: graphics settings in the launcher
+
+**Changed:** New `src/engine/graphics.rs` (graphics settings, their
+option parsing, the window they make, MSAA on all cameras with a graphics
+card check, the exclusive-fullscreen video mode, `window_state` log).
+New game options `--display windowed|borderless|fullscreen`, `--fov
+80-120`, `--brightness 50-200`, `--msaa 0|2|4|8`, `--anisotropy
+1|2|4|8|16` (src/main.rs); `--window`, `--no-vsync`, `--fps` unchanged.
+FOV: `src/engine/camera.rs`, `src/weapons/weapon/animate.rs` (iron
+sights zoom from it), `src/game/trader_arrow.rs`. Brightness: a second
+modulate quad in `src/render/overlay.rs` (only when not 100 %).
+Anisotropy: `src/world/map.rs`. Launcher: a *Graphics* section in column 2
+under the map list (display mode, resolution, vsync, frame limit, field
+of view, brightness, anti-aliasing, texture filtering); the resolution
+list is the primary monitor's video modes (Bevy `Monitor`); the old
+"Display, sound, menus" box is now "Sound, menus" (`src/launcher/`).
+Saved in `settings/launcher.txt` with new keys `display fov brightness
+msaa anisotropy`. Docs: DESIGN.md "Graphics settings in the launcher",
+README option list.
+**Why:** Graphics settings in the launcher (resolution, display mode,
+vsync, plus what the renderer can cheaply change).
+**Tested how:** `scripts/headless.sh` runs (logs `logs/gx-*.log`,
+screenshots in `work/screenshots/`): defaults; `--window 1280x720 --fov
+110 --brightness 150 --msaa 0 --anisotropy 16`; brightness 200 and 50;
+borderless; fullscreen with and without a size; MSAA 2 and 8; FOV 110
+with iron sights; anisotropy 1 vs 16 on a road at a slant; brightness 100
+vs 160 on KF-Farm, KF-Bedlam, KF-Manor, KF-Offices. Launcher: screenshot,
+`set:` actions, a dry-run PLAY (saved file), reopened (loaded values).
+`cargo test --release --workspace`; `rtk proxy cargo clippy --release
+--workspace`.
+**Result:** Defaults log `graphics_settings display=windowed
+resolution=default vsync=on fps_limit=none fov=90 brightness=100 msaa=4
+anisotropy=8`, `brightness_overlay drawn=false`, `msaa_applied cameras=9
+samples=4`: the same picture as before. Brightness: mean linear light of
+the view x1.97 at 200 % (1.2 % of pixels clip), x0.50 at 50 %, x1.58-1.61
+at 160 % on the four maps; HUD unchanged. FOV 110: `vertical_fov_deg=93.93`,
+wider view in the screenshot; aiming the 9mm goes 110 -> 75 (its
+PlayerIronSightFOV). Anisotropy 16 vs 1: the road's detail measure 4.96 vs
+3.61. MSAA 2 and 8: card check passes (`used=2`, `used=8`), all 9
+cameras get it. Fullscreen: `fullscreen_mode result=desktop_size
+using=1920x1080` and, for 1280x720 (not a mode of the test display),
+`result=no_such_mode_used_desktop_size`. Launcher: the virtual display's
+one mode is listed (`launcher_display_modes ... sizes=1 [1920x1080]`);
+saved file has the new keys, reopening logs them back. Tests 224 + 24
+pass (new: graphics option parsing, window per mode, video mode pick,
+launcher steps, resolution list, typed options override saved ones);
+clippy 0 warnings. Failed on the way: fullscreen with Bevy's "current
+mode" found no mode on the test display (refresh rate 0) and stayed
+windowed; now a listed mode is always picked.
+**Still broken / not tested:** On the virtual display borderless and
+fullscreen are only requested and logged; the window stayed 1280 x 720
+(no window manager), so whether they fill the screen, and exclusive mode
+changes, are not tested on a real desktop, Windows or Wayland (winit
+ignores exclusive fullscreen on Wayland, so there it probably acts like
+windowed or borderless; not tested). Vsync only checked as the logged
+present mode. MSAA: the visual difference was not measurable (the smoke
+animation alone changes ~11 % of pixels between runs). The frame limit
+was not re-tested (unchanged code). Settings are not in the pause menu.
+Not used by you yet.
+**Next:** Your test on the real desktop (fullscreen / borderless /
+resolution list of your monitor); maybe FOV and brightness in the pause
+menu once the volume-slider branch is merged.
+
+## 2026-10-07 Merge: Graphics settings + volume control in the launcher
+
+**Changed:** merged the Graphics branch onto the volume work. Conflicts in
+`src/launcher/{choices,draw,mod}.rs` and `src/main.rs` kept both sides
+(`FIELDS` now 25 names; usage line has `--settings FILE` and the graphics
+options; `AudioSettings` keeps its settings path). Launcher layout: the
+Audio box moved from column 2 to column 3, under "Sound, menus" (column 3
+rows shrink on short windows so all three boxes fit).
+**Why:** with Graphics and Audio both under the map list, the list showed
+one row at 1280x800.
+**Tested how:** cargo test (227 + 24 pass), clippy 0 warnings; launcher
+screenshots at 1280x800 and 1920x1080 (looked at: map list 7 / 10 rows,
+no overlaps); dry-run launcher with `volume_click:master@0.5`,
+`click:spin:display:1`, `click:spin:fov:1`, PLAY: saved `volume=0.500
+display=borderless fov=95` and passed `--display borderless --fov 95`; a
+headless game run logged `graphics_settings ... fov=95 brightness=120` and
+`audio_volume master=0.500 ... read=file`.
+**Not tested:** real mouse drag on the moved sliders.
