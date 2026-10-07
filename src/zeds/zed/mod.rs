@@ -38,6 +38,7 @@ mod boss_ai;
 mod think;
 mod animate;
 mod methods;
+mod spotted;
 use load::*;
 use sounds::*;
 use spawn::*;
@@ -46,6 +47,7 @@ use attacks::*;
 use boss_ai::*;
 use think::*;
 use animate::*;
+use spotted::*;
 
 /// Spawn a Clot (`--zed`) or a Gorefast (`--gorefast`) at startup.
 #[derive(Resource, Default, Clone)]
@@ -298,6 +300,9 @@ struct ZedClass {
     /// Stalker: the cloaked look (KF: Shader stalker_invisible, a refraction
     /// effect; here a faint see-through skin, an approximation).
     cloak_material: Option<Handle<StandardMaterial>>,
+    /// Stalker and Patriarch: the look when a Commando spots them
+    /// (FinalBlend KFX.StalkerGlow; spotted.rs).
+    spotted_material: Option<Handle<StandardMaterial>>,
     /// Patriarch: one cloaked look per part (KF: patriarch_invisible_gun and
     /// patriarch_invisible, refraction shaders we cannot draw; approximated
     /// like the Stalker's, from each part's own texture).
@@ -638,6 +643,10 @@ pub struct Zed {
     since_uncloak: f32,
     cloak_check: f32,
     cloak_dirty: bool,
+    /// bSpotted: the local player is a Commando close enough (spotted.rs),
+    /// and whether the glow (KFX.StalkerGlow) is on.
+    spotted: bool,
+    glow: bool,
 
     /// Facing, Unreal rotation units.
     pub(crate) yaw: f32,

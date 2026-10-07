@@ -151,6 +151,8 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 since_uncloak: f32::MAX,
                 cloak_check: 0.0,
                 cloak_dirty: c.cloak_material.is_some() && c.boss.is_none(),
+                spotted: false,
+                glow: false,
                 yaw,
                 state: ZedState::Idle,
                 vertical_speed: 0.0,

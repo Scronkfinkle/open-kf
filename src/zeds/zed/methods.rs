@@ -10,6 +10,8 @@ impl Zed {
             self.cloaked = false;
             self.cloak_dirty = true;
         }
+        self.clear_glow();
+        self.spotted = false;
         self.health = 0.0;
         self.bleed_out = None;
         self.state = ZedState::Dead;
@@ -25,6 +27,7 @@ impl Zed {
             self.cloaked = false;
             self.cloak_dirty = true;
         }
+        self.clear_glow();
         self.decapitated = true;
         self.head_health = 0.0;
         self.sound_events.push(ZedSound::Decapitation);
@@ -374,6 +377,8 @@ impl Zed {
             since_uncloak: f32::MAX,
             cloak_check: 0.0,
             cloak_dirty: false,
+            spotted: false,
+            glow: false,
             yaw: 0.0,
             state: ZedState::Idle,
             vertical_speed: 0.0,

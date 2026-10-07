@@ -66,7 +66,7 @@ pub(super) fn think_and_move(
         MessageWriter<crate::player::hit_cam::SirenScreamShake>,
     ),
     mut kills: ResMut<crate::game::combat::KillCount>,
-    (mut pinned, vet): (ResMut<crate::game::combat::PlayerPinned>, Res<crate::game::perks::Veterancy>),
+    (mut pinned, vet, player_health): (ResMut<crate::game::combat::PlayerPinned>, Res<crate::game::perks::Veterancy>, Res<crate::game::combat::PlayerHealth>),
     nav: Res<crate::world::nav::NavNetwork>,
     script: Res<crate::weapons::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
@@ -103,6 +103,9 @@ pub(super) fn think_and_move(
     };
     // Player cylinder centre: the walker's, or below the flying camera.
     let target = walker.map_or(pt.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center);
+    // Who decides whether cloaked zeds are spotted: this machine's player
+    // (KF: LocalKFHumanPawn).
+    let viewer = CloakViewer { location: target, alive: !player_health.dead && player_health.health > 0.0, vet: vet.vet };
     let dt = time.delta_secs().min(0.1);
     *log_timer += dt;
     let log_now = *log_timer >= 1.0;
@@ -348,19 +351,15 @@ pub(super) fn think_and_move(
                 }
             }
         }
-        // ZombieStalker.Tick: every 0.5 s, cloak again 1.2 s after the last
-        // uncloak (never once headless).
+        // ZombieStalker.Tick: every 0.5 s, spotted by a Commando or not;
+        // cloak again (or glow) 1.2 s after the last uncloak (spotted.rs).
         if c.cloak_material.is_some() {
-            z.since_uncloak = (z.since_uncloak + dt).min(1e6);
-            z.cloak_check -= dt;
-            if z.cloak_check <= 0.0 {
-                z.cloak_check = 0.5;
-                if !z.cloaked && !z.decapitated && !z.zapped() && z.since_uncloak > 1.2 {
-                    z.cloaked = true;
-                    z.cloak_dirty = true;
-                    runlog::kv("stalker_cloak", &format!("id={}", z.id));
-                }
-            }
+            z.stalker_cloak_tick(Some(&viewer), dt);
+        }
+        // ZombieBoss.Tick: the Commando's glow while he is cloaked.
+        if c.boss.is_some() && c.spotted_material.is_some() {
+            let at = z.centre;
+            z.boss_spot_tick(Some(&viewer), || sees(&spatial, at, target), dt);
         }
         if let Some(s) = z.since_decap.as_mut() {
             *s += dt;
@@ -1126,6 +1125,11 @@ pub(super) fn think_and_move(
                 // ZombieStalker.SetAnimAction: a melee attack uncloaks her.
                 if c.cloak_material.is_some() {
                     z.since_uncloak = 0.0;
+                    // UncloakStalker sets the normal skin: the glow goes.
+                    if z.glow {
+                        z.clear_glow();
+                        runlog::kv("stalker_glow", &format!("id={} on=false reason=attack", z.id));
+                    }
                     if z.cloaked {
                         z.cloaked = false;
                         z.cloak_dirty = true;

@@ -4012,7 +4012,7 @@ checked from logs, LATER = left).
 | ExtraRange | Firebug (Flamethrower) | FlameTendril.Timer (bursts after 2 + n timers) | yes (projectile.rs flames) | done |
 | GetNadeType | Medic (MedicNade), Firebug 3+ (FlameNade) | FragFire.GetDesiredProjectileClass | no (only the Nade) | LATER |
 | SpecialHUDInfo (zed health bars) | Commando 1+ | HUDKillingFloor.DrawHudPassA | no | LATER |
-| ShowStalkers / GetStalkerViewDistanceMulti | Commando | KFHumanPawn -> ZombieStalker drawing | partly (Stalkers cloak) | LATER |
+| ShowStalkers / GetStalkerViewDistanceMulti | Commando | ZombieStalker.Tick, ZombieBoss.Tick (the red "spotted" glow) | yes | done (see "Commando: seeing cloaked zeds") |
 | CanMeleeStun | Berserker | no caller in the base game scripts | - | nothing to do |
 | ShouldBecomeIncendiary, KilledShouldExplode | none (base false) | KFMonster.TakeDamage | - | nothing to do |
 
@@ -4063,6 +4063,74 @@ KF's variable is an int.
   3.85 from a Clot); a respawn after death (debug mode) does not give
   the perk's armour again; the player starts holding the 9mm (KF calls
   ClientSwitchToBestWeapon, not checked).
+
+### Commando: seeing cloaked zeds (built 2026-10-06)
+
+In KF a Commando sees a cloaked Stalker (and the cloaked Patriarch) as a
+red, see-through glow instead of the near-invisible cloak. KF calls a
+zed in that state "spotted" (`KFMonster.bSpotted`).
+
+**The rule, Stalker** (`ZombieStalker.Tick`, every 0.5 s, not while
+zapped, only while she is alive): she is spotted when the viewing
+player is alive, has a perk whose `ShowStalkers` is true (only
+`KFVetCommando`) and is closer than
+`sqrt(GetStalkerViewDistanceMulti x 640000)` units (640000 = 800
+squared). Commando levels: 0 = 0.0625 (200 units), 1 = 0.25 (400),
+2 = 0.36 (480), 3 = 0.49 (560), 4 = 0.64 (640), 5 and 6 = 1.0 (800).
+No wall check: she is spotted through walls.
+Check against KF's own perk text (`KFVetCommando` LevelEffects, also on
+the user's pause-menu screenshot for level 0), at KF's 50 units per
+metre (HUDKillingFloor: trader distance = units / 50): level 0 "4
+meters" = 200 units, 1 "8m" = 400, 5 and 6 "16m" = 800 agree exactly;
+levels 2-4 say 10m, 12m, 14m where the code gives 9.6, 11.2, 12.8 m (the
+text is rounded up loosely). We follow the code.
+
+Then, in the same tick (copied branch by branch):
+- not spotted, not cloaked and wearing the glow: `UncloakStalker`
+  (normal skin; restarts the 1.2 s timer);
+- otherwise, 1.2 s after the last uncloak: spotted and not glowing ->
+  `CloakStalker`, which, when spotted, only puts on the glow
+  (`Skins[0] = Skins[1] = FinalBlend'KFX.StalkerGlow'`, `bUnlit`) and
+  returns; it does not set `bCloaked`. Not spotted and not wearing the
+  invisible skin -> `CloakStalker` the normal way (not when headless).
+- KF quirks kept: the glow's branch comes before the "no head, no cloak"
+  test, so a headless Stalker still glows for a Commando; an uncloaked
+  Stalker (after attacking) glows 1.2 s later while still uncloaked.
+- The glow is removed (normal skin) by what sets the normal skin in KF:
+  an attack (`UncloakStalker`), losing the head (`RemoveHead`), a zap
+  (`SetZappedBehavior`), death (`PlayDying`).
+
+**The rule, Patriarch** (`ZombieBoss.Tick`, every 0.8 s while cloaked,
+not zapped): spotted when a living player with `ShowStalkers` (any
+Commando level) is within 1000 units and in sight
+(`VisibleCollidingActors`: a line-of-sight trace). Spotted -> glow;
+no longer spotted -> back to the cloak. Uncloaking clears it
+(`UnCloakBoss` sets `bSpotted = false`).
+
+**The look.** `KFX.StalkerGlow` is a FinalBlend (FrameBufferBlending 6
+= FB_Brighten) over Shader `StalkerGlowShader`: Diffuse and
+SelfIllumination = Combiner `StalkerGlowCombiner` (TexPanner
+`GhostPanner` over the red texture `KFGhostOverlay`, alpha-blended with
+`KFCharacters.StalkerSkin`), SelfIlluminationMask = texture
+`CloakGradient`, Opacity = TexOscillator `DeCloakOSC` (CloakGradient
+again), OutputBlending OB_Masked. We follow that chain in the package at
+load time and draw: unlit, additive, colour = KFGhostOverlay x
+CloakGradient's alpha (the self-illumination mask), which gives the faint
+red body with brighter patches of the user's screenshot. Guesses
+(native code we cannot read): FB_Brighten drawn as plain additive; the
+combiner's mix with StalkerSkin left out (KFGhostOverlay has no alpha, so
+the result is the red texture, matching the screenshot); the panner and
+oscillator motion are not animated.
+
+**Built for more players later.** Being spotted is a matter of what one
+player sees: in KF each client checks its own player
+(`LocalKFHumanPawn`). Our check takes a `CloakViewer` (position, alive,
+perk) instead of reading the player directly, so another viewer can be
+passed later; the per-zed `spotted` / glow state is the local view's.
+
+**Not part of this:** the Commando's zed health bars
+(`KFVetCommando.SpecialHUDInfo`, levels 1-6, 160 to 800 units) are a
+separate HUD drawing path; next step.
 
 ### Stage 2 (plan only, not built): earning levels
 

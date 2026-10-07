@@ -374,6 +374,7 @@ pub(super) fn load_class(
         } else {
             Vec::new()
         },
+        spotted_material: if matches!(kind, ZedKind::Stalker | ZedKind::Patriarch) { load_stalker_glow(set, images, materials) } else { None },
         cloak_material: (kind == ZedKind::Stalker).then(|| {
             let texture = model.parts.first().and_then(|p| materials.get(&p.material)).and_then(|m| m.base_color_texture.clone());
             materials.add(StandardMaterial {

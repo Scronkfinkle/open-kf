@@ -776,6 +776,28 @@ impl Vet {
         }
     }
 
+    /// ShowStalkers (KFHumanPawn.ShowStalkers): only the Commando sees
+    /// cloaked Stalkers and the cloaked Patriarch.
+    pub fn shows_stalkers(&self) -> bool {
+        self.perk == Some(Perk::Commando)
+    }
+
+    /// GetStalkerViewDistanceMulti (ZombieStalker.Tick: spotted when the
+    /// squared distance < this x 640000, 800 units squared).
+    pub fn stalker_view_distance_multi(&self) -> f32 {
+        match self.perk {
+            Some(Perk::Commando) => match self.level {
+                0 => 0.0625,
+                1 => 0.25,
+                2 => 0.36,
+                3 => 0.49,
+                4 => 0.64,
+                _ => 1.0,
+            },
+            _ => 0.0,
+        }
+    }
+
     /// GetMAC10DamageType: the Firebug's MAC-10 shoots DamTypeMAC10MPInc.
     pub fn mac10_incendiary(&self) -> bool {
         self.perk == Some(Perk::Firebug)

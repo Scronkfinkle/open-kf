@@ -4844,3 +4844,43 @@ bars and Stalker sight, ammo box pickups (none in the game yet), stage 2.
 This worktree branch starts from 2bf299d, 17 commits behind main: merging
 will need conflict fixes (see the report).
 **Next:** your play test; then the grenades or stage 2.
+
+## 2026-10-06 Commando sees cloaked Stalkers (the red "spotted" glow)
+
+**Changed:** new `src/zeds/zed/spotted.rs` (who is spotted, the glow
+material, unit tests); `game/perks.rs` (`Vet::shows_stalkers`,
+`Vet::stalker_view_distance_multi`); `zeds/zed/think.rs` (the Stalker's
+0.5 s check now goes through spotted.rs; the Patriarch's 0.8 s check;
+an attack removes the glow); `zeds/zed/effects.rs` (glow material
+chosen first; a zap removes it); `zeds/zed/methods.rs` (death and losing
+the head remove it); `zeds/zed/load.rs`, `zeds/zed/mod.rs`,
+`zeds/zed/spawn.rs` (new fields); `docs/DESIGN.md` ("Commando: seeing
+cloaked zeds", perk table row).
+**Why:** perks stage 1 listed the Commando's Stalker sight as not done;
+your screenshot `references/cloak_spotted.jpg` shows the effect.
+**Tested how:** 4 unit tests (range per level, only living Commandos,
+the glow/uncloak/re-cloak sequence incl. headless, Patriarch rule);
+`cargo test` 146 pass; `cargo clippy` 0 warnings (`--all-targets`: 1
+old warning in boss.rs tests, not from this change). Headless runs on
+KF-WestLondon, Stalker spawned 1000 units away walking at the player
+(`--god`), with Commando 6, Commando 0 and no perk; log lines
+`zed_spotted`, `stalker_glow`, `stalker_glow_loaded`; screenshots.
+**Result:** glow material read from the package:
+`final_blend=KFX.StalkerGlow frame_buffer_blending=6
+shader=KFX.StalkerGlowShader combiner=KFX.StalkerGlowCombiner
+colour=KFX.KFGhostOverlay mask=KFX.CloakGradient`. Commando 6:
+`zed_spotted ... spotted=true distance=722` (first 0.5 s check under
+800), glow on, then `stalker_glow on=false reason=attack` when she
+attacked. Commando 0: spotted at distance=116 (limit 200), cloaked
+(pale) before, red glow after. No perk: no spotted lines, pale cloak.
+Screenshots show a red see-through Stalker close to your reference
+(ours a little more even; KF's has more holes). Ranges agree with KF's
+perk text at 50 units per metre (4 m at level 0, 16 m at 5-6).
+**Still broken / not tested:** not played by you. The Patriarch's glow
+not tried in a run (unit-tested only). Leaving range in a run not
+tried (unit-tested). Guesses: FB_Brighten drawn as plain additive, the
+Combiner's StalkerSkin mix and the masked alpha-test holes left out, the
+pan/oscillation not animated. Headless Stalkers still glow for a
+Commando (that is KF's script).
+**Next:** the Commando's zed health bars (KFVetCommando.SpecialHUDInfo,
+levels 1-6, 160-800 units), a separate HUD path.

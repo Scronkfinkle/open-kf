@@ -346,6 +346,9 @@ pub(super) fn burn_zeds(
                 z.cloaked = false;
                 z.cloak_dirty = true;
             }
+            if z.zapped() {
+                z.clear_glow();
+            }
             if z.zap_tick(dt) {
                 z.run_speed_lost = z.running || z.raging || z.fp_rage.is_some() || z.boss.is_some_and(|b| b.charge.is_some() || b.escaping());
                 runlog::kv("zed_unzapped", &format!("zed={} next_threshold={:.2} run_speed_lost={}", z.id, z.zap_threshold, z.run_speed_lost));
@@ -484,6 +487,9 @@ pub(super) fn apply_cloaks(mut commands: Commands, classes: Option<Res<ZedClasse
         let c = &classes.0[z.class];
         for (i, &e) in parts.0.iter().enumerate() {
             let material = match (&c.cloak_material, z.cloaked, &c.fp_red_device) {
+                // Spotted by a Commando: Skins[0] and Skins[1] =
+                // KFX.StalkerGlow (spotted.rs).
+                _ if z.glow && let Some(glow) = &c.spotted_material => glow.clone(),
                 (Some(cloak), true, _) => cloak.clone(),
                 (_, true, _) if !c.cloak_parts.is_empty() => c.cloak_parts[i.min(c.cloak_parts.len() - 1)].clone(),
                 // DeviceGoRed while raging (Skins[1]).
