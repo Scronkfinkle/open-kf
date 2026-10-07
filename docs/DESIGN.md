@@ -5509,7 +5509,7 @@ setting. If nothing is found, the error lists each Steam install and why
 granted Steam folders cannot be read until the player grants it with
 `flatpak override`.
 
-## Release CI on GitHub (planned 2026-10-07: C1-C3)
+## Release CI on GitHub (planned and built 2026-10-07: C1-C3)
 
 Goal: pushing a version tag (e.g. `v0.2.0`) on a commit that is on `main`
 builds the release files and publishes a GitHub release with them.
@@ -5538,6 +5538,13 @@ build machines, which run the steps in that file).
 - No build cache between runs at first (each run builds from scratch,
   about 10-15 minutes per job). Can add one later if it is too slow.
 - `.gitignore` allows `.github/workflows/*.yml`.
+
+Results (2026-10-07, hand-started run 37684199947): every job passed on the
+first try (release skipped, as intended). Times: windows 18m36s, flatpak
+19m52s, nix 34m22s; the release waits for the slowest. The downloaded
+Flatpak (22 MB) installed and ran headless on KF-WestLondon (install found
+through Steam, `exit=Success`); the Windows zip (48 MB) holds the exe and
+both licences. Not run yet: the release job (needs a real tag).
 
 ## Later milestones (rough order, to be planned in detail when reached)
 

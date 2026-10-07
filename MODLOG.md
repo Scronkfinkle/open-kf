@@ -5500,3 +5500,23 @@ real library on another drive (the Flatpak test imitates one). Flatpak
 needs `flatpak override` for libraries outside the Steam folders.
 **Next:** GitHub Actions for releases, if wanted.
 
+## 2026-10-07 Release CI (C1-C3)
+
+**Changed:** `.github/workflows/release.yml`: on a `v*` tag whose commit is
+on `main`, builds the Windows zip and the Flatpak with Nix (plus a check
+that the Nix package builds) and publishes a GitHub release with both
+files; started by hand it only builds. `.gitignore` allows workflow files.
+Plan and results in `docs/DESIGN.md` ("Release CI on GitHub").
+**Why:** Publish releases for several platforms from tags.
+**Tested how:** actionlint. Started the workflow by hand
+(`gh workflow run release.yml`, run 37684199947), downloaded its files,
+installed the Flatpak into `work/flatpak/user` and ran it headless.
+**Result:** check, windows (18m36s), flatpak (19m52s), nix (34m22s) all
+passed; release skipped as intended. CI Flatpak: install found through
+Steam, KF-WestLondon, `exit=Success`. Zip: exe and both licences.
+**Still broken / not tested:** The release job itself (runs only on a
+tag; the user will push the first tag). The tag-on-main check failing for
+a side-branch tag was not tried. No build cache: every run builds from
+scratch.
+**Next:** First tagged release by the user.
+
