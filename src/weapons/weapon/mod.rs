@@ -30,6 +30,7 @@ mod welder_screen;
 mod torch;
 mod perk;
 mod sleeve;
+mod pickup;
 pub(crate) use load::*;
 use input::*;
 use animate::*;
@@ -140,6 +141,7 @@ impl Plugin for WeaponPlugin {
                     .after(crate::engine::camera::follow_sky),
             )
             .add_systems(Update, publish_pawn_weapon.in_set(PublishPawnWeapon).after(weapon_input))
+            .add_systems(Update, pickup::pickup_inventory.after(crate::game::pickups::PickupSystems::Touch).before(crate::game::pickups::PickupSystems::Answer))
             .add_plugins(crate::weapons::flashlight::FlashlightPlugin);
     }
 }
@@ -320,6 +322,10 @@ struct WeaponDef {
     alt_ammo_class: Option<crate::game::perks::ClassChain>,
     /// The alt ammo's default MaxAmmo.
     alt_default_max: u32,
+    /// The ammo classes' AmmoPickupAmount, None if they take no ammo
+    /// boxes (not a KFAmmunition, or bAcceptsAmmoPickups false).
+    pickup_amount: Option<u32>,
+    alt_pickup_amount: Option<u32>,
     /// KFHumanPawn.ChangedWeapon: bSpeedMeUp (`speed_bonus` is then
     /// GroundSpeed x (BaseMeleeIncrease + the perk's melee speed) - Weight x 2).
     speed_me_up: bool,

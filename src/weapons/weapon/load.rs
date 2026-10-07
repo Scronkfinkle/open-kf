@@ -17,6 +17,18 @@ pub(crate) fn sound_prop(defaults: &ClassDefaults, class: &ObjectHandle, prop: &
     }
 }
 
+/// KFAmmoPickup.Touch: an ammo class that takes ammo boxes (a
+/// KFAmmunition with bAcceptsAmmoPickups) gives its AmmoPickupAmount.
+fn ammo_pickup_amount(defaults: &ClassDefaults, ammo: &ObjectHandle) -> Option<u32> {
+    if !defaults.is_a(ammo, "KFAmmunition") || !matches!(defaults.get(ammo, "bAcceptsAmmoPickups"), Some((Value::Bool(true), _))) {
+        return None;
+    }
+    match defaults.get(ammo, "AmmoPickupAmount") {
+        Some((Value::Int(n), _)) => Some(n.max(0) as u32),
+        _ => None,
+    }
+}
+
 /// An array of sounds as full paths: the `refs` strings (e.g.
 /// MeleeHitSoundRefs) win over the `prop` objects (MeleeHitSounds).
 pub(crate) fn sound_array(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str, refs: &str) -> Vec<String> {
@@ -965,6 +977,7 @@ pub(super) fn load_weapon(
     // Ammo, aimed animation and firing effects come from the primary mode.
     let mut ammo = None;
     let mut ammo_class: Option<crate::game::perks::ClassChain> = None;
+    let mut pickup_amount = None;
     let mut fx = FireFx::default();
     let mut shell_bone_name = None;
     let mut shell2_bone_name = None;
@@ -1010,6 +1023,7 @@ pub(super) fn load_weapon(
                 default_max: max_total,
             });
             *ammo_class = Some(crate::game::perks::ClassChain::new(defaults.chain_names(&ammo_class_h)));
+            pickup_amount = ammo_pickup_amount(defaults, &ammo_class_h);
         }
     }
 
@@ -1154,7 +1168,10 @@ pub(super) fn load_weapon(
         _ => None,
     });
     let alt_ammo_class = alt_ammo_h.as_ref().map(|h| crate::game::perks::ClassChain::new(defaults.chain_names(h)));
+    let alt_pickup_amount = alt_ammo_h.as_ref().and_then(|h| ammo_pickup_amount(defaults, h));
     let mut def = WeaponDef {
+        pickup_amount,
+        alt_pickup_amount,
         perk: crate::game::perks::PerkWeapon {
             class: crate::game::perks::ClassChain::new(defaults.chain_names(&class)),
         },

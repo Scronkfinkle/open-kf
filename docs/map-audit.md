@@ -33,6 +33,7 @@ inside static meshes.
 | Emitter (placed) | 34 / 988 | fires, smoke, ambient effects | M5: loaded from the map and running |
 | Projector, KFBloodSplatter | 22 / 322, 29 / 1176 | placed decals: blood, scorch marks, light patterns | M6: built at load; only on solid surfaces |
 | ShopVolume, KFTraderDoor, Teleporter, KFTraderTeleporter | 34 maps | trader rooms open between waves; players left inside are teleported out | T2a (2026-10-05): chosen, opened and closed as KF; doors move and block; boot to the shop's teleporters. The trail, the arrow and buying: T2b, T3. KF-Transit has 2 shops without teleporters (KF cannot boot there either); KF-Suburbia's shops also trigger event counters (event system not simulated) |
+| KFRandomItemSpawn, KFAmmoPickup, placed weapon pickups and vests | 33 / 468, 34 / 541, 2 maps / 7 | random weapons / vests, ammo boxes, fixed pickups | Pickups (2026-10-07): KF's SetupPickups, spawn-point and ammo-box timers, touch rules, messages, sounds; host-owned in network games (docs/DESIGN.md "Pickups") |
 | WeaponLocker (the trader woman) | 35 maps (not KF-MoonBase, KF-A-AliensTunnelBeta1-2) | stands in each shop looping Idle, always shown; blocks pawns where the map leaves her collision on | T4a (2026-10-06): mesh, map skins, DrawScale3D, Idle loop, CullDistance. Not yet: her collision cylinder (15 x 50) |
 
 ## Not simulated, by how much it matters
@@ -51,7 +52,6 @@ inside static meshes.
 | ScriptedTrigger + Action_*, Trigger, KFProxyTrigger, UseTrigger, BETimedTrigger, NetworkTrigger | 14 / 172 and others | the event system: buttons, timed events, KF-Aperture's puzzle doors | not simulated | anything driven by events stays put |
 | Teleporter with a URL | none enabled in any map (KF-Offices' 6 are bEnabled false) | would teleport on touch | nothing to do | Teleporters are trader boot spots (T2) |
 | KFTraderTeleporter | 4 / 102 | older trader kick-out spots | not simulated | T2 |
-| KFRandomItemSpawn, KFAmmoPickup, weapon pickups | 34 maps | pickups | not simulated | no pickups yet |
 
 **Low**
 

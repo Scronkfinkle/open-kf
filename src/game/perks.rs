@@ -371,6 +371,23 @@ const COMMANDO_AMMO: [&str; 13] = [
     "neonscarmk17ammo",
 ];
 const FIREBUG_AMMO: [&str; 6] = ["flameammo", "mac10ammo", "huskgunammo", "trenchgunammo", "flarerevolverammo", "goldenflameammo"];
+/// GetAmmoPickupMod's lists (casts: the class or a subclass).
+const COMMANDO_PICKUP_AMMO: [&str; 12] = [
+    "bullpupammo",
+    "ak47ammo",
+    "scarmk17ammo",
+    "m4ammo",
+    "fnfalammo",
+    "mkb42ammo",
+    "thompsonammo",
+    "goldenak47ammo",
+    "thompsondrumammo",
+    "spthompsonammo",
+    "camom4ammo",
+    "neonak47ammo",
+];
+const MEDIC_PICKUP_AMMO: [&str; 7] = ["mp7mammo", "mp5mammo", "m7a3mammo", "krissmammo", "blowerthrowerammo", "camomp5mammo", "neonkrissmammo"];
+const FIREBUG_PICKUP_AMMO: [&str; 5] = ["flameammo", "mac10ammo", "huskgunammo", "trenchgunammo", "flarerevolverammo"];
 
 impl Vet {
     #[cfg(test)]
@@ -570,6 +587,24 @@ impl Vet {
             Some(Perk::Demolitions) if ammo.is("fragammo") => 1.0 + 0.20 * self.l(),
             Some(Perk::Demolitions) if ammo.is("pipebombammo") => 1.0 + 0.5 * self.l(),
             Some(Perk::Demolitions) if ammo.is("lawammo") => 1.0 + 0.20 * self.l(),
+            _ => 1.0,
+        }
+    }
+
+    /// GetAmmoPickupMod: an ammo box's AmmoPickupAmount x this
+    /// (KFAmmoPickup.Touch). The Support Specialist has none.
+    pub fn ammo_pickup_mod(&self, ammo: &ClassChain) -> f32 {
+        if self.level == 0 {
+            return 1.0;
+        }
+        match self.perk {
+            Some(Perk::Commando) if ammo.is_a_any(&COMMANDO_PICKUP_AMMO) => match self.level {
+                1 => 1.10,
+                2 => 1.20,
+                _ => 1.25,
+            },
+            Some(Perk::Medic) if ammo.is_a_any(&MEDIC_PICKUP_AMMO) => 1.0 + 0.20 * self.l5(),
+            Some(Perk::Firebug) if ammo.is_a_any(&FIREBUG_PICKUP_AMMO) => 1.0 + 0.10 * self.l(),
             _ => 1.0,
         }
     }

@@ -161,6 +161,11 @@ pub enum ProjectileFx {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DoorStates(pub Vec<crate::world::door::DoorNetState>);
 
+/// Every pickup shown on the host (game/pickups), sent when the list
+/// changes and every 2 s.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PickupStates(pub Vec<crate::game::pickups::ShownPickup>);
+
 /// Reliable, ordered: lobby requests must all arrive, in order.
 pub struct LobbyChannel;
 
@@ -190,6 +195,9 @@ pub fn register(app: &mut App) {
     app.register_message::<ProjectileFx>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<DoorStates>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<crate::world::door::DoorRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<PickupStates>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<crate::game::pickups::PickupRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<crate::game::pickups::PickupNotice>().add_direction(NetworkDirection::ServerToClient);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })
