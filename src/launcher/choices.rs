@@ -2,6 +2,7 @@
 //! the `key=value` text the choices are saved as. No Bevy here, so it is
 //! all unit-tested. See DESIGN.md, "The launcher".
 
+use crate::engine::graphics::{self, DisplayMode};
 use crate::game::buy_menu::MenuKind;
 use crate::game::perks::Perk;
 use crate::player::character::DEFAULT_CHARACTER;
@@ -25,7 +26,9 @@ impl PlayType {
     }
 }
 
-/// The window sizes offered (None: the system's default window).
+/// The window sizes offered when the monitor reports none (None: the
+/// system's default window). Normally the launcher offers the monitor's
+/// own sizes (`step_resolution`).
 pub const WINDOW_SIZES: &[Option<(u32, u32)>] = &[None, Some((1280, 720)), Some((1280, 960)), Some((1600, 900)), Some((1920, 1080)), Some((2560, 1440))];
 /// The frame limits offered (None: no limit).
 pub const FPS_LIMITS: &[Option<u32>] = &[None, Some(30), Some(60), Some(120), Some(144), Some(240)];
@@ -48,8 +51,8 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 17] = [
-    "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "sound", "trader", "extra",
+pub const FIELDS: [&str; 22] = [
+    "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "display", "fov", "brightness", "msaa", "anisotropy", "sound", "trader", "extra",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,9 +74,18 @@ pub struct Choices {
     pub perk: Option<Perk>,
     pub perk_level: u8,
     pub character: String,
+    /// The resolution (`--window`): the window size, or the video mode in
+    /// fullscreen. None: the default window / the desktop's mode.
     pub window: Option<(u32, u32)>,
     pub fps: Option<u32>,
     pub vsync: bool,
+    /// Graphics (engine/graphics.rs): `--display`, `--fov`, `--brightness`
+    /// (percent), `--msaa` (samples, 1 = off), `--anisotropy`.
+    pub display: DisplayMode,
+    pub fov: u32,
+    pub brightness: u32,
+    pub msaa: u32,
+    pub anisotropy: u16,
     pub sound: bool,
     /// The trader's menu (`--trader-menu`): NuMenu (default) or KF's.
     pub trader: MenuKind,
@@ -98,6 +110,11 @@ impl Default for Choices {
             window: None,
             fps: None,
             vsync: true,
+            display: DisplayMode::Windowed,
+            fov: graphics::DEFAULT_FOV,
+            brightness: graphics::DEFAULT_BRIGHTNESS,
+            msaa: graphics::DEFAULT_MSAA,
+            anisotropy: graphics::DEFAULT_ANISOTROPY,
             sound: true,
             trader: MenuKind::Nu,
             extra: String::new(),
@@ -135,6 +152,11 @@ impl Choices {
             "window" => self.window.map_or("default".into(), |(w, h)| format!("{w}x{h}")),
             "fps" => self.fps.map_or("none".into(), |f| f.to_string()),
             "vsync" => on_off(self.vsync).into(),
+            "display" => self.display.word().into(),
+            "fov" => self.fov.to_string(),
+            "brightness" => self.brightness.to_string(),
+            "msaa" => if self.msaa <= 1 { "off".into() } else { self.msaa.to_string() },
+            "anisotropy" => self.anisotropy.to_string(),
             "sound" => on_off(self.sound).into(),
             "trader" => self.trader.word().into(),
             "extra" => self.extra.clone(),
@@ -190,6 +212,11 @@ impl Choices {
             }
             "fps" => self.fps = if v.eq_ignore_ascii_case("none") { None } else { Some(num(v)?.clamp(1, 1000)) },
             "vsync" => self.vsync = parse_bool(v)?,
+            "display" => self.display = DisplayMode::parse(v).ok_or(format!("not windowed/borderless/fullscreen: {v}"))?,
+            "fov" => self.fov = graphics::parse_fov(v)?,
+            "brightness" => self.brightness = graphics::parse_brightness(v)?,
+            "msaa" => self.msaa = graphics::parse_msaa(v)?,
+            "anisotropy" => self.anisotropy = graphics::parse_anisotropy(v)?,
             "sound" => self.sound = parse_bool(v)?,
             "trader" => self.trader = MenuKind::parse(v).ok_or(format!("not nu/kf: {v}"))?,
             "extra" => self.extra = v.trim().into(),
@@ -233,10 +260,34 @@ impl Choices {
                 self.fps = FPS_LIMITS[cycle(i, FPS_LIMITS.len(), d)];
             }
             "vsync" => self.vsync = !self.vsync,
+            "display" => {
+                let i = DisplayMode::ALL.iter().position(|m| *m == self.display).unwrap_or(0);
+                self.display = DisplayMode::ALL[cycle(i, DisplayMode::ALL.len(), d)];
+            }
+            // Numbers stop at their ends instead of wrapping.
+            "fov" => self.fov = (self.fov as i64 + d as i64 * graphics::FOV_STEP as i64).clamp(graphics::FOV_MIN as i64, graphics::FOV_MAX as i64) as u32,
+            "brightness" => self.brightness = (self.brightness as i64 + d as i64 * graphics::BRIGHTNESS_STEP as i64).clamp(graphics::BRIGHTNESS_MIN as i64, graphics::BRIGHTNESS_MAX as i64) as u32,
+            "msaa" => {
+                let i = graphics::MSAA_SAMPLES.iter().position(|m| *m == self.msaa).unwrap_or(0);
+                self.msaa = graphics::MSAA_SAMPLES[cycle(i, graphics::MSAA_SAMPLES.len(), d)];
+            }
+            "anisotropy" => {
+                let i = graphics::ANISOTROPY_LEVELS.iter().position(|a| *a == self.anisotropy).unwrap_or(0);
+                self.anisotropy = graphics::ANISOTROPY_LEVELS[cycle(i, graphics::ANISOTROPY_LEVELS.len(), d)];
+            }
             "sound" => self.sound = !self.sound,
             "trader" => self.trader = if self.trader == MenuKind::Nu { MenuKind::Kf } else { MenuKind::Nu },
             _ => {}
         }
+    }
+
+    /// The Resolution `<` / `>` buttons: one step through Default and
+    /// `sizes` (the monitor's, largest first), wrapping. A saved size the
+    /// monitor does not list steps to the list's first entry.
+    pub fn step_resolution(&mut self, d: i32, sizes: &[(u32, u32)]) {
+        let list: Vec<Option<(u32, u32)>> = std::iter::once(None).chain(sizes.iter().copied().map(Some)).collect();
+        let i = list.iter().position(|w| *w == self.window).unwrap_or(0);
+        self.window = list[(i as i64 + d as i64).rem_euclid(list.len() as i64) as usize];
     }
 
     /// Why PLAY cannot be used now, if it cannot.
@@ -298,6 +349,22 @@ impl Choices {
         }
         if !self.vsync {
             push(&["--no-vsync"]);
+        }
+        // Graphics: only what differs from the game's defaults.
+        if self.display != DisplayMode::Windowed {
+            push(&["--display", self.display.word()]);
+        }
+        if self.fov != graphics::DEFAULT_FOV {
+            push(&["--fov", &self.fov.to_string()]);
+        }
+        if self.brightness != graphics::DEFAULT_BRIGHTNESS {
+            push(&["--brightness", &self.brightness.to_string()]);
+        }
+        if self.msaa != graphics::DEFAULT_MSAA {
+            push(&["--msaa", &if self.msaa <= 1 { 0 } else { self.msaa }.to_string()]);
+        }
+        if self.anisotropy != graphics::DEFAULT_ANISOTROPY {
+            push(&["--anisotropy", &self.anisotropy.to_string()]);
         }
         if !self.sound || mute {
             push(&["--mute"]);
@@ -444,6 +511,11 @@ mod tests {
         c.vsync = false;
         c.sound = false;
         c.trader = MenuKind::Kf;
+        c.display = DisplayMode::Fullscreen;
+        c.fov = 105;
+        c.brightness = 140;
+        c.msaa = 1;
+        c.anisotropy = 16;
         c.extra = "--god --give all".into();
         let (back, bad) = Choices::from_text(&c.to_text());
         assert!(bad.is_empty(), "{bad:?}");
@@ -487,6 +559,59 @@ mod tests {
         assert!(c.set("trader", "wizard").is_err());
         c.set("trader", "nu").unwrap();
         assert_eq!(c.trader, MenuKind::Nu);
+    }
+
+    #[test]
+    fn graphics_choices() {
+        let mut c = Choices::default();
+        // Defaults add nothing to the command line.
+        let a = c.to_args(false).unwrap();
+        for o in ["--display", "--fov", "--brightness", "--msaa", "--anisotropy"] {
+            assert!(!a.contains(&o.to_string()), "{o}");
+        }
+        c.step("display", 1, &[]);
+        assert_eq!(c.display, DisplayMode::Borderless);
+        c.step("display", -2, &[]);
+        assert_eq!(c.display, DisplayMode::Fullscreen);
+        c.step("fov", 1, &[]);
+        assert_eq!(c.fov, 95);
+        for _ in 0..20 {
+            c.step("fov", 1, &[]);
+            c.step("brightness", -1, &[]);
+        }
+        assert_eq!((c.fov, c.brightness), (graphics::FOV_MAX, graphics::BRIGHTNESS_MIN));
+        c.step("msaa", 1, &[]);
+        assert_eq!(c.msaa, 8);
+        c.step("msaa", 1, &[]);
+        assert_eq!(c.msaa, 1);
+        assert_eq!(c.get("msaa"), "off");
+        c.step("anisotropy", -1, &[]);
+        assert_eq!(c.anisotropy, 4);
+        let a = c.to_args(false).unwrap();
+        assert!(a.windows(2).any(|w| w == ["--display", "fullscreen"]));
+        assert!(a.windows(2).any(|w| w == ["--fov", "120"]));
+        assert!(a.windows(2).any(|w| w == ["--brightness", "50"]));
+        assert!(a.windows(2).any(|w| w == ["--msaa", "0"]));
+        assert!(a.windows(2).any(|w| w == ["--anisotropy", "4"]));
+        assert!(c.set("fov", "200").is_err() && c.set("msaa", "3").is_err() && c.set("display", "huge").is_err());
+        c.set("msaa", "off").unwrap();
+        assert_eq!(c.msaa, 1);
+    }
+
+    #[test]
+    fn resolution_steps_through_the_monitor_sizes() {
+        let mut c = Choices::default();
+        let sizes = [(2560, 1440), (1920, 1080), (1280, 720)];
+        c.step_resolution(1, &sizes);
+        assert_eq!(c.window, Some((2560, 1440)));
+        c.step_resolution(-2, &sizes);
+        assert_eq!(c.window, Some((1280, 720)));
+        c.step_resolution(1, &sizes);
+        assert_eq!(c.window, None);
+        // A saved size the monitor does not have: the next step starts over.
+        c.window = Some((1600, 900));
+        c.step_resolution(1, &sizes);
+        assert_eq!(c.window, Some((2560, 1440)));
     }
 
     #[test]

@@ -169,6 +169,7 @@ fn place_arrow(
     window: Query<&Window>,
     (shops, menu, options, fov): (Res<crate::game::trader::Shops>, Res<crate::game::buy_menu::BuyMenu>, Res<crate::game::waves::GameOptions>, Res<crate::engine::camera::ViewFov>),
     game: Res<crate::game::waves::WaveGame>,
+    graphics: Res<crate::engine::graphics::GraphicsSettings>,
     mut log_timer: Local<f32>,
 ) {
     let (Ok((main_t, main_p, walker)), Ok((mut cam_t, mut cam_p)), Ok((mut t, mut vis))) = (main.single(), cam.single_mut(), arrow.single_mut()) else {
@@ -185,8 +186,8 @@ fn place_arrow(
     let (Some(shop), Ok(win), Projection::Perspective(p)) = (shop, window.single(), main_p) else { return };
     let ray = corner_ray(Vec2::new(win.width(), win.height()), p.fov);
     // x 10 x (DefaultFOV / FovAngle): further when zoomed, the same size.
-    // ARROW_DISTANCE_FIT: see its comment.
-    let dist = 10.0 * ARROW_DISTANCE_FIT * (crate::engine::camera::DEFAULT_FOV / fov.0) * SCALE;
+    // DefaultFOV is the player's (`--fov`). ARROW_DISTANCE_FIT: see its comment.
+    let dist = 10.0 * ARROW_DISTANCE_FIT * (graphics.fov / fov.0) * SCALE;
     t.translation = main_t.translation + main_t.rotation * (ray * dist);
     let centre = walker.map_or(main_t.translation - Vec3::Y * crate::game::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center);
     let pawn = Vec3::new(-centre.z, centre.x, centre.y) / SCALE;

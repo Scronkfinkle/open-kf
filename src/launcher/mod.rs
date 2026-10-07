@@ -180,6 +180,11 @@ pub struct Launcher {
     /// the address it was for; a new address clears it).
     host_wait: Option<HostAnswer>,
     pub host_text: Option<(String, String)>,
+    /// Graphics: the sizes the Resolution row offers (the primary
+    /// monitor's, largest first; `WINDOW_SIZES` until it is known or if it
+    /// reports none) and the desktop's size.
+    pub resolutions: Vec<(u32, u32)>,
+    pub desktop: Option<(u32, u32)>,
 }
 
 type HostAnswer = Arc<Mutex<Option<Result<(u16, crate::net::query::HostInfo), String>>>>;
@@ -276,6 +281,7 @@ pub fn run(args: &[String]) -> AppExit {
         maps: list_maps(&install.root),
         characters: crate::player::character::model_select_records(&install.root).into_iter().map(|r| (r.name, r.portrait)).collect(),
         reveal_map: true,
+        resolutions: choices::WINDOW_SIZES.iter().flatten().copied().collect(),
         ..default()
     };
     runlog::kv(
@@ -301,7 +307,7 @@ pub fn run(args: &[String]) -> AppExit {
         .init_resource::<Gui>()
         .init_resource::<Hits>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (input, poll_host_check, log_changes, test_end).chain())
+        .add_systems(Update, (read_monitors, input, poll_host_check, log_changes, test_end).chain())
         .add_systems(PostUpdate, paint)
         .run();
     // The window is closed now (the app is gone); wait for the game.
@@ -460,6 +466,9 @@ fn apply(id: &str, l: &mut Launcher, opts: &Options, started: &Started, exit: &m
         }
     } else if let Some(f) = id.strip_prefix("focus:").and_then(Field::parse) {
         l.focus = Some(f);
+    } else if let Some(d) = id.strip_prefix("spin:window:") {
+        let sizes = l.resolutions.clone();
+        l.choices.step_resolution(d.parse().unwrap_or(1), &sizes);
     } else if let Some((field, d)) = id.strip_prefix("spin:").and_then(|s| s.rsplit_once(':')) {
         l.choices.step(field, d.parse().unwrap_or(1), &characters);
     } else if let Some(i) = id.strip_prefix("map:").and_then(|n| n.parse::<usize>().ok()) {
@@ -536,6 +545,44 @@ fn launch(l: &mut Launcher, opts: &Options, started: &Started, exit: &mut Messag
             runlog::kv("launcher_start_failed", &format!("exe=\"{}\" reason=\"{e}\"", exe.display()));
         }
     }
+}
+
+/// The Resolution list: the primary monitor's video mode sizes (Bevy's
+/// `Monitor` entities, from winit: the same on Linux and Windows), largest
+/// first, plus its current size. Read once, when the monitors are known;
+/// after 60 frames without one the fixed list stays.
+fn read_monitors(mut launcher: ResMut<Launcher>, monitors: Query<(&bevy::window::Monitor, Has<bevy::window::PrimaryMonitor>)>, mut frames: Local<u32>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    *frames += 1;
+    let primary = monitors.iter().find(|(_, p)| *p).or_else(|| monitors.iter().next());
+    let Some((m, is_primary)) = primary else {
+        if *frames > 60 {
+            *done = true;
+            runlog::kv("launcher_display_modes", &format!("monitor=none sizes={} source=fixed_list", launcher.resolutions.len()));
+        }
+        return;
+    };
+    *done = true;
+    let desktop = (m.physical_width, m.physical_height);
+    let sizes = monitor_sizes(m.video_modes.iter().map(|v| (v.physical_size.x, v.physical_size.y)), desktop);
+    let list: Vec<String> = sizes.iter().map(|(w, h)| format!("{w}x{h}")).collect();
+    runlog::kv(
+        "launcher_display_modes",
+        &format!("monitor=\"{}\" primary={is_primary} desktop={}x{} refresh_hz={:.2} video_modes={} sizes={} source=monitor [{}]", m.name.as_deref().unwrap_or("?"), desktop.0, desktop.1, m.refresh_rate_millihertz.unwrap_or(0) as f32 / 1000.0, m.video_modes.len(), sizes.len(), list.join(" ")),
+    );
+    launcher.desktop = Some(desktop);
+    launcher.resolutions = sizes;
+}
+
+/// The distinct sizes, largest first (by pixels, then width), with the
+/// desktop's own size always in.
+fn monitor_sizes(modes: impl Iterator<Item = (u32, u32)>, desktop: (u32, u32)) -> Vec<(u32, u32)> {
+    let mut sizes: Vec<(u32, u32)> = modes.chain(std::iter::once(desktop)).filter(|(w, h)| *w > 0 && *h > 0).collect();
+    sizes.sort_by_key(|&(w, h)| std::cmp::Reverse((w as u64 * h as u64, w)));
+    sizes.dedup();
+    sizes
 }
 
 /// Logs every choice that changed this frame.
@@ -633,8 +680,15 @@ mod tests {
             c.fps = Some(60);
             c.vsync = false;
             c.trader = crate::game::buy_menu::MenuKind::Kf;
+            c.display = crate::engine::graphics::DisplayMode::Borderless;
+            c.fov = 110;
+            c.brightness = 130;
+            c.msaa = 1;
+            c.anisotropy = 16;
             let args = c.to_args(true).unwrap();
             let parsed = crate::parse_args(args.clone()).unwrap_or_else(|e| panic!("{play:?}: {e} ({args:?})"));
+            assert_eq!(parsed.display, crate::engine::graphics::DisplayMode::Borderless);
+            assert_eq!((parsed.fov, parsed.brightness, parsed.msaa, parsed.anisotropy), (Some(110), Some(130), Some(1), Some(16)));
             assert_eq!(parsed.trader_menu, crate::game::buy_menu::MenuKind::Kf);
             assert_eq!(parsed.name.as_deref(), Some("Big Al"));
             assert!(parsed.mute && parsed.no_vsync);
@@ -642,6 +696,23 @@ mod tests {
         }
         c.extra = "--no-such-option".into();
         assert!(crate::parse_args(c.to_args(false).unwrap()).is_err());
+    }
+
+    #[test]
+    fn typed_options_override_saved_graphics() {
+        // The extra arguments come last; the game keeps the last value.
+        let c = Choices { fov: 100, extra: "--fov 85 --display fullscreen".into(), ..Default::default() };
+        let parsed = crate::parse_args(c.to_args(false).unwrap()).unwrap();
+        assert_eq!(parsed.fov, Some(85));
+        assert_eq!(parsed.display, crate::engine::graphics::DisplayMode::Fullscreen);
+    }
+
+    #[test]
+    fn monitor_sizes_sorted_and_unique() {
+        let modes = [(1280, 720), (1920, 1080), (1920, 1080), (800, 600), (1280, 1024)];
+        assert_eq!(monitor_sizes(modes.into_iter(), (2560, 1440)), vec![(2560, 1440), (1920, 1080), (1280, 1024), (1280, 720), (800, 600)]);
+        // Only the desktop (e.g. a virtual display that lists no modes).
+        assert_eq!(monitor_sizes(std::iter::empty(), (1920, 1080)), vec![(1920, 1080)]);
     }
 
     #[test]

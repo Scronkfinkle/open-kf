@@ -5199,7 +5199,9 @@ sections and a bottom row:
 - *Player*: name (typed), perk (with its icon; or None), perk level
   0-6, character (with its portrait), each changed with `<` and `>`.
 - *Display and sound*: window size (Default or a fixed size), frame
-  limit (None, 30-240), vsync on/off, sound on/off.
+  limit (None, 30-240), vsync on/off, sound on/off. (2026-10-07: the
+  window, frame limit and vsync rows moved to the *Graphics* section, see
+  "Graphics settings in the launcher"; this box is now "Sound, menus".)
 - Bottom: an "extra arguments" field (for test options such as
   `--god`), the command line that PLAY will run (so you can copy it),
   QUIT and PLAY. A reason is shown when PLAY cannot be used (a bad
@@ -5258,6 +5260,93 @@ planned, with these details:
   `maps.scroll:N`, `check_host`, `launch`, `quit`), `set:FIELD=VALUE`
   (fields as in the saved file), `type:TEXT`, `key:tab|enter|escape|backspace`,
   `dump`. Values cannot contain commas (`--input` splits on them).
+
+## Graphics settings in the launcher (planned 2026-10-07: GX1-GX3)
+
+**Goal.** The launcher gets a *Graphics* section: display mode, resolution,
+vsync, frame limit, field of view, brightness, anti-aliasing and texture
+filtering. Only settings the renderer really uses; nothing that is a
+dead switch.
+
+**How they reach the game: command-line options, as before.** The launcher
+already turns every choice into a game option (`--window`, `--fps`,
+`--no-vsync`). The new settings work the same way, so the game has one
+way in, and test runs (`scripts/headless.sh`) never pick up your saved
+settings by surprise. Options typed in the launcher's "extra arguments"
+field come last on the command line, and for these options the last one
+wins, so a typed option overrides the saved one. The choices are saved in
+the launcher's existing file (`settings/launcher.txt`, new keys
+`display`, `fov`, `brightness`, `msaa`, `anisotropy`; the old `window`,
+`fps`, `vsync` keys stay). No second settings file.
+
+**The settings.** (KF's values from `System/Default.ini`, read only; our
+defaults keep today's look so nothing changes unless you pick something.)
+
+| Setting | Game option | Values | Default | What it changes |
+| --- | --- | --- | --- | --- |
+| Display mode | `--display windowed\|borderless\|fullscreen` | Windowed, Borderless (a window the size of the screen, no border), Fullscreen (exclusive: the monitor switches to the resolution) | Windowed (KF: `StartupFullscreen=True`; windowed kept so nothing changes) | Bevy `WindowMode` |
+| Resolution | `--window WxH` (exists) | Default, then every size the primary monitor reports (Bevy's `Monitor::video_modes`, from winit; works on Windows too); a fixed list when the monitor reports none | Default | Windowed: the window size. Fullscreen: the video mode (the monitor's own size when Default). Borderless: ignored (always the screen's size) |
+| Vsync | `--no-vsync` (exists) | On / Off | On (KF D3D9: `UseVSync=False`) | `PresentMode` |
+| Frame limit | `--fps N` (exists) | None, 30-240 | None | our frame limiter |
+| Field of view | `--fov DEG` | 80-120, steps of 5 | 90 (KFPlayerController.InitFOV at 4:3) | the player's view angle (KF's horizontal degrees at 4:3, as now); iron sights still zoom from it. The weapon model keeps its own DisplayFOV, as in KF |
+| Brightness | `--brightness PERCENT` | 50-200, steps of 10 | 100 (no change) | the 3D view's light times PERCENT/100 (sky, map, zeds, weapon; not the HUD or menus). A second full-screen modulate quad in the vision-overlay camera (render/overlay.rs: screen x 2 x colour), so 200 % is the most it can do. KF's own Brightness / Gamma / Contrast set the monitor's gamma ramp; we do not copy that (no gamma curve: a multiply only) |
+| Anti-aliasing | `--msaa 0\|2\|4\|8` | Off, 2x, 4x, 8x | 4x (Bevy's default, today's look) | `Msaa` on every camera (they share the screen, so they must match). 2x and 8x are not supported by every graphics card: the game checks the card and falls back to 4x (logged) |
+| Texture filtering | `--anisotropy 1\|2\|4\|8\|16` | Trilinear (1), Anisotropic 2x-16x | 8x (today's value; KF: `LevelOfAnisotropy=1`) | the map textures' sampler (`anisotropy_clamp`): sharper floors and walls seen at a slant |
+
+**Not added (and why).** Render scale (drawing at a lower resolution and
+stretching): Bevy has no simple switch for the window's main view; it would
+need our own render-to-image path. Gamma / contrast curves: no cheap pass
+for a curve over the whole frame (Bevy's colour grading runs only in its
+own materials, not in ours). Shadows, detail levels: the renderer uses
+KF's baked lighting and has none to turn down. Changing settings in the
+pause menu: another branch is changing the pause menu; FOV and brightness
+could be added there later (both are resources the game reads every frame).
+
+**Logs.** The game logs `graphics_settings` at start (every value and where
+it came from), `window_state` when the window is ready and whenever its
+mode or size changes (mode, physical size, scale factor, present mode),
+`msaa_applied` (cameras, the sample count, any fallback),
+`fullscreen_mode` (the video mode picked for exclusive fullscreen, or why
+none). The launcher logs `launcher_display_modes` (the monitor and the
+sizes offered).
+
+**Steps.**
+
+- GX1. Game: the new options, `engine/graphics.rs` (the settings resource,
+  MSAA on cameras, exclusive fullscreen, window logs), FOV in the camera
+  and iron sights, brightness quad, anisotropy in map textures.
+- GX2. Launcher: the Graphics section (column 2, under the map list), the
+  resolution list from the monitor, the saved keys, unit tests.
+- GX3. Headless checks: logs, screenshots at several resolutions and
+  brightness values, persistence (save, reopen).
+
+**As built (2026-10-07; headless runs only, not used by you yet).** As
+planned, with these details:
+
+- Files: `src/engine/graphics.rs` (new: settings, option parsing shared
+  with the launcher, the window, MSAA check and apply, video mode pick,
+  `window_state` log; unit tests), `src/main.rs` (options),
+  `src/engine/camera.rs` and `src/weapons/weapon/animate.rs` (FOV),
+  `src/game/trader_arrow.rs` (the arrow's distance uses the player's FOV,
+  KF's `DefaultFOV / FovAngle`), `src/render/overlay.rs` (brightness quad),
+  `src/world/map.rs` (anisotropy), `src/launcher/` (the section, the
+  monitor's sizes, saved keys).
+- Exclusive fullscreen opens borderless and switches to the video mode once
+  Bevy knows the monitors (first frame). The mode is the chosen size with
+  the highest refresh rate; if the monitor has no such size, the desktop's
+  size (logged `no_such_mode_used_desktop_size`). Bevy's own "current
+  mode" failed on the test display (it reports no refresh rate), so we
+  always pick a listed mode.
+- The Graphics section is in column 2 under the map list (the list keeps
+  at least half the column; at 1280 x 800 it shows 7 maps). Field ids for
+  tests: `spin:display|window|vsync|fps|fov|brightness|msaa|anisotropy:±1`.
+  FOV and brightness stop at their ends; the others wrap.
+- The game only gets an option when it differs from the default (so the
+  command line stays short and old command lines behave as before).
+- On the virtual test display (Xvfb, no window manager) borderless and
+  fullscreen are requested and logged but the window stays 1280 x 720:
+  only a real desktop can show whether they work. Vsync on/off is also
+  only checked as the logged present mode.
 
 ## NuMenu: our own trader menu (planned 2026-10-07: NU1-NU4)
 

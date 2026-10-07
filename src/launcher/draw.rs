@@ -161,7 +161,17 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         }
     }
 
-    // Column 2: the map list.
+    // Column 2: the map list, then Graphics under it (8 rows; smaller rows
+    // on a short window so the map list keeps at least half the column).
+    let (rhg, gapg) = if section_height(GRAPHICS_ROWS, rh, gap) <= b.height() * 0.5 {
+        (rh, gap)
+    } else {
+        let s = ((b.height() * 0.5 - 45.0) / (GRAPHICS_ROWS as f32 * (rh + gap))).max(0.5);
+        ((rh * s).floor(), (gap * s).floor())
+    };
+    let gfx = Rect::new(b.min.x, b.max.y - section_height(GRAPHICS_ROWS, rhg, gapg), b.max.x, b.max.y);
+    graphics_section(p, l, c_, gfx, rhg, gapg, menu);
+    let b = Rect::new(b.min.x, b.min.y, b.max.x, gfx.min.y - gap);
     p.section(b, "Map", false, "Map");
     let list = Painter::section_client(b, [0.0; 4]);
     if join {
@@ -176,13 +186,13 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         map_list(p, l, list, menu);
     }
 
-    // Column 3: Game, then Display, sound, menus (3 + 5 rows). On a short
-    // window its rows get a little smaller so both fit above the bottom row.
-    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(5, h, g);
+    // Column 3: Game, then Sound, menus (3 + 2 rows). On a short window
+    // its rows get a little smaller so both fit above the bottom row.
+    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(2, h, g);
     let (rh3, gap3) = if need(rh, gap) <= c.height() {
         (rh, gap)
     } else {
-        let s = ((c.height() - 90.0 - gap) / (8.0 * (rh + gap))).max(0.5);
+        let s = ((c.height() - 90.0 - gap) / (5.0 * (rh + gap))).max(0.5);
         ((rh * s).floor(), (gap * s).floor())
     };
     let game_h = section_height(3, rh3, gap3);
@@ -205,18 +215,9 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         spinner(p, "wave", ctl, &c_.start_wave.map_or("First".into(), |w| w.to_string()), c_.waves, menu);
     }
 
-    let disp = Rect::new(c.min.x, game.max.y + gap3, c.max.x, game.max.y + gap3 + section_height(5, rh3, gap3));
-    p.section(disp, "Display, sound, menus", false, "Display");
+    let disp = Rect::new(c.min.x, game.max.y + gap3, c.max.x, game.max.y + gap3 + section_height(2, rh3, gap3));
+    p.section(disp, "Sound, menus", false, "Display");
     let mut rows = Rows::new(Painter::section_client(disp, [0.0; 4]), rh3, gap3, 0.4);
-    let (lab, ctl) = rows.next();
-    label(p, lab, "Window", menu);
-    spinner(p, "window", ctl, &c_.window.map_or("Default".into(), |(w, h)| format!("{w} x {h}")), true, menu);
-    let (lab, ctl) = rows.next();
-    label(p, lab, "Frame limit", menu);
-    spinner(p, "fps", ctl, &c_.fps.map_or("None".into(), |f| format!("{f} fps")), true, menu);
-    let (lab, ctl) = rows.next();
-    label(p, lab, "Vsync", menu);
-    spinner(p, "vsync", ctl, if c_.vsync { "On" } else { "Off" }, true, menu);
     let (lab, ctl) = rows.next();
     label(p, lab, "Sound", menu);
     spinner(p, "sound", ctl, if c_.sound { "On" } else { "Off (muted)" }, true, menu);
@@ -259,6 +260,43 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
     let help = "Click a field to type in it (Tab: next field). Enter: play. Escape: quit. Your choices are saved when you press PLAY.";
     let hh = p.line_height(small);
     note(p, Rect::new(line_box.min.x, y + 4.0, line_box.max.x, y + 4.0 + hh), help, small, DIM, "Help");
+}
+
+/// Rows in the Graphics section.
+const GRAPHICS_ROWS: usize = 8;
+
+/// The Graphics section (DESIGN.md, "Graphics settings in the launcher").
+fn graphics_section(p: &mut Painter, l: &Launcher, c: &super::choices::Choices, r: Rect, rh: f32, gap: f32, font: &'static str) {
+    use crate::engine::graphics::DisplayMode;
+    p.section(r, "Graphics", false, "Graphics");
+    let mut rows = Rows::new(Painter::section_client(r, [0.0; 4]), rh, gap, 0.42);
+    let mut row = |p: &mut Painter, name: &str, field: &str, value: &str, enabled: bool| {
+        let (lab, ctl) = rows.next();
+        // Labels in a font that fits ("Texture filtering" is long).
+        label(p, lab, name, fit(p, font, name, lab.width() - 8.0));
+        spinner(p, field, ctl, value, enabled, font);
+    };
+    let display = match c.display {
+        DisplayMode::Windowed => "Windowed",
+        DisplayMode::Borderless => "Borderless (screen size)",
+        DisplayMode::Fullscreen => "Fullscreen",
+    };
+    row(p, "Display mode", "display", display, true);
+    let desktop = l.desktop.map_or(String::new(), |(w, h)| format!(" ({w} x {h})"));
+    let resolution = match (c.display, c.window) {
+        (DisplayMode::Borderless, _) => format!("Screen size{desktop}"),
+        (DisplayMode::Fullscreen, None) => format!("Desktop{desktop}"),
+        (_, None) => "Default".into(),
+        (_, Some((w, h))) => format!("{w} x {h}"),
+    };
+    // Borderless always fills the screen: the size is not used.
+    row(p, "Resolution", "window", &resolution, c.display != DisplayMode::Borderless);
+    row(p, "Vsync", "vsync", if c.vsync { "On" } else { "Off" }, true);
+    row(p, "Frame limit", "fps", &c.fps.map_or("None".into(), |f| format!("{f} fps")), true);
+    row(p, "Field of view", "fov", &format!("{} deg", c.fov), true);
+    row(p, "Brightness", "brightness", &format!("{} %", c.brightness), true);
+    row(p, "Anti-aliasing", "msaa", &if c.msaa <= 1 { "Off".to_string() } else { format!("MSAA {}x", c.msaa) }, true);
+    row(p, "Texture filtering", "anisotropy", &if c.anisotropy <= 1 { "Trilinear".to_string() } else { format!("Anisotropic {}x", c.anisotropy) }, true);
 }
 
 /// The largest of KF's menu fonts, up to `font`, that fits `text` into

@@ -3,6 +3,9 @@
 //! player zone's fog colour. This is KF-WestLondon's orange look. See
 //! DESIGN.md, "Baked lighting", LV. Below 25% health the overlay is
 //! NearDeathOverlay instead, a red pulse (E4, DESIGN.md "Hit effects").
+//!
+//! The brightness setting (`--brightness`, engine/graphics.rs) is a second
+//! quad of the same kind: the view times PERCENT / 100, in linear light.
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ClearColorConfig, ScalingMode};
@@ -95,7 +98,19 @@ struct Tint {
     target: Option<[f32; 3]>,
 }
 
-fn spawn_overlay(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<OverlayMaterial>>) {
+/// The brightness quad's colour: the blend doubles, so half the factor
+/// (`--brightness` is 50-200 %, so 0.25-1.0).
+fn brightness_color(percent: u32) -> LinearRgba {
+    let half = (percent as f32 / 100.0 / 2.0).clamp(0.0, 1.0);
+    LinearRgba::rgb(half, half, half)
+}
+
+fn spawn_overlay(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<OverlayMaterial>>,
+    graphics: Option<Res<crate::engine::graphics::GraphicsSettings>>,
+) {
     let layer = RenderLayers::layer(OVERLAY_LAYER);
     commands.spawn((
         Camera3d::default(),
@@ -113,9 +128,21 @@ fn spawn_overlay(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut m
         Mesh3d(meshes.add(Rectangle::new(4.0, 4.0))),
         MeshMaterial3d(materials.add(OverlayMaterial { color: LinearRgba::rgb(0.5, 0.5, 0.5) })),
         Transform::from_xyz(0.0, 0.0, -1.0),
-        layer,
+        layer.clone(),
         Overlay,
     ));
+    // Brightness: only drawn when not 100 % (then nothing changes at all).
+    let percent = graphics.map_or(crate::engine::graphics::DEFAULT_BRIGHTNESS, |g| g.brightness);
+    if percent != crate::engine::graphics::DEFAULT_BRIGHTNESS {
+        commands.spawn((
+            Mesh3d(meshes.add(Rectangle::new(4.0, 4.0))),
+            MeshMaterial3d(materials.add(OverlayMaterial { color: brightness_color(percent) })),
+            Transform::from_xyz(0.0, 0.0, -1.0),
+            layer,
+        ));
+    }
+    let c = brightness_color(percent);
+    runlog::kv("brightness_overlay", &format!("percent={percent} drawn={} quad_colour={:.3} light_factor={:.2}", percent != crate::engine::graphics::DEFAULT_BRIGHTNESS, c.red, c.red * 2.0));
 }
 
 /// KFX.NearDeathShader -> DeSat, a looping MaterialSequence (TotalTime
@@ -210,6 +237,13 @@ mod tests {
     use super::*;
 
     /// DeSat: red at 0.5 s into each 1.5 s loop, back to Grain1 at 1.5 s.
+    #[test]
+    fn brightness_quad_colour() {
+        assert_eq!(brightness_color(100).red, 0.5);
+        assert_eq!(brightness_color(200).red, 1.0);
+        assert_eq!(brightness_color(50).red, 0.25);
+    }
+
     #[test]
     fn near_death_pulse() {
         assert_eq!(near_death_texel(0.5), INJURED_TEXEL);

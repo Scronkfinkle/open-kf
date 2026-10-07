@@ -211,6 +211,8 @@ struct Loader<'a> {
     materials_without_texture: usize,
     /// The GPU accepts DXT (BC1-3) textures directly.
     bc_supported: bool,
+    /// Anisotropic filtering of the tiling textures (`--anisotropy`).
+    anisotropy: u16,
     /// Unlit copies of materials (sky zone, bUnlit actors, PF_Unlit faces).
     unlit_cache: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
 }
@@ -311,7 +313,7 @@ impl Loader<'_> {
             mag_filter: ImageFilterMode::Linear,
             min_filter: ImageFilterMode::Linear,
             mipmap_filter: ImageFilterMode::Linear,
-            anisotropy_clamp: 8,
+            anisotropy_clamp: self.anisotropy,
             ..default()
         });
         Some((self.images.add(image), UVec2::new(w as u32, h0 as u32)))
@@ -397,7 +399,7 @@ impl Loader<'_> {
                 mag_filter: ImageFilterMode::Linear,
                 min_filter: ImageFilterMode::Linear,
                 mipmap_filter: ImageFilterMode::Linear,
-                anisotropy_clamp: 8,
+                anisotropy_clamp: self.anisotropy,
                 ..default()
             });
             Some((self.images.add(image), UVec2::new(w as u32, h0 as u32)))
@@ -569,6 +571,7 @@ fn load_map(
     mut glass_setup: ResMut<crate::world::glass::GlassSetup>,
     game_options: Res<crate::game::waves::GameOptions>,
     compressed: Option<Res<CompressedImageFormatSupport>>,
+    graphics: Option<Res<crate::engine::graphics::GraphicsSettings>>,
 ) {
     let started = Instant::now();
     let set = PackageSet::new(&request.install_root);
@@ -622,6 +625,7 @@ fn load_map(
         textures_compressed: 0,
         materials_without_texture: 0,
         bc_supported: compressed.is_some_and(|c| c.0.contains(CompressedImageFormats::BC)),
+        anisotropy: graphics.map_or(crate::engine::graphics::DEFAULT_ANISOTROPY, |g| g.anisotropy),
     };
 
     // --- BSP: one mesh per material ---
@@ -1291,14 +1295,15 @@ fn load_map(
     runlog::kv(
         "textures_loaded",
         &format!(
-            "uploaded={} compressed={} bc_supported={} failed={} megabytes={:.1} materials={} materials_without_texture={}",
+            "uploaded={} compressed={} bc_supported={} failed={} megabytes={:.1} materials={} materials_without_texture={} anisotropy={}",
             loader.textures_uploaded,
             loader.textures_compressed,
             loader.bc_supported,
             loader.textures_failed,
             loader.texture_bytes as f64 / 1e6,
             loader.material_cache.len(),
-            loader.materials_without_texture
+            loader.materials_without_texture,
+            loader.anisotropy
         ),
     );
 
