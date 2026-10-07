@@ -146,6 +146,65 @@ impl Zed {
         }
     }
 
+    /// ZombieStalker.Tick on a network client (KF runs it on every client
+    /// for its own LocalKFHumanPawn). The host decides bCloaked (sent as
+    /// FLAG_CLOAKED); this game only decides the look: every 0.5 s,
+    /// spotted by this game's player or not; not spotted and glowing:
+    /// back to the normal look (the cloak if the host says cloaked);
+    /// spotted, 1.2 s after the last uncloak: the glow. An uncloak from
+    /// the host restarts the 1.2 s (`host_uncloaked`).
+    pub(super) fn puppet_stalker_glow_tick(&mut self, viewer: &CloakViewer, dt: f32) {
+        self.since_uncloak = (self.since_uncloak + dt).min(1e6);
+        if self.zapped() {
+            self.cloak_check = 0.0;
+            return;
+        }
+        if self.health <= 0.0 || self.is_dead() {
+            return;
+        }
+        self.cloak_check -= dt;
+        if self.cloak_check > 0.0 {
+            return;
+        }
+        self.cloak_check = STALKER_CHECK_INTERVAL;
+        let spotted = viewer.spots_stalker(self.centre);
+        if spotted != self.spotted {
+            self.spotted = spotted;
+            self.log_spotted(Some(viewer), "stalker_puppet");
+        }
+        if !spotted && self.glow {
+            self.glow = false;
+            self.cloak_dirty = true;
+            runlog::kv("stalker_glow", &format!("id={} on=false reason=unspotted puppet=true", self.id));
+        } else if spotted && !self.glow && self.since_uncloak > RECLOAK_DELAY {
+            self.glow = true;
+            self.cloak_dirty = true;
+            runlog::kv("stalker_glow", &format!("id={} on=true cloaked={} decapitated={} puppet=true", self.id, self.cloaked, self.decapitated));
+        }
+    }
+
+    /// A puppet's FLAG_CLOAKED went off (UncloakStalker on the host:
+    /// an attack, a zap): the normal skin, and the 1.2 s timer restarts.
+    pub(super) fn host_uncloaked(&mut self) {
+        self.since_uncloak = 0.0;
+        self.clear_glow();
+    }
+
+    /// The cloak state other players' games should get from this host
+    /// zed. A spotted Stalker keeps bCloaked unchanged in KF (only the
+    /// host's own look changes), but here the host's `cloaked` would then
+    /// stay false and every joiner would see her. She is cloaked for
+    /// them exactly when she would have cloaked unspotted: glowing and
+    /// still having her head.
+    pub(super) fn cloaked_for_others(&self) -> bool {
+        self.cloaked || (self.glow && !self.decapitated && self.boss.is_none())
+    }
+
+    /// KFVetCommando.SpecialHUDInfo's test: !Cloaked() || bZapped || bSpotted.
+    pub(crate) fn health_bar_shown(&self) -> bool {
+        !self.cloaked || self.zapped() || self.spotted
+    }
+
     /// What KF does to the skins when it sets the normal skin
     /// (UncloakStalker, RemoveHead, SetZappedBehavior, PlayDying): the
     /// glow goes too.
@@ -348,6 +407,64 @@ mod tests {
         v.location = at(-100.0);
         run(&mut z, &v, 0.6);
         assert!(z.glow && !z.cloaked);
+    }
+
+    #[test]
+    fn joiner_commando_sees_the_glow_on_a_host_stalker() {
+        // A puppet: the host says cloaked; this game's Commando decides the look.
+        let mut z = Zed::test_clot();
+        z.cloaked = true;
+        z.since_uncloak = 5.0;
+        let mut v = viewer(Some(Perk::Commando), 6);
+        v.location = at(-700.0);
+        for _ in 0..6 {
+            z.puppet_stalker_glow_tick(&v, 0.1);
+        }
+        assert!(z.spotted && z.glow && z.cloaked);
+        // The host uncloaks her (an attack): no glow for 1.2 s.
+        z.cloaked = false;
+        z.host_uncloaked();
+        for _ in 0..10 {
+            z.puppet_stalker_glow_tick(&v, 0.1);
+        }
+        assert!(!z.glow);
+        for _ in 0..6 {
+            z.puppet_stalker_glow_tick(&v, 0.1);
+        }
+        assert!(z.glow);
+        // Out of range: the glow goes.
+        v.location = at(-900.0);
+        for _ in 0..6 {
+            z.puppet_stalker_glow_tick(&v, 0.1);
+        }
+        assert!(!z.glow && !z.spotted);
+        // A non-Commando joiner never sees it.
+        let mut z2 = Zed::test_clot();
+        z2.cloaked = true;
+        z2.since_uncloak = 5.0;
+        let mut m = viewer(Some(Perk::Medic), 6);
+        m.location = at(-10.0);
+        for _ in 0..6 {
+            z2.puppet_stalker_glow_tick(&m, 0.1);
+        }
+        assert!(!z2.glow);
+    }
+
+    #[test]
+    fn host_commando_does_not_reveal_stalkers_to_joiners() {
+        // Spotted by the host's Commando: KF keeps bCloaked unchanged (only
+        // the glow), but the joiners must still get "cloaked".
+        let mut z = Zed::test_clot();
+        z.cloaked = false;
+        z.since_uncloak = 5.0;
+        let mut v = viewer(Some(Perk::Commando), 6);
+        v.location = at(-700.0);
+        run(&mut z, &v, 0.6);
+        assert!(z.glow && !z.cloaked);
+        assert!(z.cloaked_for_others());
+        // Headless: KF never cloaks her ("No head, no cloak").
+        z.decapitated = true;
+        assert!(!z.cloaked_for_others());
     }
 
     #[test]

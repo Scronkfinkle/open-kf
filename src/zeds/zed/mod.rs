@@ -586,6 +586,10 @@ pub struct Zed {
     pub(crate) heat: u32,
     pub(crate) fire_class: crate::game::combat::FireType,
     pub(crate) burn_timer: f32,
+    /// BurnInstigator's perk (set when the zed catches fire): the burn
+    /// ticks go through TakeDamage with BurnInstigator, so its AddDamage
+    /// is the igniter's (in a network game maybe another player's).
+    pub(crate) burn_vet: crate::game::perks::Vet,
     burn_fx: Option<Entity>,
     /// ZombieBloat: DamTypeBurned x 1.5; ZombieHusk: BurnDamageScale for
     /// DamTypeBurned / DamTypeFlamethrower (1 for others).

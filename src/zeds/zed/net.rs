@@ -134,7 +134,7 @@ impl Zed {
             (self.looping, FLAG_LOOPING),
             (self.is_dead(), FLAG_DEAD),
             (self.decapitated, FLAG_HEADLESS),
-            (self.cloaked, FLAG_CLOAKED),
+            (self.cloaked_for_others(), FLAG_CLOAKED),
             (self.fp_rage.is_some() || self.state == ZedState::Enraging, FLAG_RAGING),
             (self.burn_down > 0, FLAG_BURNING),
             (self.braindead, FLAG_BRAINDEAD),
@@ -239,6 +239,9 @@ impl Zed {
         if cloaked != self.cloaked {
             self.cloaked = cloaked;
             self.cloak_dirty = true;
+            if !cloaked {
+                self.host_uncloaked();
+            }
             changed.push(format!("cloaked={cloaked}"));
         }
         let raging = n.flags & FLAG_RAGING != 0;

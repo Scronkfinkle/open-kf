@@ -345,6 +345,10 @@ pub fn read_emitter_actor(
     };
     let mut emitters = Vec::new();
     for (i, rf) in refs.into_iter().enumerate() {
+        // An empty slot (Emitters(i)=None, e.g. KFIncendiaryExplosion).
+        if rf == ObjectRef::Null {
+            continue;
+        }
         let h = set.resolve(&from, rf).ok_or_else(|| format!("emitter {i} not found"))?;
         emitters.push(read_def(set, defaults, &h).map_err(|e| format!("emitter {i}: {e}"))?);
     }
@@ -380,6 +384,10 @@ pub fn read_emitter_class(set: &PackageSet, defaults: &ClassDefaults, class_path
     };
     let mut emitters = Vec::new();
     for (i, rf) in refs.into_iter().enumerate() {
+        // An empty slot (Emitters(i)=None, e.g. KFIncendiaryExplosion).
+        if rf == ObjectRef::Null {
+            continue;
+        }
         let h = set.resolve(&from, rf).ok_or_else(|| format!("emitter {i} not found"))?;
         emitters.push(read_def(set, defaults, &h).map_err(|e| format!("emitter {i}: {e}"))?);
     }

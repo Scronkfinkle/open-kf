@@ -206,23 +206,41 @@ pub(super) fn play_fire_end(w: &mut Weapons, mode: usize) {
 }
 
 /// The Syringe's two modes while their button is held. SyringeFire (left)
-/// heals a teammate in front of you (GetHealee: within 80 units); alone
-/// there is none, so AttemptHeal only shows "You must be near another
-/// player to heal them!" (at most every HealAttemptDelay). SyringeAltFire
-/// (alt): with Health under HealthMax and a full charge, ModeDoFire plays
-/// AltFire and the heal follows InjectDelay later (`pending_inject`).
-pub(super) fn syringe_fire(w: &mut Weapons, mode: usize, pressed: bool, h: HealCharge, health: f32, now: f32) {
+/// heals a teammate in front of you (`healee`: GetHealee, within 80
+/// units; healing.rs): AttemptHeal plays the fire and the injection
+/// follows InjectDelay later (`pending_inject` with `heal_target`); with
+/// no one to heal only "You must be near another player to heal them!"
+/// (at most every HealAttemptDelay). SyringeAltFire (alt): with Health
+/// under HealthMax and a full charge, ModeDoFire plays AltFire and the
+/// heal follows InjectDelay later (`pending_inject`).
+pub(super) fn syringe_fire(w: &mut Weapons, mode: usize, pressed: bool, h: HealCharge, health: f32, now: f32, healee: Option<(u64, &str)>) {
     let alt = 1 - mode;
     let fm = &w.defs[w.current].modes[mode];
     let ready = w.action == Action::Idle && w.fire_cooldown[mode] <= 0.0 && w.fire_cooldown[alt] <= 0.0 && !w.firing[alt];
     if mode == 0 {
-        // bWaitForRelease: one attempt per click.
-        if pressed && ready && now - w.last_heal_attempt > 0.5 {
-            w.last_heal_attempt = now;
-            runlog::kv(
-                "syringe_no_target",
-                &format!("message=\"You must be near another player to heal them!\" charge={}", h.charge),
-            );
+        // bWaitForRelease: one attempt per click. AllowFire: the charge
+        // covers AmmoPerFire; CanFindHealee.
+        if !(pressed && ready) {
+            return;
+        }
+        match healee {
+            Some((peer, name)) if h.charge >= h.cost[0] => {
+                let rate = fm.rate;
+                w.firing[mode] = true;
+                w.fire_cooldown[mode] = rate;
+                w.pending_inject = Some((h.inject_delay[0], w.current, 0));
+                w.heal_target = Some(peer);
+                play_firing(w, 0, false);
+                runlog::kv("syringe_heal_other", &format!("peer={peer} name=\"{name}\" charge={} inject_delay={} fire_rate={rate}", h.charge, h.inject_delay[0]));
+            }
+            _ if now - w.last_heal_attempt > 0.5 => {
+                w.last_heal_attempt = now;
+                runlog::kv(
+                    "syringe_no_target",
+                    &format!("message=\"You must be near another player to heal them!\" charge={} healee={:?}", h.charge, healee.map(|(p, _)| p)),
+                );
+            }
+            _ => {}
         }
         return;
     }
@@ -341,10 +359,12 @@ pub(super) fn weapon_input(
         MessageWriter<crate::game::combat::GiveHealth>,
         MessageWriter<crate::weapons::projectile::BeamZap>,
     ),
-    (weld_view, mut weld_hits, match_over): (
+    (weld_view, mut weld_hits, match_over, teammates, mut heal_out): (
         Res<crate::world::door::WeldView>,
         MessageWriter<crate::world::door::WeldHit>,
         Option<Res<crate::game::end_game::MatchOver>>,
+        Res<crate::game::healing::Teammates>,
+        MessageWriter<crate::game::healing::HealTeammate>,
     ),
     mut scripted_held: Local<[bool; 2]>,
 ) {
@@ -399,6 +419,24 @@ pub(super) fn weapon_input(
         let t = t - time.delta_secs();
         if t > 0.0 {
             w.pending_inject = Some((t, wi, mode));
+        } else if mode == 0 {
+            // SyringeFire.Timer: the cached healee, if still alive:
+            // ConsumeAmmo, MedicReward = HealBoostAmount x GetHealPotency
+            // (an int), GiveHealth(HealSum, HealthMax) on them.
+            w.pending_inject = None;
+            let target = w.heal_target.take();
+            let potency = w.vet.heal_potency();
+            if let (Some(peer), Some(h)) = (target, w.defs[wi].heal_charge.as_mut())
+                && teammates.0.iter().any(|t| t.peer == peer && t.alive && t.health > 0.0)
+            {
+                h.charge = h.charge.saturating_sub(h.cost[0]);
+                // Syringe.PostBeginPlay: 50 only with one player (NumPlayers
+                // when the weapon is made; here: now).
+                let base = if teammates.0.is_empty() { h.boost } else { h.boost_team };
+                let amount = (base * potency).trunc();
+                heal_out.write(crate::game::healing::HealTeammate { peer, heal_sum: amount, source: "syringe" });
+                runlog::kv("syringe_inject_other", &format!("peer={peer} heal={amount} base_heal={base} heal_potency={potency} charge_left={}", h.charge));
+            }
         } else {
             w.pending_inject = None;
             let potency = w.vet.heal_potency();
@@ -408,9 +446,10 @@ pub(super) fn weapon_input(
                 }
                 // HealSum = HealBoostAmount x the perk's GetHealPotency;
                 // GiveHealth takes an int.
-                let amount = (h.boost * potency).trunc();
+                let base = if teammates.0.is_empty() { h.boost } else { h.boost_team };
+                let amount = (base * potency).trunc();
                 heals.write(crate::game::combat::GiveHealth { amount, max: crate::game::combat::PLAYER_HEALTH_MAX, source: "syringe" });
-                runlog::kv("syringe_inject", &format!("heal={amount} base_heal={} heal_potency={potency} charge_left={} charge_per_tick={charge_step}", h.boost, h.charge));
+                runlog::kv("syringe_inject", &format!("heal={amount} base_heal={base} heal_potency={potency} charge_left={} charge_per_tick={charge_step}", h.charge));
             }
         }
     }
@@ -762,7 +801,12 @@ pub(super) fn weapon_input(
             continue;
         }
         if let Some(h) = w.defs[cur].heal_charge.filter(|h| h.syringe) {
-            syringe_fire(&mut w, mode, pressed[mode], h, health.health, now);
+            // SyringeFire.GetHealee from this game's pawn and view.
+            let healee = main_cam.single().ok().and_then(|(t, wk)| {
+                let me = wk.map_or(t.translation - Vec3::Y * crate::game::combat::PLAYER_EYE_HEIGHT * coords::SCALE, |wk| wk.center);
+                crate::game::healing::syringe_healee(me, *t.forward(), &teammates.0, coords::SCALE, crate::game::healing::PAWN_RADIUS)
+            });
+            syringe_fire(&mut w, mode, pressed[mode], h, health.health, now, healee.map(|t| (t.peer, t.name.as_str())));
             continue;
         }
         // Torch weapons: the alt fire is the flashlight (torch.rs).
@@ -1323,8 +1367,20 @@ pub(super) fn weapon_input(
                             }
                             let fm = w.defs[frag].modes[0].clone();
                             if let (Some(pf), Ok((cam, walker))) = (fm.pellets, main_cam.single())
-                                && let Some(t) = pf.thrown
+                                && let Some(frag_nade) = pf.thrown
                             {
+                                // FragFire.GetDesiredProjectileClass: the perk's
+                                // GetNadeType.
+                                let wanted = w.vet.nade_class();
+                                let t = match wanted {
+                                    "KFMod.FlameNade" => pf.flame_nade.unwrap_or(frag_nade),
+                                    "KFMod.MedicNade" => pf.medic_nade.unwrap_or(frag_nade),
+                                    _ => frag_nade,
+                                };
+                                runlog::kv(
+                                    "perk_effect",
+                                    &format!("perk={} effect=nade_type wanted={wanted} thrown={} damage={} radius={} fire={:?}", w.vet.label(), t.class, t.damage, t.radius, t.fire),
+                                );
                                 let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
                                 let eye = to_ue(cam.translation) / coords::SCALE;
                                 let (x, y, z) = (to_ue(*cam.forward()), to_ue(*cam.right()), to_ue(*cam.up()));

@@ -240,15 +240,16 @@ fn follow_match(
     }
 }
 
-/// Test action "kill_player": 1000 damage from the level (not in god mode).
+/// Test actions "kill_player": 1000 damage from the level (not in god
+/// mode); "hurt_player": 60 (for healing tests).
 fn test_kill_player(
     script: Res<crate::weapons::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
     mut hurt: MessageWriter<crate::game::combat::PlayerDamaged>,
 ) {
-    if script.0.iter().any(|(f, a)| *f == frames.0 && a == "kill_player") {
+    for (_, a) in script.0.iter().filter(|(f, a)| *f == frames.0 && (a == "kill_player" || a == "hurt_player")) {
         hurt.write(crate::game::combat::PlayerDamaged {
-            amount: 1000.0,
+            amount: if a == "kill_player" { 1000.0 } else { 60.0 },
             zed_id: crate::game::combat::LEVEL_DAMAGE,
             kind: crate::game::combat::HurtKind::Plain,
             armor_stops: false,
@@ -257,7 +258,7 @@ fn test_kill_player(
             dam: None,
             to_peer: None,
         });
-        runlog::kv("test_kill_player", &format!("frame={}", frames.0));
+        runlog::kv("test_kill_player", &format!("frame={} action={a}", frames.0));
     }
 }
 

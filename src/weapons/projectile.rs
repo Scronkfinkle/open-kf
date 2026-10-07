@@ -205,7 +205,8 @@ pub struct DartStats {
     pub class: &'static str,
     pub speed: f32,
     pub life_span: f32,
-    /// HealBoostAmount: what it gives a teammate it touches (none here).
+    /// HealBoostAmount: what it gives a teammate it touches (x the
+    /// shooter's GetHealPotency; healing.rs).
     pub heal: f32,
     /// AmbientSound while flying (MP7_DartFlyLoop, 128, 250).
     pub flight: Option<(&'static str, u8, f32)>,
@@ -317,7 +318,7 @@ struct PlayerProjectile {
 /// StaticMeshRef): grenades, the LAW rocket, the frag, the pipe bomb and
 /// nails. Pellets and the M99 bullet are tiny and fast (their tracers show
 /// them); the Crossbow bolt is a skeletal mesh (not drawn yet).
-const MODEL_CLASSES: [&str; 17] = [
+const MODEL_CLASSES: [&str; 19] = [
     "KFMod.ZEDGunProjectile",
     "KFMod.ZEDMKIIPrimaryProjectile",
     "KFMod.ZEDMKIISecondaryProjectile",
@@ -333,6 +334,8 @@ const MODEL_CLASSES: [&str; 17] = [
     "KFMod.M203GrenadeProjectile",
     "KFMod.LAWProj",
     "KFMod.Nade",
+    "KFMod.FlameNade",
+    "KFMod.MedicNade",
     "KFMod.PipeBombProjectile",
     "KFMod.NailGunProjectile",
 ];
@@ -508,6 +511,7 @@ fn spawn_projectiles(
                 countdown: None,
                 throw_dir: dir,
                 id: *next_id,
+                cloud: None,
             }).id();
             attach_model(&mut commands, &models, e, t.class, origin, dir);
             runlog::kv(
@@ -1243,6 +1247,7 @@ fn move_darts(
     mut darts: Query<(Entity, &mut PlayerDart)>,
     zeds: Query<&Zed>,
     mut bullet_fx: MessageWriter<crate::weapons::bullet_fx::BulletFx>,
+    (teammates, vet, mut heal_out): (Res<crate::game::healing::Teammates>, Res<crate::game::perks::Veterancy>, MessageWriter<crate::game::healing::HealTeammate>),
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1265,6 +1270,32 @@ fn move_darts(
             .filter(|z| z.health > 0.0)
             .filter_map(|z| crate::game::combat::zed_hit(z, from, dir).filter(|&t| t <= world_t).map(|t| (t, z.id)))
             .min_by(|a, b| a.0.total_cmp(&b.0));
+        // Another player's pawn (HealingProjectile.ProcessTouch on a
+        // KFHumanPawn; the shooter's own pawn is skipped).
+        let mate = teammates
+            .0
+            .iter()
+            .filter(|m| m.alive)
+            .filter_map(|m| {
+                let t = crate::game::healing::ray_cylinder(from, dir, world_t, m.centre, crate::game::healing::PAWN_RADIUS, crate::game::healing::PAWN_HALF_HEIGHT, SCALE)?;
+                Some((t, m))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .filter(|(t, _)| zed.is_none_or(|(zt, _)| *t < zt));
+        if let Some((_, m)) = mate {
+            // Healed.Health > 0 and < HealthMax: MedicReward =
+            // HealBoostAmount x GetHealPotency (an int), GiveHealth(HealSum).
+            let healed = if m.health > 0.0 && m.health < crate::game::combat::PLAYER_HEALTH_MAX {
+                let amount = (p.stats.heal * vet.vet.heal_potency()).trunc();
+                heal_out.write(crate::game::healing::HealTeammate { peer: m.peer, heal_sum: amount, source: "dart" });
+                format!("{amount}")
+            } else {
+                "none".into()
+            };
+            runlog::kv("dart_hit", &format!("id={} weapon={} hit=player peer={} healed={healed} flight_unreal={:.0}", p.id, p.weapon, m.peer, p.age * p.stats.speed));
+            commands.entity(entity).despawn();
+            continue;
+        }
         let (t, normal, what) = match (zed, world) {
             (Some((t, id)), _) => (t, -dir_ue, format!("zed={id}")),
             (None, Some(h)) => {
@@ -1492,7 +1523,9 @@ fn blast(
                     amount: raw,
                     armor_stops: true,
                     zed_id: crate::game::combat::SELF_DAMAGE,
-                    kind: crate::game::combat::HurtKind::Plain,
+                    // KFPawn.TakeDamage: a DamTypeBurned / DamTypeFlamethrower
+                    // hit over 2 sets the player on fire (FlameNade, Husk Gun).
+                    kind: if b.fire.is_some() { crate::game::combat::HurtKind::Fire } else { crate::game::combat::HurtKind::Plain },
                     dam_type: crate::game::combat::DamType::Other,
                     source: Some(at_bevy),
                     dam: b.dam,
@@ -1523,6 +1556,20 @@ pub struct ThrownStats {
     pub kind: ThrownKind,
     /// MyDamageType (DamTypeFrag, DamTypePipeBomb), for the perks.
     pub dam: Option<crate::game::perks::DamType>,
+    /// A burning MyDamageType (the Firebug's FlameNade: DamTypeFlameNade).
+    pub fire: Option<crate::game::combat::FireType>,
+    /// The Medic's MedicNade: instead of one blast, a cloud that hurts
+    /// zeds and heals players (HealOrHurt) at the explosion and then
+    /// every HealInterval, MaxHeals more times.
+    pub medic: Option<MedicCloud>,
+}
+
+/// MedicNade's HealBoostAmount, MaxHeals and HealInterval.
+#[derive(Clone, Copy, Debug)]
+pub struct MedicCloud {
+    pub heal: f32,
+    pub max_heals: u32,
+    pub interval: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1555,6 +1602,92 @@ struct PlayerThrown {
     /// The throw's direction (its yaw is kept at rest).
     throw_dir: Vec3,
     id: u32,
+    /// MedicNade after its explosion: (TotalHeals, seconds to the next).
+    cloud: Option<(u32, f32)>,
+}
+
+/// What a MedicNade pulse needs besides the zeds.
+#[derive(bevy::ecs::system::SystemParam)]
+struct HealParams<'w> {
+    teammates: Res<'w, crate::game::healing::Teammates>,
+    health: Res<'w, crate::game::combat::PlayerHealth>,
+    heal_out: MessageWriter<'w, crate::game::healing::HealTeammate>,
+    give: MessageWriter<'w, crate::game::combat::GiveHealth>,
+    dosh: ResMut<'w, crate::game::dosh::Dosh>,
+}
+
+/// MedicNade.HealOrHurt: every pawn whose cylinder reaches DamageRadius
+/// (CollidingActors: no distance falloff) and that the nade can see
+/// (GetExposureTo > 0, from 15 units above it). Zeds take Damage x
+/// exposure (DamTypeMedicNade; ZombieFleshPound x 2); players under
+/// HealthMax get GiveHealth(HealBoostAmount x the thrower's
+/// GetHealPotency, an int), the thrower included (KF's code does not
+/// leave him out, and pays him for it too). Nothing heals once the
+/// thrower is dead. Returns (zeds hit, zeds killed, players healed).
+#[allow(clippy::too_many_arguments)]
+fn medic_pulse(
+    spatial: &SpatialQuery,
+    zeds: &mut Query<&mut Zed>,
+    kills: &mut crate::game::combat::KillCount,
+    player_ue: Option<Vec3>,
+    p: &PlayerThrown,
+    cloud: MedicCloud,
+    vet: crate::game::perks::Vet,
+    hp: &mut HealParams,
+) -> (u32, u32, u32) {
+    let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
+    let from_ue = p.pos + Vec3::Z * 15.0;
+    let from = coords::pos(from_ue.to_array());
+    let r = p.stats.radius;
+    let (mut hit, mut killed, mut healed) = (0, 0, 0);
+    for mut z in zeds.iter_mut() {
+        if z.health <= 0.0 {
+            continue;
+        }
+        let centre = to_ue(z.centre) / SCALE;
+        if (centre - p.pos).length() - z.radius > r {
+            continue;
+        }
+        let exposure = zed_exposure(spatial, &z, from_ue);
+        if exposure <= 0.0 {
+            continue;
+        }
+        let source = crate::game::combat::HitSource { point: z.centre, attacker: from, melee: false, explosive: Some(p.stats.fleshpound_mult), fire: None, dam: p.stats.dam, vet };
+        let before = z.health;
+        crate::game::combat::damage_zed(&mut z, exposure * p.stats.damage, false, 1.0, p.weapon, (centre - p.pos).length() * SCALE, source, kills);
+        hit += 1;
+        if before > 0.0 && z.health <= 0.0 {
+            killed += 1;
+        }
+    }
+    if hp.health.dead || hp.health.health <= 0.0 {
+        return (hit, killed, 0);
+    }
+    let heal_sum = (cloud.heal * vet.heal_potency()).trunc();
+    let sees = |at: Vec3| {
+        0.5 * in_sight(spatial, from, coords::pos((at + Vec3::Z * PLAYER_HEAD).to_array())) as u8 as f32 + 0.5 * in_sight(spatial, from, coords::pos(at.to_array())) as u8 as f32
+    };
+    // This game's own player (the thrower).
+    if let Some(pl) = player_ue
+        && (pl - p.pos).length() - PLAYER_RADIUS <= r
+        && sees(pl) > 0.0
+        && hp.health.health < crate::game::combat::PLAYER_HEALTH_MAX
+    {
+        hp.give.write(crate::game::combat::GiveHealth { amount: heal_sum, max: crate::game::combat::PLAYER_HEALTH_MAX, source: "medic_nade" });
+        let reward = crate::game::healing::medic_reward(heal_sum, hp.health.health, hp.health.to_give.max(0.0));
+        hp.dosh.score += reward as f32;
+        hp.dosh.team += reward as f32;
+        healed += 1;
+        runlog::kv("perk_effect", &format!("perk={} effect=medic_nade_heal who=self heal={heal_sum} reward={reward}", vet.label()));
+    }
+    for m in hp.teammates.0.iter().filter(|m| m.alive && m.health > 0.0 && m.health < crate::game::combat::PLAYER_HEALTH_MAX) {
+        let at = to_ue(m.centre) / SCALE;
+        if (at - p.pos).length() - PLAYER_RADIUS <= r && sees(at) > 0.0 {
+            hp.heal_out.write(crate::game::healing::HealTeammate { peer: m.peer, heal_sum, source: "medic_nade" });
+            healed += 1;
+        }
+    }
+    (hit, killed, healed)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
@@ -1573,6 +1706,7 @@ fn move_thrown(
     mut door_blasts: MessageWriter<crate::world::door::DoorBlast>,
     (mut dramatic, mut sounds, mut rng): (MessageWriter<crate::game::zed_time::DramaticEvent>, MessageWriter<crate::audio::mixer::PlaySound>, Local<u32>),
     vet: Res<crate::game::perks::Veterancy>,
+    mut hp: HealParams,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1581,6 +1715,24 @@ fn move_thrown(
     });
     for (entity, mut p) in &mut thrown {
         p.age += dt;
+        // MedicNade.Tick after the explosion: a pulse every HealInterval
+        // until MaxHeals, then the nade is gone (AmbientSound off).
+        if let (Some((done, next)), Some(cloud)) = (p.cloud, p.stats.medic) {
+            let next = next - dt;
+            if next > 0.0 {
+                p.cloud = Some((done, next));
+                continue;
+            }
+            let done = done + 1;
+            let (hit, killed, healed) = medic_pulse(&spatial, &mut zeds, &mut kills, player_ue, &p, cloud, vet.vet, &mut hp);
+            runlog::kv("medic_nade_pulse", &format!("id={} pulse={done} of={} zeds_hit={hit} zeds_killed={killed} players_healed={healed}", p.id, cloud.max_heals));
+            if done >= cloud.max_heals {
+                commands.entity(entity).despawn();
+            } else {
+                p.cloud = Some((done, cloud.interval));
+            }
+            continue;
+        }
         // Fly: PHYS_Falling, bouncing off the level; a zed stops it dead.
         if !p.resting {
             p.vel.z -= GRAVITY * dt;
@@ -1699,6 +1851,27 @@ fn move_thrown(
             sounds.write(sound_at(snd, p.pos).volume(2.0).radius(p.stats.sounds.explode_radius));
         }
         let normal = Vec3::Z;
+        // MedicNade.Explode: BlowUp (the first HealOrHurt), KFNadeHealing,
+        // the decal; the nade stays for the pulses.
+        if let Some(cloud) = p.stats.medic {
+            if let Some(lib) = library.as_deref() {
+                crate::render::particles::spawn_effect(&mut commands, lib, &mut meshes, p.stats.effect, p.pos, crate::zeds::fireball::axes_along(normal), p.id);
+            }
+            decals.write(crate::render::decals::SpawnDecal { kind: p.stats.decal, at: p.pos, dir: -normal, trace: false });
+            let (hit, killed, healed) = medic_pulse(&spatial, &mut zeds, &mut kills, player_ue, &p, cloud, vet.vet, &mut hp);
+            if let Some(e) = crate::game::zed_time::blast_event(killed as usize) {
+                dramatic.write(e);
+            }
+            runlog::kv(
+                "thrown_exploded",
+                &format!(
+                    "id={} weapon={} class={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} zeds_hit={hit} zeds_killed={killed} players_healed={healed} medic_cloud=true",
+                    p.id, p.weapon, p.stats.class, p.pos.x, p.pos.y, p.pos.z, p.age
+                ),
+            );
+            p.cloud = Some((0, cloud.interval));
+            continue;
+        }
         let (zeds_hit, zeds_killed, self_damage) = blast(
             &mut commands,
             &spatial,
@@ -1718,13 +1891,16 @@ fn move_thrown(
                 decal: p.stats.decal,
                 damage: p.stats.damage,
                 radius: p.stats.radius,
-                fleshpound_mult: Some(p.stats.fleshpound_mult),
-                fire: None,
+                // ZombieFleshPound.TakeDamage's explosive list has
+                // DamTypeFrag and DamTypePipeBomb, not DamTypeFlameNade.
+                fleshpound_mult: p.stats.fire.is_none().then_some(p.stats.fleshpound_mult),
+                fire: p.stats.fire,
                 hurts_self: true,
                 zap: None,
                 // Nade.MyDamageType DamTypeFrag; PipeBombProjectile's is
-                // DamTypePipeBomb.
-                frag: matches!(p.stats.kind, ThrownKind::Frag { .. }),
+                // DamTypePipeBomb; FlameNade's DamTypeFlameNade (doors take
+                // only DamTypeFrag).
+                frag: matches!(p.stats.kind, ThrownKind::Frag { .. }) && p.stats.fire.is_none(),
                 weapon: p.weapon,
                 id: p.id,
                 dam: p.stats.dam,

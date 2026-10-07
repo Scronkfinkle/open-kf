@@ -157,6 +157,63 @@ pub(super) fn projectile_sounds(defaults: &ClassDefaults, pc: &ObjectHandle) -> 
     }
 }
 
+/// A Nade subclass the perks throw instead (KFVetFirebug.GetNadeType:
+/// FlameNade): the frag's values with the subclass's Damage,
+/// DamageRadius and MyDamageType, and its own Explode (FlameNade.Explode:
+/// the FlameNade_Explode sound and KFIncendiaryExplosion; ExplosionDecal
+/// is the Nade's).
+fn perk_nade(
+    set: &PackageSet,
+    defaults: &ClassDefaults,
+    base: crate::weapons::projectile::ThrownStats,
+    class: &'static str,
+) -> Option<crate::weapons::projectile::ThrownStats> {
+    let Some(c) = crate::zeds::gore::find_class(set, class) else {
+        runlog::kv("perk_nade_missing", &format!("class={class}"));
+        return None;
+    };
+    let float = |p: &str, d: f32| match defaults.get(&c, p) {
+        Some((Value::Float(f), _)) => f,
+        Some((Value::Int(i), _)) => i as f32,
+        _ => d,
+    };
+    let dam_class = match defaults.get(&c, "MyDamageType") {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
+        _ => None,
+    };
+    let mut t = base;
+    t.class = class;
+    t.damage = float("Damage", base.damage);
+    t.radius = float("DamageRadius", base.radius);
+    t.dam = dam_class.as_ref().map(|d| dam_type(defaults, d));
+    t.fire = dam_class.as_ref().and_then(|d| fire_type(defaults, d));
+    if class.eq_ignore_ascii_case("KFMod.FlameNade") {
+        // FlameNade.Explode: PlaySound(FlameNade_Explode,, 100.5 x
+        // TransientSoundVolume); played at the frag's 2.0 (guess: the
+        // engine limits the volume) and the frag's radius.
+        t.sounds.explode = &["KF_GrenadeSnd.FlameNade_Explode"];
+        t.effect = "KFMod.KFIncendiaryExplosion";
+    }
+    if class.eq_ignore_ascii_case("KFMod.MedicNade") {
+        // MedicNade.Explode: PlaySound(ExplosionSound,, TransientSoundVolume),
+        // KFNadeHealing, ExplosionDecal MedicNadeDecal; then HealOrHurt
+        // pulses (HealBoostAmount, MaxHeals, HealInterval).
+        t.sounds.explode = &["KF_GrenadeSnd.NadeBase.MedicNade_Explode"];
+        t.effect = "KFMod.KFNadeHealing";
+        t.decal = crate::render::decals::DecalKind::MedicNade;
+        t.medic = Some(crate::weapons::projectile::MedicCloud {
+            heal: float("HealBoostAmount", 10.0),
+            max_heals: float("MaxHeals", 8.0) as u32,
+            interval: float("HealInterval", 1.0),
+        });
+    }
+    runlog::kv(
+        "perk_nade_loaded",
+        &format!("class={class} damage={} radius={} dam_type={:?} fire={:?} effect={} medic={:?}", t.damage, t.radius, t.dam, t.fire, t.effect, t.medic),
+    );
+    Some(t)
+}
+
 /// Which burn rules a damage type follows, if it has bDealBurningDamage
 /// (KFMonster.TakeDamage / ZombieBloat / ZombieHusk tell them apart by class).
 pub(super) fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<crate::game::combat::FireType> {
@@ -171,6 +228,7 @@ pub(super) fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<c
         "damtypemac10mpinc" => FireType::Mac10,
         "damtypehuskgun" => FireType::HuskGun,
         "damtypeburned" => FireType::Burned,
+        "damtypeflamenade" => FireType::FlameNade,
         _ => FireType::Flamethrower,
     })
 }
@@ -573,7 +631,12 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
                 crate::weapons::projectile::ThrownKind::Frag { fuse: pfloat("ExplodeTimer", 2.0) }
             },
             dam: dam_type_prop(set, defaults, pc, "MyDamageType"),
+            fire: None,
+            medic: None,
         });
+        // FragFire: the perk's other grenade classes (GetNadeType).
+        let flame_nade = thrown.filter(|_| defaults.is_a(fm_class, "FragFire")).and_then(|t| perk_nade(set, defaults, t, "KFMod.FlameNade"));
+        let medic_nade = thrown.filter(|_| defaults.is_a(fm_class, "FragFire")).and_then(|t| perk_nade(set, defaults, t, "KFMod.MedicNade"));
         // FlameBurstFire (a CrossbowFire) overrides AllowFire: it needs a
         // round in the magazine and never fires while reloading.
         let flame_fire = defaults.is_a(fm_class, "FlameBurstFire");
@@ -607,6 +670,8 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
             dart,
             flame,
             thrown,
+            flame_nade,
+            medic_nade,
             explosive,
             stats: crate::weapons::projectile::ProjectileStats {
                 class: projectile_path,
@@ -851,6 +916,7 @@ pub(super) fn load_weapons(
         charge_hold: None,
         charge_fx: None,
         pending_inject: None,
+        heal_target: None,
         beam: None,
         last_heal_attempt: -10.0,
         last_weld_fail: -10.0,
@@ -1281,6 +1347,7 @@ pub(super) fn load_weapon(
                 // Syringe.PostBeginPlay: 50 with one player; medic guns:
                 // HealBoostAmount (their darts' own value is what heals).
                 boost: if syringe { 50.0 } else { float("HealBoostAmount", 20.0) },
+                boost_team: float("HealBoostAmount", 20.0),
                 syringe,
                 cost: [mode_float(0, "AmmoPerFire", 250.0) as u32, mode_float(1, "AmmoPerFire", 500.0) as u32],
                 inject_delay: [mode_float(0, "InjectDelay", 0.36), mode_float(1, "InjectDelay", 0.1)],

@@ -833,6 +833,31 @@ impl Vet {
         }
     }
 
+    /// KFVetCommando.SpecialHUDInfo's MaxDistanceSquared (Unreal units
+    /// squared): zed health bars from level 1, 160 / 320 / 480 / 640 /
+    /// 800 / 800 units; None below level 1 or for other perks.
+    pub fn commando_health_bar_range_sq(&self) -> Option<f32> {
+        match (self.perk, self.level) {
+            (Some(Perk::Commando), 1) => Some(25600.0),
+            (Some(Perk::Commando), 2) => Some(102400.0),
+            (Some(Perk::Commando), 3) => Some(230400.0),
+            (Some(Perk::Commando), 4) => Some(409600.0),
+            (Some(Perk::Commando), 5..) => Some(640000.0),
+            _ => None,
+        }
+    }
+
+    /// GetNadeType (FragFire.GetDesiredProjectileClass): the grenade class
+    /// thrown with G. Medic: MedicNade at every level; Firebug: FlameNade
+    /// from level 3; everyone else (and no perk) the Nade.
+    pub fn nade_class(&self) -> &'static str {
+        match self.perk {
+            Some(Perk::Medic) => "KFMod.MedicNade",
+            Some(Perk::Firebug) if self.level >= 3 => "KFMod.FlameNade",
+            _ => "KFMod.Nade",
+        }
+    }
+
     /// GetMAC10DamageType: the Firebug's MAC-10 shoots DamTypeMAC10MPInc.
     pub fn mac10_incendiary(&self) -> bool {
         self.perk == Some(Perk::Firebug)
@@ -1245,6 +1270,25 @@ mod tests {
         let mut t = Veterancy::default();
         assert_eq!(select_veterancy(&mut t, Perk::Medic, false, false), ChangeResult::Now);
         assert_eq!(select_veterancy(&mut t, Perk::Support, false, false), ChangeResult::Now);
+    }
+
+    #[test]
+    fn commando_health_bar_ranges() {
+        assert_eq!(v(Perk::Commando, 0).commando_health_bar_range_sq(), None);
+        assert_eq!(v(Perk::Support, 6).commando_health_bar_range_sq(), None);
+        for (l, units) in [(1, 160.0), (2, 320.0), (3, 480.0), (4, 640.0), (5, 800.0), (6, 800.0)] {
+            assert_eq!(v(Perk::Commando, l).commando_health_bar_range_sq(), Some(units * units), "level {l}");
+        }
+    }
+
+    #[test]
+    fn grenade_type_per_perk() {
+        assert_eq!(Vet::NONE.nade_class(), "KFMod.Nade");
+        assert_eq!(v(Perk::Firebug, 2).nade_class(), "KFMod.Nade");
+        assert_eq!(v(Perk::Firebug, 3).nade_class(), "KFMod.FlameNade");
+        assert_eq!(v(Perk::Firebug, 6).nade_class(), "KFMod.FlameNade");
+        assert_eq!(v(Perk::Medic, 0).nade_class(), "KFMod.MedicNade");
+        assert_eq!(v(Perk::Demolitions, 6).nade_class(), "KFMod.Nade");
     }
 
     #[test]

@@ -126,6 +126,7 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 heat: 0,
                 fire_class: crate::game::combat::FireType::Flamethrower,
                 burn_timer: 0.0,
+                burn_vet: crate::game::perks::Vet::default(),
                 burn_fx: None,
                 burned_scale: if c.kind == ZedKind::Bloat { 1.5 } else { 1.0 },
                 fire_resist: c.fire_resist,

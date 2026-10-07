@@ -31,7 +31,7 @@ use crate::world::map::MapRequest;
 use crate::engine::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 85] = [
+const EFFECT_CLASSES: [&str; 87] = [
     // KFGlassMover GlassBits / BreakGlassBits (glass.rs).
     "KFMod.WindowGlassEmitter",
     "KFMod.BreakWindowGlassEmitter",
@@ -65,6 +65,10 @@ const EFFECT_CLASSES: [&str; 85] = [
     "KFMod.KFMonsterFlame",
     // Frag explosions (Nade.Explode).
     "KFMod.KFNadeExplosion",
+    // The Firebug's FlameNade (FlameNade.Explode).
+    "KFMod.KFIncendiaryExplosion",
+    // The Medic's grenade (MedicNade.Explode).
+    "KFMod.KFNadeHealing",
     // Grenade explosions (M79GrenadeProjectile.Explode).
     "KFMod.KFNadeLExplosion",
     "KFMod.DismembermentJetHead",

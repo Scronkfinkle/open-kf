@@ -5143,6 +5143,264 @@ JPEG (213 KB). Already covered by the `!/docs/images/*.jpg` whitelist line.
 **Still broken / not tested:** How GitHub renders it (not pushed).
 **Next:** —
 
+## 2026-10-07 Perks audit: docs/perks.md
+
+**Changed:** new `docs/perks.md`: every effect of the seven KF perk
+classes (KFVetFieldMedic ... KFVetDemolitions, base KFVeterancyTypes),
+KF's formula per level, our status (done / partly / missing / wrong),
+the file, and notes; plus what remains.
+**Why:** finishing the perks; plan before code.
+**Tested how:** read each KFVet*.uc function against `src/game/perks.rs`
+and grepped every caller of every `Vet` method.
+**Result:** the formulas were all already in perks.rs and matched; every
+method has a caller. Found: missing GetNadeType (Medic/Firebug
+grenades), Commando zed health bars (SpecialHUDInfo), teammate healing;
+wrong in network games: joiners' perk resistances to host-sent bile /
+fire / rockets, burn ticks using the host's perk, the Commando's
+Stalker glow on joiners (and a hosting Commando un-cloaking Stalkers for
+everyone). DESIGN.md's "GetAmmoPickupMod: LATER" was out of date (done).
+**Still broken / not tested:** see the following entries.
+**Next:** fix the network items, then the grenades and health bars.
+
+## 2026-10-07 Perks: joiners' perk resistances to bile, Husk fire and Patriarch rockets
+
+**Changed:** `src/net/protocol.rs` (`PlayerEvent::Hurt` gets `dam`, the
+damage type's class chain), `src/net/zeds.rs` (the host fills it, the
+joiner turns it back into the perk damage type).
+**Why:** the host sends zed hits to the hurt player's game, which runs
+that player's perk ReduceDamage (KFGameType.ReduceDamage); the damage
+type was dropped on the way, so a joining Medic / Berserker got no bile
+resistance, a joining Firebug no fire resistance from Husk fireballs, a
+joining Demolitions no resistance to the Patriarch's rockets.
+**Tested how:** `work/perks/mp.sh` (gitignored helper: headless host +
+joiner on 127.0.0.1), tag `fire`: host no perk, spawns a Husk and a
+Bloat, dies (`kill_player`); joiner `--perk firebug --perk-level 6 --god`.
+**Result:** joiner log `perk_mod kind=reduce_damage perk=KFVetFirebug:6
+dam_type=Some(damtypeburned) self=false damage=14->0` and `damage=20->0`,
+`player_hit_ignored reason=perk_reduce_damage kind=Fire` for the Husk's
+fireballs (host: `other_players=[<joiner>:14]` / `:20`).
+**Still broken / not tested:** bile on a joining Medic/Berserker and
+rockets on a joining Demolitions not run (same code path, not tested).
+**Next:** burn ticks.
+
+## 2026-10-07 Perks: burn ticks use the igniter's perk (BurnInstigator)
+
+**Changed:** `src/zeds/zed/mod.rs` (`Zed.burn_vet`), `methods.rs`,
+`spawn.rs` (initial value), `src/game/combat.rs` (set when the zed
+catches fire; `zed_ignited` logs `igniter_perk`; unit test
+`burn_ticks_keep_the_igniters_perk`), `src/zeds/zed/effects.rs` (the
+ticks use it instead of this game's player's perk).
+**Why:** KFMonster.TakeDamage sets BurnInstigator when the zed ignites
+and every burn tick goes through TakeDamage with it, so the Firebug's
+AddDamage applies to the ticks of zeds a Firebug lit. The host used its
+own player's perk, so a joining Firebug's burns got no bonus (and a
+hosting Firebug's bonus went to everyone's burns).
+**Tested how:** unit test; `work/perks/mp.sh` tag `fire`: joiner
+Firebug 6 with the start Flamethrower (`3`, `aim_zed`, `fire_down`), host
+no perk.
+**Result:** host log `zed_ignited zed=14 weapon=FlameThrower fire=Burned
+damage=16.7 heat=0 igniter_perk=KFVetFirebug:6`, then 31 tick lines like
+`perk_mod kind=add_damage perk=KFVetFirebug:6 weapon=fire zed=17
+dam_type=Some(damtypeflamethrower) mult=1.600 damage=12.0->19.0`.
+**Still broken / not tested:** kill credit for a burn kill still goes to
+whoever hit the zed last (KF: the igniter); unchanged.
+**Next:** Commando glow on joiners.
+
+## 2026-10-07 Perks: the Commando's Stalker / Patriarch glow in network games
+
+**Changed:** `src/zeds/zed/spotted.rs` (`puppet_stalker_glow_tick`,
+`host_uncloaked`, `cloaked_for_others`, 2 unit tests),
+`src/zeds/zed/think.rs` (puppets run the Stalker glow check and the
+Patriarch's `boss_spot_tick` for this game's player),
+`src/zeds/zed/net.rs` (FLAG_CLOAKED from `cloaked_for_others`; an
+uncloak from the host restarts the 1.2 s and clears the glow).
+**Why:** (1) a joining Commando never saw the glow: puppet zeds skipped
+the spotted check (KF runs ZombieStalker.Tick on every client for its
+own player). (2) A hosting Commando's spotted Stalker keeps bCloaked
+false (KF: only the look changes), and our joiners take the cloak from
+the host, so they saw her fully.
+**Tested how:** unit tests; `work/perks/mp.sh` tag `cmd`: host and joiner
+both Commando 6, `--god`, host `spawn_stalker` twice.
+**Result:** joiner `zed_spotted id=20 kind=stalker_puppet spotted=true
+distance=745 perk=KFVetCommando:6`, `stalker_glow id=20 on=true
+cloaked=true ... puppet=true` (same for id=21 at 640). Host glowing her
+after an attack (`stalker_glow id=20 on=true cloaked=false`) now sends
+cloaked: joiner `net_zed_puppet_change id=20 cloaked=true` 0.03 s later.
+**Still broken / not tested:** the Patriarch's glow on a joiner not run
+(unit-level only); no screenshot of the joiner's glow.
+**Next:** Firebug grenades.
+
+## 2026-10-07 Perks: the Firebug's fire grenade (FlameNade, level 3+)
+
+**Changed:** `src/game/perks.rs` (`Vet::nade_class`, KF's GetNadeType,
+unit test), `src/weapons/weapon/load.rs` (`perk_nade`: FlameNade's
+Damage 80, DamageRadius, MyDamageType DamTypeFlameNade read from the
+class; FlameNade_Explode sound, KFIncendiaryExplosion effect),
+`weapons/weapon/mod.rs` (`PelletFire.flame_nade`), `weapons/weapon/input.rs`
+(G throws the perk's grenade; `perk_effect ... effect=nade_type` log),
+`weapons/projectile.rs` (`ThrownStats.fire`; a fire grenade's blast
+burns zeds, is not a FleshPound "explosive", does not hit doors; the
+FlameNade model), `game/combat.rs` (`FireType::FlameNade`: burns like
+the flamethrower, no Husk BurnDamageScale since KF tests
+DamTypeFlamethrower exactly), `render/particles.rs` (effect listed),
+`crates/ue-assets/src/emitter.rs` (empty `Emitters(i)=None` slots are
+skipped; KFIncendiaryExplosion failed to load with "emitter 2 not found").
+Self-damage from a burning blast now uses KF's burning rule (sets you
+alight if it gets through ReduceDamage): this also applies to the Husk
+Gun's own blast, as in KFPawn.TakeDamage.
+**Why:** KFVetFirebug.GetNadeType gives a FlameNade from level 3
+(FragFire.GetDesiredProjectileClass); we always threw the Nade.
+**Tested how:** unit test `grenade_type_per_perk`; headless
+`scripts/headless.sh --map KF-WestLondon --perk firebug --perk-level 6
+--god --mute --input 60:zed_line,120:nade --frames 450`.
+**Result:** `perk_nade_loaded class=KFMod.FlameNade damage=80 radius=420
+dam_type=Some(damtypeflamenade) fire=Some(FlameNade)`, `perk_effect
+perk=KFVetFirebug:6 effect=nade_type wanted=KFMod.FlameNade`, on the
+explosion three `zed_ignited ... fire=FlameNade` with `perk_mod
+kind=add_damage ... mult=1.600 damage=113.0->180.0` (80 x distance
+scale x 1.5 burn x 1.6), `effect_spawned ... KFIncendiaryExplosion`
+(2 emitters), `sound_play ... FlameNade_Explode`; own blast
+`player_hit_ignored reason=perk_reduce_damage ... damtypeflamenade`
+(Firebug 4+ takes no fire damage).
+**Still broken / not tested:** volume: KF plays it at 100.5 x
+TransientSoundVolume, we use the frag's 2.0 (guess). Whether the 4 empty
+emitter slots of KFIncendiaryExplosion really mean "no emitter" (as read)
+or inherited ones is not sure. Not looked at on screen. Medic grenade:
+still the plain Nade (logged as `wanted=KFMod.MedicNade thrown=KFMod.Nade`).
+A level 3 Firebug catching fire from his own grenade not run.
+**Next:** the Commando's zed health bars.
+
+## 2026-10-07 Perks: the Commando's zed health bars (SpecialHUDInfo)
+
+**Changed:** `src/game/hud.rs` (`zed_health_bars`, `ZedBarParams`; HUD
+loads WhiteMaterial, EnemyHealthBarLength/Height, HealthBarCutoffDist;
+UI node pool 96 -> 160), `src/game/perks.rs`
+(`Vet::commando_health_bar_range_sq`, unit test),
+`src/zeds/zed/spotted.rs` (`Zed::health_bar_shown`).
+**Why:** KFVetCommando.SpecialHUDInfo draws a health bar over every
+living zed near a Commando of level 1+ (160/320/480/640/800/800 units
+from the pawn; cloaked zeds only when zapped or spotted), through
+HUDKillingFloor.DrawHealthBar (2 x CollisionHeight above the zed's
+centre, within 2000 units of the camera, in front, on screen, no wall in
+between; grey 192 box 50 x 6 scaled by width/1024 at most, red bar 1 px
+inside x Health / HealthMax). It was not built.
+**Tested how:** unit test `commando_health_bar_ranges`; headless
+`scripts/headless.sh --map KF-WestLondon --perk commando --perk-level 6
+--god --mute --input 60:zed_line,62:spawn_scrake,90:hurt_zeds
+--screenshot 110`; looked at the screenshot.
+**Result:** `hud_health_bar white=true length=50 height=6 cutoff=2000`;
+`perk_effect perk=KFVetCommando:6 effect=zed_health_bars range=800
+in_range=4 drawn=4`. Screenshot: four small grey bars with red fill,
+three Clots at about 23% (100 of 130 health taken) and the Scrake at
+about 90%, floating well above the heads (KF's 2 x CollisionHeight).
+**Still broken / not tested:** not compared against a real KF screenshot
+of the bars (position and size come from the script and defaults only).
+Lower levels' ranges and the "no bars at level 0" case are unit-tested,
+not run. Not run as a joining client (the bars read the puppets' health,
+which the host sends; not tested).
+**Next:** teammate healing.
+
+## 2026-10-07 Perks: healing other players (Syringe primary fire, medic gun darts) over the network
+
+**Changed:** new `src/game/healing.rs` (`Teammates`, `HealTeammate`,
+`HealedByTeammate`, `syringe_healee` = SyringeFire.GetHealee,
+`medic_reward`, `ray_cylinder`; the healer's dosh reward and "You healed
+NAME"; the healed side's GiveHealth; 3 unit tests), new
+`src/net/heals.rs` (each game's `Teammates` from the other players'
+`NetPawn`/`NetPlayer`; client -> host `HealRequest`; host -> healed
+player `PlayerEvent::Healed`, or applied at once for the host's own
+player), `src/net/protocol.rs` (`HealRequest`, `PlayerEvent::Healed`;
+PROTOCOL_ID 0x...0007 -> 0x...0008, also covering the `Hurt.dam` change),
+`src/net/zeds.rs` (client applies `Healed`), `src/net/mod.rs`,
+`src/weapons/weapon/input.rs` (SyringeFire: AttemptHeal on the player
+in front within 80 units, the injection InjectDelay later heals them),
+`src/weapons/weapon/mod.rs`, `load.rs` (`heal_target`; `boost_team`),
+`src/weapons/projectile.rs` (a dart touching another player heals
+HealBoostAmount x the shooter's GetHealPotency), `src/game/end_game.rs`
+(test action `hurt_player`: 60 damage), `src/main.rs`, `src/game/mod.rs`.
+Also: Syringe.PostBeginPlay's heal is 50 only with one player; with
+other players in the game it is HealBoostAmount 20 (self heal too).
+**Why:** the Medic's heal potency (GetHealPotency) only reached the
+self heal; healing teammates did not exist (solo there is no one to
+heal), so in a network game the Medic could not heal anyone.
+**Tested how:** unit tests; `work/perks/mp.sh` tag `heal`: host and
+joiner both Medic 6; both warped 58 units apart facing each other and
+hurt with `hurt_player`; host `5` (Syringe), `aim_player`, `fire`;
+joiner `3` (MP7M), `aim_player`, `altfire` several times.
+**Result:** host `syringe_heal_other peer=<joiner> name="ClientGal"`,
+`syringe_inject_other ... heal=87 base_heal=50 heal_potency=1.75`,
+`net_heal_routed ... sent=true`, `perk_effect ... effect=heal_teammate
+source=syringe ... their_health=40 reward=36`; joiner
+`healed_by_teammate amount=87 healer="HostGuy" source=syringe` (twice).
+Joiner darts: `dart_hit ... hit=player peer=0 healed=35`,
+`net_heal_sent target=0 amount=35`, `reward=21`; host
+`net_heal_routed target=0 (host) amount=35 healer="ClientGal"
+source=dart`, `healed_by_teammate amount=35` (4 darts). The 87 showed
+the solo 50 was used with two players: fixed afterwards; a second run
+shows the host's self heal at `base_heal=20` with the joiner present
+(that run's timing missed the teammate heal: the joiner joined late).
+**Still broken / not tested:** the teammate syringe heal with the fixed
+20 (35 at Medic 6) not re-run. Guesses: GetHealee's "within 80" as
+centre distance minus 20 (their collision radius), no line-of-sight
+check; the healee's healthToGive is unknown to the healer (taken as 0
+for the reward); "You healed X" is shown when the heal lands, not at the
+attempt; the dart's HitHealTarget effect is not shown; the 50/20 choice
+uses the player count at the injection, KF's at the weapon's creation.
+Trusting: a client could send any heal (capped at 100).
+**Next:** the Medic grenade.
+
+## 2026-10-07 Perks: the Medic's grenade (MedicNade)
+
+**Changed:** `src/weapons/projectile.rs` (`MedicCloud`, `medic_pulse` =
+MedicNade.HealOrHurt, the nade stays after its explosion for 8 more
+pulses 1 s apart; the MedicNade model), `src/weapons/weapon/load.rs`
+(`perk_nade` reads MedicNade's Damage 50, DamageRadius 175,
+DamTypeMedicNade, HealBoostAmount 10, MaxHeals 8, HealInterval 1;
+MedicNade_Explode, KFNadeHealing, MedicNadeDecal),
+`weapons/weapon/mod.rs`, `input.rs` (G throws it for a Medic),
+`src/render/decals.rs` (`DecalKind::MedicNade`), `render/particles.rs`.
+**Why:** KFVetFieldMedic.GetNadeType gives every Medic the MedicNade.
+**Tested how:** headless `scripts/headless.sh --map KF-WestLondon --perk
+medic --perk-level 6 --mute --input
+60:hurt_player,70:zed_line,100:nade,170:walk_on,230:walk_off --frames 600`.
+**Result:** `perk_nade_loaded class=KFMod.MedicNade damage=50 radius=175
+dam_type=Some(damtypemedicnade) ... medic=Some(MedicCloud { heal: 10.0,
+max_heals: 8, interval: 1.0 })`; `thrown_exploded ... class=KFMod.MedicNade
+zeds_hit=3 players_healed=1 medic_cloud=true`, `effect_spawned ...
+KFNadeHealing`, `decal_spawned ... kind=MedicNade`, `sound_play ...
+MedicNade_Explode`; then `medic_nade_pulse pulse=1..` once a second; the
+three Clots (130 health) died on pulse 2 (3 x 50); the player healed 17
+a pulse (10 x 1.75), `player_heal source=medic_nade amount=17` with
+health 40 -> 48 -> 55 -> 64..., reward 10 a pulse.
+**Still broken / not tested:** the smoke loop sound (AmbientSound
+smoke_loop) is not played; teammates healed by the cloud not run in a
+network game (same `HealTeammate` path as the darts); zeds' exposure is
+traced from 15 units above the nade as KF, players' with the blast's
+head/centre rule (guess). KF quirk kept: the thrower is paid for healing
+himself.
+**Next:** docs, tests.
+
+## 2026-10-07 Perks: docs and re-checks after the perk work
+
+**Changed:** `docs/perks.md` (statuses, "Whose perk is used in a network
+game", remaining approximations), `docs/DESIGN.md` (perk table rows for
+ammo boxes, heal potency, grenades, health bars; "Healing other players
+and network perks"), `WORK_LOG.md`, `MULTIPLAYER.md` ("What is shared":
+healing, per-player perks).
+**Why:** keep the docs true after the perk steps above.
+**Tested how:** `cargo test --release --workspace` (209 + 24 pass);
+`rtk proxy cargo clippy --release --workspace` (0 warnings in the raw
+output); `work/perks/mp.sh` tag `heal3` (the syringe on a joiner after
+the 50/20 fix); solo headless Medic 6 syringe run.
+**Result:** heal3 host: `syringe_inject_other ... heal=35 base_heal=20
+heal_potency=1.75`, `net_heal_routed ... amount=35 sent=true`, reward
+21. The joiner had already quit when it was sent (scripted timing), so
+its receipt was not seen in that run (the path was seen in run `heal`).
+Solo: `syringe_no_target` on left click, self heal `heal=87 base_heal=50`
+as before.
+**Still broken / not tested:** see docs/perks.md "Remaining".
+**Next:** your play test.
+
 ## 2026-10-07 NuMenu: our own trader menu, the new default (NU1-NU4)
 
 **Changed:** new `src/game/numenu.rs` (the screen, its keys / mouse /

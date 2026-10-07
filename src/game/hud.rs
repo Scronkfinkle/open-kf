@@ -29,7 +29,7 @@ use crate::engine::runlog;
 
 const HUD_CLASS: &str = "KFMod.HUDKillingFloor";
 /// UI image nodes reused every frame (more than the HUD ever draws).
-const POOL: usize = 96;
+const POOL: usize = 160;
 
 /// IntBox: X1, Y1, X2, Y2 in texels.
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,6 +116,11 @@ struct Hud {
     vet_star_gold: Option<usize>,
     vet_star_size: f32,
     vet_scale: f32,
+    /// DrawHealthBar (the Commando's zed health bars): WhiteMaterial,
+    /// EnemyHealthBarLength / Height, HealthBarCutoffDist.
+    white: Option<usize>,
+    enemy_bar: Vec2,
+    bar_cutoff: f32,
     loaded: bool,
 }
 
@@ -679,6 +684,14 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
             hud.vet_scale
         ),
     );
+    hud.white = obj("WhiteMaterial").and_then(|(pkg, r)| loader.texture(&pkg, r));
+    let fdef = |n: &str| float_of(defaults.get(&class, n).map(|(v, _)| v).as_ref());
+    hud.enemy_bar = Vec2::new(fdef("EnemyHealthBarLength"), fdef("EnemyHealthBarHeight"));
+    hud.bar_cutoff = fdef("HealthBarCutoffDist");
+    runlog::kv(
+        "hud_health_bar",
+        &format!("white={} length={} height={} cutoff={}", hud.white.is_some(), hud.enemy_bar.x, hud.enemy_bar.y, hud.bar_cutoff),
+    );
     hud.textures = loader.textures;
     hud.weapons = weapons;
     hud.loaded = true;
@@ -852,6 +865,7 @@ fn draw_hud(
     hit: Res<HitDisplay>,
     vet: Res<crate::game::perks::Veterancy>,
     menus: Res<crate::game::menus::MenuState>,
+    mut bars: ZedBarParams,
 ) {
     if !hud.loaded {
         return;
@@ -1029,6 +1043,13 @@ fn draw_hud(
                 sprite(&mut c, "SecondaryClipsIcon");
             }
         }
+    }
+    // ClientVeteranSkill.SpecialHUDInfo (the Commando's zed health bars),
+    // between the ammo and the cash. DrawHealthBar returns while a menu is
+    // open (the buy menu, the pause menu).
+    if !menu.open && menus.top().is_none() && !health.dead {
+        let pawn = player.single().ok().map(|(t, w, _)| w.map_or(t.translation - Vec3::Y * crate::game::combat::PLAYER_EYE_HEIGHT * crate::engine::coords::SCALE, |w| w.center));
+        zed_health_bars(&mut c, &hud, &vet.vet, pawn, &mut bars);
     }
     sprite(&mut c, "CashIcon");
     numeric(&mut c, "CashDigits", dosh.score as i32, true, None);
@@ -1296,6 +1317,84 @@ fn display_local_messages(c: &mut Canvas, hud: &Hud, list: &mut LocalMessages, n
 fn font_size_index(clip_x: f32, font_size: i32) -> usize {
     let steps = [512.0, 640.0, 800.0, 1024.0, 1280.0, 1600.0].iter().filter(|&&t| clip_x >= t).count() as i32;
     (8 - (font_size + steps)).clamp(0, 8) as usize
+}
+
+/// What the Commando's health bars need: the zeds, the view, and the level
+/// for FastTrace; the last count drawn (for the log).
+#[derive(bevy::ecs::system::SystemParam)]
+struct ZedBarParams<'w, 's> {
+    zeds: Query<'w, 's, &'static crate::zeds::zed::Zed>,
+    camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<crate::engine::camera::FlyCamera>>,
+    spatial: avian3d::prelude::SpatialQuery<'w, 's>,
+    last: Local<'s, Option<(usize, usize)>>,
+}
+
+/// KFVetCommando.SpecialHUDInfo: from level 1, a bar over each living zed
+/// (not cloaked, unless zapped or spotted) closer to the pawn than the
+/// level's MaxDistanceSquared, drawn by HUDKillingFloor.DrawHealthBar:
+/// at Location + 2 x CollisionHeight up, only within HealthBarCutoffDist
+/// of the camera, in front, on screen and with nothing of the level in
+/// between (FastTrace); a grey (192,192,192) box EnemyHealthBarLength x
+/// EnemyHealthBarHeight (both x SizeX / 1024, at most their defaults),
+/// and inside it a red (255,0,0) bar 1 pixel in, its width x Health /
+/// HealthMax.
+fn zed_health_bars(c: &mut Canvas, hud: &Hud, vet: &crate::game::perks::Vet, pawn: Option<Vec3>, p: &mut ZedBarParams) {
+    use crate::engine::coords::SCALE;
+    let (Some(range_sq), Some(pawn), Some(white)) = (vet.commando_health_bar_range_sq(), pawn, hud.white) else {
+        return;
+    };
+    let Ok((camera, cam_t)) = p.camera.single() else { return };
+    let cam = cam_t.translation();
+    let forward = cam_t.forward();
+    let phys_x = c.size.x * c.scale_factor;
+    // Physical pixels (C.SizeX), then logical for the UI nodes.
+    let len = (hud.enemy_bar.x * phys_x / 1024.0).min(hud.enemy_bar.x) / c.scale_factor;
+    let height = (hud.enemy_bar.y * phys_x / 1024.0).min(hud.enemy_bar.y) / c.scale_factor;
+    let one = 1.0 / c.scale_factor;
+    let tex = hud.textures[white].size;
+    let (mut candidates, mut drawn) = (0, 0);
+    for z in &p.zeds {
+        let pawn_d = (z.centre - pawn).length() / SCALE;
+        if z.health <= 0.0 || !z.health_bar_shown() || pawn_d * pawn_d >= range_sq {
+            continue;
+        }
+        candidates += 1;
+        let target = z.centre + Vec3::Y * z.half_height * 2.0 * SCALE;
+        let to = target - cam;
+        if to.length() / SCALE > hud.bar_cutoff || to.normalize_or_zero().dot(*forward) < 0.0 {
+            continue;
+        }
+        let Ok(at) = camera.world_to_viewport(cam_t, target) else { continue };
+        if at.x <= 0.0 || at.x >= c.size.x || at.y <= 0.0 || at.y >= c.size.y {
+            continue;
+        }
+        // FastTrace: the level only.
+        if let Ok(dir) = Dir3::new(to)
+            && p.spatial.cast_ray(cam, dir, to.length(), true, &crate::world::collision::world_filter()).is_some()
+        {
+            continue;
+        }
+        let pct = (z.health / z.health_max.max(1.0)).clamp(0.0, 1.0);
+        let uv = Rect::from_corners(Vec2::ZERO, tex);
+        let x0 = at.x - len * 0.5;
+        c.quads.push(Quad { texture: white, uv, screen: Rect::new(x0, at.y, x0 + len, at.y + height), tint: [192, 192, 192, 255], what: "EnemyHealthBarBG".into() });
+        let inner = (len - 2.0 * one) * pct;
+        c.quads.push(Quad {
+            texture: white,
+            uv,
+            screen: Rect::new(x0 + one, at.y + one, x0 + one + inner, at.y + height - one),
+            tint: [255, 0, 0, 255],
+            what: "EnemyHealthBar".into(),
+        });
+        drawn += 1;
+    }
+    if *p.last != Some((candidates, drawn)) {
+        *p.last = Some((candidates, drawn));
+        runlog::kv(
+            "perk_effect",
+            &format!("perk={} effect=zed_health_bars range={:.0} in_range={candidates} drawn={drawn}", vet.label(), range_sq.sqrt()),
+        );
+    }
 }
 
 type PlayerQuery<'w, 's> = Query<
