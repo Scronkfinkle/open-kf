@@ -5519,16 +5519,17 @@ build machines, which run the steps in that file).
 - **C1, check:** runs on `push` of tags `v*`. Fails unless the tagged commit
   is on `main` (`git merge-base --is-ancestor`), so a tag on a side branch
   publishes nothing.
-- **C2, build (three jobs side by side, Ubuntu machines with Nix installed):**
+- **C2, build (two jobs side by side, Ubuntu machines with Nix installed):**
   - `windows`: `nix build .#windows`, uploads `open-kf-windows-x86_64.zip`.
   - `flatpak`: `nix run .#flatpak`, uploads `open-kf.flatpak`. Ubuntu
     24.04 blocks the sandbox tool (bubblewrap) from Nix by default
     (AppArmor's user-namespace restriction), so the job switches that
     restriction off first with `sysctl`.
-  - `nix`: `nix build .#open-kf`, only to check it still builds. Not
-    attached to the release: the binary only runs on machines with Nix (its
-    libraries are paths in `/nix/store`). Linux players use the Flatpak; Nix
-    users can `nix run github:Scronkfinkle/open-kf`.
+  - No Linux binary in the release: the Nix one only runs on machines with
+    Nix (its libraries are paths in `/nix/store`). Linux players use the
+    Flatpak; Nix users can `nix run github:Scronkfinkle/open-kf`. (A `nix`
+    job that only checked `nix build .#open-kf` was dropped 2026-10-07: the
+    slowest job, 34 min, and not needed.)
 - **C3, release:** after all builds pass, `gh release create <tag>` with
   both files and GitHub's generated notes (the commit list since the last
   release).

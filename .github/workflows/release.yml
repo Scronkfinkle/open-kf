@@ -55,19 +55,9 @@ jobs:
           path: work/flatpak/open-kf.flatpak
           if-no-files-found: error
 
-  # Only checks the Nix package builds; it runs only where Nix is installed,
-  # so it is not attached to the release.
-  nix:
-    needs: check
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
-      - run: nix build .#open-kf -L
-
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, flatpak, nix]
+    needs: [windows, flatpak]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -5520,3 +5520,14 @@ a side-branch tag was not tried. No build cache: every run builds from
 scratch.
 **Next:** First tagged release by the user.
 
+## 2026-10-07 Release CI: drop the Nix build check
+
+**Changed:** `.github/workflows/release.yml`: removed the `nix` job (it only
+checked `nix build .#open-kf`); the release now waits for windows and
+flatpak only. `docs/DESIGN.md` updated.
+**Why:** Not needed, and the slowest job (34 min), which held up releases.
+**Tested how:** actionlint.
+**Result:** No errors. Not run on GitHub after this change.
+**Still broken / not tested:** The release job (needs a tag).
+**Next:** First tagged release by the user.
+
