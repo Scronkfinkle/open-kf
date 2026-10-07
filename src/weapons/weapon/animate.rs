@@ -197,6 +197,9 @@ pub(super) fn animate_weapon(
         Err(_) => Vec::new(),
     };
     w.hand_frames = frames;
+    // The flashlight's LightBone (torch.rs).
+    let light = main_cam.single().ok().and_then(|main| light_frame(&w.defs[w.current], &bones, part_translation, main));
+    w.torch.frame = light;
     let def = &w.defs[w.current];
 
     *log_timer += dt;

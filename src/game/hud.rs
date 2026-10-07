@@ -947,12 +947,13 @@ fn draw_hud(
                         }
                     }
                 }
-                // The flashlight box (bTorchEnabled). We have no flashlight
-                // yet: the battery shows full and the light off.
+                // The flashlight box (bTorchEnabled): FlashlightDigits =
+                // 100 x TorchBatteryLife / 500; the icon on or off.
                 if w.torch {
+                    let torch = player.single().ok().and_then(|(_, _, f)| f);
                     sprite(&mut c, "FlashlightBG");
-                    numeric(&mut c, "FlashlightDigits", 100, false, None);
-                    sprite(&mut c, "FlashlightOffIcon");
+                    numeric(&mut c, "FlashlightDigits", torch.map_or(100, |f| f.percent()), false, None);
+                    sprite(&mut c, if torch.is_some_and(|f| f.on && f.weapon.is_some()) { "FlashlightIcon" } else { "FlashlightOffIcon" });
                 }
             }
             // Secondary ammo (bHasSecondaryAmmo: the M4 203's grenades).
@@ -995,7 +996,7 @@ fn draw_hud(
     if !menu.open
         && !won
         && let Some(cur) = shops.current
-        && let Ok((cam, walker)) = player.single()
+        && let Ok((cam, walker, _)) = player.single()
     {
         let centre = walker.map_or(cam.translation - Vec3::Y * crate::game::combat::PLAYER_EYE_HEIGHT * crate::engine::coords::SCALE, |w| w.center);
         let pawn = Vec3::new(-centre.z, centre.x, centre.y) / crate::engine::coords::SCALE;
@@ -1184,7 +1185,12 @@ fn font_size_index(clip_x: f32, font_size: i32) -> usize {
     (8 - (font_size + steps)).clamp(0, 8) as usize
 }
 
-type PlayerQuery<'w, 's> = Query<'w, 's, (&'static Transform, Option<&'static crate::player::walk::Walker>), With<crate::engine::camera::FlyCamera>>;
+type PlayerQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Transform, Option<&'static crate::player::walk::Walker>, Option<&'static crate::weapons::flashlight::Flashlight>),
+    With<crate::engine::camera::FlyCamera>,
+>;
 
 /// UpdateHud's syringe / medic gun digit colours by charge.
 fn charge_tint(v: i32) -> [u8; 3] {

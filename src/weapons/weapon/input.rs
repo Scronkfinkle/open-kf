@@ -493,6 +493,15 @@ pub(super) fn weapon_input(
         }
         _ => {}
     }
+    // KFPawn.ToggleFlashlight (F): the light alt fire of a torch weapon in
+    // hand, else bring out a torch weapon and light it (torch.rs).
+    if keys.just_pressed(KeyCode::KeyF) || scripted("flashlight") {
+        match flashlight_key(&mut w) {
+            FlashKey::AltFire => force_alt = true,
+            FlashKey::Switch(i) if i != w.current => choice = Some(i),
+            _ => {}
+        }
+    }
     if let Some(next) = choice {
         match w.action {
             Action::PutDown { .. } => w.action = Action::PutDown { next },
@@ -739,6 +748,11 @@ pub(super) fn weapon_input(
         }
         if let Some(h) = w.defs[cur].heal_charge.filter(|h| h.syringe) {
             syringe_fire(&mut w, mode, pressed[mode], h, health.health, now);
+            continue;
+        }
+        // Torch weapons: the alt fire is the flashlight (torch.rs).
+        if mode == 1 && w.defs[cur].torch.is_some() {
+            torch_alt_fire(&mut w);
             continue;
         }
         if mode == 1 && !matches!(fm.kind, FireKind::Melee | FireKind::Pellets) {

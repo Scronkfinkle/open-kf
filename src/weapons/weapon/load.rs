@@ -773,6 +773,7 @@ pub(super) fn load_weapons(
         sounds: Vec::new(),
         last_click: -10.0,
         sound_rng: 0x1b87_3593,
+        torch: TorchState::default(),
     };
     set_action(&mut w, Action::Select);
     commands.insert_resource(w);
@@ -1040,7 +1041,18 @@ pub(super) fn load_weapon(
     } else {
         None
     };
+    // bTorchEnabled (own or inherited): the flashlight (torch.rs).
+    let torch = matches!(get("bTorchEnabled"), Some((Value::Bool(true), _))).then(|| {
+        let offset = match get("FirstPersonFlashlightOffset") {
+            Some((Value::Vector(v), _)) => v,
+            _ => [0.0; 3],
+        };
+        let t = TorchDef::new(&model, offset, name("ModeSwitchAnim"), |c| defaults.is_a(&class, c));
+        t.log(class_path);
+        t
+    });
     Ok(WeaponDef {
+        torch,
         class: class_path.to_string(),
         item_name,
         group,

@@ -3785,6 +3785,145 @@ Not done: the character's third-person body (we have none), voice packs.
 We do not read the user's own `User.ini` choice (KF would use it); the
 user asked for KF's default unless `--character` is given.
 
+## Weapon flashlights (FL1 implemented 2026-10-06)
+
+**What KF does (scripts and class defaults, checked 2026-10-06):**
+
+- **Keys.** User.ini: `F=ToggleFlashlight`, `MiddleMouse=AltFire`.
+  KFPawn.ToggleFlashlight: if the weapon in hand has `bTorchEnabled`,
+  `Weapon.ClientStartFire(1)` (its alt fire). Otherwise it looks for a
+  torch weapon in the inventory, in this order: Shotgun (and subclasses),
+  BenelliShotgun, Dualies (not DualDeagle, Dual44Magnum, DualMK23Pistol,
+  DualFlareRevolver), Single; switches to it with `bPendingFlashlight`,
+  and when it is up (KFWeapon.Timer, end of BringUp) calls LightFire.
+  Without any, nothing happens.
+- **Torch weapons** (`bTorchEnabled = true`, own or inherited): Single
+  (9mm), Dualies, Shotgun (and CamoShotgun), BenelliShotgun (and Golden),
+  NailGun; DualiesDM (deathmatch only). Not the Bullpup or any other.
+  FirstPersonFlashlightOffset: Single and NailGun (-20, -22, 8), Dualies
+  (-15, 0, 5), Shotgun and Benelli (-25, -18, 8). Their alt fire is the
+  light: SingleALTFire (9mm, Dualies), ShotgunLightFire (Shotgun,
+  Benelli), NailGunALTFire. All three: ModeDoFire calls ToggleTorch, then
+  the normal fire (FireAnim 'LightOn', FireSound KF_9MMSnd.Ninemm_AltFire1;
+  the NailGun's FireSoundRef KF_NailShotgun.Vlad9000_Light_On), FireRate
+  0.5 (WeaponFire default, so holding the button toggles every 0.5 s),
+  AllowFire: not reloading, not throwing a grenade.
+- **The toggle** (KFWeapon.ServerSpawnLight), only if FireMode[0] is not
+  firing and not reloading: with no FlashLight actor yet, and battery
+  >= 1 and alive: spawn Effect_TacLightProjector, play
+  NineMM_AltFire1 (SLOT_Misc), PlayAnim(ModeSwitchAnim) (Single:
+  'LightOn'; the others have none), light on. With one: flip it.
+- **Off by itself** (KFWeapon.WeaponTick): dead, battery <= 0, or a weapon
+  switch starting (PendingWeapon). OwnerEvent('ChangedWeapon') also turns
+  it off, and the projector destroys itself when the pawn's weapon is no
+  longer its weapon. So every weapon has its own light; switching away
+  turns it off.
+- **Battery** (KFHumanPawn.TorchBatteryLife, 500, one per player; the
+  pawn's Timer every 1.5 s): light on: -10 (so 75 s from full); otherwise
+  +20 up to 500 (37.5 s from empty). HUD: FlashlightDigits =
+  100 x battery / 500, FlashlightIcon when on, FlashlightOffIcon when off,
+  shown only with a torch weapon in hand.
+- **The light** (Effect_TacLightProjector.Tick, every frame):
+  - Start, first person: W + 0.2 x (LightBone - W) + the offset along the
+    LightBone's X, Y, Z axes (W = the first-person weapon's location).
+    Direction: the LightBone's X axis (so it sways with the weapon).
+    Third person (other players, behind view): the WeaponAttachment's
+    location and its 'FlashLight' bone's X axis (else the eye and the
+    view rotation).
+  - Trace 1800 units (actors too). BeamLength = distance to the hit.
+  - The projector (a DynamicProjector): ProjTexture
+    KillingFloorWeapons.Dualies.LightCircle (grey ring, brightest at 0.3 of
+    the radius, half at 0.55, none at the edge), MaterialBlendingOp
+    PB_Modulate, FrameBufferBlendingOp PB_Add (adds texture x circle),
+    bGradient (fades with depth), MaxTraceDistance 1600, bClipBSP,
+    bProjectOnUnlit, bNoProjectOnOwner, DrawScale 0.1. FOV = Lerp(Beam /
+    1800, 30, 50) degrees. Pulled back so it never starts inside a wall
+    (ProjectorPullbackDist 25).
+  - The glow (Effect_TacLightGlow, a Light: LT_Steady, LightBrightness
+    100, LightRadius 3, LightHue 0, LightSaturation 255 = white), at the
+    hit point (50 units back on terrain). Beam <= 100: brightness 100,
+    radius Lerp(Beam / 100, 0, 3.75); else brightness 100 x (1 - Beam /
+    1800), radius Min(12, Lerp(Beam / 900, 3, 12)). (UE2 radius units:
+    25 x (radius + 1) world units, so 100 to 325.)
+- **First-person look**: TacLightShineAttachment (skeletal mesh
+  KFWeaponModels.TacShine, DrawScale 0.15, unlit) on the weapon's
+  LightBone, shown while the light is on (KFWeapon.AdjustLightGraphic).
+- **Third-person look** (seen by others): on the attachment's
+  'FlashLight' bone the same TacShine, stretched along Y by Beam / 90
+  (0.02 to 1), and KFTacLightCorona (sprite FlashLightCorona3P, STY_Alpha,
+  DrawScale 0.3; its dynamic light has brightness 0).
+
+**What our renderer can light (checked in the code 2026-10-06):**
+
+- BSP: lit Bevy material plus its lightmap (`lighting.rs`); the sun and
+  ambient are told to skip lightmapped meshes, but Bevy spot and point
+  lights do light them (`affects_lightmapped_mesh_diffuse`). Yes.
+- Zeds, gore, terrain and placed meshes without baked colours: lit
+  materials (sun + ambient). Yes.
+- **Placed meshes with baked colours (most props: 1595 of 1669 on
+  KF-WestLondon): drawn unlit** (texture x colour x K). A Bevy light
+  cannot add to an unlit material, so **the flashlight does not light
+  them** in this step. Fixing it needs our own material for those meshes
+  (baked colour plus Bevy's dynamic lights): a renderer change for every
+  map, so a separate step (FL2), to be checked on all 34 maps.
+- The first-person weapon is on its own layer and unlit: not lit (KF:
+  bNoProjectOnOwner).
+
+**How we do it (FL1):**
+
+- **The light belongs to whoever holds the weapon.** A `Flashlight`
+  component (src/weapons/flashlight.rs) on the holder's entity carries
+  the battery, on/off, the weapon whose light it is, and the beam start
+  and direction for this frame. A generic system turns every holder's
+  component into lights in the world (trace, KF's per-frame values, the
+  Bevy lights), so the same code would show another player's light.
+  Filling the beam start is the holder's side: for us, the first-person
+  weapon's LightBone (src/weapons/weapon/torch.rs). A remote player would
+  fill it from their third-person attachment's 'FlashLight' bone, as KF
+  does. No networking is written (CLAUDE.md: offline only); this only
+  keeps the door open. Today only the local player (the camera entity)
+  has the component.
+- The projector becomes a Bevy SpotLight from the beam start: outer angle
+  FOV / 2 (KF's FOV lerp), inner angle 0.45 x outer (**guess**: fits the
+  LightCircle's ring roughly; Bevy has spot textures only behind an
+  optional renderer feature, so the ring itself is not drawn), shadows on
+  (stands in for bClipBSP: no light through walls), range 1800 units.
+- The glow becomes a Bevy PointLight near the hit point with KF's
+  per-frame radius and brightness.
+- **Brightness (guesses, to compare with the real game):** UE2 adds light
+  in screen (gamma) space; Bevy in linear. At the hit point we aim for:
+  projector texture x 0.58 (the circle's average where it is bright) x
+  (1 - depth / 1600) (**guess**: GRADIENT_Fade taken as linear over
+  MaxTraceDistance); glow texture x LightBrightness / 255 x K (K = 2, the
+  overbright of `lighting.rs`). Each is turned into linear light
+  (^2.2) and into Bevy lumens for the distance to the hit, so the spot
+  on the wall gets that much whatever the distance (Bevy's own falloff
+  then applies to things in front of or around it). The glow sits half
+  its radius in front of the wall (**guess**: Bevy's inverse-square light
+  would be infinitely bright exactly on the wall).
+- The trace: world geometry and doors (`world_filter`) and the zeds'
+  collision cylinders (KF's trace stops at actors too).
+- First person: the TacShine mesh on the LightBone, unlit, on the weapon
+  layer, shown while on. Its material (Shader berettaLightSHader,
+  OB_Brighten over BeretaTacLightStream) is almost black in the data
+  (brightest texel 11 of 255), so it is barely visible, in KF too as far
+  as the data says.
+- Battery, HUD box, sounds, animations as KF above. F is a single press
+  (KF's exec starts the alt fire without a stop; we fire it once).
+- Not done in FL1: lighting baked props (FL2), the third-person look
+  (no other players), the LightCircle ring pattern, the projector's
+  pull-back from walls (ProjectorPullbackDist: our spot starts at the
+  beam start, Bevy shadows keep it from shining through), the "TERRAIN:
+  glow 50 units back" rule (the glow always stands off). Brightness in
+  already-lit places is lower than UE2's gamma-space add (we add in
+  linear light): the light shows best in dark places, as in KF.
+
+Logs: `weapon_torch` (per torch weapon at load: offset, LightBone found,
+switch anim), `flashlight_toggle`, `flashlight_refused`, `flashlight_off`,
+`flashlight_battery`, `flashlight_beam` (once a second while on: start,
+direction, what was hit, distance, FOV, light values), `flashlight_key`,
+`flashlight_pending`, `flashlight_shine` / `flashlight_shine_shown`.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

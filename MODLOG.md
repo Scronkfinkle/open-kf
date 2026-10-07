@@ -4744,3 +4744,51 @@ machine) is not read: KF's default is used unless `--character` is
 given, as you asked. Weapons not looked at in screenshots: all but the
 9mm, shotgun, syringe and ZED Gun.
 **Next:** —
+
+## 2026-10-06 FL1: weapon flashlights
+
+**Changed:** new `src/weapons/flashlight.rs` (the holder's `Flashlight`
+component: battery, on/off, beam; the battery timer; the spot and glow
+lights) and `src/weapons/weapon/torch.rs` (the local player's side: F
+key, the light alt fire, KFWeapon.ServerSpawnLight, the light going off
+by itself, the beam from the first-person LightBone, the TacShine mesh).
+Small hooks: `weapons/mod.rs` (module), `weapon/mod.rs` (fields
+`WeaponDef::torch`, `Weapons::torch`, systems, FlashlightPlugin added
+from WeaponPlugin, so main.rs is untouched), `weapon/load.rs` (reads
+bTorchEnabled, FirstPersonFlashlightOffset, ModeSwitchAnim; logs
+`weapon_torch`), `weapon/input.rs` (F key; middle mouse on a torch
+weapon), `weapon/animate.rs` (stores the LightBone frame), `game/hud.rs`
+(battery percent and on/off icon in the flashlight box). Plan and KF's
+rules: DESIGN.md, "Weapon flashlights".
+**Why:** you asked for flashlights, built as state of whoever holds the
+weapon (so other players' lights could be shown later; no networking).
+**Tested how:** headless runs (`work/headless.sh`, a copy of
+scripts/headless.sh) on KF-Bedlam (dark), KF-WestLondon, KF-Farm,
+KF-Offices, KF-Manor, logs first, then screenshots with the light off and
+on at the same frame, compared by a pixel-difference script; cargo test
+(118 + 24 pass, 2 new), cargo clippy (no warnings).
+**Result:** torch weapons found from the class defaults: Single (9mm,
+LightBone 59), Dualies (60), Shotgun (53), BenelliShotgun (55), NailGun
+(51). F with the 9mm: `flashlight_toggle on=true`, beam along the view
+(dir -0.94,0,-0.34 for a view pitched -0.35). KF-Bedlam floor 168 units
+away: the lit spot is +85 to +106 brighter (of 255) in the centre cells,
+untouched at the edges; the Shotgun with iron sights the same. Battery:
+on at 8.36 s, `flashlight_off reason=battery` at 82.97 s (KF: 75 s),
+HUD box 100 -> 98 -> ... and FlashlightIcon / FlashlightOffIcon swap
+(hud_dump). Switching to the knife: `flashlight_off reason=switching`. F
+with the knife: `flashlight_pending from=Knife to=9mm Tactical` (to
+Shotgun when carried), the light comes on when the gun is up (with the
+9mm's LightOn animation). Holding the middle button toggles every 0.5 s
+(KF's FireRate). Middle button on the knife: its own stab, no light. A
+Clot in front: `hit=zed beam_length=44`, its body lit. KF-Farm terrain
+lit (+35).
+**Still broken / not tested:** placed meshes with baked lighting (most
+props) are drawn unlit, so the flashlight does not light them (FL2, a
+renderer change for every map); brightness values are guesses (compare
+with the real game); the third-person light/beam (no other players);
+the LightCircle ring pattern (Bevy needs an optional feature); the
+TacShine beam mesh is drawn but its texture is almost black (as in the
+data); the NailGun and Benelli were loaded but their light not switched
+on in a test; sounds not listened to; not play-tested by you.
+**Next:** FL2, our own material for baked props so dynamic lights
+(flashlight, later muzzle flashes) light them, checked on all maps.

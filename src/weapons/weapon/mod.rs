@@ -27,12 +27,14 @@ mod animate;
 mod inventory;
 mod sounds;
 mod welder_screen;
+mod torch;
 pub(crate) use load::*;
 use input::*;
 use animate::*;
 use inventory::*;
 use welder_screen::update_welder_screen;
 pub(crate) use sounds::*;
+use torch::*;
 
 /// Render layer seen only by the weapon camera.
 pub const WEAPON_LAYER: usize = 2;
@@ -129,10 +131,11 @@ impl Plugin for WeaponPlugin {
             .add_systems(Update, shop_requests.before(weapon_input))
             .add_systems(
                 Update,
-                (weapon_input, animate_weapon, update_welder_screen, weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
+                (weapon_input, torch_update, animate_weapon, update_welder_screen, torch_beam.in_set(crate::weapons::flashlight::FlashlightBeamSet), weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
                     .chain()
                     .after(crate::engine::camera::follow_sky),
-            );
+            )
+            .add_plugins(crate::weapons::flashlight::FlashlightPlugin);
     }
 }
 
@@ -264,6 +267,8 @@ struct WeaponDef {
     sell_value: Option<f32>,
     /// bKFNeverThrow: cannot be sold.
     never_throw: bool,
+    /// bTorchEnabled: the weapon's flashlight (torch.rs).
+    torch: Option<TorchDef>,
 }
 
 /// A scoped weapon's lens (Crossbow / M99SniperRifle): the model part that
@@ -764,6 +769,8 @@ struct Weapons {
     /// Random pitch of fire sounds: its own stream, so the spread and
     /// damage rolls stay as they were before sound.
     sound_rng: u32,
+    /// The flashlight on the weapon in hand (torch.rs).
+    torch: TorchState,
 }
 
 impl Weapons {
