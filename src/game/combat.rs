@@ -159,6 +159,10 @@ const BILE_FREQUENCY: f32 = 0.5;
 pub struct PlayerHealth {
     pub health: f32,
     pub deaths: u32,
+    /// Dead and not respawned: the wave game in solo (KF's MaxLives 1,
+    /// KillingFloor.ini) ends the match instead (end_game.rs revives the
+    /// player on restart). Hits are ignored meanwhile.
+    pub dead: bool,
     /// God mode (`--god` or F1): hits are still logged, but take no health.
     pub god: bool,
     /// KFPawn healthToGive / lastHealTime: healing still to come, paid out
@@ -169,7 +173,7 @@ pub struct PlayerHealth {
 
 impl Default for PlayerHealth {
     fn default() -> Self {
-        PlayerHealth { health: 100.0, deaths: 0, god: false, to_give: 0.0, last_heal_time: 0.0 }
+        PlayerHealth { health: 100.0, deaths: 0, dead: false, god: false, to_give: 0.0, last_heal_time: 0.0 }
     }
 }
 
@@ -939,8 +943,12 @@ fn apply_player_damage(
     mut armour: ResMut<crate::player::armour::Armour>,
     mut sounds: MessageWriter<crate::audio::player_sound::PlayerSoundEvent>,
     mut hurt: MessageWriter<PlayerHurt>,
+    options: Res<crate::game::waves::GameOptions>,
 ) {
     for hit in hits.read() {
+        if health.dead {
+            continue;
+        }
         // TakeDamage(int Damage): the fraction is cut off (zed claws pass
         // MeleeDamage x 0.95..1.05 to MeleeDamageTarget(int hitdamage)).
         let amount = hit.amount.trunc();
@@ -1015,8 +1023,18 @@ fn apply_player_damage(
             sounds.write(crate::audio::player_sound::PlayerSoundEvent::Died);
             bile.count = 0;
             burn.burn_down = 0;
-            // Death: respawn at the player start with full health.
             health.deaths += 1;
+            // Waves: no respawn (KF's MaxLives 1: CheckMaxLives ends the
+            // game when no player has a life left).
+            if options.mode == crate::game::waves::GameMode::Waves {
+                health.health = 0.0;
+                health.to_give = 0.0;
+                health.dead = true;
+                pinned.release("player_died");
+                runlog::kv("player_died", &format!("deaths={} respawned=false", health.deaths));
+                continue;
+            }
+            // Other modes: respawn at the player start with full health.
             health.health = 100.0;
             health.to_give = 0.0;
             // A new pawn: no armour.

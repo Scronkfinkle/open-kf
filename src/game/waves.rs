@@ -499,7 +499,7 @@ pub fn wave_timer(
         ResMut<crate::engine::view_target::ViewTarget>,
         MessageWriter<crate::zeds::zed::BossAction>,
     ),
-    mut shops: ResMut<crate::game::trader::Shops>,
+    (mut shops, mut restart_requests): (ResMut<crate::game::trader::Shops>, MessageReader<crate::game::end_game::RestartGame>),
 ) {
     if options.mode != GameMode::Waves || frames.0 < 10 {
         return;
@@ -543,8 +543,12 @@ pub fn wave_timer(
         doors: &doors,
         now,
     };
-    // After a win or a loss, Enter (test action "restart_game") starts over.
-    let restart = keys.just_pressed(KeyCode::Enter) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
+    // After a win or a loss: GameInfo.RestartGame (end_game.rs: Fire after
+    // 5 s, or the MatchOver timer), or Enter / test action "restart_game"
+    // (ours).
+    let restart = restart_requests.read().count() > 0
+        || keys.just_pressed(KeyCode::Enter)
+        || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
     if restart && matches!(g.phase, Phase::Won | Phase::Lost) {
         *g = WaveGame {
             restarts: g.restarts + 1,

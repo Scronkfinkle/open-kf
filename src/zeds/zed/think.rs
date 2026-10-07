@@ -45,6 +45,7 @@ pub(super) struct ZedWorld<'w, 's> {
     player_zone: Res<'w, crate::world::zones::PlayerZone>,
     level_damage: MessageReader<'w, 's, crate::player::pain::LevelDamageZed>,
     boss_death: MessageReader<'w, 's, crate::game::waves::BossDied>,
+    match_over: Option<Res<'w, crate::game::end_game::MatchOver>>,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
@@ -72,8 +73,11 @@ pub(super) fn think_and_move(
     mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
-    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage, boss_death } = &mut world;
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage, boss_death, match_over } = &mut world;
     let boss_died = boss_death.read().count() > 0;
+    // CheckEndGame: every controller goes to GameEnded (P.GameHasEnded);
+    // KFMonster.TurnOff does nothing, so the bodies stay where they are.
+    let game_ended = match_over.as_ref().is_some_and(|m| m.active());
     let level_hits: Vec<(usize, f32, &'static str)> = level_damage.read().map(|d| (d.zed, d.amount, d.cause)).collect();
     let player_zone = **player_zone;
     let stuck: Vec<usize> = kill_stuck.read().map(|k| k.0).collect();
@@ -210,7 +214,7 @@ pub(super) fn think_and_move(
         }
         // DoBossDeath: the controller is gone mid-whatever; the body stands
         // (our approximation: the attack is dropped and it idles).
-        if boss_died && !z.braindead {
+        if (boss_died || (game_ended && !z.is_dead())) && !z.braindead {
             z.braindead = true;
             z.attack = None;
             z.overlay = None;
@@ -221,7 +225,7 @@ pub(super) fn think_and_move(
             if z.state != ZedState::Falling {
                 z.state = ZedState::Idle;
             }
-            runlog::kv("zed_braindead", &format!("id={} reason=boss_died", z.id));
+            runlog::kv("zed_braindead", &format!("id={} reason={}", z.id, if boss_died { "boss_died" } else { "game_ended" }));
         }
         let ai = active.0 && !z.braindead;
         // KFMonster.Tick (standalone), when CanSpeedAdjust (head on, not

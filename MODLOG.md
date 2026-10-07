@@ -4659,3 +4659,48 @@ Claw / Claw2 not run. Worktree based on 2bf299d, behind main: this edit
 needs merging into main's newer melee block (whole-number damage,
 dam_type, source).
 **Next:** your check in play.
+
+## 2026-10-06 End of match screen ("Your squad survived" / "wiped out")
+
+**Changed:** new `src/game/end_game.rs` (MatchOver state, the picture as
+a Bevy UI material, restart timing, test action `kill_player`);
+`src/game/waves.rs` (reads the restart request); `src/game/combat.rs`
+(waves mode: a death no longer respawns, `PlayerHealth.dead`, hits
+ignored while dead); `src/game/hud.rs` (spectating HUD once the match is
+over: no bar or weapon name; won: no circle, trader text or messages);
+`src/game/trader_arrow.rs` (no arrow when won); `src/engine/view_target.rs`
+(behind view on yourself hides the first-person weapon);
+`src/player/walk.rs`, `src/weapons/weapon/input.rs` (no moving or weapon
+use after the end); `src/zeds/zed/think.rs` (living zeds stop at the
+end, reason `game_ended`); `src/game/mod.rs`, `src/main.rs` (plugin);
+DESIGN.md, "End of match screen".
+**Why:** the end of the game only showed a debug text line. KF draws
+KFMapEndTextures' VictoryCombiner / DefeatCombiner
+(HUDKillingFloor.DrawEndGameHUD), freezes everyone (GameEnded) and
+restarts (Fire after 5 s, or MatchOver's timer about 14 s after).
+**Tested how:** `scripts/headless.sh --map KF-WestLondon --mode waves
+--length short --mute --fps 60` with `--input 200:kill_player`
+(lost; also `290:fire,500:fire`; also `--window 1920x1080`), and with
+`--wave 5 --god --input 1500:kill_boss` (won); screenshots looked at;
+`cargo test --release --workspace`, `cargo clippy --release --workspace`.
+**Result:** `end_game_loaded` reads both combiners (Victory rate [0, 10]
+amplitude [0.01, 0.01]; Defeat rate [10, 0.5] amplitude [0.01, 0.015]).
+Lost: `player_died deaths=1 respawned=false`, `end_game result=wiped_out`,
+picture (280,0)-(1000,720) at 1280x720 and (448,28)-(1472,1052) at
+1920x1080, `end_game_fade` after 2.98 s, `walk ... held=true` from the
+end on, no weapon action; the fire at about 3 s did nothing, the one at
+8.96 s gave `end_game_restart reason=fire`; with no fire,
+`reason=timer seconds_after_end=14.01`; after the restart `health=100`.
+Won: `end_game result=survived`, view on the dead Patriarch, picture
+only (no HUD, no weapon), `reason=timer` at 14.00 s, then wave 1 starts
+again with the HUD and weapon back. Tests: 142 pass (2 new). Clippy:
+no warnings.
+**Still broken / not tested:** not tested by playing with mouse and
+keyboard (only scripted input); the moving glow is not checked by eye
+(its 2 pi and the picture + glow alpha are guesses, see DESIGN.md); no
+behind view of your own body (no player model); KF goes to the next map
+on restart, we restart the waves on the same map (what the restart
+resets besides health, armour, dosh and zeds, e.g. weapons, not checked);
+the Patriarch's laugh after you die in the boss wave not tested; the
+scoreboard text ("Squad eliminated.") is not done.
+**Next:** you look at both screens in a real window.

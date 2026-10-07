@@ -352,7 +352,7 @@ fn walk(
     settings: Res<WalkSettings>,
     spatial: SpatialQuery,
     mut q: Query<(&mut Transform, &FlyCamera, &mut Walker)>,
-    (frames, script): (Res<bevy::diagnostic::FrameCount>, Res<crate::weapons::weapon::ScriptedInput>),
+    (frames, script, match_over): (Res<bevy::diagnostic::FrameCount>, Res<crate::weapons::weapon::ScriptedInput>, Option<Res<crate::game::end_game::MatchOver>>),
     names: Query<&Name>,
     mut effects: Option<ResMut<crate::weapons::weapon::WeaponEffects>>,
     mut bob: ResMut<ViewBob>,
@@ -437,7 +437,9 @@ fn walk(
         let mut jump = keys.just_pressed(KeyCode::Space) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "jump");
         // Held by a Clot's grab (KFPawn.DisableMovement / ModifyVelocity):
         // no input, no jumping, and no velocity while on the ground.
-        let held = pinned.as_ref().is_some_and(|p| p.active());
+        // Also once the match is over (GameEnded: PlayerMove only turns
+        // the view; Pawn.TurnOff stops the pawn).
+        let held = pinned.as_ref().is_some_and(|p| p.active()) || match_over.as_ref().is_some_and(|m| m.active());
         if held {
             wish = Vec3::ZERO;
             jump = false;

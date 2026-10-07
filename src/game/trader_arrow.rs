@@ -168,6 +168,7 @@ fn place_arrow(
     mut arrow: ArrowModel,
     window: Query<&Window>,
     (shops, menu, options, fov): (Res<crate::game::trader::Shops>, Res<crate::game::buy_menu::BuyMenu>, Res<crate::game::waves::GameOptions>, Res<crate::engine::camera::ViewFov>),
+    game: Res<crate::game::waves::WaveGame>,
     mut log_timer: Local<f32>,
 ) {
     let (Ok((main_t, main_p, walker)), Ok((mut cam_t, mut cam_p)), Ok((mut t, mut vis))) = (main.single(), cam.single_mut(), arrow.single_mut()) else {
@@ -177,7 +178,9 @@ fn place_arrow(
     *cam_t = *main_t;
     *cam_p = main_p.clone();
     let shop = shops.current.map(|c| shops.shops[c].location);
-    let shown = options.mode == crate::game::waves::GameMode::Waves && !menu.open && shop.is_some();
+    // Won: DrawEndGameHUD(True) returns before DrawKFHUDTextElements.
+    let won = game.phase == crate::game::waves::Phase::Won;
+    let shown = options.mode == crate::game::waves::GameMode::Waves && !menu.open && !won && shop.is_some();
     *vis = if shown { Visibility::Visible } else { Visibility::Hidden };
     let (Some(shop), Ok(win), Projection::Perspective(p)) = (shop, window.single(), main_p) else { return };
     let ray = corner_ray(Vec2::new(win.width(), win.height()), p.fov);

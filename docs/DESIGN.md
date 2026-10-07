@@ -3129,6 +3129,77 @@ Logs: `hud_loaded` (widgets, textures found or missing, fonts), and on
 F3 or a test action `hud_dump` (each drawn widget's pixel box) so the
 layout can be checked against the screenshots by numbers.
 
+## End of match screen (planned and built 2026-10-06)
+
+"Your squad survived" / "Your squad was wiped out". `end_game.rs`, from
+KFGameType.CheckEndGame, the MatchOver state (DeathMatch, KFGameType),
+PlayerController's GameEnded state and HUDKillingFloor.DrawEndGameHUD.
+
+What KF does:
+
+- **When.** Won: the wave timer finds WaveNum > FinalWave with no zeds
+  left (after the Patriarch). Lost: CheckMaxLives finds no player with a
+  life left. KF's MaxLives is 1 (KillingFloor.ini, [KFMod.KFGameType]),
+  so in solo the first death ends the game: there is no respawn.
+  CheckEndGame sets GRI.EndGameType (2 won, 1 lost), puts every player
+  in behind view (ClientSetBehindView) and every controller in its
+  GameEnded state (P.GameHasEnded): players and zeds stop.
+- **The picture.** DrawEndGameHUD draws Combiner'VictoryCombiner' or
+  'DefeatCombiner' (package KFMapEndTextures) white, STY_Alpha, as a
+  square of side Clamp(ClipY, 320, 1024) pixels centred on the screen,
+  texels 0-1024. Its alpha is EndGameHUDTime x 255; HUD.Tick adds
+  delta / 3 while it is under 1: a 3 s fade in.
+  Each combiner adds (CombineOperation 3, CO_Add) a 1024 x 1024 DXT5
+  picture (VictoryTexture: white text; DefeatTexture: the text on a
+  blood splash) and a blurred glow (VictoryTextureOverlay: green;
+  DefeatTextureOverlay: grey) moved by a TexOscillator (OT_Pan): Victory
+  U 0, V 10 per second, amplitude 0.01 both; Defeat U 10, V 0.5 per
+  second, amplitudes 0.01 and 0.015.
+- **The HUD.** In GameEnded the player is spectating in behind view, so
+  HUD.DrawHUD calls DrawSpectatingHud: no health / ammo bar, no weapon
+  name, no first-person weapon. Won: the picture, then return (no
+  circle, no messages). Lost: the picture, then DrawKFHUDTextElements
+  (the circle, trader distance) and the messages on top.
+- **Restart.** GameEnded.BeginState sets bFrozen and a 5 s timer; after
+  it, Fire restarts the game (ServerReStartGame, PlayerCanRestartGame is
+  always true). MatchOver.Timer (once a second) restarts on its own when
+  Level.TimeSeconds > EndTime + RestartWait: EndTime = end +
+  EndTimeDelay 4 (KillingFloor.ini, UnrealMPGameInfo), RestartWait 10
+  (DeathMatch), so about 14 s after the end.
+- **Sounds.** None: KFGameType's EndGameSoundName are all 'Sound' (no
+  announcer). MatchOver's BossLaughtIt (a living Patriarch laughs) is
+  already done (G3b).
+
+What we do:
+
+- `WaveGame.phase` Won / Lost (waves.rs) stays the trigger. New:
+  `MatchOver` (end time, EndGameHUDTime) follows it.
+- The picture is a Bevy UI material node (`EndGameMaterial`): a shader
+  adds the two textures, the overlay's UV moved by Amplitude x
+  sin(2 pi x Rate x time) (TexOscillator is native: the sine and the 2 pi
+  are assumed; the matrix stored in the package fits Amplitude x sin).
+  Alpha: picture alpha + overlay alpha (AO_Use_Mask with no mask is
+  native, unknown: **guess**), times the fade.
+- Zeds: on the end, all zeds go "braindead" (the existing DoBossDeath
+  rule: no thinking, moving or attacking) except a pending boss laugh.
+- The player: in waves mode a death no longer respawns (health stays
+  0); hits are ignored once dead. After the end the player cannot move
+  or fire; looking around still works (GameEnded.PlayerMove turns the
+  view). On restart the player is put back at the start with 100 health
+  and no armour.
+- Restart: Fire after 5 s, or at the first whole second past 14 s, or
+  Enter / test action `restart_game` (ours, kept). KF's RestartGame
+  travels to the next map of the map list (bChangeLevels=True); we
+  restart the waves on the same map (as before).
+- Not done: KF's behind view of your own body (we draw no player model:
+  the view stays where it was), the scoreboard ("Your squad survived!" /
+  "Squad eliminated." from HUDBase, only when the scoreboard key is
+  held: no scoreboard yet).
+
+Logs: `end_game` (result, wave, end time, restart time), `end_game_fade`
+(EndGameHUDTime reaching 1), `end_game_restart` (why: fire / timer /
+key), `end_game_loaded` (textures and oscillator values read).
+
 ## Zed time (milestone 13, implemented 2026-10-05)
 
 KF's slow motion (KFGameType.DramaticEvent, Tick, Killed, DoBossDeath;

@@ -21,6 +21,10 @@ const CAMERA_DIST: f32 = 9.0;
 pub struct ViewTarget {
     zed: Option<usize>,
     reason: &'static str,
+    /// Behind view on the player's own pawn (the match is over:
+    /// ClientSetBehindView(true)). We draw no player model, so only the
+    /// first-person weapon goes.
+    behind_self: bool,
 }
 
 impl ViewTarget {
@@ -38,6 +42,13 @@ impl ViewTarget {
 
     pub fn reason(&self) -> &'static str {
         self.reason
+    }
+
+    pub fn set_behind_self(&mut self, on: bool) {
+        if self.behind_self != on {
+            runlog::kv("view_target", &format!("behind_self={on}"));
+        }
+        self.behind_self = on;
     }
 }
 
@@ -62,9 +73,10 @@ fn behind_view(
     spatial: SpatialQuery,
 ) {
     let target = view.zed.and_then(|id| zeds.iter().find(|z| z.id == id));
+    let first_person = target.is_none() && !view.behind_self;
     for mut c in &mut weapon_cams {
-        if c.is_active == target.is_some() {
-            c.is_active = target.is_none();
+        if c.is_active != first_person {
+            c.is_active = first_person;
         }
     }
     let (Some(z), Ok((t, mut global))) = (target, camera.single_mut()) else { return };

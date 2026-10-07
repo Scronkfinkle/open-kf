@@ -974,15 +974,26 @@ fn draw_hud(
         let phys = c.size * c.scale_factor;
         c.text(f, ammo.weapon, Vec2::new(phys.x * 0.983 - size.x, phys.y * 0.90), 1.0, [255, 50, 50, hud.alpha], "WeaponName");
     }
+    // The match is over: the player is in GameEnded, spectating in behind
+    // view, so HUD.DrawHUD calls DrawSpectatingHud: no bar, no weapon
+    // name. Won: DrawEndGameHUD(True) then return (the picture only, see
+    // end_game.rs). Lost: the picture, then the text elements and the
+    // messages on top.
+    use crate::game::waves::Phase;
+    if matches!(game.phase, Phase::Won | Phase::Lost) {
+        c.quads.clear();
+    }
+    let won = game.phase == Phase::Won;
     // DrawKFHUDTextElements: the top-right circle (not while shopping;
     // wave mode only, standing in for bMatchHasBegun).
-    if !menu.open && options.mode == crate::game::waves::GameMode::Waves {
+    if !menu.open && !won && options.mode == crate::game::waves::GameMode::Waves {
         top_right_circle(&mut c, &hud, &game);
     }
     // DrawTraderDistance (from DrawKFHUDTextElements: not while shopping,
     // only with a current shop): "Trader: Nm", N = int(distance / 50),
     // centred on SizeX / 14, top at SizeX / 10, (255, 50, 50, 255).
     if !menu.open
+        && !won
         && let Some(cur) = shops.current
         && let Ok((cam, walker)) = player.single()
     {
@@ -1009,7 +1020,9 @@ fn draw_hud(
 
     // DisplayLocalMessages (called before DrawWeaponName in DrawHUD; drawn
     // last here, on top).
-    display_local_messages(&mut c, &hud, &mut messages, time.elapsed_secs());
+    if !won {
+        display_local_messages(&mut c, &hud, &mut messages, time.elapsed_secs());
+    }
 
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "hud_dump") {
         let lines: Vec<String> = c

@@ -337,12 +337,21 @@ pub(super) fn weapon_input(
         MessageWriter<crate::game::combat::GiveHealth>,
         MessageWriter<crate::weapons::projectile::BeamZap>,
     ),
-    (weld_view, mut weld_hits): (Res<crate::world::door::WeldView>, MessageWriter<crate::world::door::WeldHit>),
+    (weld_view, mut weld_hits, match_over): (
+        Res<crate::world::door::WeldView>,
+        MessageWriter<crate::world::door::WeldHit>,
+        Option<Res<crate::game::end_game::MatchOver>>,
+    ),
     mut scripted_held: Local<[bool; 2]>,
 ) {
     let Some(mut w) = weapons else {
         return;
     };
+    // GameEnded: Fire restarts the game (end_game.rs), SwitchWeapon and
+    // ThrowWeapon do nothing; the weapon stops (bEndOfRound).
+    if match_over.is_some_and(|m| m.active()) {
+        return;
+    }
     let scripted = |action: &str| script.0.iter().any(|(f, a)| *f == frames.0 && a == action);
     // Time to each mode's NextFireTime; negative = overdue (kept, so the
     // next shot comes FireRate after the last was due, as
