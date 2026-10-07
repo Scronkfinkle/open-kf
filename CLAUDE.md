@@ -42,8 +42,12 @@ A complete rewrite of the killing floor games engine to play with its assets
   `cargo run`. It takes the same options as the game, runs it on a virtual
   display (Xvfb) so no window opens on my screen, and enters `nix develop`
   by itself. Example:
-  `scripts/headless.sh --map KF-WestLondon --fly --camera X,Y,Z,YAW,PITCH --screenshot 60`
+  `scripts/headless.sh --map KF-WestLondon --fly --camera X,Y,Z,YAW,PITCH --mute --screenshot 60`
   (PNG goes to `work/screenshots/`).
+- **Always pass `--mute`.** The virtual display has no screen but the sound
+  still plays on my speakers. Sound is still mixed and logged when muted
+  (`sound_play` lines), so sound tests can use `--mute` too. Leave it off
+  only if I ask to hear something.
 - Always pass `--screenshot` or `--frames` so the run ends. `HEADLESS_TIMEOUT`
   (default 300 s) kills a stuck run; `HEADLESS_SOFTWARE=1` draws without the GPU.
 - The mouse does nothing on the virtual display: drive tests with `--camera`,
