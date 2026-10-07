@@ -5127,3 +5127,18 @@ ignored). The facts were taken from `docs/multiplayer-prototype.md`.
 **Still broken / not tested:** not tested across two machines or with a host name instead of an IP address.
 **Next:** your try of the launcher (`cargo run --release` with no options).
 
+## 2026-10-07 README quick start with a launcher screenshot
+
+**Changed:** `README.md`: new "Quick start" section after Requirements
+(run `cargo run --release`, use the launcher) with the image
+`docs/images/launcher.jpg`; "Running the map viewer" renamed "Command-line
+options". The image: `scripts/headless.sh --launcher --dry-run --mute
+--settings work/launcher-shot.txt --window 1600x900 --input
+"5:set:name=Player" --screenshot 60` (fresh settings file, so it shows the
+defaults, not your saved choices), PNG converted with ffmpeg to a 1600x900
+JPEG (213 KB). Already covered by the `!/docs/images/*.jpg` whitelist line.
+**Why:** The user asked for a quick start that just says to run the launcher.
+**Tested how:** Looked at the screenshot; `git status` lists the JPEG.
+**Result:** Docs only.
+**Still broken / not tested:** How GitHub renders it (not pushed).
+**Next:** —

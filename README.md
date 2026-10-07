@@ -20,7 +20,23 @@ See `docs/DESIGN.md` for how it works and the plan.
   libraries Bevy needs. The flake files must be tracked by git (`git add flake.nix
   flake.lock`) or Nix will not see them.
 
-## Running the map viewer
+## Quick start
+
+With the requirements above in place, run:
+
+```sh
+cargo run --release
+```
+
+The launcher opens. Pick Solo, Host or Join, a map, your name, perk and
+character, then press **PLAY**. Your choices are remembered for next time.
+
+![The Open KF launcher: Solo / Host / Join, the map list, perk and character, game and display options](docs/images/launcher.jpg)
+
+*The launcher. The command it will run is shown at the bottom; the same
+options can be typed on the command line (below).*
+
+## Command-line options
 
 ```sh
 cargo run --release                        # no options: the launcher (pick map, perk, solo/host/join, then PLAY)
