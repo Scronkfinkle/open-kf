@@ -154,6 +154,7 @@ pub(super) fn projectile_sounds(defaults: &ClassDefaults, pc: &ObjectHandle) -> 
         bounce_volume: float("TransientSoundVolume", 0.3),
         beep: sound_prop(defaults, pc, "BeepSound").map(leak),
         dud: law_or_m79.then_some("ProjectileSounds.PTRD_deflect04"),
+        disintegrate: sound_prop(defaults, pc, "DisintegrateSound").map(leak),
     }
 }
 

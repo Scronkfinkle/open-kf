@@ -5586,3 +5586,75 @@ loss, jumping onto another player's head (KF's JumpOffPawn not done),
 real play by you. The push-apart is our own rule (KF never lets pawns
 overlap); 50 units/s is a guess tuned from the logs.
 **Next:** Play-test with two windows (commands in MULTIPLAYER.md).
+
+## 2026-10-07 SX1: the scream's "disintegrate" sound and effect loaded
+
+**Changed:** `src/weapons/projectile.rs`: `ProjectileSounds.disintegrate`.
+`src/weapons/weapon/load.rs`: `projectile_sounds` reads
+`DisintegrateSound` / `DisintegrateSoundRef` of each projectile class.
+`src/render/particles.rs`: `KFMod.SirenNadeDeflect` added to the effect
+library. `docs/DESIGN.md`: new section "The Siren's scream destroys
+explosives" (what KF does, our design, steps SX1-SX3).
+**Why:** KF's `Disintegrate` (Nade, PipeBombProjectile, LAWProj,
+M79GrenadeProjectile) plays `DisintegrateSound` at volume 2.0 and spawns
+`SirenNadeDeflect`; both are needed by SX2.
+**Tested how:** headless runs (below, SX2): load log and `sound_play`.
+**Result:** `effect_loaded class=KFMod.SirenNadeDeflect` (3 sprite
+emitters); the frag's sound `Inf_Weapons.panzerfaust60.
+faust_explode_distant02` and the M79's group-less ref
+`Inf_Weapons.faust_explode_distant02` both play; no `sound_missing`.
+**Still broken / not tested:** Whether KF's own `DynamicLoadObject`
+finds the M79/LAW group-less sound ref is not known (we find it by name).
+**Next:** SX2.
+
+## 2026-10-07 SX2: a Siren's scream destroys grenades, rockets and frags
+
+**Changed:** `src/weapons/projectile.rs`: new system `scream_explosives`
+(runs in the projectile chain), reading the `DoorBlast` messages the
+Siren's scream already sends (`source: "siren_scream"`); rule function
+`scream_result` (`ScreamTarget` Nade / Pipe / Launched, `ScreamResult`);
+unit test `scream_rules`. A projectile within ScreamRadius (700) of her
+centre with a clear line through the level is removed with no explosion:
+trail stopped, disintegrate sound, `SirenNadeDeflect` facing up. Pipe
+bombs follow `PipeBombProjectile.TakeDamage`: damage
+int(damageScale x ScreamDamage) under 25 is ignored, so a vanilla Siren
+(at most 8 x 1.75 = 14) never destroys one. A Medic grenade's healing
+cloud ends if it is screamed at (MedicNade.TakeDamage). Log line per
+projectile and pulse: `scream_explosive result=disintegrated|ignored|
+blocked|out_of_range kind=frag|pipe|launched class weapon id at_unreal
+distance_unreal damage scream_damage zed`.
+**Why:** KF mechanic: `ZombieSiren.SpawnTwoShots` -> `HurtRadius`
+(VisibleCollidingActors) -> each projectile's `TakeDamage` with
+`SirenScreamDamage` -> `Disintegrate`.
+**Tested how:** `scripts/headless.sh --mode debug --spawn siren --god
+--mute ...` on KF-WestLondon: (1) `--input 40:nade --frames 700`;
+(2) `--input 1:turn:180,60:nade --frames 800`; (3) `--zed-at
+-3760,1313,-3818 --input 1:turn:180,30:nade --frames 800`; (4) `--give
+PipeBombExplosive --input 20:4,50:fire --frames 700`; (5) `--fps 20
+--camera -3110,1313,-3768,-3.72,-0.9 --give M79GrenadeLauncher --input
+10:3,34:fire --frames 300`. `cargo test --release --workspace`; `rtk
+proxy cargo clippy --release --workspace` (warnings counted in the raw
+output).
+**Result:** (1) frag resting by her: `result=disintegrated kind=frag
+distance_unreal=37 damage=5`, effect and sound, no `thrown_exploded`.
+(2) frag in flight: disintegrated at 98 units. (3) frag 857 units away:
+`out_of_range` on 4 pulses (857, 832, 806, 781 as she walked), then
+`thrown_exploded` on its own fuse. (4) pipe bomb: `result=ignored
+damage=5` on 5 pulses at 54-71 units; it then armed, detected her and
+exploded (killed her). (5) M79 dud on the floor: `kind=launched
+distance_unreal=118 damage=4` disintegrated, trail killed, sound at
+radius 500, no `explosive_exploded`. Tests 215 + 24 pass (new
+`scream_rules`); clippy 0 warnings. Failed attempts on the way: M79
+shots straight at her hit her (a dud's impact damage stunned or killed
+her, so she stopped screaming); one run at an uncapped frame rate fired
+after her screams (frame timing varies between runs; `--fps 20` fixed
+it).
+**Still broken / not tested:** Not tested in a run: LAW, M32, M203,
+Husk Gun and ZED gun projectiles, FlameNade, MedicNade (same code path
+and rule; unit test only for the kinds). A scream blocked by a wall is
+covered by the unit test only. The engine's exact range test for
+VisibleCollidingActors is a guess (projectile centre within 700).
+Network games: a client's own grenades are not reached by the host's
+Siren. The medic gun's dart (HealingProjectile) also reacts to any
+damage in KF (it pops); not done. Not play-tested by you.
+**Next:** Your play test; merge the worktree branch.

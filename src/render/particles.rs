@@ -31,7 +31,7 @@ use crate::world::map::MapRequest;
 use crate::engine::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 87] = [
+const EFFECT_CLASSES: [&str; 88] = [
     // KFGlassMover GlassBits / BreakGlassBits (glass.rs).
     "KFMod.WindowGlassEmitter",
     "KFMod.BreakWindowGlassEmitter",
@@ -86,6 +86,9 @@ const EFFECT_CLASSES: [&str; 87] = [
     "KFMod.BileExplosion",
     "KFMod.BileExplosionHeadless",
     "ROEffects.SirenScream",
+    // A projectile the scream destroys (Nade / LAWProj / M79GrenadeProjectile
+    // / PipeBombProjectile.Disintegrate).
+    "KFMod.SirenNadeDeflect",
     "ROEffects.HuskChargeUp",
     "ROEffects.HuskMuzzle",
     "KFMod.FlameImpact",
