@@ -5084,3 +5084,19 @@ player body is merged.
 **Result:** client: `net_query_answer from=127.0.0.1:7708 after_ms=647 host_map=KF-Farm mode=Waves length=Short players=0 max_players=6`, `game_options mode=Waves length=Short`, `map_loaded map=KF-Farm`, `net_game_info ... same_map=true ... my_mode=Waves`, both players in the lobby. Host: `net_query_listening addr=0.0.0.0:7708`, `net_query_answered ... bytes=146 ok=true`. Typed options overridden with three `note:` lines and `net_query_override ... differs=true`; the second answer said `players=1`. No host: error after 3.6 s, exit code 1, `net_query_failed ... reason="no answer"`; with `--map`: warning, then `net_connecting` as before. Tests 191 + 24 pass; clippy 0 warnings (only nix's dirty-tree line).
 **Still broken / not tested:** not tested on two machines, through a firewall, or on Windows; not played by you. Hosts now need UDP port P + 1 open too; two hosts on one machine need ports 2 apart. No LAN server browser.
 **Next:** a LAN browser could broadcast the same request.
+
+## 2026-10-07 MULTIPLAYER.md and a multiplayer section in the README
+
+**Changed:** New `MULTIPLAYER.md` (how to host and join, ports, what is
+shared, known limits, logs). `README.md`: the intro no longer says
+"single-player only" and points to it; a short "Multiplayer" section with the
+host and join commands; "Package inspection tool" became its own heading.
+`.gitignore`: whitelists `/MULTIPLAYER.md`.
+**Why:** The user wanted multiplayer described separately from the README,
+with a pointer to it.
+**Tested how:** `git status` shows `MULTIPLAYER.md` as a new file (not
+ignored). The facts were taken from `docs/multiplayer-prototype.md`.
+**Result:** Docs only; no code changed.
+**Still broken / not tested:** The README's links were not checked on GitHub.
+**Next:** Mention the launcher in both files once it is done.
+

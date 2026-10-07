@@ -35,6 +35,7 @@ logs/
 !/LICENSE-APACHE
 !/CLAUDE.md
 !/README.md
+!/MULTIPLAYER.md
 !/MODLOG.md
 !/MODLOG-template.md
 !/STATUS-handoff.md

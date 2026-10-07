@@ -1,8 +1,9 @@
 # Open KF
 
 A from-scratch Rust + Bevy reimplementation of Killing Floor (2009), reading the
-original game's files from an installed copy. It currently supports
-single-player only. No game assets are included in this repository.
+original game's files from an installed copy. It plays single-player, and
+has experimental co-op multiplayer (see [MULTIPLAYER.md](MULTIPLAYER.md)).
+No game assets are included in this repository.
 
 ![Open KF on KF-WestLondon: wave 1, Clots coming out of the tunnel, KF's HUD](docs/images/kf-westlondon.jpg)
 
@@ -79,7 +80,19 @@ Each run writes `logs/latest.log`: what was loaded (counts, load time), camera
 position once per second (Bevy metres and Unreal units), frame timings, and
 exit status.
 
-Package inspection tool:
+## Multiplayer
+
+Co-op for up to 6 players: one player hosts, the others join with just the
+address and a name.
+
+```sh
+cargo run --release -- --map KF-Farm --mode waves --length short --host --name HostGuy
+cargo run --release -- --join 127.0.0.1 --name ClientGal
+```
+
+Ports, what is shared, and known limits: [MULTIPLAYER.md](MULTIPLAYER.md).
+
+## Package inspection tool
 
 ```sh
 cargo run --release -p ue-assets --bin kfpkg -- scan                       # parse every package
