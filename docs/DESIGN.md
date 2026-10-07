@@ -86,7 +86,8 @@ open-kf/                   Cargo workspace root (the repository)
     audio/                 the mixer, music, map / player / trader sounds
     net/                   experimental multiplayer (branch multiplayer-lightyear):
                            --host / --join, the lobby over the network (lightyear),
-                           other players' pawns and bodies (pawns.rs);
+                           other players' pawns and bodies (pawns.rs), the host's
+                           zeds and waves shared with clients (zeds.rs);
                            see docs/multiplayer-prototype.md
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
@@ -548,6 +549,21 @@ RotOrigin yaw -16384 (a quarter turn), unlike the weapons.
 - Each zed gets its own copies of the meshes (`SkinnedModel::new_instance`);
   materials are shared. Walking reuses `walk::Mover` with the zed's
   cylinder size.
+
+**In a network game (branch multiplayer-lightyear, step 3).** Only the
+host runs zeds. Each `Zed` has a `net` part (`zeds/zed/net.rs`). On a
+client every zed is a *puppet*: made by the normal spawn code from the
+host's snapshot, it does not think or move by itself (`think.rs` skips
+it); `Zed::apply_net` copies the host's position, yaw, state,
+animation, health and flags into it, and its death, ragdoll, gore and
+sounds run locally. On the host the AI hunts a list of players
+(`Prey`: this game's own plus `combat::RemotePlayers`, the other
+players' pawns) and picks one per zed with KF's FindNewEnemy /
+SetEnemy rules (`choose_enemy`); hits on another player's pawn carry
+`to_peer` (`PlayerDamaged`, `PlayerPush`) or are a `RemoteGrab`, and
+net/zeds.rs sends them to that player's game. In single player the list
+has one player and nothing changes. Details and limits:
+docs/multiplayer-prototype.md, step 3.
 
 ## Combat (milestone 5, implemented 2026-10-03)
 

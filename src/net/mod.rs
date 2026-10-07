@@ -13,8 +13,10 @@
 //! every client. Clients send their own choices (`LobbyRequest`). The
 //! server starts the match with KF's rule (`server::PendingMatch`).
 //! Step 2 (`pawns.rs`): every player's pawn is shared, so each game draws
-//! the other players' bodies. Zeds and waves are not shared yet: every
-//! game plays its own.
+//! the other players' bodies.
+//! Step 3 (`zeds.rs`): one shared match. The host runs the zeds and the
+//! waves; clients draw puppets of the host's zeds, follow its wave state,
+//! report their hits on zeds, and take the hits the host's zeds deal them.
 //!
 //! For the next steps: every player has a peer id (`NetPlayer::peer`, 0 is
 //! the host) and the server keeps `NetPlayers` (peer id -> the player's
@@ -25,6 +27,7 @@ pub mod lobby;
 pub mod pawns;
 pub mod protocol;
 mod server;
+mod zeds;
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -38,7 +41,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0002;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0003;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -129,6 +132,7 @@ impl Plugin for NetPlugin {
         app.add_systems(First, keep_zed_time_speed.before(bevy::time::TimeSystems));
         lobby::build(app);
         pawns::build(app, &self.mode);
+        zeds::build(app, &self.mode);
         crate::engine::runlog::kv("net_mode", &self.mode.label());
     }
 }

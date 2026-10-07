@@ -100,7 +100,8 @@ fn update_dosh(
         runlog::kv("dosh", &format!("reason=new_game total={:.0}", dosh.score));
     }
     for mut z in &mut zeds {
-        if z.is_dead() && z.killed_by_player && !z.kill_paid {
+        // (Another network player's kill is credited to them: net/zeds.rs.)
+        if z.is_dead() && z.killed_by_player && !z.kill_paid && z.net.damaged_by.is_none() {
             z.kill_paid = true;
             let paid = dosh.kill(z.scoring_value, options.length);
             runlog::kv("dosh", &format!("reason=kill zed={} amount={paid:.0} total={:.0} team={:.0}", z.id, dosh.score, dosh.team));

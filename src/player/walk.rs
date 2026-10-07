@@ -78,6 +78,9 @@ pub struct Walker {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct PlayerPush {
     pub momentum: Vec3,
+    /// Multiplayer host: for another player (net/zeds.rs sends it); None:
+    /// this game's own player.
+    pub to_peer: Option<u64>,
 }
 
 /// Pawn.AddVelocity: added to the velocity as is (not divided by mass);
@@ -512,6 +515,9 @@ fn walk(
             runlog::kv("player_kick", &format!("velocity_add_unreal=({:.0}, {:.0}, {:.0})", v.x, v.y, v.z));
         }
         for push in pushes.read() {
+            if push.to_peer.is_some() {
+                continue;
+            }
             let mut m = push.momentum;
             if w.on_ground {
                 m.z = m.z.max(0.4 * m.length());

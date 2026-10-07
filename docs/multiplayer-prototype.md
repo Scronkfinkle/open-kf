@@ -471,3 +471,299 @@ second.
    each player's dosh and kills (on `NetPlayer`, KF's PRI).
 5. **Spawn spots** chosen by the server, so players do not start inside
    each other.
+
+## Step 3 plan: one shared match (host runs zeds and waves)
+
+Words: **puppet** = a zed on a client's screen that only copies the
+host's zed (it does not think, walk or decide anything itself).
+**Snapshot** = one message with the state of every zed at one moment.
+
+Order (stop at a solid point; what is left is listed at the end):
+
+1. **Waves from the host.** Clients do not run the wave timer and never
+   spawn zeds themselves (no wave spawns, no test spawn keys). The host's
+   wave state (phase, wave number, final wave, countdown, zeds still to
+   come, zeds alive, waves ended, restarts, current shop and whether the
+   trader is open) is a replicated `NetWave` record. A client copies it
+   into its own `WaveGame`, so its HUD, trader, music, dosh wave reward
+   and end screen work unchanged (`waves.rs`, `follow_remote_wave`).
+2. **Zeds from the host.** 20 times a second the host sends each client a
+   `ZedSnapshot` (unreliable, newest wins): per zed its id, kind,
+   position, yaw, state, animation (sequence, frame, looping, the
+   upper-body layer), health, head health and flags (dead, headless,
+   cloaked, raging, burning). Packed small (positions as whole half
+   units, angles and frames as integers); bytes per second are logged.
+   A client makes a puppet the first time it sees an id (with the normal
+   zed spawn code, so meshes, gore and sounds are the same), draws it
+   0.1 s in the past blended between snapshots (as the pawns), and
+   starts an animation when the host's changes. A dead flag kills the
+   puppet: the ragdoll and death sound run on the client (KF's
+   PlayDying is client-side too). A headless flag takes the head off
+   with its gore. A zed missing from a snapshot is gone on the host.
+3. **Zeds hunt every player.** On the host each zed picks its enemy by
+   KF's FindNewEnemy (KFMonsterController: the nearest living player;
+   checked again when the enemy dies or is out of sight, here at most
+   every 0.5 s), and KF's SetEnemy rule when a client hurts it (switch to
+   the attacker unless the current enemy is in sight and closer). The
+   other players' positions come from their pawns (step 2) and they block
+   zeds like the host's player. A hit on a client's player (melee,
+   pounce, Siren scream, Patriarch melee and chaingun, Clot grab, push) is
+   sent to that client and applied there: **health stays per machine**.
+4. **Client shots hit host zeds** (prototype rule, **client-trusted**):
+   when a client's weapon damages a puppet (the normal `damage_zed`, so
+   gore and flinches show at once), the client sends what went into that
+   call (zed id, damage, headshot, multipliers, damage type, its perk,
+   hit point). The host makes the same `damage_zed` call on its zed with
+   the client's perk, credits the kill to that player, and sends back a
+   `KillCredit` (kill count + dosh on the client). KF's real way: the
+   server traces the shot itself (later).
+
+Not in this step (later): server-side movement checks, shared zed time,
+shop/doors/welding/pickups shared, voice/chat, players blocking each
+other, the Bloat's bile, the Husk's and Patriarch's projectiles hurting
+clients (they fly at the client but only the host's own player can be
+hit), ZED-gun zaps from clients, dead players respawning at wave end.
+
+## Step 3 as built (2026-10-06, overnight)
+
+### How to play a shared wave (two games on one machine)
+
+Build once: `cargo build --release`. Then, in two terminals:
+
+```
+# Terminal 1: the host (runs the zeds and the waves, and plays)
+cargo run --release -- --map KF-WestLondon --mode waves --length short --host --name HostGuy
+
+# Terminal 2: a player joining it
+cargo run --release -- --map KF-WestLondon --mode waves --length short --join 127.0.0.1 --name ClientGal --character Baddest_Santa
+```
+
+Press Ready in both lobbies. Both games show the same countdown, then
+the same wave: the same zeds in the same places on both screens (the
+host's), the same "zeds left" number and wave number in the circle at
+the top right. Shoot a zed on either screen and it bleeds, loses its
+head and dies on both; the kill and its dosh go to whoever shot it.
+Zeds go for the nearest player and hurt whoever they hit. The wave ends
+on both, the trader opens on both (the same shop). The match is lost
+only when every player is dead.
+
+Test-only inputs added: `aim_zed` (turn the view to the nearest living
+zed's head, for `--input` runs). Test scripts (not in the repository):
+`work/mp3_test.sh` (host + client; env `TAG`, `HOST_GOD`, `CLIENT_GOD`,
+`HOST_FRAMES`, `CLIENT_FRAMES`, `SHOTS_FROM`/`SHOTS_TO` for the client's
+`aim_zed`+`fire` loop, `CLIENT_EXTRA`, `HOST_ARGS`, `CLIENT_ARGS`) and
+`work/mp3_analyse.py HOST_LOG CLIENT_LOG` (lag, position error and
+bandwidth of the zeds).
+
+### What was built
+
+- `src/net/zeds.rs` (new): the host shares its wave state, sends zed
+  snapshots, feeds the other players' pawns to the zeds, forwards hits
+  on other players, applies clients' hits on zeds and credits their
+  kills. The client follows the wave state, smooths the snapshots for
+  the puppets, reports its hits and applies the hits and credits it
+  gets.
+- `src/zeds/zed/net.rs` (new): what a zed sends (`ZedNet`: id, kind,
+  position in half units, yaw, state, main and upper-body animation,
+  health, head health, flags; about 22 bytes), puppets
+  (`apply_net`, `drive_puppets`, `SpawnPuppet`).
+- `src/zeds/zed/think.rs`: zeds hunt a list of players (`Prey`) and
+  pick one by `choose_enemy`; other players block zeds; puppets skip the
+  AI; every hit on a player says which player (`to_peer`). A zed's
+  "unseen" timer (used by the speed-up of unseen zeds and the stuck-zed
+  cleanup) also counts another player's sight on the host.
+- `src/game/waves.rs`: `WaveShare` (what is shared) and
+  `follow_remote_wave` (a client's wave timer: copies it, plays the
+  music, trader lines and "wave inbound" messages, opens and closes the
+  shops); the host loses only when every player is dead; a `wave_hud`
+  log line; zeds asked to spawn are counted at once (before, the "zeds
+  left" number dipped for one frame each time a squad spawned: also in
+  single player, a one-frame display glitch).
+- `src/game/combat.rs`: `PlayerDamaged.to_peer`, `RemotePlayers`,
+  `RemoteGrab`, `NetHit` (one `damage_zed` call, reported by a client);
+  `damage_zed` records a puppet's hits, notes who hit a zed, and counts
+  only this game's own kills on the HUD. `dosh.rs` pays only this
+  game's player's kills. `walk.rs`: `PlayerPush.to_peer`.
+- `src/zeds/zed/spawn.rs`: a client spawns only puppets (no wave or test
+  spawns). `effects.rs`: puppets do not take burn ticks or zap ticks
+  (the host does). `engine/camera.rs`: the `aim_zed` test input.
+- `src/net/protocol.rs`: `NetWave` (replicated), `ZedSnapshot`
+  (`ZedChannel`, unreliable sequenced), `PlayerEvent`, `KillCredit`,
+  `NetHit` (`GameChannel`, reliable ordered, both ways). `PROTOCOL_ID`
+  is now `0x4F4B_4600_0003`. `Cargo.toml`: postcard (lightyear's own
+  encoder, already a dependency of it) to log snapshot sizes.
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+Runs: `work/mp3_test.sh` with tags a to h; logs `logs/mp3-<tag>-host.log`
+and `logs/mp3-<tag>-client.log` (untracked). Both games ran at about
+28 frames a second.
+
+1. **The client spawns no zeds of its own.** Run e (about 4 minutes,
+   two waves started): the host logged 52 `zed_spawned ... puppet=false`
+   (ids 0-51), the client 52 `zed_spawned ... puppet=true` with the same
+   ids and classes, and none with `puppet=false`. Example: host
+   `t=29.183 zed_spawned id=0 class=KFChar.ZombieClot_STANDARD
+   centre_unreal=(-1912, 1280, -3818)`, client `t=25.382 zed_spawned
+   id=0 ... centre_unreal=(-1911, 1262, -3818) puppet=true` (the
+   client's clock is 3.97 s behind the host's; the puppet appears about
+   0.17 s after the zed).
+2. **Same zeds, same places** (`work/mp3_analyse.py`, run e, 3073
+   samples of one zed position on the client compared with the host's
+   by wall clock): the client draws the host's zed from **about 121 ms
+   earlier** (median 121, 90% under 124, worst 140 ms). A **moving** zed
+   is drawn **about 34 Unreal units behind** where the host has it at
+   the same moment (median 33.6, 90% under 37.6, worst 92.7; a Clot is
+   52 units wide); standing zeds 0. The blend itself adds at most 1.4
+   units. 14 of 238 seconds had a frame or more drawn past the newest
+   snapshot (`late_frames`).
+3. **Bandwidth** (zed snapshots only, postcard payload without packet
+   headers): about 22 bytes per zed; 20 snapshots a second; the busiest
+   second 14.4 KB/s to one client with 32 zeds alive (the biggest
+   snapshot 692 bytes); median 9.5 KB/s during a wave. Each extra
+   client gets its own copy.
+4. **Zeds hurt the client** (run a, client without `--god`): host
+   `net_player_event_sent ... event=Hurt { amount: 11.5104, zed_id: 4,
+   ... ZombieMelee ... }`, client `net_player_event Hurt {...}` then
+   `player_hit zed=4 damage=11 ... health_left=89 god=false`, the hit
+   flash and view shake. Run c (the host walked away, the client stood
+   still): Clots grabbed the client (`player_pinned by_zed=6
+   seconds=1.5` on the client, 20 times) and hit it from 100 to 0
+   health; then the zeds that hunted it changed to the host
+   (`zed_enemy ... to=local reason=enemy_dead`, 4 times).
+5. **The client's shots hurt and kill host zeds** (run e): 46 hits sent
+   (`net_zed_hit_sent`), 46 applied on the host (`net_zed_hit_applied`),
+   0 dropped. The same result on both sides, e.g. client `net_zed_hit_sent
+   zed=6 ... damage=35.0 headshot=true puppet_health_now=13.4` and host
+   `net_zed_hit_applied ... zed=6 ... health=130.0->13.4 killed=false
+   decapitated=true`. Kills: the client killed 18 puppets, the host
+   killed the same 18 zeds from the client's hits (the same ids in run b:
+   0 1 2 3 4 5 6 7 8 9 11 13 15 16 17 18 19); 18 `net_kill_credit` sent,
+   18 `dosh reason=kill_credit` on the client (12 dosh a Clot, 21 a
+   Gorefast at Short length, as single player); the host's own dosh
+   stayed 250. A zed the client beheaded and that then bled out was
+   credited to the client too (zed 12, run b). Hit to host about 30 ms,
+   kill credit back about 13 ms (from the two logs and the clock offset).
+6. **Both players shoot** (run g): host 11 kills paid to the host, client
+   7 credited to the client, 18 in total; the host's kills show on the
+   client (`net_zed_puppet_change id=8 headless`, `... id=6 dead`). Twice
+   both shot the same zed in the same moment: the host had already
+   killed it (`net_zed_hit_dropped ... reason=already_dead`), so the
+   client saw it die without a credit.
+7. **Waves match** (run e): the "zeds left" numbers in the circle were
+   the same series on both games (`wave_hud`, after the one-frame dip
+   fix, run f: `20 19 18 17 16 15 14` on both). Wave 1 ended on both
+   (host `t=77.169 wave_end wave=1`, client `t=73.245 wave_follow
+   phase=Countdown wave=2 ... countdown=60`), the client got its
+   wave-end pot (`dosh reason=wave_end amount=225`), the trader opened
+   on both (`shop shop=ShopVolume1 event=open`), and wave 2 started on
+   both 60 s later (`wave_start wave=2 ... zeds=32` /
+   `wave_follow phase=Wave wave=2 of=4 zeds=32`).
+8. **Other specimens hurt the client too** (run e, wave 2: Clots,
+   Crawlers, Gorefasts, Stalkers, a Siren and a Husk): the client took
+   72 Siren scream pulses (`siren_scream ... target=<client peer>` on the
+   host, `player_hit ... type=SirenScream` on the client), 64 slashes
+   (Stalkers), 110 claws and bites, and 14 Clot grabs, all with `--god`
+   (logged, no health lost). 106 Crawler pounces started; none touched a
+   player.
+9. **Match lost only when everyone is dead** (run d, no `--god`): the
+   host's player died at t=43.5 (`kill_player`), the game went on; the
+   client died at its t=46.8; the host then logged `game_end
+   result=lost` (t=51.0) and the client showed "wiped out" 0.06 s later
+   by the host's clock (`wave_follow phase=Lost`, `end_game
+   result=wiped_out`). Both restarted together 14 s later and both
+   players were alive again (`end_game_over ... health=100`).
+10. **Late joiner** (run h, joined 50 s after the host started, wave 1
+   running): it received all 20 zeds at once and its HUD started in the
+   wave (`game_start mode=waves follow_host=true ... phase=Wave`). The
+   first puppets were asked for before the game's first frames, so they
+   appeared 1.8 s later (the retry is now 0.5 s; not re-tested).
+11. **Screenshots** (untracked): `work/screenshots/KF-WestLondon-mp3-f-client-1791347821-1.png`
+    (the client, 9mm in hand, Clots in the tunnel, corpses and blood,
+    "14 / Wave 1/4", £322) and
+    `work/screenshots/KF-WestLondon-mp3-b-client-1791346678-1.png`
+    (Clots by the ambulance, ragdolled corpses, "10 / Wave 1/4").
+12. **Single player unchanged**: a waves run with `aim_zed` + `fire`
+    (`logs/sp3b.log`): 0 `net_` lines, 0 `zed_enemy` lines, 20 zeds
+    spawned (none puppets), 18 kills each paid (`dosh reason=kill`),
+    zeds hit the player (`zed_melee_hit ... target=local`), no lightyear
+    output. A lobby + pause run: `menu_close page=Lobby reason=ready`,
+    `pause paused=true` / `false`, 0 `net_` lines.
+13. `cargo clippy --release --workspace`: no warnings (only nix's "git
+    tree is dirty"); with `--all-targets` still the one older test-code
+    warning (`src/zeds/boss.rs:1005`). `cargo test --release
+    --workspace`: 164 + 24 pass (3 new: the snapshot blend, yaw the
+    short way, a puppet copying a host zed).
+
+### Choices to know about
+
+- **Client-trusted hits.** A client says "I hit zed N with this"; the
+  host believes it and makes the same `damage_zed` call (with the
+  client's perk). A cheating client could kill anything. KF's real way:
+  the client sends its fire, the server traces it (later work).
+- **Health is per machine.** The host decides which zed hits which
+  player and how hard; the hit player's own game applies it (armour,
+  god mode, death). The host only learns a client is dead from its pawn
+  (`dead` in the pawn update).
+- **Puppet health.** A puppet takes the client's own hits at once (gore
+  and flinches show without waiting); the host's figure only lowers it
+  further (other players' hits); the Patriarch's comes from the host as
+  is (he heals). So a puppet can die on the client a moment before the
+  host confirms it, and in a race (another player's hit first) the
+  client may see a kill that is not credited to it.
+- **Which player a zed hunts**: KF's FindNewEnemy (nearest living
+  player, no threat assessment), re-checked when its enemy dies or (every
+  0.5 s here) is out of its sight, and SetEnemy when hurt (stays on the
+  old enemy if it is in sight and closer, for Mammal brains and up). Two
+  players standing on the same spot make zeds switch back and forth
+  often (`zed_enemy ... reason=not_visible`): they are equally near.
+- **Where the other players are** for the zeds: their pawns as the host
+  draws them (0.1 s in the past plus the trip, about 0.12 s).
+- **Zed time, the trader's shop, doors, welding and pickups are each
+  game's own.** The shop opens and closes with the host's, at the same
+  shop.
+
+### What does not work yet / not tested
+
+- The Bloat's bile, the Husk's fireballs and the Patriarch's rockets
+  fly at a client's pawn on the host but can only hurt the host's own
+  player; the client is never hit by them (on the client, a dying
+  Bloat's burst is local and can hurt the client). The Siren's scream,
+  zed melee, the Crawler's pounce, the Patriarch's melee and chaingun,
+  and Clot grabs do reach clients (screams, Stalker slashes and grabs
+  seen in run e; no Crawler pounce landed in a test, and the Patriarch
+  was not tested).
+- ZED-gun zaps from a client only zap its puppet (the host's zed is not
+  zapped). Burning: the host burns its zed from the client's fire hits
+  (burn ticks are credited to the last attacker); the client shows the
+  flames from the host's flag.
+- Dead players are not brought back at the end of a wave (KF respawns
+  them); a dead host or client stays dead until the match restarts.
+- Not tested: the boss wave and the Patriarch in a network game, other
+  specimens than Clots and Gorefasts (Crawler pounce, Siren scream,
+  Bloat, Husk, Scrake, Fleshpound) over the network, more than one
+  client, two real machines, packet loss, lag. Not played by you.
+- Clients standing far from the host: the host's KF-style "is this zed
+  seen" now counts clients' sight (no fog check for them); the stuck-zed
+  cleanup still killed 2 zeds that nobody had seen (`zed_cleanup ...
+  unseen_seconds=9999`), as in single player.
+
+### What step 4 needs
+
+1. **Server-side shots** (KF's way): clients send their fire (origin,
+   direction, weapon, time); the host traces against its zeds, rewound
+   to what the client saw (lag compensation), and applies damage.
+2. **The other ranged attacks reach clients**: projectiles (bile,
+   fireballs, rockets) checked against every player's pawn on the host.
+3. **Respawning** dead players at the wave end (KF: RestartPlayer for
+   players waiting), a spectator view while dead.
+4. **A shared scoreboard**: kills and dosh on `NetPlayer` (KF's PRI
+   Kills / Score), the team pot split between living players
+   (RewardSurvivingPlayers), dosh tossing.
+5. **Shared world state**: doors and welding, pickups, the trader's
+   stock if it ever becomes limited.
+6. **Zed time from the host** for everyone (Level.TimeDilation; see the
+   step 1 note about lightyear's clock).
+7. **Bandwidth**: send only zeds that changed, fewer for far ones (KF:
+   relevancy and NetPriority), if 32 zeds x 5 clients (about 70 KB/s
+   from the host) is too much on a real connection.

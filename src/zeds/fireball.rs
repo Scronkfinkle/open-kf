@@ -398,10 +398,12 @@ fn move_fireballs(
                             dam_type: crate::game::combat::DamType::Other,
                             source: Some(coords::pos(at.to_array())),
                             dam: Some(crate::game::perks::known_dam_type(spec.dam)),
+                            to_peer: None,
                         });
                     }
                     push.write(crate::player::walk::PlayerPush {
                         momentum: (p - at) / dist * (scale * spec.momentum),
+                        to_peer: None,
                     });
                 }
             }

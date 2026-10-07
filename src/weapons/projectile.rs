@@ -1226,6 +1226,7 @@ fn flame_burst(
                     dam_type: crate::game::combat::DamType::Other,
                     source: Some(at_bevy),
                     dam: p.dam,
+                    to_peer: None,
                 });
             }
         }
@@ -1495,6 +1496,7 @@ fn blast(
                     dam_type: crate::game::combat::DamType::Other,
                     source: Some(at_bevy),
                     dam: b.dam,
+                    to_peer: None,
                 });
             }
         }

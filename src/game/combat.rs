@@ -71,11 +71,80 @@ pub struct PlayerDamaged {
     /// DamTypeBurned, the player's own explosives; None for zed hits and
     /// the level.
     pub dam: Option<crate::game::perks::DamType>,
+    /// Multiplayer host: the hit is for another player (their peer id);
+    /// net/zeds.rs sends it to their game, this game's player ignores it.
+    /// None: this game's own player.
+    pub to_peer: Option<u64>,
+}
+
+/// Multiplayer host: the other players' pawns, for the zeds to hunt
+/// (filled by net/pawns.rs from the pawn updates; empty in single player).
+#[derive(Resource, Default, Debug)]
+pub struct RemotePlayers(pub Vec<RemotePlayer>);
+
+#[derive(Clone, Copy, Debug)]
+pub struct RemotePlayer {
+    pub peer: u64,
+    /// Cylinder centre, Bevy space.
+    pub centre: Vec3,
+    /// Metres per second, Bevy space.
+    pub velocity: Vec3,
+    pub alive: bool,
+}
+
+/// Multiplayer host: a Clot's grab landed on another player (their game
+/// pins them, net/zeds.rs).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct RemoteGrab {
+    pub peer: u64,
+    pub seconds: f32,
+    pub zed_id: usize,
+}
+
+/// Multiplayer client: one `damage_zed` call on a puppet zed, with
+/// everything that went into it, reported to the host, which makes the
+/// same call on its zed (prototype rule, client-trusted; KF's server
+/// traces the shot itself). Bevy space for points.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct NetHit {
+    pub zed: u32,
+    pub damage: f32,
+    pub headshot: bool,
+    pub headshot_mult: f32,
+    pub weapon: String,
+    pub distance: f32,
+    pub point: [f32; 3],
+    pub attacker: [f32; 3],
+    /// The shot's direction (the zed's last hit, for the ragdoll push).
+    pub dir: [f32; 3],
+    pub melee: bool,
+    pub explosive: Option<f32>,
+    pub fire: Option<u8>,
+    /// The damage type: its class chain and bIsMeleeDamage.
+    pub dam: Option<(Vec<String>, bool)>,
+    /// The shooter's perk (`Perk::ALL` index) and level.
+    pub perk: Option<u8>,
+    pub level: u8,
+}
+
+impl NetHit {
+    /// The hit source this report describes (the host's side).
+    pub(crate) fn source(&self) -> HitSource {
+        HitSource {
+            point: Vec3::from_array(self.point),
+            attacker: Vec3::from_array(self.attacker),
+            melee: self.melee,
+            explosive: self.explosive,
+            fire: self.fire.and_then(FireType::from_code),
+            dam: self.dam.as_ref().map(|(chain, melee)| crate::game::perks::intern_dam_type(crate::game::perks::ClassChain(chain.clone()), *melee)),
+            vet: crate::game::perks::Vet { perk: self.perk.and_then(|i| crate::game::perks::Perk::ALL.get(i as usize).copied()), level: self.level.min(6) },
+        }
+    }
 }
 
 /// The KF damage class of a hit on the player, as far as the hit effects
 /// care (HUDKillingFloor.DisplayHit). See DESIGN.md, "Hit effects".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DamType {
     /// ZombieMeleeDamage (KFMonster's ZombieDamType): blunt.
     ZombieMelee,
@@ -115,7 +184,7 @@ pub struct GiveHealth {
 pub const PLAYER_HEALTH_MAX: f32 = 100.0;
 
 /// Damage types with after-effects on the player.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HurtKind {
     Plain,
     /// DamTypeVomit (Bloat bile): starts the bile burn.
@@ -266,6 +335,8 @@ impl Plugin for CombatPlugin {
             .add_message::<PlayerDamaged>()
             .add_message::<PlayerHurt>()
             .add_message::<GiveHealth>()
+            .add_message::<RemoteGrab>()
+            .init_resource::<RemotePlayers>()
             .init_resource::<PlayerHealth>()
             .init_resource::<AmmoDisplay>()
             .init_resource::<KillCount>()
@@ -435,6 +506,19 @@ pub enum FireType {
     HuskGun,
 }
 
+impl FireType {
+    const ALL: [FireType; 5] = [FireType::Flamethrower, FireType::Trenchgun, FireType::Mac10, FireType::Burned, FireType::HuskGun];
+
+    /// A number for the network.
+    pub fn code(self) -> u8 {
+        Self::ALL.iter().position(|f| *f == self).unwrap_or(0) as u8
+    }
+
+    pub fn from_code(c: u8) -> Option<Self> {
+        Self::ALL.get(c as usize).copied()
+    }
+}
+
 /// The attacker for a hit: where it was hit, the attacker's centre, and
 /// whether it was a melee attack (for the stun rule).
 #[derive(Clone, Copy)]
@@ -469,6 +553,30 @@ pub(crate) fn damage_zed(
     if z.health <= 0.0 {
         return;
     }
+    // Multiplayer. A client reports its hits on a puppet to the host (the
+    // puppet still takes them here, so gore and flinches show at once).
+    // The host notes who hit it (None: this game's own player).
+    if z.net.puppet {
+        z.net.hits.push(NetHit {
+            zed: z.id as u32,
+            damage,
+            headshot,
+            headshot_mult,
+            weapon: weapon.to_string(),
+            distance,
+            point: source.point.to_array(),
+            attacker: source.attacker.to_array(),
+            dir: z.last_hit.map_or([0.0; 3], |(_, d)| d.to_array()),
+            melee: source.melee,
+            explosive: source.explosive,
+            fire: source.fire.map(FireType::code),
+            dam: source.dam.map(|d| (d.chain.0.clone(), d.melee)),
+            perk: source.vet.perk.map(|p| p.index() as u8),
+            level: source.vet.level,
+        });
+    }
+    z.net.damaged_by = z.net.next_hit_by.take();
+    z.net.provoked_by = Some(z.net.damaged_by);
     // Burned and flamethrower damage never gets the headshot or headless
     // multiplier (KFMonster.TakeDamage). KF still looks for a headshot with
     // DamTypeBurned, but its only hits are blasts and burn ticks, which have
@@ -604,7 +712,12 @@ pub(crate) fn damage_zed(
     z.note_boss_health();
     if killed {
         z.kill();
-        kills.0 += 1;
+        // The HUD's kills are this game's player's own: a puppet's kill is
+        // counted when the host credits it, and the host does not count a
+        // client's kill.
+        if !z.net.puppet && z.net.damaged_by.is_none() {
+            kills.0 += 1;
+        }
         z.killed_by_player = true;
         // KFMonster.TakeDamage: bIsHeadShot && Health <= 0 -> DramaticEvent(0.03).
         z.headshot_kill = headshot;
@@ -881,6 +994,7 @@ fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter
             // TakeBileDamage hits at Location: no direction.
             source: None,
             dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
+            to_peer: None,
         });
     }
 }
@@ -909,6 +1023,7 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
         dam_type: DamType::Other,
         source: None,
         dam: Some(crate::game::perks::known_dam_type("DamTypeBurned")),
+        to_peer: None,
     });
 }
 
@@ -995,6 +1110,10 @@ fn apply_player_damage(
     vet: Res<crate::game::perks::Veterancy>,
 ) {
     for hit in hits.read() {
+        // For another player (the host sends it to their game).
+        if hit.to_peer.is_some() {
+            continue;
+        }
         if health.dead {
             continue;
         }

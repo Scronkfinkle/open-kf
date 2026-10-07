@@ -338,10 +338,13 @@ pub(super) fn burn_zeds(
         let b = t.translation;
         let ue = Vec3::new(-b.z, b.x, b.y) / SCALE;
         let alive = z.health > 0.0;
+        // A network client's puppet: zaps and burn damage are the host's
+        // (its burning look comes from the host, net.rs).
+        let alive_here = alive && !z.net.puppet;
         // Zap (KFMonster.Tick). SetZappedBehavior uncloaks (the Stalker
         // and the Patriarch do not cloak while zapped); when it wears off
         // during a run, rage or charge, that state keeps the normal speed.
-        if alive {
+        if alive_here {
             if z.zapped() && z.cloaked {
                 z.cloaked = false;
                 z.cloak_dirty = true;
@@ -354,7 +357,7 @@ pub(super) fn burn_zeds(
                 runlog::kv("zed_unzapped", &format!("zed={} next_threshold={:.2} run_speed_lost={}", z.id, z.zap_threshold, z.run_speed_lost));
             }
         }
-        if z.burn_down > 0 && alive {
+        if z.burn_down > 0 && alive_here {
             z.burn_timer -= dt;
             if z.burn_timer <= 0.0 {
                 z.burn_timer += 1.0;
@@ -368,6 +371,8 @@ pub(super) fn burn_zeds(
                     _ => "DamTypeFlamethrower",
                 }));
                 let source = crate::game::combat::HitSource { point: b, attacker: b, melee: false, explosive: None, fire: Some(fire), dam, vet: vet.vet };
+                // KF's BurnInstigator: credited to whoever hurt it last.
+                z.net.next_hit_by = z.net.damaged_by;
                 crate::game::combat::damage_zed(&mut z, damage, false, 1.0, "fire", 0.0, source, &mut kills);
                 z.burn_down -= 1;
                 runlog::kv(

@@ -316,6 +316,8 @@ pub struct WaveGame {
     /// calls. Kept across a restart.
     pub restarts: u32,
     pub waves_ended: u32,
+    /// What the HUD's wave circle shows, as last logged (`log_hud`).
+    last_hud: Option<(Phase, usize, usize, i32)>,
 }
 
 impl Default for WaveGame {
@@ -352,11 +354,22 @@ impl Default for WaveGame {
             did_almost_open_message: false,
             kills_at_wave_start: 0,
             waves_ended: 0,
+            last_hud: None,
         }
     }
 }
 
 impl WaveGame {
+    /// One log line whenever the HUD's wave circle changes (phase, wave,
+    /// zeds left, countdown), to compare a host's and a client's HUD.
+    fn log_hud(&mut self) {
+        let now = (self.phase, self.wave_num, self.total_max_monsters.max(0) as usize + self.living, self.countdown);
+        if self.last_hud != Some(now) {
+            self.last_hud = Some(now);
+            runlog::kv("wave_hud", &format!("phase={:?} wave={}/{} zeds_left={} countdown={}", now.0, now.1 + 1, self.final_wave, now.2, now.3));
+        }
+    }
+
     /// Rand(n).
     fn rand(&mut self, n: usize) -> usize {
         self.rng ^= self.rng << 13;
@@ -462,12 +475,59 @@ pub struct KillStuckZed(pub usize);
 #[derive(Resource, Default)]
 pub struct WaveHud(pub String);
 
+/// Multiplayer: the wave state the host shares with the clients (KF's
+/// KFGameReplicationInfo: WaveNumber, FinalWave, MaxMonsters,
+/// TimeToNextWave, bWaveInProgress, CurrentShop, EndGameType).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct WaveShare {
+    /// The host's wave game has started (its `game_start`).
+    pub started: bool,
+    /// `Phase` as a number (Countdown 0, Wave 1, BossWave 2, Won 3, Lost 4).
+    pub phase: u8,
+    pub wave_num: u16,
+    pub final_wave: u16,
+    pub countdown: i32,
+    pub total_max_monsters: i32,
+    pub living: u16,
+    pub waves_ended: u32,
+    pub restarts: u32,
+    /// Shops: the current one, and whether the trader is open.
+    pub shop: Option<u8>,
+    pub doors_open: bool,
+}
+
+const PHASES: [Phase; 5] = [Phase::Countdown, Phase::Wave, Phase::BossWave, Phase::Won, Phase::Lost];
+
+impl WaveGame {
+    /// Host: the shared part.
+    pub fn share(&self, shops: &crate::game::trader::Shops) -> WaveShare {
+        WaveShare {
+            started: self.deaths_at_start.is_some(),
+            phase: PHASES.iter().position(|p| *p == self.phase).unwrap_or(0) as u8,
+            wave_num: self.wave_num as u16,
+            final_wave: self.final_wave as u16,
+            countdown: self.countdown,
+            total_max_monsters: self.total_max_monsters,
+            living: self.living as u16,
+            waves_ended: self.waves_ended,
+            restarts: self.restarts,
+            shop: shops.current.map(|c| c as u8),
+            doors_open: shops.doors_open,
+        }
+    }
+}
+
+/// Multiplayer client: the host's wave state, as last received (net/).
+#[derive(Resource, Default)]
+pub struct RemoteWave(pub Option<WaveShare>);
+
 pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaveGame>()
             .init_resource::<WaveHud>()
+            .init_resource::<RemoteWave>()
             .add_message::<SpawnZedAt>()
             .add_message::<ClearZeds>()
             .add_message::<KillStuckZed>()
@@ -500,9 +560,23 @@ pub fn wave_timer(
         MessageWriter<crate::zeds::zed::BossAction>,
     ),
     (mut shops, mut restart_requests, menus): (ResMut<crate::game::trader::Shops>, MessageReader<crate::game::end_game::RestartGame>, Res<crate::game::menus::MenuState>),
+    (remote_wave, net_mode, remote_players): (Res<RemoteWave>, Option<Res<crate::net::NetMode>>, Res<crate::game::combat::RemotePlayers>),
 ) {
     // The lobby: KF only enters MatchInProgress once everyone is ready.
     if options.mode != GameMode::Waves || frames.0 < 10 || menus.lobby_open() {
+        return;
+    }
+    // A network client runs no waves of its own: it follows the host's.
+    if net_mode.is_some_and(|m| matches!(*m, crate::net::NetMode::Client { .. })) {
+        restart_requests.clear();
+        if let Some(w) = remote_wave.0.as_ref() {
+            let now = time.elapsed_secs();
+            let location = player.single().ok().map(|(cam, walker)| {
+                let c = walker.map_or(cam.translation - Vec3::Y * crate::game::combat::PLAYER_EYE_HEIGHT * SCALE, |w| w.center);
+                Vec3::new(-c.z, c.x, c.y) / SCALE
+            });
+            follow_remote_wave(&mut game, w, now, health.deaths, &mut hud, &mut shops, &mut doors, &mut talk, &mut hud_messages, location);
+        }
         return;
     }
     // Test action "next_wave": the countdown ends at the next tick.
@@ -593,11 +667,14 @@ pub fn wave_timer(
     {
         view_target.set(Some(z.id), "boss_death");
     }
-    // UpdateMonsterCount: no living player ends the game (solo: no respawn).
-    if matches!(g.phase, Phase::Countdown | Phase::Wave | Phase::BossWave) && health.deaths > g.deaths_at_start.unwrap_or(0) {
+    // UpdateMonsterCount: no living player ends the game (solo: no respawn;
+    // a network host also waits for the other players' pawns to be dead).
+    let others_alive = remote_players.0.iter().filter(|p| p.alive).count();
+    if matches!(g.phase, Phase::Countdown | Phase::Wave | Phase::BossWave) && health.deaths > g.deaths_at_start.unwrap_or(0) && others_alive == 0 {
         g.phase = Phase::Lost;
         runlog::kv("game_end", &format!("result=lost wave={}", g.wave_num + 1));
     }
+    g.log_hud();
     hud.0 = match g.phase {
         Phase::Countdown => format!("WAVE {}/{}  NEXT IN {}", g.wave_num + 1, g.final_wave, g.countdown.max(0)),
         Phase::Wave => format!("WAVE {}/{}  ZEDS {}", g.wave_num + 1, g.final_wave, g.total_max_monsters.max(0) as usize + g.living),
@@ -752,6 +829,109 @@ pub fn wave_timer(
             // BootShopPlayers (trader.rs moves the player).
             shops.boot_requested = true;
         }
+    }
+}
+
+/// Multiplayer client: copy the host's wave state (`WaveShare`) into this
+/// game's `WaveGame`, so the HUD, trader, music, dosh and end screen
+/// follow it; play what the host's wave timer would play here (music,
+/// trader lines, the "wave inbound" messages); open and close the shops
+/// as the host does. `location`: this player's pawn, Unreal units.
+#[allow(clippy::too_many_arguments)]
+fn follow_remote_wave(
+    g: &mut WaveGame,
+    w: &WaveShare,
+    now: f32,
+    deaths: u32,
+    hud: &mut WaveHud,
+    shops: &mut crate::game::trader::Shops,
+    doors: &mut crate::world::door::Doors,
+    talk: &mut WaveSounds,
+    hud_messages: &mut MessageWriter<crate::game::hud::LocalMessage>,
+    location: Option<Vec3>,
+) {
+    if !w.started {
+        hud.0 = "WAITING FOR THE HOST".into();
+        return;
+    }
+    if g.deaths_at_start.is_none() {
+        g.deaths_at_start = Some(deaths);
+        g.next_tick = now + 1.0;
+        runlog::kv("game_start", &format!("mode=waves follow_host=true final_wave={} wave={} phase={:?}", w.final_wave, w.wave_num + 1, PHASES[w.phase as usize % 5]));
+    }
+    let (old_phase, old_countdown, old_wave) = (g.phase, g.countdown, g.wave_num);
+    g.phase = PHASES[w.phase as usize % 5];
+    g.wave_num = w.wave_num as usize;
+    g.final_wave = w.final_wave as usize;
+    g.countdown = w.countdown;
+    g.total_max_monsters = w.total_max_monsters;
+    g.living = w.living as usize;
+    g.waves_ended = w.waves_ended;
+    g.restarts = w.restarts;
+    if old_phase != g.phase || old_wave != g.wave_num {
+        runlog::kv("wave_follow", &format!("phase={:?} wave={} of={} zeds={} countdown={}", g.phase, g.wave_num + 1, g.final_wave, g.total_max_monsters.max(0) as usize + g.living, g.countdown));
+        match g.phase {
+            Phase::Wave | Phase::BossWave if !g.music_playing => {
+                g.music_playing = true;
+                g.calm_music_playing = false;
+                talk.music.write(crate::audio::music::MusicCue::Combat(g.wave_num));
+            }
+            Phase::Countdown if !g.calm_music_playing => {
+                g.calm_music_playing = true;
+                g.music_playing = false;
+                talk.music.write(crate::audio::music::MusicCue::Calm(g.wave_num));
+            }
+            _ => {}
+        }
+    }
+    if g.phase == Phase::Countdown && g.countdown != old_countdown {
+        if g.countdown == 30 {
+            talk.speech.write(crate::audio::trader_voice::TraderSpeech(4));
+        } else if g.countdown == 10 {
+            talk.speech.write(crate::audio::trader_voice::TraderSpeech(5));
+        }
+        if g.countdown > 0 && g.countdown < 5 {
+            let switch = if g.wave_num == g.final_wave { 3 } else { 1 };
+            hud_messages.write(crate::game::hud::LocalMessage::new(crate::game::hud::MessageClass::Waiting, switch));
+        }
+        if g.countdown % 10 == 0 && g.countdown > 0 {
+            runlog::kv("wave_countdown", &format!("wave={} seconds={} follow_host=true", g.wave_num + 1, g.countdown));
+        }
+    }
+    // The shops as the host has them.
+    let host_shop = w.shop.map(|s| s as usize).filter(|s| *s < shops.shops.len());
+    if w.doors_open && !shops.doors_open {
+        shops.current = host_shop;
+        shops.open_shops(doors);
+        talk.speech.write(crate::audio::trader_voice::TraderSpeech(if g.wave_num < g.final_wave { 2 } else { 3 }));
+    } else if !w.doors_open && shops.doors_open {
+        shops.close_shops(doors);
+        if g.wave_num + 1 < g.final_wave {
+            talk.speech.write(crate::audio::trader_voice::TraderSpeech(6));
+        }
+    }
+    if shops.current != host_shop && host_shop.is_some() {
+        shops.current = host_shop;
+    }
+    // BootShopPlayers once a second during a wave, as the host's timer.
+    if now >= g.next_tick {
+        g.next_tick = now + 1.0;
+        if matches!(g.phase, Phase::Wave | Phase::BossWave) {
+            shops.boot_requested = true;
+        }
+    }
+    g.log_hud();
+    hud.0 = match g.phase {
+        Phase::Countdown => format!("WAVE {}/{}  NEXT IN {}", g.wave_num + 1, g.final_wave, g.countdown.max(0)),
+        Phase::Wave => format!("WAVE {}/{}  ZEDS {}", g.wave_num + 1, g.final_wave, g.total_max_monsters.max(0) as usize + g.living),
+        Phase::BossWave => "PATRIARCH".into(),
+        Phase::Won => "YOU WON".into(),
+        Phase::Lost => "YOUR SQUAD WAS WIPED OUT".into(),
+    };
+    if let Some(at) = location
+        && let Some(t) = crate::game::trader::distance_text(shops, at)
+    {
+        hud.0 += &format!("  {t}");
     }
 }
 
@@ -918,6 +1098,10 @@ fn add_squad(g: &mut WaveGame, data: &mut GameData, num_monsters: i32, ctx: &Spa
     };
     let spawned = spawn_in_here(g, data, v, ctx, &mut limits, spawns);
     g.total_max_monsters = limits.total;
+    // The new zeds exist from the next frame on; count them now so "zeds
+    // to come + alive" (the HUD, and what clients are sent) does not dip
+    // for a frame.
+    g.living += spawned;
     if spawned > 0 {
         let n = spawned.min(g.next_squad.len());
         g.next_squad.drain(..n);
@@ -965,8 +1149,10 @@ fn add_boss(g: &mut WaveGame, data: &mut GameData, ctx: &SpawnCtx, spawns: &mut 
         at_once: MAX_ZOMBIES_ONCE,
         try_all: true,
     };
-    if spawn_in_here(g, data, v, ctx, &mut limits, spawns) > 0 {
+    let spawned = spawn_in_here(g, data, v, ctx, &mut limits, spawns);
+    if spawned > 0 {
         g.total_max_monsters = limits.total;
+        g.living += spawned;
         runlog::kv("boss_spawned", &format!("volume={}", data.volumes[v].name));
     } else {
         runlog::kv("boss_spawn_failed", &format!("volume={}", data.volumes[v].name));

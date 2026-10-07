@@ -251,6 +251,7 @@ fn test_kill_player(
             dam_type: crate::game::combat::DamType::Other,
             source: None,
             dam: None,
+            to_peer: None,
         });
         runlog::kv("test_kill_player", &format!("frame={}", frames.0));
     }

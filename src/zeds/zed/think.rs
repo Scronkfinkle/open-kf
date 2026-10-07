@@ -46,6 +46,97 @@ pub(super) struct ZedWorld<'w, 's> {
     level_damage: MessageReader<'w, 's, crate::player::pain::LevelDamageZed>,
     boss_death: MessageReader<'w, 's, crate::game::waves::BossDied>,
     match_over: Option<Res<'w, crate::game::end_game::MatchOver>>,
+    /// Multiplayer host: the other players' pawns, and Clot grabs on them.
+    remote: Res<'w, crate::game::combat::RemotePlayers>,
+    grabs: MessageWriter<'w, crate::game::combat::RemoteGrab>,
+}
+
+/// A player the zeds can hunt: this game's own, or (network host) another
+/// player's pawn.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Prey {
+    /// None: this game's own player.
+    pub peer: Option<u64>,
+    /// Cylinder centre, Bevy space.
+    pub centre: Vec3,
+    /// Unreal units per second.
+    pub velocity: Vec3,
+    pub alive: bool,
+    /// A walking pawn (a flying camera does not block or get grabbed).
+    pub walking: bool,
+}
+
+/// Which player a zed hunts (network host only; single player always has
+/// one). KFMonsterController.FindNewEnemy without threat assessment: the
+/// nearest living player, chosen when the zed has no enemy, its enemy died,
+/// or (WhatToDoNext: `!EnemyVisible()`) it cannot see it, checked here
+/// every 0.5 s (KF re-decides at each WhatToDoNext; the interval is ours).
+/// SetEnemy when a player hurts it: kept on the old enemy if its
+/// Intelligence is BRAINS_Mammal or more and the old one is in sight and
+/// closer. Returns the index into `prey`.
+pub(super) fn choose_enemy(z: &mut Zed, c: &ZedClass, prey: &[Prey], spatial: &SpatialQuery, dt: f32) -> usize {
+    let eye = z.centre + Vec3::Y * c.collision_height * 0.8 * SCALE;
+    let centre = z.centre;
+    let dist2 = |i: usize| (prey[i].centre - centre).length_squared();
+    let nearest = || (0..prey.len()).filter(|&i| prey[i].alive).min_by(|&a, &b| dist2(a).total_cmp(&dist2(b)));
+    let current = prey.iter().position(|p| p.peer == z.net.enemy).filter(|&i| prey[i].alive && z.net.enemy_chosen);
+    let mut pick = current;
+    let mut reason = "";
+    if let Some(by) = z.net.provoked_by.take()
+        && let Some(i) = prey.iter().position(|p| p.peer == by && p.alive)
+        && Some(i) != current
+    {
+        let keep = c.intelligence >= 2 && current.is_some_and(|cur| dist2(cur) < dist2(i) && sees(spatial, eye, prey[cur].centre));
+        if !keep {
+            pick = Some(i);
+            reason = "hurt_by";
+        }
+    }
+    z.net.enemy_check -= dt;
+    if pick.is_none() {
+        pick = nearest();
+        reason = if z.net.enemy_chosen { "enemy_dead" } else { "first" };
+    } else if reason.is_empty() && z.net.enemy_check <= 0.0 {
+        z.net.enemy_check = 0.5;
+        if let Some(cur) = pick
+            && !sees(spatial, eye, prey[cur].centre)
+            && let Some(n) = nearest()
+            && n != cur
+        {
+            pick = Some(n);
+            reason = "not_visible";
+        }
+    }
+    let i = pick.unwrap_or(0);
+    if prey[i].peer != z.net.enemy || !z.net.enemy_chosen {
+        runlog::kv(
+            "zed_enemy",
+            &format!(
+                "id={} from={} to={} reason={reason} distance_unreal={:.0}",
+                z.id,
+                if z.net.enemy_chosen { z.net.enemy.map_or("local".to_string(), |p| p.to_string()) } else { "none".to_string() },
+                prey[i].peer.map_or("local".to_string(), |p| p.to_string()),
+                dist2(i).sqrt() / SCALE
+            ),
+        );
+        z.net.enemy = prey[i].peer;
+        z.net.enemy_chosen = true;
+    }
+    i
+}
+
+/// KFMonsterController MoanTime: the next moan (also for puppets, whose
+/// moans are not sent).
+fn moan_tick(z: &mut Zed, now: f32) {
+    if z.moan_at < 0.0 {
+        z.moan_at = (now + 2.0 + 36.0 * (z.random() % 1000) as f32 / 1000.0).floor();
+    } else if now > z.moan_at {
+        z.moan_at = (now + 12.0 + 8.0 * (z.random() % 1000) as f32 / 1000.0).floor();
+        let busy = z.boss.is_some() && (z.attack.is_some() || z.state == ZedState::BossBusy);
+        if !z.decapitated && !busy {
+            z.sound_events.push(ZedSound::Moan);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
@@ -73,7 +164,7 @@ pub(super) fn think_and_move(
     mut world: ZedWorld,
     mut log_timer: Local<f32>,
 ) {
-    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage, boss_death, match_over } = &mut world;
+    let ZedWorld { doors, door_colliders, door_hits, door_blasts, clear_zeds, kill_stuck, glass, glass_bumps, player_zone, level_damage, boss_death, match_over, remote, grabs } = &mut world;
     let boss_died = boss_death.read().count() > 0;
     // CheckEndGame: every controller goes to GameEnded (P.GameHasEnded);
     // KFMonster.TurnOff does nothing, so the bodies stay where they are.
@@ -102,10 +193,21 @@ pub(super) fn think_and_move(
         return;
     };
     // Player cylinder centre: the walker's, or below the flying camera.
-    let target = walker.map_or(pt.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center);
+    let local_target = walker.map_or(pt.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center);
+    let local_alive = !player_health.dead && player_health.health > 0.0;
     // Who decides whether cloaked zeds are spotted: this machine's player
     // (KF: LocalKFHumanPawn).
-    let viewer = CloakViewer { location: target, alive: !player_health.dead && player_health.health > 0.0, vet: vet.vet };
+    let viewer = CloakViewer { location: local_target, alive: local_alive, vet: vet.vet };
+    // The players to hunt: this game's own first, then (network host) the
+    // other players' pawns.
+    let mut prey = vec![Prey {
+        peer: None,
+        centre: local_target,
+        velocity: walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE),
+        alive: local_alive,
+        walking: walker.is_some(),
+    }];
+    prey.extend(remote.0.iter().map(|r| Prey { peer: Some(r.peer), centre: r.centre, velocity: ue_dir(r.velocity) / SCALE, alive: r.alive, walking: true }));
     let dt = time.delta_secs().min(0.1);
     *log_timer += dt;
     let log_now = *log_timer >= 1.0;
@@ -115,7 +217,7 @@ pub(super) fn think_and_move(
     // Blocking cylinders: the player first, then every living zed (kept up
     // to date as each zed moves, so later zeds see the new positions).
     let player_cylinder = Cylinder {
-        centre: target,
+        centre: local_target,
         radius: PLAYER_RADIUS * SCALE,
         half_height: PLAYER_HALF_HEIGHT * SCALE,
     };
@@ -123,6 +225,10 @@ pub(super) fn think_and_move(
     let mut blockers: Vec<(Option<Entity>, Cylinder)> = Vec::new();
     if walker.is_some() {
         blockers.push((None, player_cylinder));
+    }
+    // The other players' pawns block zeds too (network host).
+    for p in prey.iter().skip(1).filter(|p| p.alive) {
+        blockers.push((None, Cylinder { centre: p.centre, ..player_cylinder }));
     }
     let zeds_ids: std::collections::HashMap<Entity, usize> = zeds.iter().map(|(e, z, _, _)| (e, z.id)).collect();
     blockers.extend(zeds.iter().filter_map(|(e, z, _, _)| z.blocking_cylinder().map(|c| (Some(e), c))));
@@ -183,7 +289,18 @@ pub(super) fn think_and_move(
             }
             continue;
         }
-        if kill_all || (kill_near && (z.centre - target).length() / SCALE < 500.0 && !z.is_dead()) || (kill_boss && z.boss.is_some()) {
+        // A network client's copy of a host zed: net/zeds.rs moves and
+        // animates it; nothing is decided here.
+        if z.net.puppet {
+            if z.decapitated && pinned.by == Some(z.id) {
+                pinned.release("grabber_decapitated");
+            }
+            moan_tick(&mut z, time.elapsed_secs());
+            t.translation = z.centre;
+            t.rotation = coords::rotation(Rotator { pitch: 0, yaw: z.yaw as i32, roll: 0 });
+            continue;
+        }
+        if kill_all || (kill_near && (z.centre - local_target).length() / SCALE < 500.0 && !z.is_dead()) || (kill_boss && z.boss.is_some()) {
             z.last_hit = None;
             z.kill();
             kills.0 += 1;
@@ -231,6 +348,9 @@ pub(super) fn think_and_move(
             runlog::kv("zed_braindead", &format!("id={} reason={}", z.id, if boss_died { "boss_died" } else { "game_ended" }));
         }
         let ai = active.0 && !z.braindead;
+        // The player this zed hunts (always this game's own in single player).
+        let enemy = if prey.len() > 1 { choose_enemy(&mut z, c, &prey, &spatial, dt) } else { 0 };
+        let Prey { peer: target_peer, centre: target, velocity: target_velocity, walking: target_walking, .. } = prey[enemy];
         // KFMonster.Tick (standalone), when CanSpeedAdjust (head on, not
         // zapped): seen within the last 5 s of being drawn, else a sight
         // check from its eyes to the player's every second; unseen zeds
@@ -253,6 +373,12 @@ pub(super) fn think_and_move(
                     z.last_view_check = now;
                     let was = z.hidden;
                     z.hidden = !(in_fog && sees(&spatial, eye, pt.translation));
+                    // Network host: another player's view counts too (KF's
+                    // LastSeenOrRelevantTime is set by any player's view;
+                    // here: that player's eye in clear sight, no fog check).
+                    if z.hidden && prey.len() > 1 {
+                        z.hidden = !prey.iter().skip(1).any(|p| p.alive && sees(&spatial, eye, p.centre + Vec3::Y * PLAYER_EYE * SCALE));
+                    }
                     if !z.hidden {
                         z.last_seen = now;
                     }
@@ -275,7 +401,11 @@ pub(super) fn think_and_move(
                 z.last_hit = None;
                 z.bled_out = true;
                 z.kill();
-                kills.0 += 1; // credited to the player, as KF credits LastDamagedBy
+                // Credited to the player, as KF credits LastDamagedBy (another
+                // network player: the host credits them, net/zeds.rs).
+                if z.net.damaged_by.is_none() {
+                    kills.0 += 1;
+                }
                 z.killed_by_player = true;
                 runlog::kv("zed_bled_out", &format!("id={} health_left={:.1}", z.id, z.health));
                 continue;
@@ -289,15 +419,7 @@ pub(super) fn think_and_move(
         // FRand() at first, then + 12 + 8 x FRand() after each moan (an int,
         // so whole seconds); headless zeds stay quiet, the Patriarch while
         // busy (bShotAnim).
-        if z.moan_at < 0.0 {
-            z.moan_at = (now + 2.0 + 36.0 * (z.random() % 1000) as f32 / 1000.0).floor();
-        } else if now > z.moan_at {
-            z.moan_at = (now + 12.0 + 8.0 * (z.random() % 1000) as f32 / 1000.0).floor();
-            let busy = z.boss.is_some() && (z.attack.is_some() || z.state == ZedState::BossBusy);
-            if !z.decapitated && !busy {
-                z.sound_events.push(ZedSound::Moan);
-            }
-        }
+        moan_tick(&mut z, now);
         // Monster.PlayChallengeSound: when the zed takes the player as its
         // enemy and when it sees the player more than 7 s after the last
         // (MonsterController EnemyChanged, Hunting.SeePlayer). Sight is
@@ -359,7 +481,7 @@ pub(super) fn think_and_move(
         // ZombieBoss.Tick: the Commando's glow while he is cloaked.
         if c.boss.is_some() && c.spotted_material.is_some() {
             let at = z.centre;
-            z.boss_spot_tick(Some(&viewer), || sees(&spatial, at, target), dt);
+            z.boss_spot_tick(Some(&viewer), || sees(&spatial, at, local_target), dt);
         }
         if let Some(s) = z.since_decap.as_mut() {
             *s += dt;
@@ -437,14 +559,14 @@ pub(super) fn think_and_move(
         // `boss_busy` runs it.
         if z.state == ZedState::BossBusy {
             if ai {
-                let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
+                let player_velocity = target_velocity;
                 // ZombieBoss.DoorAttack: the rocket goes at the door
                 // (Controller.Target, its Location), not the player.
                 let (aim, aim_velocity) = match z.door_bash.and_then(|b| doors.doors.get(b.door)) {
                     Some(d) => (coords::pos(d_pos(d)), Vec3::ZERO),
                     None => (target, player_velocity),
                 };
-                boss_busy(&mut z, c, &t, aim, aim_velocity, dt, &spatial, &mut player_damage, &mut push, &mut fireball, &mut bullet_fx);
+                boss_busy(&mut z, c, &t, aim, aim_velocity, target_peer, dt, &spatial, &mut player_damage, &mut push, &mut fireball, &mut bullet_fx);
             }
             t.translation = z.centre;
             continue;
@@ -587,7 +709,11 @@ pub(super) fn think_and_move(
                             if let Some(shake) = c.scream_shake {
                                 scream_shake.write(crate::player::hit_cam::SirenScreamShake { at: z.centre, radius, shake });
                             }
-                            scream_pulse(&z, damage, radius, force, target, &spatial, &mut player_damage, &mut push);
+                            // HurtRadius reaches every player in range (in
+                            // single player: the one, alive or not, as before).
+                            for p in prey.iter().filter(|p| p.alive || prey.len() == 1) {
+                                scream_pulse(&z, damage, radius, force, p.centre, p.peer, &spatial, &mut player_damage, &mut push);
+                            }
                             // ZombieSiren.HurtRadius reaches doors too (any
                             // non-zed actor in sight within ScreamRadius).
                             door_blasts.write(crate::world::door::DoorBlast {
@@ -602,7 +728,7 @@ pub(super) fn think_and_move(
                             });
                         }
                     } else if c.kind == ZedKind::Husk {
-                        let player_velocity = walker.map_or(Vec3::ZERO, |w| ue_dir(w.velocity) / SCALE);
+                        let player_velocity = target_velocity;
                         shoot_fireball(&mut z, c, &t, crate::zeds::fireball::Projectile::HuskFire, c.barrel_bone, target, player_velocity, &spatial, &mut fireball);
                     } else {
                         spawn_two_shots(&z, c, target, &mut vomit);
@@ -671,12 +797,13 @@ pub(super) fn think_and_move(
                             dam_type: c.melee_dam_type,
                             source: Some(z.centre),
                             dam: None,
+                            to_peer: target_peer,
                         });
                         let impale = z.attack.is_some_and(|a| c.model.sequence_name(a.seq) == Some("MeleeImpale"));
                         z.sound_events.push(if impale { ZedSound::ImpaleHit } else { ZedSound::MeleeHit });
                         let (from, to) = (ue_pos(z.centre), ue_pos(target));
                         let momentum = (to - from).normalize_or_zero() * BOSS_DAMAGE_FORCE * push_scale;
-                        push.write(crate::player::walk::PlayerPush { momentum });
+                        push.write(crate::player::walk::PlayerPush { momentum, to_peer: target_peer });
                         runlog::kv(
                             "boss_melee_hit",
                             &format!(
@@ -752,26 +879,32 @@ pub(super) fn think_and_move(
                             dam_type: c.melee_dam_type,
                             source: Some(z.centre),
                             dam: None,
+                            to_peer: target_peer,
                         });
                         // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
                         z.sound_events.push(ZedSound::MeleeHit);
                         // ZombieClot: a landed grab pins the player (not when headless).
                         // CanBeGrabbed: a Berserker is not grabbed by Clots.
-                        if c.grapple_duration > 0.0 && !z.decapitated && walker.is_some() {
-                            if vet.vet.can_be_grabbed_by_clot() {
-                                pinned.pin(c.grapple_duration, z.id);
-                            } else {
-                                runlog::kv("perk_mod", &format!("kind=no_clot_grab perk={} zed={}", vet.vet.label(), z.id));
+                        if c.grapple_duration > 0.0 && !z.decapitated && target_walking {
+                            match target_peer {
+                                // Another player's: their game pins them
+                                // (and checks their perk).
+                                Some(peer) => {
+                                    grabs.write(crate::game::combat::RemoteGrab { peer, seconds: c.grapple_duration, zed_id: z.id });
+                                }
+                                None if vet.vet.can_be_grabbed_by_clot() => pinned.pin(c.grapple_duration, z.id),
+                                None => runlog::kv("perk_mod", &format!("kind=no_clot_grab perk={} zed={}", vet.vet.label(), z.id)),
                             }
                         }
                         runlog::kv(
                             "zed_melee_hit",
                             &format!(
-                                "id={} sequence={sequence} hit={}/{} notify_at={:.3} progress={p:.3} anim_seconds={seconds:.3} damage={amount:.1} distance_unreal={dist:.0}",
+                                "id={} sequence={sequence} hit={}/{} notify_at={:.3} progress={p:.3} anim_seconds={seconds:.3} damage={amount:.1} distance_unreal={dist:.0} target={}",
                                 z.id,
                                 i + 1,
                                 times.len(),
-                                times[i]
+                                times[i],
+                                target_peer.map_or("local".to_string(), |p| p.to_string())
                             ),
                         );
                     } else {
@@ -1302,7 +1435,7 @@ pub(super) fn think_and_move(
         z.jump_cooldown = (z.jump_cooldown - dt).max(0.0);
         // ZombieCrawler.Bump: a pouncing Crawler that touches the player
         // hurts it once (MeleeDamage -5% .. +5%).
-        if z.pouncing && z.state == ZedState::Falling && walker.is_some() {
+        if z.pouncing && z.state == ZedState::Falling && target_walking {
             let d = target - z.centre;
             let touching = d.with_y(0.0).length() / SCALE <= c.collision_radius + PLAYER_RADIUS + 2.0
                 && (d.y / SCALE).abs() <= c.collision_height + PLAYER_HALF_HEIGHT;
@@ -1318,6 +1451,7 @@ pub(super) fn think_and_move(
                         dam_type: crate::game::combat::DamType::ZombieMelee,
                         source: Some(z.centre),
                         dam: None,
+                        to_peer: target_peer,
                     });
                 z.pouncing = false;
                 runlog::kv("crawler_pounce_hit", &format!("id={} damage={amount:.1}", z.id));

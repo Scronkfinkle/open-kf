@@ -73,11 +73,29 @@ fn scripted_turn(
     frames: Res<bevy::diagnostic::FrameCount>,
     mut cams: Query<(&mut Transform, &mut FlyCamera)>,
     mut turning: Local<Option<(f32, f32)>>,
+    zeds: Query<&crate::zeds::zed::Zed>,
 ) {
     for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
         if let Some(deg) = a.strip_prefix("turn:").and_then(|d| d.parse::<f32>().ok()) {
             *turning = Some((deg.to_radians(), 1.0));
             runlog::kv("scripted_turn", &format!("degrees={deg} seconds=1"));
+        }
+        // Test action `aim_zed`: look straight at the nearest living zed's
+        // head (its body centre if the head is not placed yet).
+        if a == "aim_zed" {
+            for (mut t, mut cam) in &mut cams {
+                let eye = t.translation;
+                let Some(z) = zeds.iter().filter(|z| !z.is_dead()).min_by(|a, b| (a.centre - eye).length_squared().total_cmp(&(b.centre - eye).length_squared())) else {
+                    runlog::kv("scripted_aim", "zed=none");
+                    continue;
+                };
+                let at = z.head.map_or(z.centre, |(h, _)| h);
+                let d = (at - eye).normalize_or_zero();
+                cam.yaw = (-d.x).atan2(-d.z);
+                cam.pitch = d.y.clamp(-1.0, 1.0).asin();
+                t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
+                runlog::kv("scripted_aim", &format!("zed={} distance_unreal={:.0} head={}", z.id, (at - eye).length() / crate::engine::coords::SCALE, z.head.is_some()));
+            }
         }
     }
     let Some((rate, left)) = *turning else { return };

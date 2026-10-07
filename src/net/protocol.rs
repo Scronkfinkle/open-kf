@@ -93,8 +93,51 @@ pub struct NetPawn {
     pub state: PawnUpdate,
 }
 
+/// The host's wave state (KF's KFGameReplicationInfo wave fields), on
+/// the `NetGame` entity, copied to everyone when it changes (step 3).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NetWave(pub crate::game::waves::WaveShare);
+
+/// Every zed the host runs at one moment (step 3), sent to each client
+/// 20 times a second. `time`: the host's clock (real seconds since it
+/// started), for the client's smoothing.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct ZedSnapshot {
+    pub seq: u32,
+    pub time: f64,
+    pub zeds: Vec<crate::zeds::zed::ZedNet>,
+}
+
+/// Something a host zed did to a client's player (step 3): applied on
+/// that client's game (health stays per machine).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum PlayerEvent {
+    /// A `PlayerDamaged` (zed melee, pounce, scream, Patriarch hits).
+    Hurt { amount: f32, zed_id: u32, kind: crate::game::combat::HurtKind, armor_stops: bool, dam_type: crate::game::combat::DamType, source: Option<[f32; 3]> },
+    /// A `PlayerPush` (Unreal units of momentum).
+    Push { momentum: [f32; 3] },
+    /// A Clot's grab (ZombieClot GrappleDuration).
+    Grab { seconds: f32, zed_id: u32 },
+}
+
+/// The host credits a client with a kill (KF: ScoreKill on that player's
+/// PRI): their kill count and dosh go up on their game (step 3).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct KillCredit {
+    pub zed_id: u32,
+    pub scoring_value: f32,
+    pub headshot: bool,
+}
+
 /// Reliable, ordered: lobby requests must all arrive, in order.
 pub struct LobbyChannel;
+
+/// Unreliable, sequenced: zed snapshots (a lost one is replaced by the next).
+pub struct ZedChannel;
+
+/// Reliable, ordered, both ways: hits on zeds (client to host), hits on
+/// players and kill credits (host to client).
+pub struct GameChannel;
 
 /// Unreliable, sequenced: pawn updates. A lost one is replaced by the
 /// next; an old one arriving late is dropped.
@@ -104,12 +147,21 @@ pub fn register(app: &mut App) {
     app.component::<NetPlayer>().replicate();
     app.component::<NetGame>().replicate();
     app.component::<NetPawn>().replicate();
+    app.component::<NetWave>().replicate();
     app.register_message::<LobbyRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<PawnUpdate>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<ZedSnapshot>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<PlayerEvent>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<KillCredit>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<crate::game::combat::NetHit>().add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })
         .add_direction(NetworkDirection::ClientToServer);
+    app.add_channel::<ZedChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })
+        .add_direction(NetworkDirection::ServerToClient);
+    app.add_channel::<GameChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
+        .add_direction(NetworkDirection::Bidirectional);
 }
 
 /// KF: a name is cut to 20 characters in the lobby (Left(PlayerName, 20));

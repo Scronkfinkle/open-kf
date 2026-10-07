@@ -13,6 +13,8 @@ pub(super) fn boss_busy(
     t: &Transform,
     target: Vec3,
     player_velocity: Vec3,
+    // The player at `target` (None: this game's own).
+    peer: Option<u64>,
     dt: f32,
     spatial: &SpatialQuery,
     player_damage: &mut MessageWriter<crate::game::combat::PlayerDamaged>,
@@ -181,7 +183,7 @@ pub(super) fn boss_busy(
                 }
             }
             crate::zeds::boss::MgEvent::Shoot => {
-                boss_mg_shot(z, tip, aim_at, want_yaw, target, spatial, player_damage, push, bullet_fx, mg.shots_left);
+                boss_mg_shot(z, tip, aim_at, want_yaw, target, peer, spatial, player_damage, push, bullet_fx, mg.shots_left);
             }
             crate::zeds::boss::MgEvent::Done => done = true,
         }

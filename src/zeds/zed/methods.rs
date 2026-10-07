@@ -396,6 +396,7 @@ impl Zed {
             ambient_on: None,
             pain_on_fire: false,
             meshes: Vec::new(),
+            net: ZedNetSide::default(),
         }
     }
 

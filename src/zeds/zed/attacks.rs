@@ -41,6 +41,8 @@ pub(super) fn scream_pulse(
     radius: f32,
     force: f32,
     target: Vec3,
+    // The player at `target` (None: this game's own).
+    peer: Option<u64>,
     spatial: &SpatialQuery,
     out: &mut MessageWriter<crate::game::combat::PlayerDamaged>,
     push: &mut MessageWriter<crate::player::walk::PlayerPush>,
@@ -70,15 +72,16 @@ pub(super) fn scream_pulse(
             dam_type: crate::game::combat::DamType::SirenScream,
             source: Some(z.centre),
             dam: None,
+            to_peer: peer,
         });
     }
     let momentum = (to - from) / dist * (scale * force);
-    push.write(crate::player::walk::PlayerPush { momentum });
+    push.write(crate::player::walk::PlayerPush { momentum, to_peer: peer });
     runlog::kv(
         "siren_scream",
         &format!(
-            "id={} distance_unreal={dist:.0} scale={scale:.2} damage={amount} momentum_unreal=({:.0}, {:.0}, {:.0})",
-            z.id, momentum.x, momentum.y, momentum.z
+            "id={} distance_unreal={dist:.0} scale={scale:.2} damage={amount} momentum_unreal=({:.0}, {:.0}, {:.0}) target={}",
+            z.id, momentum.x, momentum.y, momentum.z, peer.map_or("local".to_string(), |p| p.to_string())
         ),
     );
 }
@@ -94,6 +97,7 @@ pub(super) fn boss_mg_shot(
     aim_at: Vec3,
     want_yaw: f32,
     player: Vec3,
+    peer: Option<u64>,
     spatial: &SpatialQuery,
     player_damage: &mut MessageWriter<crate::game::combat::PlayerDamaged>,
     push: &mut MessageWriter<crate::player::walk::PlayerPush>,
@@ -137,8 +141,9 @@ pub(super) fn boss_mg_shot(
             dam_type: crate::game::combat::DamType::Other,
             source: Some(origin),
             dam: None,
+            to_peer: peer,
         });
-        push.write(crate::player::walk::PlayerPush { momentum: dir * crate::zeds::boss::MG_MOMENTUM });
+        push.write(crate::player::walk::PlayerPush { momentum: dir * crate::zeds::boss::MG_MOMENTUM, to_peer: peer });
         format!("player damage={amount}")
     } else if world.is_some() {
         "world".to_string()

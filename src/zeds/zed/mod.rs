@@ -39,6 +39,8 @@ mod think;
 mod animate;
 mod methods;
 mod spotted;
+mod net;
+pub use net::{PuppetFeed, PuppetSample, SpawnPuppet, ZedNet, ZedNetSide};
 use load::*;
 use sounds::*;
 use spawn::*;
@@ -689,6 +691,8 @@ pub struct Zed {
     last_render: f32,
     last_view_check: f32,
     hidden: bool,
+    /// Multiplayer: puppet, hit reports, the hunted player (net.rs).
+    pub net: ZedNetSide,
 }
 
 /// One damage event, for gore effects (KFMonster.DoDamageFX). Bevy space.
@@ -795,6 +799,11 @@ const BURN_EFFECT: &str = "KFMod.KFMonsterFlame";
 
 pub struct ZedPlugin;
 
+/// The zed systems (spawning, thinking, animation); net/zeds.rs runs its
+/// puppet update before them.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ZedSystems;
+
 impl Plugin for ZedPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ZedSettings>()
@@ -802,7 +811,9 @@ impl Plugin for ZedPlugin {
             .insert_resource(ZedsActive(true))
             .add_systems(PostStartup, load_zed_classes)
             .add_message::<BossAction>()
-            .add_systems(Update, (spawn_zeds, boss_actions, think_and_move, burn_zeds, animate_zeds, apply_cloaks).chain());
+            .add_message::<SpawnPuppet>()
+            .init_resource::<PuppetFeed>()
+            .add_systems(Update, (net::drive_puppets, spawn_zeds, boss_actions, think_and_move, burn_zeds, animate_zeds, apply_cloaks).chain().in_set(ZedSystems));
     }
 }
 

@@ -200,6 +200,7 @@ fn move_globs(
                         dam_type: crate::game::combat::DamType::Vomit,
                         source: Some(coords::pos(end.to_array())),
                         dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
+                        to_peer: None,
                     });
                 }
                 runlog::kv("vomit_touch", &format!("glob={} player=true", g.id));
@@ -230,6 +231,7 @@ fn move_globs(
                     dam_type: crate::game::combat::DamType::Vomit,
                     source: Some(at_bevy),
                     dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
+                    to_peer: None,
                 });
             }
             runlog::kv(

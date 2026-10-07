@@ -29,12 +29,14 @@ pub(super) fn spawn_in_front(
         return;
     };
     let centre = probe - Vec3::Y * hit.distance + Vec3::Y * (c.collision_height + 1.0 + lift) * SCALE;
-    spawn_zed(commands, meshes, classes, class, id, centre, yaw_of(-forward));
+    spawn_zed(commands, meshes, classes, class, id, centre, yaw_of(-forward), false);
 }
 
 /// Spawns a zed of class `class` with its cylinder centre at `centre`
-/// (Bevy space), facing `yaw` (Unreal units).
-pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedClasses, class: usize, id: usize, centre: Vec3, yaw: f32) {
+/// (Bevy space), facing `yaw` (Unreal units). `puppet`: a network
+/// client's copy of a host zed (net.rs).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedClasses, class: usize, id: usize, centre: Vec3, yaw: f32, puppet: bool) {
     let c = &classes.0[class];
     let handles = c.model.new_instance(meshes);
     let parent = commands
@@ -139,7 +141,8 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 braindead: false,
                 scoring_value: c.scoring_value,
                 killed_by_player: false,
-                kill_paid: false,
+                // A puppet's kill is paid by the host (KillCredit).
+                kill_paid: puppet,
                 headshot_kill: false,
                 zed_time_rolled: false,
                 mg_flash: None,
@@ -170,6 +173,7 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 ambient_on: None,
                 pain_on_fire: c.sounds.pain_on_fire,
                 meshes: handles.clone(),
+                net: ZedNetSide { puppet, kind: net::kind_code(c.kind), ..default() },
             },
         ))
         .id();
@@ -184,7 +188,7 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
     let u = centre / SCALE;
     runlog::kv(
         "zed_spawned",
-        &format!("id={id} class={} centre_unreal=({:.0}, {:.0}, {:.0}) yaw={yaw:.0}", c.name, -u.z, u.x, u.y),
+        &format!("id={id} class={} centre_unreal=({:.0}, {:.0}, {:.0}) yaw={yaw:.0} puppet={puppet}", c.name, -u.z, u.x, u.y),
     );
 }
 
@@ -203,6 +207,7 @@ pub(super) fn spawn_zeds(
     script: Res<crate::weapons::weapon::ScriptedInput>,
     mut wave_spawns: MessageReader<crate::game::waves::SpawnZedAt>,
     mut next_id: Local<usize>,
+    (mut puppets, net_mode): (MessageReader<SpawnPuppet>, Option<Res<crate::net::NetMode>>),
 ) {
     // Test action "toggle_zeds": the same as X.
     let toggle = script.0.iter().any(|(f, a)| *f == frames.0 && a == "toggle_zeds");
@@ -216,6 +221,19 @@ pub(super) fn spawn_zeds(
     if classes.0.is_empty() || frames.0 < 6 {
         return;
     }
+    // A network client never makes zeds of its own: every zed is a puppet
+    // of one the host runs (net/zeds.rs).
+    if net_mode.is_some_and(|m| matches!(*m, crate::net::NetMode::Client { .. })) {
+        for p in puppets.read() {
+            let Some(class) = classes.0.iter().position(|c| net::kind_code(c.kind) == p.kind) else {
+                runlog::kv("zed_spawn_failed", &format!("reason=class_not_loaded kind_code={} puppet=true", p.kind));
+                continue;
+            };
+            spawn_zed(&mut commands, &mut meshes, &classes, class, p.id, p.centre, p.yaw, true);
+        }
+        wave_spawns.clear();
+        return;
+    }
     // Zeds from the wave loop (game/waves.rs): a class standing on a floor point.
     for w in wave_spawns.read() {
         let Some(class) = classes.0.iter().position(|c| c.name.eq_ignore_ascii_case(&w.class)) else {
@@ -223,7 +241,7 @@ pub(super) fn spawn_zeds(
             continue;
         };
         let centre = coords::pos(w.centre.to_array());
-        spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, w.yaw);
+        spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, w.yaw, false);
         *next_id += 1;
     }
     let start = frames.0 == 6;
@@ -300,7 +318,7 @@ pub(super) fn spawn_zeds(
             // --zed-at: the start zed at a given place, facing you.
             Some(at) if start => {
                 let centre = coords::pos(at);
-                spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, yaw_of(t.translation - centre));
+                spawn_zed(&mut commands, &mut meshes, &classes, class, *next_id, centre, yaw_of(t.translation - centre), false);
             }
             _ => spawn_in_front(&mut commands, &mut meshes, &classes, &spatial, t, cam, class, *next_id, distance, lift, in_line),
         }
