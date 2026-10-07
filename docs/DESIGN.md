@@ -5708,7 +5708,111 @@ above. Frags (resting and in flight) and an M79 dud were destroyed, a
 frag 857 units away survived and exploded on its fuse, a pipe bomb was
 ignored on every pulse (damage 5). Results and commands in MODLOG.md.
 
-## Later milestones (rough order, to be planned in detail when reached)
+## Volume control: in the pause menu and the launcher (planned 2026-10-07: VC1-VC3)
+
+**Goal.** Change how loud the game is while playing (from the pause
+menu), hear the change at once, and find the same volume next time,
+whether the game is started from the launcher or from the command line.
+The launcher shows and sets the same saved values.
+
+**What KF has (read 2026-10-07).** KF's Settings page has an Audio tab
+(KFGui.KFAudioSettingsTab, PanelCaption "Audio"). Its "Sound System"
+box (AudioBK1) holds two sliders: "Music Volume" (AudioMusicVolume) and
+"Effects Volume" (AudioEffectsVolumeSlider), both moSlider with
+MinValue 0 and **MaxValue 0.5**. Moving one writes the ini at once
+(`set ini:Engine.Engine.AudioDevice MusicVolume` / `SoundVolume`,
+InternalOnChange) and the music changes immediately (SetMusicVolume).
+The values start from System/KillingFloor.ini [ALAudio.ALAudioSubsystem]
+(shipped MusicVolume 0.1, SoundVolume 0.3; your ini has the same). KF
+has no master volume. GUISlider: a click or a drag sets the value from
+the mouse's x position (InternalCapturedMouseMove), Left / Right keys
+move it 1% of the range (Adjust(0.01)). Look (RO styles, assumed to be
+the ones KF uses): bar InterfaceArt_tex.Menu.SliderBarDisabled, knob
+SliderGripBlurry (26 x 13), fill SliderFillBlurry.
+
+**Our mixer has a clean split.** The sound effects (our voice mixer)
+use `Audio::sound_volume`, the music uses `Audio::music_volume`; both
+are read every frame (update_voices, run_music), so changing them is
+heard at once (the voices' volume is ramped over one 256-sample block,
+so no clicks). `--mute` silences the speakers after everything is mixed
+(capture.rs), so it keeps overriding any volume.
+
+**The three sliders.**
+
+- *Master Volume* (ours, not KF's): 0 to 1, default 1; multiplies both.
+- *Effects Volume* (KF's): 0 to 0.5; default: the install's ini value.
+- *Music Volume* (KF's): 0 to 0.5; default: the install's ini value.
+
+Heard volume: sounds = master x effects, music = master x music.
+
+**Where it is saved: the launcher's file.** `settings/launcher.txt`
+(the launcher's saved choices) gets three more lines:
+`volume=1.00`, `effects_volume=default|0.300`,
+`music_volume=default|0.100` ("default" = use KillingFloor.ini). The
+game reads them at start (also when run without the launcher) and
+rewrites only these three lines when a slider is let go, keeping every
+other line as it was (or creates the file with only these lines). The
+launcher reads them on opening and writes them with its other choices
+on PLAY, so both always use the same values. The game takes
+`--settings FILE` like the launcher (tests use it to keep away from your
+file); the launcher passes its own `--settings` on to the game. We never
+write KF's own KillingFloor.ini (the install is read-only).
+
+**In the game: Settings in the pause menu.** The pause menu's Settings
+button (inert until now) opens an "Audio" window above the pause menu
+(KF opens its Settings page there), with the "Sound System" box and
+the three sliders, and a Back button. Escape or Back returns to the
+pause menu. The mouse drags a slider; Up / Down pick a slider, Left /
+Right move it 1% of its range. A solo game stays paused while it is
+open; a network game never pauses (as the pause menu). Sounds are not
+stopped when Effects changes (KF does "stopsounds"; ours keeps them, so
+you hear the change on what is playing).
+
+**In the launcher: an "Audio" box** at the bottom of the map column
+(the map list, which scrolls, gets shorter), with the same three
+sliders (drawn with the same slider code). A small, separate box so it
+merges easily with other launcher changes. (First tried between Play and
+Player in column 1: at 1280 x 800 it pushed the Character row off the
+Player box.)
+
+**Logs.** `audio_volume master= effects= music= sound_gain= music_gain=
+source=settings|default|menu|...` at start and on every change;
+`volume_saved file= ...` when written; `sound_play` lines already carry
+each sound's final gain (now including the master volume).
+
+**Steps.**
+
+- VC1. The saved values and the mixer: three fields in the launcher's
+  choices, the game reads them at start, the "update three lines" save
+  (unit tests), `--settings FILE` for the game, the logs.
+- VC2. The pause menu's Audio window: a slider drawn like KF's, mouse
+  drag, keys, test actions (`volume_page`, `volume:NAME=VALUE`,
+  `volume_click:NAME@FRACTION`), saving on release.
+- VC3. The launcher's Audio box.
+
+**As built (2026-10-07; headless runs, not heard by you yet).** VC1-VC3
+as planned. Files: `src/launcher/choices.rs` (`Volumes`, the three
+fields, `with_volume_lines`), `src/launcher/mod.rs` (`read_volumes`,
+`save_volumes`, the slider drag, `--settings` passed on),
+`src/audio/mixer.rs` (`Audio::set_volumes` / `save_volumes`, the
+`voices_regain` log), `src/audio/music.rs` (`music_gain` log),
+`src/game/menus/audio_page.rs` (the window), `src/game/menus/mod.rs`
+(page, drag, keys, test actions), `src/game/menus/gui.rs`
+(`Painter::slider`, `slider_fraction`), `src/launcher/draw.rs` (the
+box), `src/main.rs` (`--settings`). Details:
+
+- The slider's marker (knob) is 1.4 x the box's height wide (a guess;
+  KF's native drawing is not in the scripts); the GUISlider rule keeps
+  half a marker at each end, so the first and last few pixels of the
+  bar are the minimum and maximum.
+- The window has a dark backing under KF's see-through frame (ours: the
+  pause menu's text showed through).
+- Test actions (game, `--input`): `volume_page` (or `pause_settings`)
+  opens the window from the pause menu, `volume_back` closes it,
+  `volume:NAME=VALUE` sets a slider on any page, `volume_click:NAME@F`
+  clicks at fraction F of a slider's box, `volume_key:up|down|left|right`.
+  Launcher: `volume_click:NAME@F`, and `set:volume=..`,
+  `set:effects_volume=..|default`, `set:music_volume=..|default`. (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style
    walking, jumping and gravity, with values taken from the scripts.

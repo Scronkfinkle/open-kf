@@ -48,9 +48,83 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 17] = [
+pub const FIELDS: [&str; 20] = [
     "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "sound", "trader", "extra",
+    "volume", "effects_volume", "music_volume",
 ];
+
+/// The volume lines of the saved file (the game rewrites only these).
+pub const VOLUME_FIELDS: [&str; 3] = ["volume", "effects_volume", "music_volume"];
+
+/// The top of the master volume slider (ours: KF has none).
+pub const MASTER_MAX: f32 = 1.0;
+/// The top of KF's Music Volume and Effects Volume sliders
+/// (KFAudioSettingsTab.AudioMusicVolume / AudioEffectsVolumeSlider
+/// MaxValue 0.5; MinValue 0).
+pub const KF_VOLUME_MAX: f32 = 0.5;
+
+/// The slider names in screen order, with their captions (KFGui.int
+/// [KFAudioSettingsTab]; "Master Volume" is ours).
+pub const SLIDERS: [(&str, &str); 3] = [("master", "Master Volume"), ("effects", "Effects Volume"), ("music", "Music Volume")];
+
+/// The volume settings (DESIGN.md, "Volume control"). Heard volume:
+/// sounds = master x effects, music = master x music.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Volumes {
+    /// Ours (KF has no master volume): 0 to 1.
+    pub master: f32,
+    /// KF's SoundVolume, 0 to 0.5; None: the install's KillingFloor.ini.
+    pub effects: Option<f32>,
+    /// KF's MusicVolume, 0 to 0.5; None: the install's KillingFloor.ini.
+    pub music: Option<f32>,
+}
+
+impl Default for Volumes {
+    fn default() -> Self {
+        Volumes { master: 1.0, effects: None, music: None }
+    }
+}
+
+/// A slider's value as kept and saved: inside its range, to 0.001.
+pub fn clamp_volume(v: f32, max: f32) -> f32 {
+    if v.is_finite() { (v.clamp(0.0, max) * 1000.0).round() / 1000.0 } else { 0.0 }
+}
+
+impl Volumes {
+    /// (effects, music), the ini's values where not set.
+    pub fn resolved(&self, ini: (f32, f32)) -> (f32, f32) {
+        (self.effects.unwrap_or(ini.0), self.music.unwrap_or(ini.1))
+    }
+
+    /// What the mixer uses: (sounds, music) = master x each.
+    pub fn heard(&self, ini: (f32, f32)) -> (f32, f32) {
+        let (e, m) = self.resolved(ini);
+        (self.master * e, self.master * m)
+    }
+
+    /// A slider by name (`master`, `effects`, `music`): its value now and
+    /// its top.
+    pub fn slider(&self, name: &str, ini: (f32, f32)) -> Option<(f32, f32)> {
+        let (e, m) = self.resolved(ini);
+        match name {
+            "master" => Some((self.master, MASTER_MAX)),
+            "effects" => Some((e, KF_VOLUME_MAX)),
+            "music" => Some((m, KF_VOLUME_MAX)),
+            _ => None,
+        }
+    }
+
+    /// Sets a slider by name (clamped). False for an unknown name.
+    pub fn set_slider(&mut self, name: &str, v: f32) -> bool {
+        match name {
+            "master" => self.master = clamp_volume(v, MASTER_MAX),
+            "effects" => self.effects = Some(clamp_volume(v, KF_VOLUME_MAX)),
+            "music" => self.music = Some(clamp_volume(v, KF_VOLUME_MAX)),
+            _ => return false,
+        }
+        true
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Choices {
@@ -79,6 +153,8 @@ pub struct Choices {
     pub trader: MenuKind,
     /// More options typed by hand (e.g. `--god`).
     pub extra: String,
+    /// The volumes (the game's pause menu changes them too).
+    pub volumes: Volumes,
 }
 
 impl Default for Choices {
@@ -101,8 +177,18 @@ impl Default for Choices {
             sound: true,
             trader: MenuKind::Nu,
             extra: String::new(),
+            volumes: Volumes::default(),
         }
     }
+}
+
+/// A KF volume as saved: "default" (the ini's) or the number.
+fn kf_volume_text(v: Option<f32>) -> String {
+    v.map_or("default".into(), |v| format!("{v:.3}"))
+}
+
+fn parse_volume(v: &str) -> Result<f32, String> {
+    v.trim().parse::<f32>().ok().filter(|x| x.is_finite()).ok_or(format!("not a volume: {v}"))
 }
 
 fn on_off(b: bool) -> &'static str {
@@ -138,6 +224,9 @@ impl Choices {
             "sound" => on_off(self.sound).into(),
             "trader" => self.trader.word().into(),
             "extra" => self.extra.clone(),
+            "volume" => format!("{:.3}", self.volumes.master),
+            "effects_volume" => kf_volume_text(self.volumes.effects),
+            "music_volume" => kf_volume_text(self.volumes.music),
             _ => String::new(),
         }
     }
@@ -193,6 +282,15 @@ impl Choices {
             "sound" => self.sound = parse_bool(v)?,
             "trader" => self.trader = MenuKind::parse(v).ok_or(format!("not nu/kf: {v}"))?,
             "extra" => self.extra = v.trim().into(),
+            "volume" => self.volumes.master = clamp_volume(parse_volume(v)?, MASTER_MAX),
+            "effects_volume" | "music_volume" => {
+                let x = if v.trim().eq_ignore_ascii_case("default") { None } else { Some(clamp_volume(parse_volume(v)?, KF_VOLUME_MAX)) };
+                if field == "effects_volume" {
+                    self.volumes.effects = x;
+                } else {
+                    self.volumes.music = x;
+                }
+            }
             _ => return Err(format!("unknown choice: {field}")),
         }
         Ok(())
@@ -312,7 +410,7 @@ impl Choices {
 
     /// The saved file's text: one `key=value` line per choice.
     pub fn to_text(&self) -> String {
-        let mut s = String::from("# Open KF launcher choices (written when PLAY is pressed)\n");
+        let mut s = String::from("# Open KF launcher choices (written when PLAY is pressed; the game rewrites the volume lines)\n");
         for f in FIELDS {
             s.push_str(&format!("{f}={}\n", self.get(f)));
         }
@@ -335,6 +433,38 @@ impl Choices {
         }
         (c, bad)
     }
+}
+
+/// The saved file's text with only the volume lines replaced (or added at
+/// the end); every other line stays as it was. An empty text gets a
+/// header line first.
+pub fn with_volume_lines(text: &str, v: &Volumes) -> String {
+    let c = Choices { volumes: *v, ..Default::default() };
+    let mut out: Vec<String> = Vec::new();
+    let mut done = [false; 3];
+    for line in text.lines() {
+        let key = line.split_once('=').map(|(k, _)| k.trim());
+        match key.and_then(|k| VOLUME_FIELDS.iter().position(|f| *f == k)) {
+            // A repeated line is dropped (the first one is replaced).
+            Some(i) if done[i] => {}
+            Some(i) => {
+                out.push(format!("{}={}", VOLUME_FIELDS[i], c.get(VOLUME_FIELDS[i])));
+                done[i] = true;
+            }
+            None => out.push(line.to_string()),
+        }
+    }
+    if out.is_empty() {
+        out.push("# Open KF settings (the launcher writes its other choices here on PLAY)".into());
+    }
+    for (i, f) in VOLUME_FIELDS.iter().enumerate() {
+        if !done[i] {
+            out.push(format!("{f}={}", c.get(f)));
+        }
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
 }
 
 /// Splits typed options into arguments: spaces separate them, double
@@ -445,6 +575,7 @@ mod tests {
         c.sound = false;
         c.trader = MenuKind::Kf;
         c.extra = "--god --give all".into();
+        c.volumes = Volumes { master: 0.75, effects: Some(0.123), music: None };
         let (back, bad) = Choices::from_text(&c.to_text());
         assert!(bad.is_empty(), "{bad:?}");
         assert_eq!(back, c);
@@ -487,6 +618,40 @@ mod tests {
         assert!(c.set("trader", "wizard").is_err());
         c.set("trader", "nu").unwrap();
         assert_eq!(c.trader, MenuKind::Nu);
+    }
+
+    #[test]
+    fn volumes_parse_clamp_and_resolve() {
+        let (c, bad) = Choices::from_text("volume=2\neffects_volume=0.25\nmusic_volume=default\n");
+        assert!(bad.is_empty(), "{bad:?}");
+        assert_eq!(c.volumes, Volumes { master: 1.0, effects: Some(0.25), music: None });
+        let (c, bad) = Choices::from_text("volume=loud\neffects_volume=-1\nmusic_volume=0.9\n");
+        assert_eq!(bad.len(), 1);
+        assert_eq!(c.volumes, Volumes { master: 1.0, effects: Some(0.0), music: Some(KF_VOLUME_MAX) });
+        // KillingFloor.ini's values where nothing is set; master scales both.
+        let v = Volumes { master: 0.5, effects: None, music: Some(0.2) };
+        assert_eq!(v.resolved((0.3, 0.1)), (0.3, 0.2));
+        assert_eq!(v.heard((0.3, 0.1)), (0.15, 0.1));
+        let mut v = Volumes::default();
+        assert!(v.set_slider("music", 0.33333) && v.music == Some(0.333));
+        assert!(v.set_slider("master", 7.0) && v.master == 1.0);
+        assert!(!v.set_slider("voice", 0.1));
+        assert_eq!(v.slider("effects", (0.3, 0.1)), Some((0.3, KF_VOLUME_MAX)));
+    }
+
+    #[test]
+    fn volume_lines_replace_only_themselves() {
+        let v = Volumes { master: 0.8, effects: Some(0.2), music: None };
+        // Other lines (even unknown ones) stay; the volume lines change in place.
+        let old = "# head\nmap=KF-Farm\nvolume=1.000\nfuture_option=x\nvolume=0.1\n";
+        let new = with_volume_lines(old, &v);
+        assert_eq!(new, "# head\nmap=KF-Farm\nvolume=0.800\nfuture_option=x\neffects_volume=0.200\nmusic_volume=default\n");
+        let (c, _) = Choices::from_text(&new);
+        assert_eq!((c.map.as_str(), c.volumes), ("KF-Farm", v));
+        // No file yet: a header and the three lines.
+        let fresh = with_volume_lines("", &v);
+        assert!(fresh.starts_with('#') && fresh.lines().count() == 4);
+        assert_eq!(Choices::from_text(&fresh).0.volumes, v);
     }
 
     #[test]

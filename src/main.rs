@@ -93,6 +93,9 @@ struct Args {
     log: Option<String>,
     /// `--trader-menu nu|kf`: our NuMenu (default) or the KF-style list.
     trader_menu: buy_menu::MenuKind,
+    /// `--settings FILE`: the settings file the volumes are read from and
+    /// saved to (default: the launcher's, `settings/launcher.txt`).
+    settings: Option<String>,
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -210,6 +213,7 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 args.net = net::NetMode::join(&a)?;
             }
             "--log" => args.log = Some(it.next().ok_or("--log needs a file name")?),
+            "--settings" => args.settings = Some(it.next().ok_or("--settings needs a file name")?),
             "--mute" => args.mute = true,
             "--trader-menu" => {
                 let n = it.next().ok_or("--trader-menu needs nu or kf")?;
@@ -266,7 +270,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE] [--settings FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -372,7 +376,7 @@ fn main() -> AppExit {
         })
         // Our own mixer (audio/mixer.rs) replaces Bevy's player.
         .disable::<bevy::audio::AudioPlugin>())
-        .insert_resource(audio::mixer::AudioSettings { muted: args.mute })
+        .insert_resource(audio::mixer::AudioSettings { muted: args.mute, settings: args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into() })
         .insert_resource(args)
         .insert_resource(request)
         .insert_resource(ClearColor(Color::srgb(0.32, 0.36, 0.42)))

@@ -20,6 +20,7 @@ use ue_assets::package_set::{ObjectHandle, PackageSet};
 
 use crate::engine::camera::FlyCamera;
 use crate::engine::runlog;
+use crate::launcher::choices::Volumes;
 
 /// KillingFloor.ini [ALAudio.ALAudioSubsystem] Channels: voices at once.
 const MAX_VOICES: usize = 32;
@@ -502,9 +503,47 @@ pub struct Audio {
     voices: Vec<VoiceInfo>,
     next_id: u64,
     out_rate: u32,
-    /// The player's KillingFloor.ini SoundVolume and MusicVolume.
+    /// The heard volumes, master x effects and master x music (see
+    /// `set_volumes`); read every frame by update_voices and run_music.
     pub sound_volume: f32,
     pub music_volume: f32,
+    /// The volume settings (the pause menu's sliders change them).
+    pub volumes: Volumes,
+    /// The install's KillingFloor.ini SoundVolume and MusicVolume (used
+    /// where `volumes` leaves them unset).
+    pub ini_volumes: (f32, f32),
+    /// The settings file the volumes are read from and saved to.
+    pub settings_path: std::path::PathBuf,
+}
+
+impl Audio {
+    /// New volume settings, heard from the next frame on (every playing
+    /// voice and the music follow at once). Logged as `audio_volume`.
+    pub fn set_volumes(&mut self, v: Volumes, source: &str) {
+        self.volumes = v;
+        (self.sound_volume, self.music_volume) = v.heard(self.ini_volumes);
+        let (e, m) = v.resolved(self.ini_volumes);
+        runlog::kv(
+            "audio_volume",
+            &format!(
+                "master={:.3} effects={e:.3} music={m:.3} effects_from={} music_from={} sound_gain={:.4} music_gain={:.4} muted={} source={source}",
+                v.master,
+                if v.effects.is_some() { "settings" } else { "ini" },
+                if v.music.is_some() { "settings" } else { "ini" },
+                self.sound_volume,
+                self.music_volume,
+                self.capture.muted(),
+            ),
+        );
+    }
+
+    /// Writes the volumes to the settings file (only their lines).
+    pub fn save_volumes(&self, why: &str) {
+        match crate::launcher::save_volumes(&self.settings_path, &self.volumes) {
+            Ok(()) => runlog::kv("volume_saved", &format!("file={} master={:.3} effects={:?} music={:?} why={why}", self.settings_path.display(), self.volumes.master, self.volumes.effects, self.volumes.music)),
+            Err(e) => runlog::kv("volume_save_failed", &format!("file={} reason=\"{e}\"", self.settings_path.display())),
+        }
+    }
 }
 
 /// A playing song (music.rs): its volume and a stop switch, shared with
@@ -565,7 +604,7 @@ impl rodio::Source for MusicSource {
 
 /// [ALAudio.ALAudioSubsystem] SoundVolume and MusicVolume from the
 /// install's System/KillingFloor.ini (read only), else the shipped values.
-fn ini_volumes(root: &std::path::Path) -> (f32, f32) {
+pub fn ini_volumes(root: &std::path::Path) -> (f32, f32) {
     let text = std::fs::read_to_string(root.join("System").join("KillingFloor.ini")).unwrap_or_default();
     let (mut sound, mut music, mut in_section) = (SOUND_VOLUME, MUSIC_VOLUME, false);
     for line in text.lines().map(str::trim) {
@@ -582,10 +621,12 @@ fn ini_volumes(root: &std::path::Path) -> (f32, f32) {
     (sound, music)
 }
 
-/// `--mute` from the command line.
-#[derive(Resource, Clone, Copy, Default)]
+/// `--mute` and `--settings FILE` from the command line.
+#[derive(Resource, Clone, Default)]
 pub struct AudioSettings {
     pub muted: bool,
+    /// Where the volumes are saved (the launcher's settings file).
+    pub settings: std::path::PathBuf,
 }
 
 impl Audio {
@@ -635,9 +676,25 @@ impl Audio {
         } else {
             super::capture::run_without_device(tap, out_rate);
         }
-        let (sound_volume, music_volume) = ini_volumes(root);
-        runlog::kv("audio_volumes", &format!("sound={sound_volume} music={music_volume} source=KillingFloor.ini"));
-        Audio { _sink: sink, output, capture, shared, voices: Vec::new(), next_id: 1, out_rate, sound_volume, music_volume }
+        let ini = ini_volumes(root);
+        runlog::kv("audio_volumes", &format!("sound={} music={} source=KillingFloor.ini", ini.0, ini.1));
+        let (volumes, from) = crate::launcher::read_volumes(&settings.settings);
+        let mut audio = Audio {
+            _sink: sink,
+            output,
+            capture,
+            shared,
+            voices: Vec::new(),
+            next_id: 1,
+            out_rate,
+            sound_volume: 0.0,
+            music_volume: 0.0,
+            volumes,
+            ini_volumes: ini,
+            settings_path: settings.settings.clone(),
+        };
+        audio.set_volumes(volumes, &format!("start settings={} read={from}", settings.settings.display()));
+        audio
     }
 }
 
@@ -646,7 +703,7 @@ pub struct AudioPlugin;
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
         let root = app.world().resource::<crate::world::map::MapRequest>().install_root.clone();
-        let settings = app.world().get_resource::<AudioSettings>().copied().unwrap_or_default();
+        let settings = app.world().get_resource::<AudioSettings>().cloned().unwrap_or_default();
         let audio = Audio::open(settings, &root);
         app.insert_non_send(SoundBank::new(root))
             .insert_resource(audio)
@@ -851,6 +908,7 @@ fn update_voices(
     listener: Query<&GlobalTransform, With<FlyCamera>>,
     positions: Query<&GlobalTransform>,
     time: Res<Time<Virtual>>,
+    mut last_master: Local<Option<f32>>,
 ) {
     let cam = listener.single().ok();
     let ear = cam.map(|t| t.translation());
@@ -883,6 +941,13 @@ fn update_voices(
         let g = pan_gains(pan).map(|x| x * voice_gain(v.loudness, master));
         updates.push((v.id, g, v.clip_rate as f64 / out_rate * v.pitch as f64 * speed));
     }
+    // The volume sliders moved: say how many playing voices took the new
+    // volume this frame (and the loudest one's new gain, for checking).
+    if last_master.is_some_and(|m| m != master) {
+        let loudest = audio.voices.iter().map(|v| voice_gain(v.loudness, master)).fold(0.0f32, f32::max);
+        runlog::kv("voices_regain", &format!("sound_gain={master:.4} was={:.4} voices={} loudest_gain={loudest:.3}", last_master.unwrap_or(0.0), updates.len()));
+    }
+    *last_master = Some(master);
     let mut finished = Vec::new();
     if let Ok(mut s) = audio.shared.lock() {
         for (id, g, step) in updates {

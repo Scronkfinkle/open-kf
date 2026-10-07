@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use super::choices::{LENGTHS, PlayType, command_line};
+use super::choices::{LENGTHS, PlayType, SLIDERS, command_line};
 use super::{Field, Launcher};
 use crate::game::menus::gui::{Align, FONTS, Painter, State, named_font};
 
@@ -161,7 +161,10 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         }
     }
 
-    // Column 2: the map list.
+    // Column 2: the map list, and the Audio box under it (the list
+    // scrolls, so it gives up the room).
+    let audio = audio_section(p, l, b, rh, gap, menu);
+    let b = Rect::new(b.min.x, b.min.y, b.max.x, audio.min.y - gap);
     p.section(b, "Map", false, "Map");
     let list = Painter::section_client(b, [0.0; 4]);
     if join {
@@ -259,6 +262,28 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
     let help = "Click a field to type in it (Tab: next field). Enter: play. Escape: quit. Your choices are saved when you press PLAY.";
     let hh = p.line_height(small);
     note(p, Rect::new(line_box.min.x, y + 4.0, line_box.max.x, y + 4.0 + hh), help, small, DIM, "Help");
+}
+
+/// The Audio box at the bottom of `area`: the three volume sliders, the
+/// same saved values the game's pause menu changes (DESIGN.md, "Volume
+/// control"). Returns the box.
+fn audio_section(p: &mut Painter, l: &Launcher, area: Rect, rh: f32, gap: f32, font: &'static str) -> Rect {
+    let n = SLIDERS.len();
+    let r = Rect::new(area.min.x, area.max.y - section_height(n, rh, gap), area.max.x, area.max.y);
+    p.section(r, "Audio", false, "Audio");
+    let mut rows = Rows::new(Painter::section_client(r, [0.0; 4]), rh, gap, 0.42);
+    // One font for the three captions: the largest that fits them all.
+    let cap_font = SLIDERS.iter().map(|(_, c)| fit(p, font, c, rows.label_w - 10.0)).min_by_key(|f| FONTS.iter().position(|x| x == f)).unwrap_or(font);
+    for (i, (name, cap)) in SLIDERS.iter().enumerate() {
+        let (lab, ctl) = rows.next();
+        label(p, lab, cap, cap_font);
+        let (v, max) = l.choices.volumes.slider(name, l.ini_volumes).unwrap_or((0.0, 1.0));
+        let vw = p.text_size(font, "0.00").x + 8.0;
+        let sl = Rect::new(ctl.min.x, ctl.min.y + rh * 0.15, ctl.max.x - vw, ctl.max.y - rh * 0.15);
+        p.slider(&super::volume_slider_id(name), sl, v / max, l.volume_drag == Some(i));
+        p.text_in(font, &format!("{v:.2}"), Rect::new(ctl.max.x - vw, ctl.min.y, ctl.max.x, ctl.max.y), Align::Right, true, WHITE, &format!("Audio.{name}.Value"));
+    }
+    r
 }
 
 /// The largest of KF's menu fonts, up to `font`, that fits `text` into

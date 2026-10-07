@@ -69,6 +69,7 @@ pub const COMPONENTS: &[&str] = &[
     "KFTab_MidGamePerks.BGPerksNextLevel", "KFTab_MidGamePerks.PerkProgressList", "KFTab_MidGamePerks.SaveButton",
     "KFTab_MidGamePerks.SettingsButton", "KFTab_MidGamePerks.SpectateButton", "KFTab_MidGamePerks.LeaveMatchButton",
     "KFTab_MidGamePerks.QuitGameButton", "KFTab_MidGamePerks.BrowserButton", "KFModelSelect.vil_CharList",
+    "KFAudioSettingsTab.AudioBK1", "KFAudioSettingsTab.AudioMusicVolume", "KFAudioSettingsTab.AudioEffectsVolumeSlider",
 ];
 
 /// Component paths read from GUI2K4.u (KFModelSelect's inherited parts).
@@ -108,6 +109,10 @@ pub const TEXTURES: &[&str] = &[
     "KillingFloorHUD.HUD.Hud_Bio_Circle",
     "InterfaceArt_tex.Menu.buttonGreyDark01",
     "KF_InterfaceArt_tex.Menu.scrollbar",
+    // GUISlider: ROSTY2SliderBar, ROSTY2SliderKnob, FillImage.
+    "InterfaceArt_tex.Menu.SliderBarDisabled",
+    "InterfaceArt_tex.Menu.SliderGripBlurry",
+    "InterfaceArt_tex.Menu.SliderFillBlurry",
 ];
 
 /// The fonts (GUI2K4.int fntUT2k4Small / Menu / Default, ROEngine.int
@@ -619,6 +624,47 @@ impl<'a> Painter<'a> {
     pub fn hit(&mut self, id: &str, rect: Rect) {
         self.hits.push((id.to_string(), rect));
     }
+
+    /// A GUISlider at `frac` (0 to 1) of its range. Its drawing is native
+    /// (not in the scripts), so the layout is **a guess**: the bar (style
+    /// SliderBar = ROSTY2SliderBar: SliderBarDisabled) stretched over the
+    /// middle half of the box's height, the fill (FillImage
+    /// SliderFillBlurry) from the left to the marker, the marker (style
+    /// SliderKnob = ROSTY2SliderKnob: SliderGripBlurry, ImgWidths 26 x
+    /// ImgHeights 13) 0.7 of the box tall. `lit`: hovered, dragged or
+    /// picked with the keys (drawn brighter: ours). Records the box for
+    /// clicks and drags.
+    pub fn slider(&mut self, id: &str, rect: Rect, frac: f32, lit: bool) {
+        let white = [255, 255, 255, 255];
+        let mw = slider_marker_width(rect);
+        let cy = rect.center().y;
+        let bar = Rect::new(rect.min.x, cy - rect.height() * 0.25, rect.max.x, cy + rect.height() * 0.25);
+        self.stretched(self.gui.tex("InterfaceArt_tex.Menu.SliderBarDisabled"), bar, white, &format!("{id}.Bar"));
+        let x = rect.min.x + (rect.width() - mw).max(0.0) * frac.clamp(0.0, 1.0);
+        self.stretched(self.gui.tex("InterfaceArt_tex.Menu.SliderFillBlurry"), Rect::new(bar.min.x, bar.min.y, x + mw / 2.0, bar.max.y), white, &format!("{id}.Fill"));
+        let lit = lit || self.hover(rect);
+        let tint = if lit { white } else { [200, 200, 200, 255] };
+        self.tile(self.gui.tex("InterfaceArt_tex.Menu.SliderGripBlurry"), Rect::new(x, cy - mw / 4.0, x + mw, cy + mw / 4.0), tint, &format!("{id}.Knob"));
+        self.hits.push((id.to_string(), rect));
+    }
+}
+
+/// A slider's marker width: its knob (26 x 13) 0.7 of the box tall (a
+/// guess, see `Painter::slider`).
+pub fn slider_marker_width(rect: Rect) -> f32 {
+    (rect.height() * 1.4).min(rect.width() / 2.0)
+}
+
+/// GUISlider.InternalCapturedMouseMove: the fraction of the range under
+/// the mouse's x, the marker's half width in from each end, clamped (left
+/// of the box = the minimum, right of it = the maximum).
+pub fn slider_fraction(rect: Rect, x: f32) -> f32 {
+    let mw = slider_marker_width(rect);
+    let span = rect.width() - mw;
+    if span <= 0.0 {
+        return 0.0;
+    }
+    ((x - (rect.min.x + mw / 2.0)) / span).clamp(0.0, 1.0)
 }
 
 /// UI image nodes reused every frame for the menus (glyphs count one each).

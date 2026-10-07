@@ -5,7 +5,8 @@
 //! Not built: the Communication tab (KFTab_MidGameVoiceChat: player
 //! lists, voice options) and the Help tab (KFTab_MidGameHelp: game
 //! description, hints); their tabs are drawn and switch, the page shows
-//! only the buttons. Settings and Spectate are drawn but do nothing.
+//! only the buttons. Settings opens the volume window (audio_page.rs);
+//! Spectate is drawn but does nothing.
 
 use bevy::prelude::*;
 

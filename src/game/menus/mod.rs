@@ -3,6 +3,7 @@
 //! menu (KFInvasionLoginMenu / KFTab_MidGamePerks). See DESIGN.md,
 //! "Menus: the lobby, the perk page, the pause menu".
 
+mod audio_page;
 pub mod gui;
 mod lobby;
 mod model_select;
@@ -16,6 +17,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::engine::runlog;
 use crate::game::perks::Perk;
+use crate::launcher::choices::SLIDERS;
 use gui::{Gui, MenuSlot, POOL};
 use perk_panel::PerkTexts;
 
@@ -28,13 +30,17 @@ pub enum Page {
     Pause,
     /// KFModelSelect ("Change Character" on the perk page), above it.
     ModelSelect,
+    /// The volume sliders (the pause menu's Settings button), above it.
+    Audio,
 }
 
-/// Which preview the mouse is turning (a drag that started on its box).
+/// What the mouse is dragging (a drag that started on its box): a
+/// preview it turns, or a volume slider (index into `SLIDERS`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Drag {
     Profile,
     ModelSelect,
+    Volume(usize),
 }
 
 /// The pause menu's tabs (KFInvasionLoginMenu keeps Panels 1-3).
@@ -68,6 +74,8 @@ pub struct MenuState {
     pub pause_tab: PauseTab,
     /// The pause menu's highlighted perk row.
     pub pause_row: usize,
+    /// The Audio window's slider picked with the Up / Down keys.
+    pub audio_row: usize,
     /// The cursor was captured when the pause menu opened.
     cursor_was_grabbed: bool,
 }
@@ -250,6 +258,8 @@ fn scripted_to_ids(action: &str, top: Option<Page>) -> Vec<String> {
         "pause_select_perk" => vec!["pause.save".into()],
         "pause_forfeit" => vec!["pause.forfeit".into()],
         "pause_exit" => vec!["pause.exit".into()],
+        "pause_settings" | "volume_page" => vec!["pause.settings".into()],
+        "volume_back" => vec!["audio.back".into()],
         a => {
             if let Some(n) = a.strip_prefix("perk_pick:") {
                 match (perk_row(n), top) {
@@ -302,6 +312,7 @@ fn menu_input(
     mut exit: MessageWriter<AppExit>,
     mut start_vet: Local<Option<crate::game::perks::Vet>>,
     (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
+    mut audio: Option<ResMut<crate::audio::mixer::Audio>>,
 ) {
     // The perk the weapons were loaded with (start items), for Ready.
     let had = *start_vet.get_or_insert(vet.vet);
@@ -313,6 +324,7 @@ fn menu_input(
     if escape {
         match state.top() {
             Some(Page::Pause) => ids.push("pause.close".into()),
+            Some(Page::Audio) => ids.push("audio.back".into()),
             // A popup page closes on Escape, cancelled (as Cancel).
             Some(Page::ModelSelect) => ids.push("select.cancel".into()),
             None if !buy.open => ids.push("pause.open".into()),
@@ -333,15 +345,90 @@ fn menu_input(
         match id.as_str() {
             "profile.drag" => state.drag = Some(Drag::Profile),
             "select.drag" => state.drag = Some(Drag::ModelSelect),
+            // GUISlider (bCaptureMouse): the press sets the value at once
+            // (InternalOnMousePressed), then it follows the mouse.
+            s if s.starts_with("volume.slider:") => {
+                if let Some(i) = SLIDERS.iter().position(|(n, _)| audio_page::slider_id(n) == s) {
+                    state.drag = Some(Drag::Volume(i));
+                    state.audio_row = i;
+                }
+            }
             _ => ids.push(id.clone()),
         }
     }
     if let Some(d) = state.drag {
         if !mouse.pressed(MouseButton::Left) {
             state.drag = None;
+            // Let go of a slider: the value is saved (KF writes the ini on
+            // every change; we write once per drag).
+            if let (Drag::Volume(_), Some(a)) = (d, audio.as_deref()) {
+                a.save_volumes("slider_released");
+            }
+        } else if let Drag::Volume(i) = d {
+            if let (Some(a), Some(pos)) = (audio.as_deref_mut(), win.physical_cursor_position()) {
+                slide_to(a, &hits.0, i, pos.x, "menu_drag");
+            }
         } else if motion.delta.x != 0.0 {
             // Yaw -= 256 x DeltaX (mouse movement in pixels).
             turn(&mut state, d, motion.delta.x);
+        }
+    }
+    // The Audio window's keys (GUISlider.InternalOnKeyEvent: Left / Right
+    // move the focused slider 1% of its range; ours: Up / Down pick it)
+    // and the scripted volume actions.
+    if state.top() == Some(Page::Audio) {
+        let mut keys_down: Vec<&str> = [(KeyCode::ArrowUp, "up"), (KeyCode::ArrowDown, "down"), (KeyCode::ArrowLeft, "left"), (KeyCode::ArrowRight, "right")]
+            .into_iter()
+            .filter(|(k, _)| keys.just_pressed(*k))
+            .map(|(_, w)| w)
+            .collect();
+        keys_down.extend(actions.iter().filter_map(|a| a.strip_prefix("volume_key:")));
+        for k in keys_down {
+            let n = SLIDERS.len();
+            match k {
+                "up" => state.audio_row = (state.audio_row + n - 1) % n,
+                "down" => state.audio_row = (state.audio_row + 1) % n,
+                "left" | "right" => {
+                    if let Some(a) = audio.as_deref_mut() {
+                        let name = SLIDERS[state.audio_row.min(n - 1)].0;
+                        let (v, max) = a.volumes.slider(name, a.ini_volumes).unwrap_or((0.0, 1.0));
+                        let step = if k == "left" { -0.01 } else { 0.01 } * max;
+                        set_slider(a, name, v + step, "menu_key");
+                        a.save_volumes("key");
+                    }
+                }
+                _ => runlog::kv("menu_action", &format!("action=volume_key:{k} refused=unknown_key")),
+            }
+            runlog::kv("audio_page", &format!("event=key key={k} row={}", state.audio_row));
+        }
+    }
+    for a in &actions {
+        let Some(audio) = audio.as_deref_mut() else { break };
+        // `volume:NAME=VALUE`: sets a slider (any page; for tests).
+        if let Some((name, v)) = a.strip_prefix("volume:").and_then(|s| s.split_once('=')) {
+            match v.trim().parse::<f32>() {
+                Ok(v) if SLIDERS.iter().any(|(n, _)| *n == name) => {
+                    set_slider(audio, name, v, "scripted");
+                    audio.save_volumes("scripted");
+                }
+                _ => runlog::kv("menu_action", &format!("action={a} refused=bad_slider_or_value")),
+            }
+        }
+        // `volume_click:NAME@FRACTION`: a click at that fraction of the
+        // slider's box (as drawn last frame), through the mouse's code.
+        if let Some((name, f)) = a.strip_prefix("volume_click:").and_then(|s| s.split_once('@')) {
+            let i = SLIDERS.iter().position(|(n, _)| *n == name);
+            let rect = hits.0.iter().find(|(id, _)| *id == audio_page::slider_id(name)).map(|(_, r)| *r);
+            match (i, rect, f.trim().parse::<f32>()) {
+                (Some(i), Some(r), Ok(f)) => {
+                    let x = r.min.x + f * r.width();
+                    runlog::kv("audio_page", &format!("event=scripted_click slider={name} x={x:.0} box=({:.0},{:.0})-({:.0},{:.0})", r.min.x, r.min.y, r.max.x, r.max.y));
+                    state.audio_row = i;
+                    slide_to(audio, &hits.0, i, x, "menu_click");
+                    audio.save_volumes("slider_released");
+                }
+                _ => runlog::kv("menu_action", &format!("action={a} refused=no_such_slider_on_screen")),
+            }
         }
     }
     // The mouse wheel scrolls the character list one row (Step =
@@ -491,7 +578,20 @@ fn apply(
             let perk = Perk::ALL[state.pause_row.min(6)];
             perk_requests.write(crate::game::perks::PerkRequest(perk));
         }
-        "pause.settings" | "pause.spectate" => runlog::kv("menu_inert", &format!("button={id} reason=not_built")),
+        "pause.settings" if on(Page::Pause) => {
+            // KF opens its Settings page (Audio is one of its tabs); ours
+            // is only the volume window. A solo game stays paused under it
+            // (the pause menu is still open); a network game never pauses.
+            state.audio_row = 0;
+            state.stack.push(Page::Audio);
+            runlog::kv("menu_open", "page=Audio reason=settings_button");
+        }
+        "audio.back" if on(Page::Audio) => {
+            state.stack.pop();
+            state.drag = None;
+            runlog::kv("menu_close", "page=Audio reason=back");
+        }
+        "pause.spectate" => runlog::kv("menu_inert", &format!("button={id} reason=not_built")),
         "pause.forfeit" | "pause.exit" if on(Page::Pause) => {
             // Forfeit: DISCONNECT, back to the main menu (none here); Exit
             // Game: KFQuitPage asks first (not built). Both quit.
@@ -543,6 +643,24 @@ fn apply(
     }
 }
 
+/// Sets a volume slider (`master`, `effects`, `music`) if the value
+/// changed; heard from the next frame on (Audio::set_volumes logs it).
+fn set_slider(audio: &mut crate::audio::mixer::Audio, name: &str, v: f32, source: &str) {
+    let mut vols = audio.volumes;
+    if vols.set_slider(name, v) && vols != audio.volumes {
+        audio.set_volumes(vols, &format!("{source} slider={name}"));
+    }
+}
+
+/// A slider follows the mouse's x (physical pixels) over its box as drawn
+/// last frame (GUISlider.InternalCapturedMouseMove).
+fn slide_to(audio: &mut crate::audio::mixer::Audio, hits: &[(String, Rect)], i: usize, x: f32, source: &str) {
+    let Some((name, _)) = SLIDERS.get(i) else { return };
+    let Some((_, r)) = hits.iter().find(|(id, _)| *id == audio_page::slider_id(name)) else { return };
+    let (_, max) = audio.volumes.slider(name, audio.ini_volumes).unwrap_or((0.0, 1.0));
+    set_slider(audio, name, gui::slider_fraction(*r, x) * max, source);
+}
+
 /// Turns a preview by a mouse movement of `dx` pixels
 /// (KFTab_Profile.OnSpinnyDudeCapturedMouseMove: Yaw -= 256 x DeltaX).
 fn turn(state: &mut MenuState, d: Drag, dx: f32) {
@@ -550,6 +668,7 @@ fn turn(state: &mut MenuState, d: Drag, dx: f32) {
     let yaw = match d {
         Drag::Profile => &mut state.profile_yaw,
         Drag::ModelSelect => &mut state.select_yaw,
+        Drag::Volume(_) => return,
     };
     *yaw = (*yaw + delta).rem_euclid(65536);
 }
@@ -694,6 +813,7 @@ fn draw_menus(
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     net: Res<crate::net::lobby::NetLobby>,
     mut nu: crate::game::numenu::NuDraw,
+    audio: Option<Res<crate::audio::mixer::Audio>>,
 ) {
     if !gui.loaded {
         return;
@@ -740,6 +860,20 @@ fn draw_menus(
             model_select::draw(&mut p, &ctx, previews(crate::player::body::PREVIEW_MODEL_SELECT));
         }
         Some(Page::Pause) => pause::draw(&mut p, &ctx),
+        Some(Page::Audio) => {
+            // The pause menu stays drawn under the window, darkened (as
+            // under KFModelSelect); only the window takes clicks.
+            pause::draw(&mut p, &ctx);
+            p.hits.clear();
+            let screen = p.screen;
+            p.fill(screen, [0, 0, 0, 255 - 80], "Audio.Fade");
+            let view = audio.as_deref().map(|a| audio_page::AudioView { volumes: a.volumes, ini: a.ini_volumes, muted: a.capture.muted() });
+            let drag = match state.drag {
+                Some(Drag::Volume(i)) => Some(i),
+                _ => None,
+            };
+            audio_page::draw(&mut p, view.as_ref(), state.audio_row, drag);
+        }
         // The trader's NuMenu (game/numenu.rs) uses the same painter.
         None if nu.showing() => crate::game::numenu::draw(&mut p, &mut nu),
         None => {}
@@ -783,6 +917,19 @@ mod tests {
         s.stack.clear();
         s.stack.push(Page::Pause);
         assert!(!s.hides_hud() && !s.lobby_open());
+    }
+
+    #[test]
+    fn slider_value_follows_the_mouse_inside_the_marker_margins() {
+        // 220 x 20 box: marker 28 wide, so 14 px in from each end is 0 / 1.
+        let r = Rect::new(100.0, 0.0, 320.0, 20.0);
+        assert_eq!(gui::slider_fraction(r, 114.0), 0.0);
+        assert_eq!(gui::slider_fraction(r, 306.0), 1.0);
+        assert!((gui::slider_fraction(r, 210.0) - 0.5).abs() < 1e-6);
+        // Outside the box: the ends (a drag that leaves it).
+        assert_eq!(gui::slider_fraction(r, -50.0), 0.0);
+        assert_eq!(gui::slider_fraction(r, 9000.0), 1.0);
+        assert_eq!(scripted_to_ids("volume_page", Some(Page::Pause)), vec!["pause.settings".to_string()]);
     }
 
     #[test]

@@ -5658,3 +5658,74 @@ Network games: a client's own grenades are not reached by the host's
 Siren. The medic gun's dart (HealingProjectile) also reacts to any
 damage in KF (it pops); not done. Not play-tested by you.
 **Next:** Your play test; merge the worktree branch.
+
+## 2026-10-07 Volume control: pause menu Audio window and launcher sliders (VC1-VC3)
+
+**Changed:** Three volume sliders: Master (ours, 0-1, default 1), Effects
+and Music (KF's KFAudioSettingsTab sliders, 0-0.5, defaults from the
+install's KillingFloor.ini: 0.3 / 0.1). Heard volume: sounds = master x
+effects, music = master x music. The pause menu's Settings button (inert
+until now) opens an "Audio" window ("Sound System" box, KF's captions)
+over the pause menu: the mouse drags a slider, Up/Down pick one,
+Left/Right move it 1% of its range, Back or Escape closes it. The values
+are saved in the launcher's file `settings/launcher.txt` (lines
+`volume=`, `effects_volume=`, `music_volume=`; "default" = the ini's);
+the game reads them at start and rewrites only those lines when a
+slider is let go. The launcher shows the same three sliders in an
+"Audio" box under the map list and saves them on PLAY. New game option
+`--settings FILE` (the launcher passes its own on). Files:
+`src/launcher/choices.rs`, `src/launcher/mod.rs`, `src/launcher/draw.rs`,
+`src/audio/mixer.rs`, `src/audio/music.rs`, `src/audio/capture.rs`,
+`src/game/menus/audio_page.rs` (new), `src/game/menus/mod.rs`,
+`src/game/menus/gui.rs`, `src/game/menus/pause.rs`, `src/main.rs`,
+`docs/DESIGN.md` ("Volume control").
+**Why:** Change the volume while playing, at once, and keep it for the
+next launch; the same setting in the launcher.
+**Tested how:** `KF_ROOT=... scripts/headless.sh` runs, all `--mute`,
+with `--settings work/vc/settings.txt` (not your real file):
+(1) `--mode waves --input 30:sound:KF_9MMSnd.9mm_Fire,40:pause_menu,
+50:volume_page,60:volume_click:master@0.5,70:volume_key:down,
+71:volume_key:left,72:volume_key:left,80:volume_click:music@1.0
+--screenshot 95`; (2) relaunch with the saved file, `40:next_wave`, then
+`volume:music=0.1`, `volume:master=1` in the window, a 9mm shot before
+and after; (3) launcher `--launcher --dry-run` screenshot with
+`volume_click:master@0.75`; (4) launcher real PLAY (extra `--frames 150
+--mode debug --log work/vc/child.log`); (5) game `volume:effects=0.4` on
+the launcher's full file; (6) `--host 7790`, `lobby_ready`, pause menu,
+Audio window, `volume_click:master@0.5`, 9mm shot. `cargo test --release
+--workspace`; `rtk proxy cargo clippy --release --workspace`.
+**Result:** (1) `audio_volume master=0.500 effects=0.300 music=0.100
+sound_gain=0.1500 music_gain=0.0500 source=menu_click`, then effects
+0.295, 0.290 (keys), music 0.500; `volume_saved` after each; the 9mm
+shot before the change `gain=0.540` (1.8 x 0.3). Screenshot: window
+over the darkened pause menu. (2) start line `read=file master=0.500
+effects=0.290 music=0.500 sound_gain=0.1450 music_gain=0.2500`; 9mm
+`gain=0.261`; music `music_gain song=DirgeDisunion1 gain=0.2500`, then
+0.0500 and 0.1000 in the same frames as the slider changes (music heard
+at once, game paused); after closing, 9mm `gain=0.522`; file ends
+`volume=1.000 effects_volume=0.290 music_volume=0.100`. (3) launcher
+loaded 1.000 / 0.290 / 0.100 from the file, the click set 0.84.
+(4) `launcher_launch args=... --settings work/vc/settings.txt`, the file
+got all 20 choices, the started game logged `read=file music=0.250`.
+(5) only `effects_volume=0.400` changed, the other 19 lines kept.
+(6) no `pause` line (a network game does not pause), `audio_volume
+master=0.500 ... source=menu_click`, `voices_regain sound_gain=0.2000
+was=0.4000 voices=26` (playing sounds took the new volume the same
+frame), 9mm `gain=0.360`. Tests 219 + 24 pass (new:
+`volumes_parse_clamp_and_resolve`, `volume_lines_replace_only_themselves`,
+`slider_value_follows_the_mouse_inside_the_marker_margins`); clippy 0
+warnings. Failed attempt on the way: the launcher's Audio box between
+Play and Player pushed the Character row out of its box at 1280 x 800;
+moved under the map list. First window draw let the pause menu's text
+show through (KF's frame is see-through): added a dark backing.
+**Still broken / not tested:** Not heard (all runs muted; the numbers
+are the mixer's gains). A real mouse drag was not tested (the virtual
+display has no mouse; `volume_click` goes through the same
+position-to-value code, the press/hold/release handling is untested).
+Real arrow keys untested (the `volume_key` action uses the same code
+after the key read). The slider's look (marker size, bar height) is a
+guess. Network: tested as host only, not as a joining client. Sounds
+are not stopped when Effects changes (KF does "stopsounds"; ours keeps
+them). Not play-tested by you.
+**Next:** Your listening test; merge the worktree branch (the launcher
+change is one new box under the map list and three new saved lines).

@@ -54,6 +54,11 @@ impl Capture {
         Capture { rate, muted: AtomicBool::new(muted), generation: AtomicU64::new(0), started: AtomicU64::new(0), sink: Mutex::new(None), dropped: AtomicU64::new(0) }
     }
 
+    /// `--mute` (the speakers get silence).
+    pub fn muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
+    }
+
     /// Starts sending chunks to `tx`; returns the recording's number.
     pub fn begin(&self, tx: SyncSender<AudioChunk>) -> u64 {
         if let Ok(mut s) = self.sink.lock() {

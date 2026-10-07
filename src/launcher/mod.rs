@@ -24,7 +24,33 @@ use choices::{Choices, PlayType, command_line};
 /// The launcher's log (the game keeps `logs/latest.log`).
 const LOG_PATH: &str = "logs/launcher.log";
 /// The saved choices, next to `logs/` (gitignored: not in the whitelist).
-const SETTINGS_PATH: &str = "settings/launcher.txt";
+/// The game reads and writes its volume lines too (`read_volumes`,
+/// `save_volumes`).
+pub const SETTINGS_PATH: &str = "settings/launcher.txt";
+
+/// The volumes saved in the settings file, and whether the file had them
+/// ("file") or not ("default": no file or no volume lines).
+pub fn read_volumes(path: &std::path::Path) -> (choices::Volumes, &'static str) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let has = text.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| choices::VOLUME_FIELDS.contains(&k.trim())));
+            (Choices::from_text(&text).0.volumes, if has { "file" } else { "default" })
+        }
+        Err(_) => (choices::Volumes::default(), "default"),
+    }
+}
+
+/// The game's save: rewrites only the volume lines of the settings file
+/// (the launcher's other choices stay), creating it if needed.
+pub fn save_volumes(path: &std::path::Path, v: &choices::Volumes) -> Result<(), String> {
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    let new = choices::with_volume_lines(&old, v);
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| std::fs::write(path, new))
+        .map_err(|e| e.to_string())
+}
 
 /// Does this command line open the launcher? Nothing at all, or
 /// `--launcher` first. Any other argument runs the game directly.
@@ -180,6 +206,11 @@ pub struct Launcher {
     /// the address it was for; a new address clears it).
     host_wait: Option<HostAnswer>,
     pub host_text: Option<(String, String)>,
+    /// The install's KillingFloor.ini SoundVolume and MusicVolume (what
+    /// the Effects and Music sliders show while unset).
+    pub ini_volumes: (f32, f32),
+    /// The volume slider the mouse holds (index into `choices::SLIDERS`).
+    pub volume_drag: Option<usize>,
 }
 
 type HostAnswer = Arc<Mutex<Option<Result<(u16, crate::net::query::HostInfo), String>>>>;
@@ -276,6 +307,7 @@ pub fn run(args: &[String]) -> AppExit {
         maps: list_maps(&install.root),
         characters: crate::player::character::model_select_records(&install.root).into_iter().map(|r| (r.name, r.portrait)).collect(),
         reveal_map: true,
+        ini_volumes: crate::audio::mixer::ini_volumes(&install.root),
         ..default()
     };
     runlog::kv(
@@ -422,6 +454,15 @@ fn input(
                 }
                 _ => runlog::kv("launcher_action_refused", &format!("action=\"{a}\" reason=unknown_key")),
             }
+        } else if let Some((name, f)) = a.strip_prefix("volume_click:").and_then(|s| s.split_once('@')) {
+            // A click at that fraction of a volume slider's box (as drawn
+            // last frame), through the mouse's code.
+            let i = choices::SLIDERS.iter().position(|(n, _)| *n == name);
+            let r = hits.0.iter().find(|(id, _)| *id == volume_slider_id(name)).map(|(_, r)| *r);
+            match (i, r, f.trim().parse::<f32>()) {
+                (Some(i), Some(r), Ok(f)) => slide_to(l, &hits.0, i, r.min.x + f * r.width()),
+                _ => runlog::kv("launcher_action_refused", &format!("action=\"{a}\" reason=no_such_slider")),
+            }
         } else if a == "dump" {
             let list: Vec<String> = hits.0.iter().map(|(i, r)| format!("{i}:({:.0},{:.0})-({:.0},{:.0})", r.min.x, r.min.y, r.max.x, r.max.y)).collect();
             runlog::kv("launcher_dump", &format!("hits={} [{}]", list.len(), list.join(" ")));
@@ -434,7 +475,23 @@ fn input(
         && let Some(pos) = win.physical_cursor_position()
     {
         // A click outside every box ends typing.
-        ids.push(hits.0.iter().rev().find(|(_, r)| r.contains(pos)).map_or("unfocus".into(), |(id, _)| id.clone()));
+        let id = hits.0.iter().rev().find(|(_, r)| r.contains(pos)).map_or("unfocus".into(), |(id, _)| id.clone());
+        // A press on a volume slider grabs it (GUISlider, as in the game's
+        // Audio window): the value follows the mouse until let go.
+        match choices::SLIDERS.iter().position(|(n, _)| volume_slider_id(n) == id) {
+            Some(i) => {
+                l.focus = None;
+                l.volume_drag = Some(i);
+            }
+            None => ids.push(id),
+        }
+    }
+    if let Some(i) = l.volume_drag {
+        if !mouse.pressed(MouseButton::Left) {
+            l.volume_drag = None;
+        } else if let Some(pos) = win.physical_cursor_position() {
+            slide_to(l, &hits.0, i, pos.x);
+        }
     }
     // The mouse wheel over the map list scrolls it.
     if scroll.delta.y != 0.0
@@ -446,6 +503,19 @@ fn input(
     for id in ids {
         apply(&id, l, &opts, &started, &mut exit);
     }
+}
+
+/// The click id of a volume slider (as in the game's Audio window).
+pub fn volume_slider_id(name: &str) -> String {
+    format!("volume.slider:{name}")
+}
+
+/// A volume slider follows the mouse's x over its box as drawn last frame.
+fn slide_to(l: &mut Launcher, hits: &[(String, Rect)], i: usize, x: f32) {
+    let Some((name, _)) = choices::SLIDERS.get(i) else { return };
+    let Some((_, r)) = hits.iter().find(|(id, _)| *id == volume_slider_id(name)) else { return };
+    let (_, max) = l.choices.volumes.slider(name, l.ini_volumes).unwrap_or((0.0, 1.0));
+    l.choices.volumes.set_slider(name, gui::slider_fraction(*r, x) * max);
 }
 
 fn apply(id: &str, l: &mut Launcher, opts: &Options, started: &Started, exit: &mut MessageWriter<AppExit>) {
@@ -496,7 +566,13 @@ fn apply(id: &str, l: &mut Launcher, opts: &Options, started: &Started, exit: &m
 /// start the game (or only log it with `--dry-run`).
 fn launch(l: &mut Launcher, opts: &Options, started: &Started, exit: &mut MessageWriter<AppExit>) {
     let args = match l.choices.to_args(opts.mute) {
-        Ok(a) => a,
+        // The game reads its volumes from the same file.
+        Ok(mut a) => {
+            if let Some(s) = &opts.settings {
+                a.extend(["--settings".to_string(), s.clone()]);
+            }
+            a
+        }
         Err(e) => {
             runlog::kv("launcher_refused", &format!("reason=\"{e}\""));
             l.status = e;

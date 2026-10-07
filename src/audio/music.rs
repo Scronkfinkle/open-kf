@@ -189,7 +189,7 @@ fn song_file(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
     std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().to_ascii_lowercase() == want))
 }
 
-fn run_music(real: Res<Time<Real>>, mut cues: MessageReader<MusicCue>, audio: Res<Audio>, mut music: ResMut<Music>) {
+fn run_music(real: Res<Time<Real>>, mut cues: MessageReader<MusicCue>, audio: Res<Audio>, mut music: ResMut<Music>, mut logged_gain: Local<Option<(String, f32)>>) {
     // Muted or not: `--mute` silences the speakers after the recording tap.
     let volume = audio.music_volume;
     for &cue in cues.read() {
@@ -231,8 +231,16 @@ fn run_music(real: Res<Time<Real>>, mut cues: MessageReader<MusicCue>, audio: Re
             1.0
         }
     };
-    if let Some((_, Some(handle))) = &music.active {
+    if let Some((song, Some(handle))) = &music.active {
         handle.set_volume(level * volume);
+        // The song's steady volume, logged when it changes (a new song,
+        // or the volume sliders; not every frame of a fade-in).
+        if music.fade_in.is_none() && logged_gain.as_ref().is_none_or(|(s, g)| s != song || *g != volume) {
+            *logged_gain = Some((song.clone(), volume));
+            runlog::kv("music_gain", &format!("song={song} gain={volume:.4}"));
+        }
+    } else {
+        *logged_gain = None;
     }
 }
 
