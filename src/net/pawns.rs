@@ -81,6 +81,7 @@ type MyConnection = (With<Client>, With<Connected>, Without<LinkOf>);
 /// started (the host keeps it for `receive_pawn_updates`).
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn send_own_pawn(
+    (kills, dosh, health): (Res<crate::game::combat::KillCount>, Res<crate::game::dosh::Dosh>, Res<crate::game::combat::PlayerHealth>),
     time: Res<Time<Real>>,
     mode: Res<NetMode>,
     lobby: Res<NetLobby>,
@@ -118,6 +119,10 @@ fn send_own_pawn(
         hits: s.hits,
         hit_from: s.hit_from.map(|v| v.to_array()),
         dead: s.dead,
+        kills: kills.0,
+        dosh: dosh.score as i32,
+        deaths: health.deaths,
+        health: health.health.max(0.0).round() as i32,
     };
     let line = format!(
         "seq={} send_t={:.3} wall={:.3} active={} loc_unreal={} speed={:.0} yaw_deg={:.1} pitch_deg={:.1} on_ground={} weapon={} flash={} reloads={} dead={}",
@@ -267,6 +272,8 @@ fn track_remote_pawns(
             let e = commands
                 .spawn((
                     Name::new(format!("RemotePawn {}", np.peer)),
+                    // Where its sounds play from (the mixer's Emitter::Entity).
+                    Transform::from_translation(Vec3::from_array(np.state.location)),
                     PawnState { local: false, ..default() },
                     PawnCharacter(character.clone()),
                     RemotePawn {
@@ -367,9 +374,9 @@ fn sample(snaps: &VecDeque<Snapshot>, at: f64) -> Option<(PawnUpdate, bool)> {
 
 /// Moves each remote pawn's `PawnState` to where its player was
 /// `INTERP_DELAY` seconds ago (on their clock), for the body code.
-fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &mut RemotePawn)>) {
+fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &mut RemotePawn, &mut Transform)>) {
     let now = time.elapsed_secs_f64();
-    for (mut s, mut r) in &mut pawns {
+    for (mut s, mut r, mut t) in &mut pawns {
         let Some(offset) = r.offset else { continue };
         let at = now - offset - INTERP_DELAY;
         // Keep one update older than the moment drawn.
@@ -382,6 +389,7 @@ fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &
         }
         s.active = u.active;
         s.location = Vec3::from_array(u.location);
+        t.translation = s.location;
         s.velocity = Vec3::from_array(u.velocity);
         s.on_ground = u.on_ground;
         s.yaw = u.yaw;

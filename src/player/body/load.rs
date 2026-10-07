@@ -123,6 +123,33 @@ pub(super) struct AttachmentDef {
     pub rapid: [bool; 2],
     /// The weapon class's WeaponReloadAnim.
     pub reload_anim: String,
+    /// KFWeaponAttachment.mMuzFlashClass (None: no flash, or
+    /// bDoFiringEffects off) and the bind pose of the `tip` bone it is
+    /// attached to (mesh space; the attachment is drawn in its bind pose).
+    pub muzzle_flash: Option<String>,
+    pub tip: Option<(Quat, Vec3)>,
+    /// What other players hear when this weapon fires (per fire mode).
+    pub fire_sounds: [RemoteFireSound; 2],
+}
+
+/// The fire sounds other players hear (WeaponFire / KFFire.PlayFiring on a
+/// machine that does not own the weapon: FireSound, never the
+/// StereoFireSound of the owner; KFHighROFFire's FireLoop sets the
+/// attachment's AmbientSound instead).
+#[derive(Clone, Debug, Default)]
+pub struct RemoteFireSound {
+    /// FireSound at TransientSoundVolume / TransientSoundRadius, pitch
+    /// 1 +- RandomPitchAdjustAmt x FRand when bRandomPitchFireSound.
+    pub sound: Option<String>,
+    pub volume: f32,
+    pub radius: f32,
+    pub random_pitch: f32,
+    /// Full auto (KFHighROFFire / FlameBurstFire without bWaitForRelease):
+    /// AmbientFireSound while firing, then FireEndSound.
+    pub ambient: Option<String>,
+    pub ambient_volume: u8,
+    pub ambient_radius: f32,
+    pub end: Option<String>,
 }
 
 /// The loaded bodies and attachments.
@@ -400,7 +427,7 @@ pub(super) fn load_attachments(
                 runlog::kv(
                     "body_attachment",
                     &format!(
-                        "weapon={class} attachment={} mesh={} draw_scale={} kf_anims={} rapid={:?} reload_anim={} movement={:?} idle={} fire={} fire_alt={} hit={:?}",
+                        "weapon={class} attachment={} mesh={} draw_scale={} kf_anims={} rapid={:?} reload_anim={} movement={:?} idle={} fire={} fire_alt={} hit={:?} muzzle_flash={:?} tip={} fire_sound={:?} fire_loop={:?}",
                         a.class,
                         a.model.as_ref().map_or("none".to_string(), |m| format!("{}x{}tris", m.mesh.points.len(), m.mesh.triangles.len())),
                         a.draw_scale,
@@ -412,6 +439,10 @@ pub(super) fn load_attachments(
                         a.names.as_ref().map_or("", |n| n.fire[0].as_str()),
                         a.names.as_ref().map_or("", |n| n.fire_alt[0].as_str()),
                         a.names.as_ref().map(|n| n.hit.clone()),
+                        a.muzzle_flash,
+                        a.tip.is_some(),
+                        a.fire_sounds[0].sound,
+                        a.fire_sounds[0].ambient,
                     ),
                 );
                 if !missing.is_empty() {
@@ -457,7 +488,22 @@ fn load_attachment(
         None => None,
     };
     let points = model.as_ref().map_or(Vec::new(), |m| m.pose_with_bones(None, 0.0).0);
+    let is_kf = defaults.is_a(&class, "KFWeaponAttachment");
+    // KFWeaponAttachment.bDoFiringEffects (KFMeleeAttachment: false).
+    let firing_effects = is_kf && !matches!(defaults.get(&class, "bDoFiringEffects"), Some((Value::Bool(false), _)));
+    let muzzle_flash = match defaults.get(&class, "mMuzFlashClass") {
+        Some((Value::Object(r), pkg)) if firing_effects => set.resolve(&pkg, r).map(|h| h.path()),
+        _ => None,
+    };
+    let tip = model.as_ref().and_then(|m| m.find_bone("tip").and_then(|b| m.bind_pose().get(b).copied()));
+    let fire_sounds = [0, 1].map(|i| match defaults.get_at(&weapon, "FireModeClass", i) {
+        Some((Value::Object(fm), pkg)) => set.resolve(&pkg, fm).map_or_else(RemoteFireSound::default, |fm| remote_fire_sound(defaults, &fm)),
+        _ => RemoteFireSound::default(),
+    });
     Ok(AttachmentDef {
+        muzzle_flash,
+        tip,
+        fire_sounds,
         class: class.path(),
         names: defaults.is_a(&class, "KFWeaponAttachment").then(|| AnimNames::read(defaults, &class)),
         rapid: [bool_prop(defaults, &class, "bRapidFire"), bool_prop(defaults, &class, "bAltRapidFire")],
@@ -466,6 +512,26 @@ fn load_attachment(
         points,
         model,
     })
+}
+
+fn remote_fire_sound(defaults: &ClassDefaults, fm: &ObjectHandle) -> RemoteFireSound {
+    use crate::weapons::weapon::sound_prop;
+    let kf_fire = defaults.is_a(fm, "KFFire") || defaults.is_a(fm, "KFShotgunFire");
+    let looping = (defaults.is_a(fm, "KFHighROFFire") || defaults.is_a(fm, "FlameBurstFire")) && !bool_prop(defaults, fm, "bWaitForRelease");
+    let ambient = if looping { sound_prop(defaults, fm, "AmbientFireSound") } else { None };
+    RemoteFireSound {
+        sound: sound_prop(defaults, fm, "FireSound"),
+        volume: float(defaults, fm, "TransientSoundVolume", 0.5),
+        radius: float(defaults, fm, "TransientSoundRadius", 400.0),
+        random_pitch: if kf_fire && bool_prop(defaults, fm, "bRandomPitchFireSound") { float(defaults, fm, "RandomPitchAdjustAmt", 0.0) } else { 0.0 },
+        end: ambient.as_ref().and_then(|_| sound_prop(defaults, fm, "FireEndSound")),
+        ambient,
+        ambient_volume: match defaults.get(fm, "AmbientFireVolume") {
+            Some((Value::Byte(b), _)) => b,
+            _ => 255,
+        },
+        ambient_radius: float(defaults, fm, "AmbientFireSoundRadius", 500.0),
+    }
 }
 
 type RenderAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<StandardMaterial>>);

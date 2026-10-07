@@ -68,11 +68,15 @@ pub fn kill_score(scoring_value: f32, length: GameLength) -> f32 {
     (s as i32).max(1) as f32
 }
 
+/// The dosh system (others that change dosh at a wave end run after it).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DoshSystems;
+
 pub struct DoshPlugin;
 
 impl Plugin for DoshPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Dosh>().add_systems(Update, update_dosh.after(crate::game::waves::wave_timer));
+        app.init_resource::<Dosh>().add_systems(Update, update_dosh.after(crate::game::waves::wave_timer).in_set(DoshSystems));
     }
 }
 
@@ -114,8 +118,10 @@ fn update_dosh(
     }
     if game.waves_ended != *waves_ended {
         *waves_ended = game.waves_ended;
-        // Only a living player is paid; solo, a dead player has lost.
-        if game.phase != crate::game::waves::Phase::Lost {
+        // Only a living player is paid (RewardSurvivingPlayers: players
+        // with a pawn); solo, a dead player has lost. A dead network
+        // player is brought back after this (net/starts.rs).
+        if game.phase != crate::game::waves::Phase::Lost && !health.dead {
             let pot = dosh.wave_reward();
             runlog::kv("dosh", &format!("reason=wave_end amount={pot:.0} total={:.0}", dosh.score));
         }

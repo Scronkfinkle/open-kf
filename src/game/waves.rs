@@ -567,7 +567,7 @@ pub fn wave_timer(
         return;
     }
     // A network client runs no waves of its own: it follows the host's.
-    if net_mode.is_some_and(|m| matches!(*m, crate::net::NetMode::Client { .. })) {
+    if net_mode.as_ref().is_some_and(|m| matches!(**m, crate::net::NetMode::Client { .. })) {
         restart_requests.clear();
         if let Some(w) = remote_wave.0.as_ref() {
             let now = time.elapsed_secs();
@@ -670,7 +670,12 @@ pub fn wave_timer(
     // UpdateMonsterCount: no living player ends the game (solo: no respawn;
     // a network host also waits for the other players' pawns to be dead).
     let others_alive = remote_players.0.iter().filter(|p| p.alive).count();
-    if matches!(g.phase, Phase::Countdown | Phase::Wave | Phase::BossWave) && health.deaths > g.deaths_at_start.unwrap_or(0) && others_alive == 0 {
+    // Network: players come back at a wave end (net/starts.rs), so it is
+    // whether the host's player is dead now (and died in this game: on a
+    // restart it is revived just after this, end_game.rs).
+    let died = health.deaths > g.deaths_at_start.unwrap_or(0);
+    let host_dead = if net_mode.as_ref().is_some_and(|m| m.active()) { died && health.dead } else { died };
+    if matches!(g.phase, Phase::Countdown | Phase::Wave | Phase::BossWave) && host_dead && others_alive == 0 {
         g.phase = Phase::Lost;
         runlog::kv("game_end", &format!("result=lost wave={}", g.wave_num + 1));
     }

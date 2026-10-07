@@ -71,11 +71,50 @@ fn scripted_turn(
     time: Res<Time>,
     script: Res<crate::weapons::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
-    mut cams: Query<(&mut Transform, &mut FlyCamera)>,
+    mut cams: Query<(&mut Transform, &mut FlyCamera, Option<&mut crate::player::walk::Walker>)>,
     mut turning: Local<Option<(f32, f32)>>,
     zeds: Query<&crate::zeds::zed::Zed>,
+    pawns: Query<&crate::player::body::PawnState>,
 ) {
     for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+        // Test action `aim_player` (network games): look at the nearest
+        // other player's pawn (its chest: 20 units above the centre).
+        if a == "aim_player" {
+            for (mut t, mut cam, _) in &mut cams {
+                let eye = t.translation;
+                let Some(p) = pawns.iter().filter(|p| !p.local && p.active).min_by(|a, b| (a.location - eye).length_squared().total_cmp(&(b.location - eye).length_squared())) else {
+                    runlog::kv("scripted_aim", "player=none");
+                    continue;
+                };
+                let at = p.location + Vec3::Y * 20.0 * crate::engine::coords::SCALE;
+                let d = (at - eye).normalize_or_zero();
+                cam.yaw = (-d.x).atan2(-d.z);
+                cam.pitch = d.y.clamp(-1.0, 1.0).asin();
+                t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
+                runlog::kv("scripted_aim", &format!("player=nearest distance_unreal={:.0}", (at - eye).length() / crate::engine::coords::SCALE));
+            }
+        }
+        // Test action `warp:X;Y;Z;YAW`: the player's cylinder centre to
+        // (X, Y, Z) Unreal units, facing Unreal yaw YAW degrees.
+        if let Some(v) = a.strip_prefix("warp:") {
+            let n: Vec<f32> = v.split(';').filter_map(|x| x.parse().ok()).collect();
+            if n.len() == 4 {
+                for (mut t, mut cam, walker) in &mut cams {
+                    let centre = crate::engine::coords::pos([n[0], n[1], n[2]]);
+                    t.translation = centre + Vec3::Y * crate::player::walk::kf::EYE_HEIGHT * crate::engine::coords::SCALE;
+                    let y = n[3].to_radians();
+                    let f = crate::engine::coords::dir([y.cos(), y.sin(), 0.0]);
+                    cam.yaw = (-f.x).atan2(-f.z);
+                    cam.pitch = 0.0;
+                    t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, 0.0, 0.0);
+                    if let Some(mut w) = walker {
+                        w.center = centre;
+                        w.velocity = Vec3::ZERO;
+                    }
+                }
+                runlog::kv("scripted_warp", &format!("at_unreal=({}, {}, {}) yaw_deg={}", n[0], n[1], n[2], n[3]));
+            }
+        }
         if let Some(deg) = a.strip_prefix("turn:").and_then(|d| d.parse::<f32>().ok()) {
             *turning = Some((deg.to_radians(), 1.0));
             runlog::kv("scripted_turn", &format!("degrees={deg} seconds=1"));
@@ -83,7 +122,7 @@ fn scripted_turn(
         // Test action `aim_zed`: look straight at the nearest living zed's
         // head (its body centre if the head is not placed yet).
         if a == "aim_zed" {
-            for (mut t, mut cam) in &mut cams {
+            for (mut t, mut cam, _) in &mut cams {
                 let eye = t.translation;
                 let Some(z) = zeds.iter().filter(|z| !z.is_dead()).min_by(|a, b| (a.centre - eye).length_squared().total_cmp(&(b.centre - eye).length_squared())) else {
                     runlog::kv("scripted_aim", "zed=none");
@@ -100,7 +139,7 @@ fn scripted_turn(
     }
     let Some((rate, left)) = *turning else { return };
     let dt = time.delta_secs().min(left);
-    for (mut t, mut cam) in &mut cams {
+    for (mut t, mut cam, _) in &mut cams {
         cam.yaw -= rate * dt;
         t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
     }

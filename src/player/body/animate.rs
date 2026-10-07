@@ -131,6 +131,7 @@ pub(super) fn spawn_bodies(
             ragdoll_location: None,
             log_second: -1,
             who: if s.local { "local".into() } else { name.map_or(format!("{e:?}"), |n| n.as_str().replace(' ', "_")) },
+            tip: None,
         });
         runlog::kv("body_spawned", &format!("character={} local={} parts={} pawn={e:?}", b.name, s.local, b.model.parts.len()));
     }
@@ -716,6 +717,20 @@ pub(super) fn animate_bodies(
             (origin, Mat3::from_cols(axes[0], axes[1], axes[2]))
         });
         let att_model = att.and_then(|a| a.model.as_ref().map(|m| (a, m, m.mesh_to_actor(Vec3::ZERO, a.draw_scale))));
+        // The attachment's `tip` bone in Unreal world space (the root is at
+        // the pawn's Location, turned by its yaw), for the muzzle flash.
+        body.tip = match (&att_model, hand) {
+            (Some((a, _, att_to_actor)), Some((origin, frame))) => a.tip.map(|(q, p)| {
+                let o = origin + frame * att_to_actor(p);
+                let axes = [Vec3::X, Vec3::Y, Vec3::Z].map(|ax| (origin + frame * att_to_actor(p + q * ax) - o).normalize_or_zero());
+                let rot = Quat::from_rotation_y(s.yaw);
+                let to_ue = |b: Vec3| Vec3::new(-b.z, b.x, b.y);
+                let at = to_ue(s.location + rot * coords::pos(o.to_array())) / SCALE;
+                let axes = axes.map(|ax| to_ue(rot * coords::dir(ax.to_array())));
+                (at, Mat3::from_cols(axes[0], axes[1], axes[2]))
+            }),
+            _ => None,
+        };
         if visible {
             let skinned = b.model.skin(&pose, &[]);
             b.model.upload_to(&body.meshes, &skinned, |p| coords::pos(to_actor(p).to_array()), &mut meshes);

@@ -155,6 +155,8 @@ fn load_menus(
         .or_else(|| gui::ini_value(&defuser, "DefaultPlayer", "Name"))
         .unwrap_or_else(|| "Player".into());
     let mut extra: Vec<String> = Perk::ALL.iter().map(|p| p.icons().0.to_string()).collect();
+    // The network scoreboard's boxes (net/scoreboard.rs).
+    extra.push("InterfaceArt_tex.Menu.changeme_texture".to_string());
     if settings.open {
         // The portraits and biographies are only needed by the lobby.
         let set = ue_assets::package_set::PackageSet::new(root);

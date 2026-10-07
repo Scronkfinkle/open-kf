@@ -45,6 +45,24 @@ pub struct SpawnPoint {
     pub forward: Vec3,
 }
 
+/// LevelInfo.Title (the scoreboard's title line).
+#[derive(Resource, Default, Debug, Clone)]
+pub struct LevelTitle(pub String);
+
+/// The map's PlayerStarts (Unreal units; the location is the collision
+/// cylinder's centre), for the network host's FindPlayerStart.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct PlayerStarts(pub Vec<StartSpot>);
+
+#[derive(Debug, Clone, Copy)]
+pub struct StartSpot {
+    pub location: Vec3,
+    /// Rotation.Yaw, Unreal units (65536 a turn).
+    pub yaw: i32,
+    pub enabled: bool,
+    pub primary: bool,
+}
+
 /// Surface flag: not solid (does not block movement).
 const NOT_SOLID: u32 = 0x0000_0008;
 
@@ -171,6 +189,7 @@ pub struct MapPlugin;
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SpawnPoint>()
+            .init_resource::<PlayerStarts>()
             .init_resource::<SkyInfo>()
             .add_systems(Startup, load_map);
     }
@@ -1316,8 +1335,16 @@ fn load_map(
     };
     spawn.position = position;
     spawn.forward = forward;
+    commands.insert_resource(PlayerStarts(
+        contents
+            .player_starts
+            .iter()
+            .map(|ps| StartSpot { location: Vec3::from_array(ps.location), yaw: ps.rotation.yaw, enabled: ps.enabled, primary: ps.primary })
+            .collect(),
+    ));
 
     let level_name = level_title(&lp);
+    commands.insert_resource(LevelTitle(level_name.clone()));
     runlog::kv(
         "map_loaded",
         &format!(

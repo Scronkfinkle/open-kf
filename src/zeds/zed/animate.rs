@@ -153,7 +153,8 @@ pub(super) fn animate_zeds(
                     .as_deref()
                     .and_then(|lib| particles::spawn_effect(&mut commands, lib, &mut meshes, class, at, axes, seed));
                 let tilt = 2000.0 * k;
-                for _ in 0..4 {
+                // A puppet's globs come from the host's Bloat (net/zeds.rs).
+                for _ in 0..if z.net.puppet { 0 } else { 4 } {
                     let yaw = (z.random() % 65536) as f32 * k;
                     let dir = Vec3::new(tilt.sin() * yaw.cos(), tilt.sin() * yaw.sin(), tilt.cos());
                     vomit.write(crate::zeds::vomit::SpawnVomit {

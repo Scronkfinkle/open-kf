@@ -81,6 +81,12 @@ pub struct PawnUpdate {
     pub hits: u32,
     pub hit_from: Option<[f32; 3]>,
     pub dead: bool,
+    /// For the scoreboard (KF's PRI Kills, Score, Deaths and
+    /// KFPRI.PlayerHealth), as this player's game has them (step 4).
+    pub kills: u32,
+    pub dosh: i32,
+    pub deaths: u32,
+    pub health: i32,
 }
 
 /// A player's pawn on the server, copied to everyone (KF's Pawn, as other
@@ -129,6 +135,32 @@ pub struct KillCredit {
     pub headshot: bool,
 }
 
+/// The host's choice of start spot for a player (step 4: GameInfo
+/// FindPlayerStart), and with `respawn` a dead player's new pawn (KF's
+/// wave-end ServerReStartPlayer). Unreal units; yaw 65536 a turn.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PlayerStartMsg {
+    pub location: [f32; 3],
+    pub yaw: i32,
+    pub respawn: bool,
+    pub reason: String,
+}
+
+/// A projectile a host zed fired (step 4), for clients to show a harmless
+/// copy (the host's own copy does the damage). Unreal units.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum ProjectileFx {
+    /// A Bloat glob (KFBloatVomit): start and velocity.
+    Bile { at: [f32; 3], velocity: [f32; 3], zed_id: u32 },
+    /// A Husk fireball (rocket: false) or the Patriarch's rocket: start
+    /// and direction.
+    Fireball { at: [f32; 3], dir: [f32; 3], zed_id: u32, rocket: bool },
+}
+
+/// Every door's state on the host (step 4, world/door.rs `DoorNet`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DoorStates(pub Vec<crate::world::door::DoorNetState>);
+
 /// Reliable, ordered: lobby requests must all arrive, in order.
 pub struct LobbyChannel;
 
@@ -154,6 +186,10 @@ pub fn register(app: &mut App) {
     app.register_message::<PlayerEvent>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<KillCredit>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<crate::game::combat::NetHit>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<PlayerStartMsg>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<ProjectileFx>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<DoorStates>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<crate::world::door::DoorRequest>().add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })

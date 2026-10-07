@@ -31,7 +31,7 @@ use crate::world::map::MapRequest;
 use crate::engine::runlog;
 
 /// Effects loaded at startup (the gore effects, see DESIGN.md).
-const EFFECT_CLASSES: [&str; 77] = [
+const EFFECT_CLASSES: [&str; 85] = [
     // KFGlassMover GlassBits / BreakGlassBits (glass.rs).
     "KFMod.WindowGlassEmitter",
     "KFMod.BreakWindowGlassEmitter",
@@ -121,6 +121,16 @@ const EFFECT_CLASSES: [&str; 77] = [
     "ROEffects.MuzzleFlash1stSTG",
     "ROEffects.MuzzleFlash1stZEDGunPrimary",
     "ROEffects.ZEDGunChargeDown",
+    // Other players' weapons in a network game: every base weapon
+    // attachment's mMuzFlashClass (KFWeaponAttachment.DoFlashEmitter).
+    "ROEffects.MuzzleFlash3rdPistol",
+    "ROEffects.MuzzleFlash3rdMP",
+    "ROEffects.MuzzleFlash3rdKar",
+    "ROEffects.MuzzleFlash3rdNadeL",
+    "ROEffects.MuzzleFlash3rdPTRD",
+    "ROEffects.MuzzleFlash3rdNailGun",
+    "ROEffects.MuzzleFlash3rdFlareRevolver",
+    "KFMod.KFLawMuzzFlash",
 ];
 
 pub struct ParticlePlugin;

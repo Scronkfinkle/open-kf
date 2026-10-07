@@ -356,6 +356,12 @@ pub(super) fn weapon_input(
     if match_over.is_some_and(|m| m.active()) {
         return;
     }
+    // Dead (a network game goes on without this player until the wave
+    // ends): no weapon.
+    if health.dead {
+        w.firing = [false; 2];
+        return;
+    }
     let scripted = |action: &str| script.0.iter().any(|(f, a)| *f == frames.0 && a == action);
     // Time to each mode's NextFireTime; negative = overdue (kept, so the
     // next shot comes FireRate after the last was due, as

@@ -100,6 +100,8 @@ pub struct Door {
     since_zed_hit_sound: f32,
     /// MoveAmbientSound is on (while moving).
     ambient_on: bool,
+    /// The key the last open went to (None: DoOpen), for the network state.
+    open_to: Option<u8>,
 }
 
 /// What a door plays (Mover and KFDoorMover).
@@ -139,6 +141,161 @@ pub struct Doors {
     outbox: Vec<crate::game::hud::LocalMessage>,
 }
 
+/// Network games (step 4): the host owns the doors. A client sends what
+/// its player does to a door (`DoorRequest`) and copies the host's door
+/// state (`DoorNetState`); net/doors.rs carries both.
+#[derive(Resource, Default)]
+pub struct DoorNet {
+    pub role: DoorRole,
+    /// Client: requests to send to the host.
+    pub outgoing: Vec<DoorRequest>,
+    /// Host: requests from clients (peer id, request).
+    pub incoming: Vec<(u64, DoorRequest)>,
+    /// Host: the state of every door, made each frame (sent when it changes).
+    pub state: Vec<DoorNetState>,
+    /// Client: the host's newest state, and what has been applied.
+    pub from_host: Option<Vec<DoorNetState>>,
+    applied: Vec<Option<DoorNetState>>,
+}
+
+impl DoorNet {
+    pub fn new(role: DoorRole) -> Self {
+        DoorNet { role, ..default() }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DoorRole {
+    #[default]
+    Off,
+    Host,
+    Client,
+}
+
+/// What a client's player did to a door (KFUseTrigger.UsedBy by USE;
+/// WeldFire / UnWeldFire's TakeDamage on the door).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub enum DoorRequest {
+    Use { trigger: u16, user: [f32; 3] },
+    Weld { door: u16, damage: f32, unweld: bool },
+}
+
+/// One door as the host has it.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct DoorNetState {
+    /// Opening or open (else closing or shut), and to which key.
+    pub open: bool,
+    pub to_key: Option<u8>,
+    pub weld: f32,
+    pub sealed: bool,
+    /// Broken (GoBang) and not respawned.
+    pub dead: bool,
+}
+
+impl Door {
+    fn net_state(&self) -> DoorNetState {
+        let open = match self.phase {
+            Phase::Opening { .. } => true,
+            Phase::Closing => false,
+            Phase::Idle => self.key_num > 0,
+        };
+        DoorNetState { open, to_key: self.open_to, weld: self.weld, sealed: self.sealed, dead: self.dead }
+    }
+}
+
+/// Host: clients' door requests, as if this game's player had done them
+/// (their messages are not shown here); then the doors' state for the
+/// clients. Client: the host's door state copied into the local doors
+/// (opening and closing play here, broken doors break here).
+#[allow(clippy::too_many_arguments)]
+fn door_net(
+    time: Res<Time>,
+    mut net: ResMut<DoorNet>,
+    mut doors: ResMut<Doors>,
+    mut commands: Commands,
+    library: Option<Res<crate::render::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut visibility: Query<&mut Visibility>,
+    mut seed: Local<u32>,
+) {
+    let doors = &mut *doors;
+    match net.role {
+        DoorRole::Off => {}
+        DoorRole::Host => {
+            let now = time.elapsed_secs();
+            for (peer, r) in std::mem::take(&mut net.incoming) {
+                match r {
+                    DoorRequest::Use { trigger, user } => {
+                        let t = trigger as usize;
+                        if t >= doors.triggers.len() {
+                            continue;
+                        }
+                        let before = doors.outbox.len();
+                        runlog::kv("door_use_remote", &format!("peer={peer} trigger={} at=({:.0}, {:.0}, {:.0})", doors.triggers[t].info.name, user[0], user[1], user[2]));
+                        used_by_player(doors, t, user, now);
+                        // "This door is welded shut" is for that player, not this one.
+                        doors.outbox.truncate(before);
+                    }
+                    DoorRequest::Weld { door, damage, unweld } => {
+                        let i = door as usize;
+                        if i >= doors.doors.len() {
+                            continue;
+                        }
+                        let what = doors.welder_damage(i, damage, unweld);
+                        let d = &doors.doors[i];
+                        runlog::kv("weld_hit_remote", &format!("peer={peer} mode={} door={} damage={damage} {what} weld={:.1} sealed={}", if unweld { "unweld" } else { "weld" }, d.info.name, d.weld, d.sealed));
+                    }
+                }
+            }
+            net.state = doors.doors.iter().map(Door::net_state).collect();
+        }
+        DoorRole::Client => {
+            let Some(states) = net.from_host.clone() else { return };
+            if net.applied.len() != doors.doors.len() {
+                net.applied = vec![None; doors.doors.len()];
+            }
+            for (i, s) in states.iter().enumerate().take(doors.doors.len()) {
+                let before = net.applied[i];
+                if before == Some(*s) {
+                    continue;
+                }
+                net.applied[i] = Some(*s);
+                // The weld (KFUseTrigger.WeldStrength, shared by its doors).
+                if let Some(t) = doors.doors[i].trigger {
+                    doors.triggers[t].weld_strength = s.weld;
+                }
+                let d = &mut doors.doors[i];
+                d.weld = s.weld;
+                d.sealed = s.sealed;
+                // Broken / back (GoBang / RespawnDoor).
+                if s.dead && !d.dead {
+                    go_bang(doors, i, "host", &mut commands, library.as_deref(), &mut meshes, &mut visibility, &mut seed);
+                } else if !s.dead && d.dead {
+                    d.dead = false;
+                    d.hidden = false;
+                    if let Some(c) = d.collider {
+                        commands.entity(c).insert(door_layers(&d.info));
+                    }
+                    if let Ok(mut v) = visibility.get_mut(d.root) {
+                        *v = Visibility::Inherited;
+                    }
+                    d.log("respawned", "host");
+                }
+                // Open / close when the host's door changed direction.
+                let d = &mut doors.doors[i];
+                let was_open = before.map_or(d.net_state().open, |b| b.open);
+                if s.open != was_open || (before.is_none() && s.open != d.net_state().open) {
+                    if s.open {
+                        d.goto_open(s.to_key, "host");
+                    } else {
+                        d.goto_close(s.to_key.is_some(), "host");
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub struct DoorPlugin;
 
 impl Plugin for DoorPlugin {
@@ -146,12 +303,13 @@ impl Plugin for DoorPlugin {
         app.init_resource::<DoorSetup>()
             .init_resource::<Doors>()
             .init_resource::<WeldView>()
+            .init_resource::<DoorNet>()
             .add_message::<WeldHit>()
             .add_message::<ZedDoorHit>()
             .add_message::<DoorBlast>()
             .add_message::<RespawnDoors>()
             .add_systems(PostStartup, spawn_doors)
-            .add_systems(Update, (use_and_touch, aim_at_door, weld_hits, zed_door_hits, respawn_doors, move_doors, door_path_costs, door_sounds).chain());
+            .add_systems(Update, (door_net, use_and_touch, aim_at_door, weld_hits, zed_door_hits, respawn_doors, move_doors, door_path_costs, door_sounds).chain());
     }
 }
 
@@ -220,6 +378,7 @@ impl Door {
             sounds: Vec::new(),
             since_zed_hit_sound: f32::MAX,
             ambient_on: false,
+            open_to: None,
             hidden: false,
             weld: 0.0,
             max_weld: 0.0,
@@ -321,6 +480,7 @@ impl Door {
 
     fn goto_open(&mut self, to_key: Option<u8>, by: &str) {
         self.closed = false;
+        self.open_to = to_key;
         self.phase = Phase::Opening {
             delay: self.info.delay_time,
             to_key,
@@ -689,7 +849,9 @@ fn use_and_touch(
     zeds: Query<&crate::zeds::zed::Zed>,
     mut doors: ResMut<Doors>,
     mut hud_messages: MessageWriter<crate::game::hud::LocalMessage>,
+    mut net: ResMut<DoorNet>,
 ) {
+    let client = net.role == DoorRole::Client;
     for m in std::mem::take(&mut doors.outbox) {
         hud_messages.write(m);
     }
@@ -706,7 +868,8 @@ fn use_and_touch(
     if let Some(p) = player_at {
         pawns.push((0, p, 20.0, 50.0, None));
     }
-    for z in &zeds {
+    // A client's zeds are the host's puppets: the host's zeds open its doors.
+    for z in zeds.iter().filter(|_| !client) {
         if let Some(c) = z.blocking_cylinder() {
             pawns.push((z.id + 1, ue(c.centre), c.radius / SCALE, c.half_height / SCALE, Some(z.id)));
         }
@@ -734,7 +897,19 @@ fn use_and_touch(
             ),
         );
         for t in list {
-            used_by_player(doors, t, p, now);
+            if client {
+                // The host decides (its UsedBy, net/doors.rs); the "welded
+                // shut" message is this player's, so it shows here.
+                net.outgoing.push(DoorRequest::Use { trigger: t as u16, user: p });
+                let welded = doors.triggers[t].doors.iter().any(|&i| doors.doors[i].sealed && !doors.doors[i].hidden && doors.doors[i].closed);
+                if welded {
+                    runlog::kv("message", "text=\"This door is welded shut.|Use the Welder's alt-fire to unweld.\" (client)");
+                    doors.outbox.push(crate::game::hud::LocalMessage::new(crate::game::hud::MessageClass::Waiting, 4));
+                }
+                runlog::kv("door_use_sent", &format!("trigger={} welded={welded}", doors.triggers[t].info.name));
+            } else {
+                used_by_player(doors, t, p, now);
+            }
         }
     }
 }
@@ -930,6 +1105,7 @@ fn weld_hits(
     library: Option<Res<crate::render::particles::EffectLibrary>>,
     (mut meshes, mut sounds): (ResMut<Assets<Mesh>>, MessageWriter<crate::audio::mixer::PlaySound>),
     mut seed: Local<u32>,
+    mut net: ResMut<DoorNet>,
 ) {
     for h in hits.read() {
         let mode = if h.unweld { "unweld" } else { "weld" };
@@ -941,7 +1117,13 @@ fn weld_hits(
             runlog::kv("weld_hit", &format!("mode={mode} door=none"));
             continue;
         };
-        let what = doors.welder_damage(i, h.damage, h.unweld);
+        let what = if net.role == DoorRole::Client {
+            // The host welds (net/doors.rs); the weld comes back with its door state.
+            net.outgoing.push(DoorRequest::Weld { door: i as u16, damage: h.damage, unweld: h.unweld });
+            "sent_to_host".to_string()
+        } else {
+            doors.welder_damage(i, h.damage, h.unweld)
+        };
         let d = &doors.doors[i];
         let pct = if d.max_weld > 0.0 { d.weld / d.max_weld * 100.0 } else { 0.0 };
         runlog::kv(
@@ -1132,8 +1314,16 @@ fn zed_door_hits(
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
     mut seed: Local<u32>,
-    (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
+    (script, frames, net): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>, Res<DoorNet>),
 ) {
+    // A client's doors are the host's: damage happens there.
+    if net.role == DoorRole::Client {
+        hits.clear();
+        for b in blasts.read() {
+            runlog::kv("door_blast_ignored", &format!("source={} reason=network_client", b.source));
+        }
+        return;
+    }
     // Test action "break_doors": every door with a trigger goes bang.
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "break_doors") {
         for i in 0..doors.doors.len() {
@@ -1257,8 +1447,9 @@ fn respawn_doors(
     mut doors: ResMut<Doors>,
     mut commands: Commands,
     mut visibility: Query<&mut Visibility>,
+    net: Res<DoorNet>,
 ) {
-    if requests.read().count() == 0 {
+    if requests.read().count() == 0 || net.role == DoorRole::Client {
         return;
     }
     let mut back = 0;

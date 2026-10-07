@@ -53,7 +53,8 @@ struct Glob {
     at: Vec3,
     velocity: Vec3,
     age: f32,
-    touched_player: bool,
+    /// The players already touched in flight (None: this game's own).
+    touched: Vec<Option<u64>>,
 }
 
 pub struct VomitPlugin;
@@ -113,7 +114,7 @@ fn spawn_globs(mut commands: Commands, mut requests: MessageReader<SpawnVomit>, 
                     at: r.at,
                     velocity: r.velocity,
                     age: 0.0,
-                    touched_player: false,
+                    touched: Vec::new(),
                 },
             ))
             .id();
@@ -151,7 +152,7 @@ fn hurt_radius(spatial: &SpatialQuery, player: Vec3, at: Vec3, damage: f32) -> O
     (amount > 0.0).then_some(amount)
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn move_globs(
     mut commands: Commands,
     time: Res<Time>,
@@ -160,13 +161,15 @@ fn move_globs(
     mut globs: Query<(Entity, &mut Glob, &mut Transform)>,
     mut damage: MessageWriter<crate::game::combat::PlayerDamaged>,
     (mut decals, mut sounds): (MessageWriter<SpawnDecal>, MessageWriter<crate::audio::mixer::PlaySound>),
+    (remote, net): (Res<crate::game::combat::RemotePlayers>, Option<Res<crate::net::NetMode>>),
 ) {
     let dt = time.delta_secs().min(0.1);
-    // The player's centre, Unreal units.
-    let player = player.single().ok().map(|(t, w)| {
-        let c = w.map_or(t.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center);
-        Vec3::new(-c.z, c.x, c.y) / SCALE
-    });
+    // A network client's globs only show (the host's hit the players and
+    // send the hits to their games).
+    let harmless = net.is_some_and(|n| matches!(*n, crate::net::NetMode::Client { .. }));
+    // The players' centres, Unreal units (on a host also the others').
+    let local = player.single().ok().map(|(t, w)| w.map_or(t.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center));
+    let targets = if harmless { Vec::new() } else { remote.targets(local) };
     for (e, mut g, mut t) in &mut globs {
         g.age += dt;
         if g.age > LIFE_SPAN {
@@ -182,16 +185,18 @@ fn move_globs(
                 .cast_ray(from, d, step.length() * SCALE + GLOB_RADIUS * SCALE, true, &crate::world::collision::world_filter())
                 .map(|h| (h, d))
         });
-        // Flying.ProcessTouch with the player: HurtRadius(Damage, ...), and
+        // Flying.ProcessTouch with a player: HurtRadius(Damage, ...), and
         // the glob flies on.
-        if let Some(p) = player
-            && !g.touched_player
-        {
+        for &(who, p) in &targets {
+            if g.touched.contains(&who) {
+                continue;
+            }
             let end = g.at + step;
             let flat = (end - p).truncate().length();
             if flat <= PLAYER_RADIUS + GLOB_RADIUS && (end.z - p.z).abs() <= PLAYER_HALF_HEIGHT + GLOB_RADIUS {
-                g.touched_player = true;
-                if let Some(amount) = hurt_radius(&spatial, p, end, DAMAGE) {
+                g.touched.push(who);
+                let hurt = hurt_radius(&spatial, p, end, DAMAGE);
+                if let Some(amount) = hurt {
                     damage.write(crate::game::combat::PlayerDamaged {
                         amount,
                         armor_stops: true,
@@ -200,10 +205,10 @@ fn move_globs(
                         dam_type: crate::game::combat::DamType::Vomit,
                         source: Some(coords::pos(end.to_array())),
                         dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
-                        to_peer: None,
+                        to_peer: who,
                     });
                 }
-                runlog::kv("vomit_touch", &format!("glob={} player=true", g.id));
+                runlog::kv("vomit_touch", &format!("glob={} player=true target={} damage={}", g.id, who.map_or("local".to_string(), |p| p.to_string()), hurt.unwrap_or(0.0)));
             }
         }
         if let Some((h, d)) = hit {
@@ -221,8 +226,10 @@ fn move_globs(
                 dir: -n,
                 trace: false,
             });
-            let hurt = player.and_then(|p| hurt_radius(&spatial, p, at, BASE_DAMAGE + DAMAGE * GOOP_LEVEL));
-            if let Some(amount) = hurt {
+            let mut hurt = None;
+            let mut hit_others = Vec::new();
+            for &(who, p) in &targets {
+                let Some(amount) = hurt_radius(&spatial, p, at, BASE_DAMAGE + DAMAGE * GOOP_LEVEL) else { continue };
                 damage.write(crate::game::combat::PlayerDamaged {
                     amount,
                     armor_stops: true,
@@ -231,19 +238,24 @@ fn move_globs(
                     dam_type: crate::game::combat::DamType::Vomit,
                     source: Some(at_bevy),
                     dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
-                    to_peer: None,
+                    to_peer: who,
                 });
+                match who {
+                    None => hurt = Some(amount),
+                    Some(peer) => hit_others.push(format!("{peer}:{amount}")),
+                }
             }
             runlog::kv(
                 "vomit_landed",
                 &format!(
-                    "glob={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} player_damage={}",
+                    "glob={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} player_damage={} other_players=[{}] harmless={harmless}",
                     g.id,
                     at.x,
                     at.y,
                     at.z,
                     g.age,
-                    hurt.unwrap_or(0.0)
+                    hurt.unwrap_or(0.0),
+                    hit_others.join(" ")
                 ),
             );
             commands.entity(e).despawn();

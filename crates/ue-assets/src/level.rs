@@ -165,6 +165,9 @@ pub struct BlockingBrush {
 pub struct PlayerStart {
     pub location: [f32; 3],
     pub rotation: Rotator,
+    /// PlayerStart bEnabled and bPrimaryStart (both True by default).
+    pub enabled: bool,
+    pub primary: bool,
 }
 
 #[derive(Debug, Default)]
@@ -406,6 +409,8 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                     Some(Value::Rotator(r)) => *r,
                     _ => Rotator::default(),
                 },
+                enabled: !matches!(props.get(pkg, "bEnabled"), Some(Value::Bool(false))),
+                primary: !matches!(props.get(pkg, "bPrimaryStart"), Some(Value::Bool(false))),
             });
         }
         let Some(Value::Object(mesh)) = props.get(pkg, "StaticMesh") else {

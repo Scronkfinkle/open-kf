@@ -445,3 +445,58 @@ pub(super) fn new_pawn_inventory(
         &format!("had={} now={} removed=[{}] given=[{}] armour={}", had.label(), now.label(), removed.join(" "), given.join(" "), armour.strength),
     );
 }
+
+/// A network game's respawn (net/starts.rs): the dead player's pawn is
+/// new, so everything it carried is gone (Pawn.Died drops the weapons)
+/// and the new one gets KF's starting weapons (RequiredEquipment) and the
+/// perk's (AddDefaultInventory), fresh, with the 9mm in hand.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+pub(super) fn respawn_inventory(
+    mut respawned: MessageReader<crate::game::perks::RespawnPawn>,
+    weapons: Option<ResMut<Weapons>>,
+    assets: NonSend<WeaponAssets>,
+    mut commands: Commands,
+    (mut meshes, mut images, mut materials): MeshAssets,
+    vet: Res<crate::game::perks::Veterancy>,
+    mut armour: ResMut<crate::player::armour::Armour>,
+    effects: Option<ResMut<WeaponEffects>>,
+) {
+    if respawned.read().count() == 0 {
+        return;
+    }
+    let Some(mut w) = weapons else { return };
+    let w = &mut *w;
+    let dropped: Vec<String> = w.defs.iter().filter(|d| !d.gone).map(|d| d.class.clone()).collect();
+    for d in &mut w.defs {
+        d.gone = true;
+    }
+    w.firing = [false; 2];
+    let (perk_items, start_armour) = vet.vet.default_inventory(crate::game::dosh::GAME_DIFFICULTY);
+    let mut classes: Vec<(&str, Option<f32>)> = STARTING_WEAPONS.iter().map(|c| (*c, None)).collect();
+    for (c, sell) in &perk_items {
+        if !classes.iter().any(|(have, _)| have.eq_ignore_ascii_case(c)) {
+            classes.push((c, Some(*sell)));
+        }
+    }
+    let mut given = Vec::new();
+    for (class, sell) in classes {
+        match give_weapon(w, class, &assets, &mut commands, &mut meshes, &mut images, &mut materials) {
+            Ok(i) => {
+                if sell.is_some() {
+                    w.defs[i].sell_value = sell;
+                }
+                given.push(class.to_string());
+            }
+            Err(e) => runlog::kv("respawn_weapon", &format!("weapon={class} load_failed={e}")),
+        }
+    }
+    if let Some(i) = owned_index(w, "KFMod.Single") {
+        w.current = i;
+        set_action(w, Action::Select);
+    }
+    armour.strength = if start_armour { crate::player::armour::MAX_ARMOUR } else { 0.0 };
+    if let Some(mut fx) = effects {
+        fx.weight_speed_mult = weight_speed_mult(carried_weight(w), &vet.vet);
+    }
+    runlog::kv("respawn_inventory", &format!("perk={} dropped=[{}] given=[{}] armour={}", vet.vet.label(), dropped.join(" "), given.join(" "), armour.strength));
+}

@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use crate::engine::camera::FlyCamera;
 
 mod animate;
+mod fire_fx;
 mod load;
 
 /// What is needed to draw a pawn's body (what KF replicates for other
@@ -161,6 +162,9 @@ pub struct PawnBody {
     log_second: i64,
     /// Whose body, for the log: "local", else the pawn entity's Name.
     who: String,
+    /// The attachment's `tip` bone this frame (Unreal world location and
+    /// axes), where the third-person muzzle flash sits.
+    tip: Option<(Vec3, Mat3)>,
 }
 
 impl PawnBody {
@@ -203,6 +207,7 @@ impl Plugin for BodyPlugin {
                     load::load_attachments,
                     animate::spawn_bodies,
                     animate::animate_bodies,
+                    fire_fx::remote_fire_effects,
                 )
                     .chain()
                     .in_set(BodySystems)

@@ -1,5 +1,63 @@
 # Multiplayer prototype (experimental branch `multiplayer-lightyear`)
 
+## How to play-test in the morning (host + client on one machine)
+
+Build once, then run these two commands in two terminals (the second
+one within a minute of the first):
+
+```
+cargo build --release
+
+# Terminal 1: the host (runs the zeds and the waves, and plays)
+cargo run --release -- --map KF-WestLondon --mode waves --length short --host --name HostGuy
+
+# Terminal 2: a second player joining it
+cargo run --release -- --map KF-WestLondon --mode waves --length short --join 127.0.0.1 --name ClientGal --character Baddest_Santa
+```
+
+What you should see (all checked in headless test runs, none played by
+a person yet):
+
+1. **Lobby**: both windows list both players. Press Ready in both; the
+   match starts in both about 6 s after the host opened.
+2. **Start spots**: the two of you start at different PlayerStarts (a
+   few metres apart near the first one), not inside each other.
+3. **The other player's gun**: when the other player fires you hear
+   their shot from where they stand (quieter further away) and see a
+   small flash at the tip of their gun. A full-auto gun bought at the
+   trader (MAC10, MP7, M4...) plays its firing loop while held.
+4. **Scoreboard**: hold **Tab** (KF's key). Both players, their kills,
+   status (HP, or DEAD), and cash. Your own name is red.
+5. **Doors**: E opens and closes a door, and the other window sees it.
+   The Welder (press 5 twice) seals it in both; "This door is welded
+   shut" if you then press E. Zeds that break a door break it in both.
+6. **Dying**: a dead player cannot move or shoot (the view goes
+   behind) while the other plays on. When the wave ends the dead player
+   comes back at a start spot with 100 HP, the starting weapons (and
+   perk items), and at least £200. If both die, the match is lost and
+   restarts about 14 s later, both at new start spots.
+7. **Bloats, Husks, the Patriarch**: their bile, fireballs and rockets
+   now hurt the joining player too, and the joining player sees them fly.
+
+Known limits (details in "Step 4 as built" below):
+- Both windows play sound on one machine; the mouse works in the window
+  that has focus.
+- Trusting prototype: each game says where its player is and which zeds
+  it hit; fine between friends, not cheat-proof.
+- Each game's own: zed time, pickups, dosh tossing, and the wave-end
+  team bonus (each player gets the bonus of their own kills; KF splits
+  the team's pot between living players).
+- Scoreboard: no perk icons, no ping, Assists always 0.
+- Players walk through each other. A dead player just waits (no
+  spectating the others).
+- A joining player's grenades do not damage doors (the host's doors).
+- Not tested: Patriarch rockets hitting a client (same code as the
+  Husk's fireball, which was tested), three or more players with the
+  step 4 features, two real machines, lag and packet loss.
+
+Test logs go to `logs/latest-host.log` and `logs/latest-client.log`.
+
+
 Started 2026-10-06 (overnight). The plan comes first, then what was
 built and tested. Background and the choice of library:
 `docs/multiplayer-research.md`.
@@ -767,3 +825,257 @@ and `logs/mp3-<tag>-client.log` (untracked). Both games ran at about
 7. **Bandwidth**: send only zeds that changed, fewer for far ones (KF:
    relevancy and NetPriority), if 32 zeds x 5 clients (about 70 KB/s
    from the host) is too much on a real connection.
+
+## Step 4 plan: the gaps a real two-player test hits first
+
+Order of work (stop at a solid point; what is left is listed in the
+results):
+
+1. **Remote weapons are heard and flash.** When another player's shot
+   counter (`flash_count`, already in the pawn update) goes up, their
+   game's body code does what KF's third-person code does on every other
+   machine:
+   - the sound: WeaponFire / KFFire.PlayFiring on a non-owner plays the
+     mode's FireSound (not the StereoFireSound the owner hears) with
+     SLOT_Interact, TransientSoundVolume, TransientSoundRadius and the
+     random pitch, at the pawn (so it fades with distance). Full-auto
+     modes (KFHighROFFire's FireLoop state) play no per-shot sound but set
+     the attachment's AmbientSound to AmbientFireSound
+     (AmbientFireVolume, AmbientFireSoundRadius) while firing, and
+     FireEndSound at AmbientFireVolume / 127 when it stops.
+   - the flash: KFWeaponAttachment.ThirdPersonEffects -> DoFlashEmitter:
+     the attachment's mMuzFlashClass emitter, spawned once and attached
+     to the attachment's `tip` bone, SpawnParticle(1) per shot. The
+     dynamic light (WeaponLight) is not done.
+2. **Different start spots.** The host picks every player's start with
+   KF's rules (GameInfo.FindPlayerStart over the map's PlayerStarts,
+   rated by DeathMatch.RatePlayerStart, which KFGameType reaches through
+   Invasion and TeamGame for players: primary starts first, -1,000,000
+   for a start inside another pawn, -(10000 - distance) for one in sight
+   within 3000 units, -1500 in the same zone, +3000 x FRand) and sends
+   each player a `PlayerStart` message; the player is moved there. At
+   the match start the spots are picked one after another so each sees
+   the earlier players at their new spots. Same on a match restart.
+3. **Dead players come back when the wave ends** (KFGameType state
+   MatchInProgress, wave end: every player without a pawn gets Score =
+   Max(MinRespawnCash, Score) and ServerReStartPlayer: a new pawn at a
+   player start with full health and the starting inventory). The host
+   sends the `PlayerStart` message with `respawn: true`; the dead
+   player's game revives its player there (health 100, armour and
+   weapons as a new pawn of its perk, dosh raised to MinRespawnCash).
+   While dead in a network game the player cannot move or fire (KF:
+   spectating). The match is lost only when every player is dead at the
+   same time (the host's check used the host's death count, which a
+   respawn would have broken).
+4. **Bile, fireballs and rockets hurt clients.** On the host the Bloat's
+   globs, the Husk's fireballs and the Patriarch's rockets test every
+   player (the host's own and the other players' pawns) and send the
+   hit to the hit player's game (as zed melee in step 3). The host also
+   tells the clients to spawn a harmless copy of each fireball, rocket
+   and glob, so they see and hear them; the client's own globs (from a
+   dying Bloat's burst) no longer hurt it (the host's do).
+5. **Shared scoreboard.** Each game puts its player's kills, dosh,
+   deaths and health into its pawn update; everyone gets everyone's. KF's
+   scoreboard (KFScoreBoard, held with Tab: User.ini `Tab=ScoreToggle`,
+   F1 ShowScores) is drawn with its layout: rows on 70% of the screen,
+   name, kills, assists, health, dosh. Logged as `scoreboard` lines.
+6. **Doors and welding shared** (if time is left): the host owns the
+   doors; clients send use and weld requests and copy the host's door
+   state.
+
+Protocol number goes up to `0x4F4B_4600_0004`.
+
+## Step 4 as built (2026-10-07, overnight)
+
+### What was built
+
+1. **Other players' shots are heard and flash** (`src/player/body/fire_fx.rs`,
+   new). For every pawn that is not this game's player, each rise of its
+   shot counter plays the fire mode's FireSound at the pawn
+   (SLOT_Interact, TransientSoundVolume and TransientSoundRadius, random
+   pitch for KFFire guns), and triggers the attachment's mMuzFlashClass
+   emitter, spawned once on its `tip` bone and moved with it every frame
+   (`SpawnParticle(1)` per shot). Full-auto modes (KFHighROFFire,
+   FlameBurstFire without bWaitForRelease) get AmbientFireSound as a
+   loop on the pawn while firing and FireEndSound when they stop. The
+   attachment loader reads these (`body/load.rs`: `muzzle_flash`, `tip`,
+   `fire_sounds`); the 8 third-person flash classes the base weapons use
+   are added to the effect list (`render/particles.rs`). The remote pawn
+   entity now has a Transform (where its sounds play from). Not done:
+   WeaponLight (the 0.15 s dynamic light), shell casings, tracers and
+   hit effects from other players' shots.
+2. **Start spots** (`src/net/starts.rs`, new; `world/map.rs` keeps the
+   map's PlayerStarts with bEnabled / bPrimaryStart, read in
+   `ue-assets` level.rs). The host rates every start with
+   DeathMatch.RatePlayerStart (the class KFGameType reaches for players)
+   against the pawns already placed and sends each player its spot
+   (`PlayerStartMsg`). At the match start players are placed one after
+   another by peer id; on a restart everyone is placed again. Not done:
+   the water-volume check and the same-zone -1500 (no zone lookup for a
+   start spot).
+3. **Respawn at the wave end** (`starts.rs`; `inventory.rs`
+   `respawn_inventory`; `perks.rs` `RespawnPawn`). When a wave ends
+   (DoWaveEnd) or the boss wave begins (bRespawnOnBoss=True), every dead
+   player gets a start spot with `respawn`; their game revives them:
+   health 100, armour 0 (or the perk's start armour), every carried
+   weapon dropped and KF's starting weapons plus the perk's given fresh,
+   the 9mm in hand, dosh raised to MinRespawnCashNormal 200. A dead
+   player cannot walk or fire in a network game, and does not get the
+   wave-end pot (`dosh.rs`: only living players, as
+   RewardSurvivingPlayers). The host's "everyone is dead" check uses
+   "dead now and died in this game" (it used the death count, which a
+   respawn or a restart would have broken).
+4. **Bile, fireballs, rockets** (`zeds/vomit.rs`, `zeds/fireball.rs`,
+   `game/combat.rs` `RemotePlayers::targets`, `net/zeds.rs`). On the
+   host each glob and projectile tests every player (touch and blast);
+   hits on another player go to their game as before (`to_peer`).
+   Clients get a `ProjectileFx` per glob / fireball / rocket and fly a
+   harmless copy (no damage, no door damage); a puppet Bloat's death
+   burst no longer makes its own globs (the host's come over).
+5. **Scoreboard** (`src/net/scoreboard.rs`, new). Each pawn update now
+   carries kills, dosh, deaths and health. Tab (or the test inputs
+   `scores_on` / `scores_off`) draws KFScoreBoard's layout in
+   ROHud.GetSmallMenuFont with BoxMaterial (changeme_texture) boxes:
+   the title "Normal | Wave N | KF-WestLondon", "Elapsed Time" (or "You
+   are dead..."), columns PLAYER, Kills, Assists, Status, Cash, sorted
+   like KF (kills, assists, cash, name). Every game logs a `scoreboard`
+   line when anyone's numbers change.
+6. **Doors and welding** (`world/door.rs` `DoorNet`, `src/net/doors.rs`
+   new). The host owns the doors: a client's E press sends
+   `DoorRequest::Use` (the host runs KFUseTrigger.UsedBy), a client's
+   Welder hits send `DoorRequest::Weld` (the host runs TakeDamage with
+   the welder types). The host sends every door's state (open or shut
+   and to which key, weld, sealed, broken) when one changes and every
+   2 s; a client plays the open / close itself, copies the weld, and
+   breaks or brings back doors as the host says. A client's zeds
+   (puppets) do not open doors, its blasts do not damage them, and it
+   does not respawn them itself.
+
+Protocol number `0x4F4B_4600_0004` (step 3 builds cannot join).
+
+New test inputs: `aim_player` (look at the nearest other player),
+`warp:X;Y;Z;YAW` (put the player's centre there, Unreal units and yaw
+degrees), `scores_on` / `scores_off`. Test script (not in the
+repository): `work/mp4_test.sh` (env `TAG`, `HOST_FRAMES`,
+`CLIENT_FRAMES`, `HOST_GOD` / `CLIENT_GOD`, `HOST_SHOOT` /
+`CLIENT_SHOOT` "FROM-TO" for aim_zed+fire loops, `HOST_EXTRA` /
+`CLIENT_EXTRA` more inputs, `HOST_OPTS` / `CLIENT_OPTS` more options).
+Logs `logs/mp4-<tag>-host.log` / `-client.log` (untracked).
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+1. **Remote shots** (run a): the client fired the 9mm 38 times (its
+   `net_pawn_sent ... flash=38`); the host logged 38 `remote_fire ...
+   weapon=KFMod.Single ... sound=KF_9MMSnd.9mm_Fire flash=triggered
+   flash_class=roeffects.MuzzleFlash3rdPistol tip_unreal=(-3136,1287,-3775)`
+   and played `sound_play ... 9mm_Fire slot=Interact volume=1.80
+   radius=400 distance=44 gain=0.300` (the owner hears 9mm_FireST at
+   gain 0.459). AK47 (run g): 54 `remote_fire` with
+   MuzzleFlash3rdMP. MAC10 (run h): `remote_fire_loop ...
+   looping=Some(0)`, `sound_ambient ... MAC10_Fire_Loop volume=255
+   radius=500`, then `MAC10_Fire_Loop_End_M ... distance=578
+   gain=0.278` when the burst ended (4 bursts, 4 loops). Screenshots:
+   `work/screenshots/KF-WestLondon-mp4-g-host-1791350919-12.png` and
+   `...-1791350921-17.png` (the host looks at Santa firing the AK; a
+   small yellow flash at the barrel's tip).
+2. **Start spots** (runs b, c, l, m): `net_start_assigned peer=0
+   name="HostGuy" start=5 of=6 ... others=0` and `peer=... name="ClientGal"
+   start=3 of=6 ... others=1`; the client `net_start_received`, then
+   `net_moved_to_start reason=match_start`. Spots differed in every run
+   (5/3, 5/1, 1/2, 0/2; about 190-430 units apart). After a lost match (run m)
+   both were placed again: `reason=restart` (2 and 3), both alive
+   (`end_game_over ... health=100`).
+3. **Respawn** (run b: host dead; run c: client dead): host killed at
+   t=45.2 (`player_died`, `net_dead_state dead=true`), the client played
+   on; `wave_end wave=1` at t=85.1, `net_respawn_check event=wave_end
+   dead=[0]`, `net_respawned health=100 dosh=225->225`,
+   `respawn_inventory dropped=[Knife Single Frag Syringe Welder]
+   given=[...same five...]`. Run c: the client died at its t=43.4; the
+   host's `net_respawn_check ... dead=[<client>]`, the client
+   `net_respawned`, and the host saw the client's body come back
+   (`body_anim who=RemotePawn_... kind=Idle reason=revived`). The host's
+   game was not lost while one player lived.
+4. **Bile and fireballs on the client** (runs d, e; the host killed
+   itself so the zeds went for the client): Bloat globs `vomit_touch ...
+   target=<client> damage=3/4`, `vomit_landed ... other_players=[<client>:2]`;
+   the client logged 79 `player_hit ... kind=Vomit` plus the bile burn.
+   Husk: 3 fireballs, `fireball_exploded ... hit=player ...
+   other_players=[<client>:20]`, the client 3 `player_hit zed=0
+   kind=Fire` and the burn ticks. The client saw every glob and fireball
+   fly (`net_projectile`, `vomit_spawned`, `fireball_spawned`,
+   `fireball_exploded ... harmless=true`). The Patriarch (spawned for
+   the test) used his chaingun on the client (47 hits) but fired no
+   rocket in the run: rockets on a client not tested.
+5. **Scoreboard** (run h, both shooting): both logs carry the same table,
+   e.g. client `scoreboard HostGuy:kills=8:dosh=346:... |
+   ClientGal(me):kills=1:dosh=262:...`; dead players show
+   `dead=true` / "DEAD" (runs l, m). Screenshots:
+   `work/screenshots/KF-WestLondon-mp4-h-client-1791351036-1.png` (client:
+   HostGuy 8 kills £346, ClientGal in red 1 kill £262) and
+   `...-mp4-g-host-1791350934-35.png` (host).
+6. **Doors** (runs i, k; the client warped next to KFDoorMover6/7):
+   client `door_use_sent trigger=KFUseTrigger1` -> host
+   `door_use_remote ... event=open by=player` -> client `door ...
+   event=open by=host` about 0.1 s after the press; the same for
+   closing. Welding: 28 client hits `weld_hit ... sent_to_host`, host
+   `weld_hit_remote ... welded added=10.0 weld=...` up to 280, the
+   client's door sealed; E then gave the client "This door is welded
+   shut" (`message ... (client)`); 18 unweld hits down to 10 (a zed's
+   hit then took it to 1); then a host zed bashed the door down (`door_broken`) and it broke on the client too
+   (`event=broken by=host`). Zeds opening doors on the host opened them
+   on the client (KFDoorMover17/18/13).
+7. **Single player unchanged**: waves with `aim_zed`+`fire` and `--god`
+   (`logs/sp4-waves3.log`): 20 zeds, 20 kills paid, wave end pot 249,
+   0 `net_` lines; without `--god` (`sp4-waves2.log`) the player died
+   and the game was lost at once and restarted on fire, as before; a
+   lobby + pause run (`sp4-lobby.log`): `menu_close page=Lobby
+   reason=ready`, `pause paused=true` / `false`, 0 `net_` lines;
+   debug mode (`sp4-debug.log`): 0 `net_` lines.
+8. `cargo clippy --release --workspace`: no warnings (only nix's "git
+   tree is dirty"); with `--all-targets` the older test-code warning in
+   `src/zeds/boss.rs:1005` only. `cargo test --release --workspace`:
+   166 + 24 pass (2 new: RatePlayerStart, the scoreboard's order and
+   cash text).
+
+### Problems found on the way
+
+- After a lost match the host lost again in the restart frame: its
+  player was still flagged dead there (it is revived just after). The
+  check is now "dead now and died in this game".
+- A client could get a respawn message a frame before its own wave
+  state showed the wave end, and so collect the wave pot just after
+  coming back: respawns now wait until the client's wave phase has left
+  "Wave".
+- The first scoreboard used Bevy's default font, which has no "£"; it
+  now draws with KF's own menu font and box texture.
+- Seen, not changed (older, single player too): on a restart the zeds
+  left from the lost game are cleared by killing them, and those kills
+  are paid to the player (`dosh reason=kill` right after
+  `dosh reason=new_game`).
+
+### Not done / not tested
+
+- Patriarch rockets hitting a client (not fired in the test); three or
+  more players with the step 4 features; a late joiner's start spot;
+  real machines, lag, packet loss. Not played by you.
+- The team pot is per machine (each player's own kills), not split
+  between the living players as RewardSurvivingPlayers does.
+- No spectating while dead; the dead player's own body is hidden.
+- Remote shots: no dynamic muzzle light, shells, tracers or impact
+  effects; KF also skips the flash when the pawn was not rendered in
+  the last 0.2 s (we only skip it for hidden bodies).
+- Doors: a client's grenades and other explosives do not hurt doors;
+  the client does not see the host's door-hit sounds while welded doors
+  are bashed (it hears the break).
+- Scoreboard: no perk icons and stars, no ping column, Assists 0, names
+  not clipped.
+
+### What step 5 could do
+
+1. Server-side shots (KF's way) instead of client-trusted hits.
+2. Spectating while dead (KF: Fire cycles through the living players).
+3. The team pot split at the wave end (RewardSurvivingPlayers), dosh
+   tossing between players.
+4. Zed time decided by the host for everyone.
+5. Pickups (ammo boxes, weapons on the floor) owned by the host.
+6. Player-to-player collision.

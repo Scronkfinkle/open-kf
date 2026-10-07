@@ -352,7 +352,7 @@ type WalkMap<'w, 's> = (
     Local<'s, Option<usize>>,
 );
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn walk(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -360,7 +360,13 @@ fn walk(
     settings: Res<WalkSettings>,
     spatial: SpatialQuery,
     mut q: Query<(&mut Transform, &FlyCamera, &mut Walker)>,
-    (frames, script, match_over): (Res<bevy::diagnostic::FrameCount>, Res<crate::weapons::weapon::ScriptedInput>, Option<Res<crate::game::end_game::MatchOver>>),
+    (frames, script, match_over, net, health): (
+        Res<bevy::diagnostic::FrameCount>,
+        Res<crate::weapons::weapon::ScriptedInput>,
+        Option<Res<crate::game::end_game::MatchOver>>,
+        Option<Res<crate::net::NetMode>>,
+        Res<crate::game::combat::PlayerHealth>,
+    ),
     names: Query<&Name>,
     mut effects: Option<ResMut<crate::weapons::weapon::WeaponEffects>>,
     mut bob: ResMut<ViewBob>,
@@ -375,6 +381,11 @@ fn walk(
     // Colliders become queryable a frame or two after they are spawned;
     // simulating earlier could drop the player through the floor.
     if *mode != MoveMode::Walk || frames.0 < 5 {
+        return;
+    }
+    // A dead player in a network game waits for the wave end (KF: the
+    // controller spectates; its pawn is gone).
+    if health.dead && net.is_some_and(|n| n.active()) {
         return;
     }
     let mover = Mover::new(&spatial, kf::RADIUS, kf::HALF_HEIGHT, crate::world::collision::player_filter());

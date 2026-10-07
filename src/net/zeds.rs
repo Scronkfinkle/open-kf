@@ -20,7 +20,7 @@ use lightyear::prelude::*;
 
 use super::NetMode;
 use super::pawns::RemotePawn;
-use super::protocol::{GameChannel, KillCredit, NetGame, NetPlayer, NetWave, PlayerEvent, ZedChannel, ZedSnapshot};
+use super::protocol::{GameChannel, KillCredit, NetGame, NetPlayer, NetWave, PlayerEvent, ProjectileFx, ZedChannel, ZedSnapshot};
 use super::server::PlayerSlot;
 use crate::engine::coords::SCALE;
 use crate::engine::runlog;
@@ -46,14 +46,16 @@ const MAX_EXTRAPOLATE: f64 = 0.1;
 pub(super) fn build(app: &mut App, mode: &NetMode) {
     match mode {
         NetMode::Host { .. } => {
-            app.init_resource::<SendStats>().add_systems(
-                Update,
-                (share_wave, feed_remote_players, receive_hits, credit_kills, forward_player_events, send_snapshots).chain().before(ZedSystems).before(crate::game::waves::wave_timer),
-            );
+            app.init_resource::<SendStats>()
+                .add_systems(
+                    Update,
+                    (share_wave, feed_remote_players, receive_hits, credit_kills, forward_player_events, send_snapshots).chain().before(ZedSystems).before(crate::game::waves::wave_timer),
+                )
+                .add_systems(Update, forward_projectiles.after(ZedSystems));
         }
         NetMode::Client { .. } => {
             app.init_resource::<SnapshotBuffer>()
-                .add_systems(Update, (follow_wave, receive_snapshots, feed_puppets, send_hits, receive_player_events, receive_kill_credits).chain().before(ZedSystems).before(crate::game::waves::wave_timer));
+                .add_systems(Update, (follow_wave, receive_snapshots, feed_puppets, send_hits, receive_player_events, receive_kill_credits, receive_projectiles).chain().before(ZedSystems).before(crate::game::waves::wave_timer));
         }
         NetMode::Off => {}
     }
@@ -189,6 +191,30 @@ fn forward_player_events(
     for (peer, ev) in out {
         let sent = link_of(&players, peer).and_then(|l| senders.get_mut(l).ok()).map(|mut tx| tx.send::<GameChannel>(ev.clone())).is_some();
         runlog::kv("net_player_event_sent", &format!("peer={peer} sent={sent} event={ev:?}"));
+    }
+}
+
+/// The host's zeds' projectiles go to every client as harmless copies (so
+/// they see and hear them; the host's copies do the damage).
+fn forward_projectiles(
+    mut globs: MessageReader<crate::zeds::vomit::SpawnVomit>,
+    mut fireballs: MessageReader<crate::zeds::fireball::SpawnFireball>,
+    mut senders: Query<&mut MessageSender<ProjectileFx>, RemoteLinks>,
+) {
+    let mut out: Vec<ProjectileFx> = globs.read().map(|g| ProjectileFx::Bile { at: g.at.to_array(), velocity: g.velocity.to_array(), zed_id: g.zed_id as u32 }).collect();
+    out.extend(fireballs.read().map(|f| ProjectileFx::Fireball {
+        at: f.at.to_array(),
+        dir: f.dir.to_array(),
+        zed_id: f.zed_id as u32,
+        rocket: f.kind == crate::zeds::fireball::Projectile::BossRocket,
+    }));
+    for p in out {
+        let mut clients = 0;
+        for mut tx in &mut senders {
+            tx.send::<GameChannel>(p.clone());
+            clients += 1;
+        }
+        runlog::kv("net_projectile_sent", &format!("clients={clients} {p:?}"));
     }
 }
 
@@ -424,6 +450,30 @@ fn receive_player_events(
                     } else {
                         runlog::kv("perk_mod", &format!("kind=no_clot_grab perk={} zed={zed_id}", vet.vet.label()));
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The host's zeds' projectiles: harmless copies here (vomit.rs and
+/// fireball.rs leave a client's projectiles harmless).
+#[allow(clippy::type_complexity)] // Bevy system parameters
+fn receive_projectiles(
+    mut rx: Query<&mut MessageReceiver<ProjectileFx>, (With<Client>, Without<LinkOf>)>,
+    mut globs: MessageWriter<crate::zeds::vomit::SpawnVomit>,
+    mut fireballs: MessageWriter<crate::zeds::fireball::SpawnFireball>,
+) {
+    for mut r in &mut rx {
+        for p in r.receive() {
+            runlog::kv("net_projectile", &format!("{p:?}"));
+            match p {
+                ProjectileFx::Bile { at, velocity, zed_id } => {
+                    globs.write(crate::zeds::vomit::SpawnVomit { at: Vec3::from_array(at), velocity: Vec3::from_array(velocity), zed_id: zed_id as usize });
+                }
+                ProjectileFx::Fireball { at, dir, zed_id, rocket } => {
+                    let kind = if rocket { crate::zeds::fireball::Projectile::BossRocket } else { crate::zeds::fireball::Projectile::HuskFire };
+                    fireballs.write(crate::zeds::fireball::SpawnFireball { at: Vec3::from_array(at), dir: Vec3::from_array(dir), zed_id: zed_id as usize, kind });
                 }
             }
         }

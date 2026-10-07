@@ -132,7 +132,7 @@ impl Plugin for WeaponPlugin {
             .insert_non_send(WeaponAssets::default())
             .add_systems(PostStartup, load_weapons.after(crate::engine::camera::spawn_camera))
             .add_message::<crate::player::character::ChangeCharacter>()
-            .add_systems(Update, (sync_perk, new_pawn_inventory, shop_requests, sleeve::change_character).chain().before(weapon_input))
+            .add_systems(Update, (sync_perk, new_pawn_inventory, respawn_inventory, shop_requests, sleeve::change_character).chain().before(weapon_input))
             .add_systems(
                 Update,
                 (weapon_input, torch_update, animate_weapon, update_welder_screen, torch_beam.in_set(crate::weapons::flashlight::FlashlightBeamSet), weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)

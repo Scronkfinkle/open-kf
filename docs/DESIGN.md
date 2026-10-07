@@ -87,7 +87,9 @@ open-kf/                   Cargo workspace root (the repository)
     net/                   experimental multiplayer (branch multiplayer-lightyear):
                            --host / --join, the lobby over the network (lightyear),
                            other players' pawns and bodies (pawns.rs), the host's
-                           zeds and waves shared with clients (zeds.rs);
+                           zeds and waves shared with clients (zeds.rs), start
+                           spots and wave-end respawns (starts.rs), the scoreboard
+                           (scoreboard.rs), host-owned doors (doors.rs);
                            see docs/multiplayer-prototype.md
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
@@ -564,6 +566,22 @@ SetEnemy rules (`choose_enemy`); hits on another player's pawn carry
 net/zeds.rs sends them to that player's game. In single player the list
 has one player and nothing changes. Details and limits:
 docs/multiplayer-prototype.md, step 3.
+
+**Step 4 additions (same branch).** The Bloat's globs and the Husk's and
+Patriarch's projectiles test every player on the host
+(`RemotePlayers::targets`) and send hits like melee; clients get
+harmless copies (`ProjectileFx`) to see and hear. Other players'
+weapons flash and sound on every game (`player/body/fire_fx.rs`, KF's
+third-person rules: FireSound at the pawn, the attachment's
+mMuzFlashClass on its `tip` bone, the full-auto AmbientFireSound loop).
+The host picks start spots (`net/starts.rs`, KF's RatePlayerStart) and
+brings dead players back at a wave end (a `PlayerStartMsg` with
+`respawn`; the player's own game resets health, armour, inventory and
+dosh to KF's new-pawn values). Doors belong to the host: `door.rs`
+`DoorNet` takes clients' USE and welder requests and gives clients the
+host's door state (`net/doors.rs` carries them). Each pawn update also
+carries kills, dosh, deaths and health for the Tab scoreboard
+(`net/scoreboard.rs`).
 
 ## Combat (milestone 5, implemented 2026-10-03)
 

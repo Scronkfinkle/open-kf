@@ -92,6 +92,17 @@ pub struct RemotePlayer {
     pub alive: bool,
 }
 
+impl RemotePlayers {
+    /// Every player a zed's projectile can hit, as (whose: None = this
+    /// game's own player, else the peer id; cylinder centre in Unreal
+    /// units): this game's player (if given) and, on a network host, the
+    /// other living players' pawns.
+    pub fn targets(&self, local: Option<Vec3>) -> Vec<(Option<u64>, Vec3)> {
+        let ue = |c: Vec3| Vec3::new(-c.z, c.x, c.y) / crate::engine::coords::SCALE;
+        local.map(|l| (None, l)).into_iter().chain(self.0.iter().filter(|p| p.alive).map(|p| (Some(p.peer), ue(p.centre)))).collect()
+    }
+}
+
 /// Multiplayer host: a Clot's grab landed on another player (their game
 /// pins them, net/zeds.rs).
 #[derive(Message, Clone, Copy, Debug)]

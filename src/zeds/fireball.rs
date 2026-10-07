@@ -293,13 +293,17 @@ fn move_fireballs(
     mut push: MessageWriter<crate::player::walk::PlayerPush>,
     mut decals: MessageWriter<SpawnDecal>,
     (door_colliders, mut door_blasts, mut sounds): (Query<&crate::world::door::DoorCollider>, MessageWriter<crate::world::door::DoorBlast>, MessageWriter<crate::audio::mixer::PlaySound>),
+    (remote, net): (Res<crate::game::combat::RemotePlayers>, Option<Res<crate::net::NetMode>>),
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |c: Vec3| Vec3::new(-c.z, c.x, c.y) / SCALE;
-    let player = player
-        .single()
-        .ok()
-        .map(|(t, w)| to_ue(w.map_or(t.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center)));
+    // A network client's projectiles are copies of the host's: they fly
+    // and explode on the client's screen but hurt nobody (the host's
+    // explosion hurts the players and sends the hits to their games).
+    let harmless = net.is_some_and(|n| matches!(*n, crate::net::NetMode::Client { .. }));
+    let local = player.single().ok().map(|(t, w)| w.map_or(t.translation - Vec3::Y * PLAYER_EYE * SCALE, |w| w.center));
+    // Every player it can touch (Unreal units); a host also the others.
+    let targets = remote.targets(local);
     for (e, mut f, mut t) in &mut fireballs {
         f.age += dt;
         if f.age > LIFE_SPAN {
@@ -324,12 +328,13 @@ fn move_fireballs(
             level_door = door_colliders.get(h.entity).ok().map(|c| c.0);
             hit = Some(((h.distance / SCALE / step.length()).min(1.0), n, if level_door.is_some() { "door" } else { "level" }));
         }
-        if let Some(p) = player
-            && let Some(frac) = segment_hits_cylinder(a, b, p, PLAYER_RADIUS + RADIUS, PLAYER_HALF_HEIGHT + RADIUS)
-            && hit.is_none_or(|h| frac < h.0)
-        {
-            let at = a + step * frac;
-            hit = Some((frac, (at - p).normalize_or_zero(), "player"));
+        for &(_, p) in &targets {
+            if let Some(frac) = segment_hits_cylinder(a, b, p, PLAYER_RADIUS + RADIUS, PLAYER_HALF_HEIGHT + RADIUS)
+                && hit.is_none_or(|h| frac < h.0)
+            {
+                let at = a + step * frac;
+                hit = Some((frac, (at - p).normalize_or_zero(), "player"));
+            }
         }
         for z in &zeds {
             if z.id == f.zed_id {
@@ -370,27 +375,34 @@ fn move_fireballs(
         });
         // Projectile.HitWall on a door, then LAWProj.HurtRadius
         // (CollidingActors: no line-of-sight test) on the doors around.
-        door_blasts.write(crate::world::door::DoorBlast {
-            at,
-            radius: spec.radius,
-            damage: spec.damage,
-            zed: Some(f.zed_id),
-            direct: if what == "door" { level_door } else { None },
-            line_of_sight: false,
-            frag: false,
-            source: if f.kind == Projectile::BossRocket { "boss_rocket" } else { "husk_fireball" },
-        });
+        if !harmless {
+            door_blasts.write(crate::world::door::DoorBlast {
+                at,
+                radius: spec.radius,
+                damage: spec.damage,
+                zed: Some(f.zed_id),
+                direct: if what == "door" { level_door } else { None },
+                line_of_sight: false,
+                frag: false,
+                source: if f.kind == Projectile::BossRocket { "boss_rocket" } else { "husk_fireball" },
+            });
+        }
         let mut dealt = 0.0;
-        if let Some(p) = player {
+        let mut others = Vec::new();
+        for &(who, p) in targets.iter().filter(|_| !harmless) {
             let dist = (p - at).length().max(1.0);
             if dist - PLAYER_RADIUS <= spec.radius {
                 let exposure = 0.5 * in_sight(&spatial, at, p + Vec3::Z * PLAYER_HEAD) as u8 as f32 + 0.5 * in_sight(&spatial, at, p) as u8 as f32;
                 let scale = (1.0 - ((dist - PLAYER_RADIUS) / spec.radius).max(0.0)) * exposure;
                 if scale > 0.0 {
-                    dealt = (scale * spec.damage).floor();
-                    if dealt > 0.0 {
+                    let amount = (scale * spec.damage).floor();
+                    match who {
+                        None => dealt = amount,
+                        Some(peer) => others.push(format!("{peer}:{amount}")),
+                    }
+                    if amount > 0.0 {
                         damage.write(crate::game::combat::PlayerDamaged {
-                            amount: dealt,
+                            amount,
                             armor_stops: true,
                             zed_id: f.zed_id,
                             kind: spec.hurt,
@@ -398,12 +410,12 @@ fn move_fireballs(
                             dam_type: crate::game::combat::DamType::Other,
                             source: Some(coords::pos(at.to_array())),
                             dam: Some(crate::game::perks::known_dam_type(spec.dam)),
-                            to_peer: None,
+                            to_peer: who,
                         });
                     }
                     push.write(crate::player::walk::PlayerPush {
                         momentum: (p - at) / dist * (scale * spec.momentum),
-                        to_peer: None,
+                        to_peer: who,
                     });
                 }
             }
@@ -411,8 +423,8 @@ fn move_fireballs(
         runlog::kv(
             "fireball_exploded",
             &format!(
-                "fireball={} kind={:?} hit={what} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} player_damage={dealt}",
-                f.id, f.kind, at.x, at.y, at.z, f.age
+                "fireball={} kind={:?} hit={what} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} player_damage={dealt} other_players=[{}] harmless={harmless}",
+                f.id, f.kind, at.x, at.y, at.z, f.age, others.join(" ")
             ),
         );
         if let Some(trail) = f.trail

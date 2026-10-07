@@ -870,6 +870,11 @@ pub struct NewPawn {
     pub had: Vet,
 }
 
+/// A dead player's new pawn (a network game's wave-end respawn,
+/// net/starts.rs): the starting inventory again (AddDefaultInventory).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct RespawnPawn;
+
 pub struct PerksPlugin;
 
 impl Plugin for PerksPlugin {
@@ -877,6 +882,7 @@ impl Plugin for PerksPlugin {
         app.init_resource::<Veterancy>()
             .add_message::<PerkRequest>()
             .add_message::<NewPawn>()
+            .add_message::<RespawnPawn>()
             .add_systems(Startup, log_perk)
             .add_systems(Update, (perk_requests, wave_end_change));
     }
