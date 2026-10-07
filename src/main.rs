@@ -13,7 +13,7 @@ use render::{decals, overlay, particles};
 use player::{armour, pain, walk};
 use weapons::{bullet_fx, projectile, scope, weapon, zed_beam};
 use zeds::{fireball, gore, vomit, zed};
-use game::{buy_menu, combat, dosh, end_game, hud, shopkeeper, trader, trader_arrow, trader_path, waves, zed_time};
+use game::{buy_menu, combat, dosh, end_game, hud, perks, shopkeeper, trader, trader_arrow, trader_path, waves, zed_time};
 use audio::{map_sound, music, player_sound, trader_voice};
 use bevy::diagnostic::FrameCount;
 use bevy::prelude::*;
@@ -68,6 +68,8 @@ struct Args {
     game: waves::GameOptions,
     /// `--character NAME`: a KF character (System/*.upl); default Corporal_Lewis.
     character: Option<String>,
+    /// `--perk NAME` and `--perk-level N` (0-6).
+    perk: perks::PerkOptions,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -121,6 +123,22 @@ fn parse_args() -> Result<Args, String> {
             }
             "--fly" => args.fly = true,
             "--character" => args.character = Some(it.next().ok_or("--character needs a name, e.g. Mr_Foster")?),
+            "--perk" => {
+                let n = it.next().ok_or("--perk needs a name (medic, support, sharpshooter, commando, berserker, firebug, demolitions)")?;
+                args.perk.perk = if n.eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    Some(perks::Perk::parse(&n).ok_or(format!("bad --perk value: {n} (medic, support, sharpshooter, commando, berserker, firebug, demolitions or none)"))?)
+                };
+            }
+            "--perk-level" => {
+                let n = it.next().ok_or("--perk-level needs a number 0-6")?;
+                let l: u8 = n.parse().map_err(|_| format!("bad --perk-level value: {n}"))?;
+                if l > 6 {
+                    return Err(format!("--perk-level must be 0 to 6: {n}"));
+                }
+                args.perk.level = l;
+            }
             "--mute" => args.mute = true,
             "--no-vsync" => args.no_vsync = true,
             "--god" => args.god = true,
@@ -163,7 +181,7 @@ fn main() -> AppExit {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--perk NAME] [--perk-level 0-6]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -221,6 +239,7 @@ fn main() -> AppExit {
         runlog::kv("frame_limit", &format!("fps={fps}"));
     }
     let game_options = args.game;
+    let veterancy = perks::Veterancy::from_options(args.perk);
     runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
     let walk_settings = walk::WalkSettings {
         start_walking: !args.fly,
@@ -277,9 +296,11 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin))
+        .add_plugins(perks::PerksPlugin)
         .insert_resource(auto_shot)
         .insert_resource(walk_settings)
         .insert_resource(game_options)
+        .insert_resource(veterancy)
         .insert_resource(scripted)
         .insert_resource(loadout)
         .insert_resource(character)

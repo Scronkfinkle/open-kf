@@ -176,15 +176,26 @@ pub struct OwnedWeapon {
     pub name: String,
     pub sell_value: i32,
     pub sellable: bool,
-    /// (AmmoAmount, MaxAmmo, MagCapacity) of the first and second ammo.
+    /// (AmmoAmount, MaxAmmo, default MagCapacity) of the first and second ammo.
     pub ammo: Option<(u32, u32, u32)>,
+    /// The perk's GetAmmoCostScaling and GetMagCapacityMod for this weapon.
+    pub ammo_scale: f32,
+    pub mag_mod: f32,
     pub alt_ammo: Option<(u32, u32)>,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct ShopInventory {
     pub owned: Vec<OwnedWeapon>,
     pub weight: f32,
+    /// MaxCarryWeight with the perk's AddCarryMaxWeight.
+    pub max_weight: f32,
+}
+
+impl Default for ShopInventory {
+    fn default() -> Self {
+        ShopInventory { owned: Vec::new(), weight: 0.0, max_weight: MAX_CARRY_WEIGHT }
+    }
 }
 
 /// KFHumanPawn MaxCarryWeight.
@@ -201,8 +212,10 @@ pub struct BuyMenu {
     filter: usize,
 }
 
-/// A row of the "For sale" list: item, price and weight as shown.
-fn sale_rows(cat: &ShopCatalogue, inv: &ShopInventory, filter: usize) -> Vec<(usize, i32, f32)> {
+/// A row of the "For sale" list: item, price and weight as shown
+/// (KFBuyMenuSaleList.PopulateBuyables: int(Cost x GetCostScaling /
+/// DualDivider)).
+fn sale_rows(cat: &ShopCatalogue, inv: &ShopInventory, filter: usize, vet: &crate::game::perks::Vet) -> Vec<(usize, i32, f32)> {
     let owns = |w: &str| inv.owned.iter().any(|o| o.weapon.eq_ignore_ascii_case(w));
     let Some((_, list)) = cat.lists.get(filter) else { return Vec::new() };
     list.iter()
@@ -216,18 +229,23 @@ fn sale_rows(cat: &ShopCatalogue, inv: &ShopInventory, filter: usize) -> Vec<(us
                 return None;
             }
             let half = HALF_PRICE_DUALS.iter().any(|(d, s)| d.eq_ignore_ascii_case(&it.weapon) && owns(s));
-            Some(if half { (i, it.cost / 2, it.weight / 2.0) } else { (i, it.cost, it.weight) })
+            let divider = if half { 2.0 } else { 1.0 };
+            let price = (it.cost as f32 * vet.cost_scaling(&it.pickup) / divider) as i32;
+            Some((i, price, it.weight / divider))
         })
         .collect()
 }
 
-/// Ammo prices: (clip price, fill price) for a weapon's first ammo, as
-/// ServerBuyAmmo works them out.
-pub fn ammo_prices(item: &ShopItem, total: u32, max: u32, capacity: u32) -> (i32, i32) {
+/// Ammo prices as KFBuyMenuInvList shows them: (clip price, fill price)
+/// for a weapon's first ammo. `capacity` is the default MagCapacity;
+/// `ammo_scale` and `mag_mod` the perk's GetAmmoCostScaling and
+/// GetMagCapacityMod (1 without a perk). ItemAmmoCost = AmmoCost x
+/// ammo_scale x mag_mod; ItemFillAmmoCost = int(missing x AmmoCost /
+/// MagCapacity (the Husk Gun: BuyClipSize)) x ammo_scale.
+pub fn ammo_prices(item: &ShopItem, total: u32, max: u32, capacity: u32, ammo_scale: f32, mag_mod: f32) -> (i32, i32) {
     let used = if item.weapon.eq_ignore_ascii_case("KFMod.HuskGun") { item.buy_clip_size.max(1) as f32 } else { capacity.max(1) as f32 };
-    // One magazine (UsedMagCapacity rounds) costs AmmoCost.
-    let clip = item.ammo_cost;
-    let fill = ((max.saturating_sub(total)) as f32 / used * item.ammo_cost as f32) as i32;
+    let clip = (item.ammo_cost as f32 * ammo_scale * mag_mod) as i32;
+    let fill = (((max.saturating_sub(total)) as f32 * item.ammo_cost as f32 / used) as i32 as f32 * ammo_scale) as i32;
     (clip, fill)
 }
 
@@ -283,6 +301,7 @@ fn menu_input(
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     mut requests: MessageWriter<ShopRequest>,
     mut vest: MessageWriter<crate::player::armour::BuyVest>,
+    (vet, mut perk_requests): (Res<crate::game::perks::Veterancy>, MessageWriter<crate::game::perks::PerkRequest>),
 ) {
     // Scripted test actions this frame ("buy_menu", "menu_down", ...,
     // "buy:Shotgun", "sell:Shotgun", "ammo_fill:Shotgun", "ammo_clip:Shotgun").
@@ -312,7 +331,13 @@ fn menu_input(
         // ShopVolume.UsedBy: USE inside a shop with no wave running.
         if use_pressed && in_shop && !wave_running {
             menu.open = true;
-            runlog::kv("buy_menu", "open=true");
+            // GUIBuyMenu: the sale list starts on your perk's
+            // (BuyMenuFilterIndex = the selected perk's index).
+            if let Some(p) = vet.selected {
+                menu.filter = p.index().min(cat.lists.len().saturating_sub(1));
+                menu.cursor[0] = 0;
+            }
+            runlog::kv("buy_menu", &format!("open=true filter={}", cat.lists.get(menu.filter).map_or("", |l| l.0)));
             keys.reset_all();
         }
         return;
@@ -323,7 +348,15 @@ fn menu_input(
         runlog::kv("buy_menu", &format!("open=false wave_running={wave_running} in_shop={in_shop}"));
     } else {
         // "Yours" ends with the vest row (KFBuyMenuInvList adds it last).
-        let rows = [sale_rows(&cat, &inv, menu.filter).len(), inv.owned.len() + 1];
+        // KFQuickPerkSelect (the perk icons in the buy menu): keys 1-7
+        // pick a perk, KF's PerkIndex order.
+        const PERK_KEYS: [KeyCode; 7] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7];
+        for (k, p) in PERK_KEYS.iter().zip(crate::game::perks::Perk::ALL) {
+            if keys.just_pressed(*k) {
+                perk_requests.write(crate::game::perks::PerkRequest(p));
+            }
+        }
+        let rows = [sale_rows(&cat, &inv, menu.filter, &vet.vet).len(), inv.owned.len() + 1];
         let tab = menu.tab;
         let n = rows[tab];
         if keys.just_pressed(KeyCode::ArrowDown) || act("menu_down") {
@@ -348,7 +381,7 @@ fn menu_input(
         let cursor = menu.cursor[menu.tab];
         if keys.just_pressed(KeyCode::Enter) || act("menu_enter") {
             if menu.tab == 0 {
-                if let Some(&(i, _, _)) = sale_rows(&cat, &inv, menu.filter).get(cursor) {
+                if let Some(&(i, _, _)) = sale_rows(&cat, &inv, menu.filter, &vet.vet).get(cursor) {
                     requests.write(ShopRequest::Buy(cat.items[i].weapon.clone()));
                 }
             } else if let Some(o) = inv.owned.get(cursor) {
@@ -381,7 +414,7 @@ fn draw_menu(
     inv: Res<ShopInventory>,
     dosh: Res<crate::game::dosh::Dosh>,
     game: Res<crate::game::waves::WaveGame>,
-    armour: Res<crate::player::armour::Armour>,
+    (armour, vet): (Res<crate::player::armour::Armour>, Res<crate::game::perks::Veterancy>),
     mut text: Query<(&mut Text, &mut Node), With<MenuText>>,
 ) {
     let Ok((mut t, mut node)) = text.single_mut() else { return };
@@ -392,14 +425,24 @@ fn draw_menu(
     node.display = Display::Flex;
     let score = dosh.score as i32;
     let mut s = format!(
-        "TRADER    DOSH {score}    WEIGHT {:.0}/{MAX_CARRY_WEIGHT:.0}    NEXT WAVE IN {}\n",
+        "TRADER    DOSH {score}    WEIGHT {:.0}/{:.0}    NEXT WAVE IN {}\n",
         inv.weight,
+        inv.max_weight,
         game.countdown.max(0)
     );
+    // GUIBuyMenu.CurrentPerkLabel: "Current Perk: <SelectedVeterancy> Lv<level>".
+    s += &match vet.selected {
+        Some(p) => format!("Current Perk: {} Lv{}", p.name(), vet.vet.level),
+        None => "Current Perk: No Active Perk!".to_string(),
+    };
+    if vet.selected != vet.vet.perk {
+        s += &format!("  (now: {})", vet.vet.perk.map_or("none", |p| p.name()));
+    }
+    s += "    keys 1-7: Medic Support Sharpshooter Commando Berserker Firebug Demolitions\n";
     s += "Up/Down select   Tab switch list   Enter buy/sell   C clip   F fill (Shift: 2nd ammo)   E close\n\n";
     let filter = cat.lists.get(menu.filter).map_or("", |l| l.0);
     s += &format!("{}FOR SALE   < {filter} >\n", if menu.tab == 0 { "> " } else { "  " });
-    let rows = sale_rows(&cat, &inv, menu.filter);
+    let rows = sale_rows(&cat, &inv, menu.filter, &vet.vet);
     if rows.is_empty() {
         s += "    (nothing)\n";
     }
@@ -408,7 +451,7 @@ fn draw_menu(
         let mark = if menu.tab == 0 && k == menu.cursor[0] { ">>" } else { "  " };
         let why = if price > score {
             "  (not enough dosh)"
-        } else if weight > 0.0 && inv.weight + weight > MAX_CARRY_WEIGHT {
+        } else if weight > 0.0 && inv.weight + weight > inv.max_weight {
             "  (too heavy)"
         } else {
             ""
@@ -420,7 +463,7 @@ fn draw_menu(
         let mark = if menu.tab == 1 && k == menu.cursor[1] { ">>" } else { "  " };
         let ammo = match (o.ammo, cat.item(&o.weapon)) {
             (Some((total, max, cap)), Some(item)) => {
-                let (clip, fill) = ammo_prices(item, total, max, cap);
+                let (clip, fill) = ammo_prices(item, total, max, cap, o.ammo_scale, o.mag_mod);
                 format!("ammo {total}/{max}  clip {clip}  fill {fill}")
             }
             _ => String::new(),
@@ -433,7 +476,7 @@ fn draw_menu(
         s += &format!("  {mark} {:<28} {:<10} {ammo}{alt}\n", o.name, sell);
     }
     let mark = if menu.tab == 1 && menu.cursor[1] == inv.owned.len() { ">>" } else { "  " };
-    let (points, fill) = crate::player::armour::menu_row(&armour);
+    let (points, fill) = crate::player::armour::menu_row(&armour, vet.vet.cost_scaling("vest"));
     // BuyableVest.ItemName.
     s += &format!("  {mark} {:<28} {:<10} armour {points}/100  fill {fill}\n", "Combat armour", "");
     **t = s;
@@ -457,7 +500,7 @@ mod tests {
     }
 
     fn owned(weapon: &str) -> OwnedWeapon {
-        OwnedWeapon { weapon: weapon.into(), name: weapon.into(), sell_value: 0, sellable: true, ammo: None, alt_ammo: None }
+        OwnedWeapon { weapon: weapon.into(), name: weapon.into(), sell_value: 0, sellable: true, ammo: None, alt_ammo: None, ammo_scale: 1.0, mag_mod: 1.0 }
     }
 
     #[test]
@@ -466,20 +509,28 @@ mod tests {
             items: vec![item("KFMod.Single", 150, 0.0), item("KFMod.Deagle", 500, 2.0), item("KFMod.DualDeagle", 1000, 4.0), item("KFMod.Shotgun", 500, 8.0)],
             lists: vec![("Test", vec![0, 1, 2, 3])],
         };
-        let inv = ShopInventory { owned: vec![owned("KFMod.Deagle")], weight: 2.0 };
-        let rows = sale_rows(&cat, &inv, 0);
+        let inv = ShopInventory { owned: vec![owned("KFMod.Deagle")], weight: 2.0, max_weight: MAX_CARRY_WEIGHT };
+        let none = crate::game::perks::Vet::NONE;
+        let rows = sale_rows(&cat, &inv, 0, &none);
         assert_eq!(rows, vec![(2, 500, 2.0), (3, 500, 8.0)]);
         // With the duals owned, the single is hidden.
-        let inv = ShopInventory { owned: vec![owned("KFMod.DualDeagle")], weight: 4.0 };
-        assert_eq!(sale_rows(&cat, &inv, 0), vec![(3, 500, 8.0)]);
+        let inv = ShopInventory { owned: vec![owned("KFMod.DualDeagle")], weight: 4.0, max_weight: MAX_CARRY_WEIGHT };
+        assert_eq!(sale_rows(&cat, &inv, 0, &none), vec![(3, 500, 8.0)]);
+        // Support 6: shotguns 70% off: 0.9 - 0.1 x 6 is 0.29999998 in KF's
+        // (and our) 32-bit floats, so int(500 x it) = 149.
+        let support = crate::game::perks::Vet { perk: Some(crate::game::perks::Perk::Support), level: 6 };
+        let shotgun_cat = ShopCatalogue { items: vec![ShopItem { pickup: "KFMod.ShotgunPickup".into(), ..item("KFMod.Shotgun", 500, 8.0) }], lists: vec![("Test", vec![0])] };
+        assert_eq!(sale_rows(&shotgun_cat, &inv, 0, &support), vec![(0, 149, 8.0)]);
     }
 
     #[test]
     fn ammo_prices_follow_server_buy_ammo() {
         let shotgun = ShopItem { ammo_cost: 15, ..item("KFMod.Shotgun", 500, 8.0) };
         // Clip: one magazine (8) = AmmoCost; fill 64 -> 80: 16 / 8 x 15.
-        assert_eq!(ammo_prices(&shotgun, 64, 80, 8), (15, 30));
-        // Odd amounts round down: 3 shells = int(3 / 8 x 15) = 5.
-        assert_eq!(ammo_prices(&shotgun, 77, 80, 8), (15, 5));
+        assert_eq!(ammo_prices(&shotgun, 64, 80, 8, 1.0, 1.0), (15, 30));
+        // Odd amounts round down: 3 shells = int(3 x 15 / 8) = 5.
+        assert_eq!(ammo_prices(&shotgun, 77, 80, 8, 1.0, 1.0), (15, 5));
+        // A perk: clip AmmoCost x 0.7 x 1.25 = 13; fill int(16 x 15 / 8) x 0.7 = 21.
+        assert_eq!(ammo_prices(&shotgun, 64, 80, 8, 0.7, 1.25), (13, 21));
     }
 }

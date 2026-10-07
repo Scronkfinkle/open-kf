@@ -68,6 +68,9 @@ struct Spec {
     explosion_sound: &'static str,
     decal: DecalKind,
     hurt: crate::game::combat::HurtKind,
+    /// MyDamageType (HuskFireProjectile DamTypeBurned, BossLAWProj
+    /// DamTypeFrag), for the perks' ReduceDamage.
+    dam: &'static str,
 }
 
 impl Projectile {
@@ -89,6 +92,7 @@ impl Projectile {
                 explosion_sound: "KF_EnemiesFinalSnd.Husk.Husk_FireImpact",
                 decal: DecalKind::Scorch,
                 hurt: crate::game::combat::HurtKind::Fire,
+                dam: "DamTypeBurned",
             },
             Projectile::BossRocket => Spec {
                 class: "KFChar.BossLAWProj",
@@ -104,6 +108,7 @@ impl Projectile {
                 explosion_sound: "KF_LAWSnd.Rocket_Explode",
                 decal: DecalKind::RocketMark,
                 hurt: crate::game::combat::HurtKind::Plain,
+                dam: "DamTypeFrag",
             },
         }
     }
@@ -392,6 +397,7 @@ fn move_fireballs(
                             // DamTypeBurned (Husk), DamTypeFrag (Patriarch rocket).
                             dam_type: crate::game::combat::DamType::Other,
                             source: Some(coords::pos(at.to_array())),
+                            dam: Some(crate::game::perks::known_dam_type(spec.dam)),
                         });
                     }
                     push.write(crate::player::walk::PlayerPush {

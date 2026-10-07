@@ -11,7 +11,7 @@ use crate::engine::runlog;
 /// StartingCashNormal.
 pub const STARTING_CASH: f32 = 250.0;
 /// KillingFloor.ini GameDifficulty (Normal).
-const GAME_DIFFICULTY: f32 = 2.0;
+pub const GAME_DIFFICULTY: f32 = 2.0;
 
 #[derive(Resource, Debug)]
 pub struct Dosh {

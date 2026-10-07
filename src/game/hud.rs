@@ -108,6 +108,14 @@ struct Hud {
     /// `SPLASH_CLASSES` order; GoreSplashFB for every other damage.
     splashes: [Splash; 4],
     gore_splash: Option<usize>,
+    /// The perks' OnHUDIcon and OnHUDGoldIcon (PerkIndex order), and
+    /// VetStarMaterial / VetStarGoldMaterial, VetStarSize,
+    /// VeterancyMatScaleFactor (DrawHudPassA).
+    perk_icons: [(Option<usize>, Option<usize>); 7],
+    vet_star: Option<usize>,
+    vet_star_gold: Option<usize>,
+    vet_star_size: f32,
+    vet_scale: f32,
     loaded: bool,
 }
 
@@ -197,6 +205,13 @@ pub struct LocalMessage {
 impl LocalMessage {
     pub fn new(class: MessageClass, switch: u8) -> Self {
         LocalMessage { class, switch, text: None }
+    }
+
+    /// PlayerController.ClientMessage text (the perk messages). We have no
+    /// console-message area yet: shown in the KFCriticalEventPlus style,
+    /// a stand-in.
+    pub fn text(text: String) -> Self {
+        LocalMessage { class: MessageClass::Critical, switch: 0, text: Some(text) }
     }
 }
 
@@ -622,6 +637,29 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
             }
         ),
     );
+    // The perk icon and stars (HUDKillingFloor defaults, perk classes).
+    for (i, p) in crate::game::perks::Perk::ALL.iter().enumerate() {
+        let (icon, gold) = p.icons();
+        hud.perk_icons[i] = (loader.texture_path(icon), loader.texture_path(gold));
+    }
+    let obj = |name: &str| match defaults.get(&class, name) {
+        Some((Value::Object(r), pkg)) => Some((pkg, r)),
+        _ => None,
+    };
+    hud.vet_star = obj("VetStarMaterial").and_then(|(pkg, r)| loader.texture(&pkg, r));
+    hud.vet_star_gold = obj("VetStarGoldMaterial").and_then(|(pkg, r)| loader.texture(&pkg, r));
+    hud.vet_star_size = float_of(defaults.get(&class, "VetStarSize").map(|(v, _)| v).as_ref());
+    hud.vet_scale = float_of(defaults.get(&class, "VeterancyMatScaleFactor").map(|(v, _)| v).as_ref());
+    runlog::kv(
+        "hud_perk_icons",
+        &format!(
+            "icons={} stars={} star_size={} scale={}",
+            hud.perk_icons.iter().filter(|(a, b)| a.is_some() && b.is_some()).count(),
+            u8::from(hud.vet_star.is_some()) + u8::from(hud.vet_star_gold.is_some()),
+            hud.vet_star_size,
+            hud.vet_scale
+        ),
+    );
     hud.textures = loader.textures;
     hud.weapons = weapons;
     hud.loaded = true;
@@ -793,6 +831,7 @@ fn draw_hud(
     mut spawned: Local<bool>,
     mut messages: ResMut<LocalMessages>,
     hit: Res<HitDisplay>,
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     if !hud.loaded {
         return;
@@ -876,7 +915,7 @@ fn draw_hud(
     // "1/15": LoadSmallFontStatic(5), scaled ClipX / 1024, at WeightDigits'
     // position in its colour (alpha KFHUDAlpha).
     if let (Some(f), Some(n)) = (hud.small_font_array[5].map(|i| &hud.fonts[i]), hud.numerics.get("WeightDigits")) {
-        let text = format!("{}/{}", inv.weight as i32, crate::game::buy_menu::MAX_CARRY_WEIGHT as i32);
+        let text = format!("{}/{}", inv.weight as i32, inv.max_weight as i32);
         let at = n.pos * c.size * c.scale_factor;
         let scale = c.clip_x() / 1024.0;
         c.text(f, &text, at, scale, [n.tint[0], n.tint[1], n.tint[2], hud.alpha], "Weight");
@@ -966,6 +1005,7 @@ fn draw_hud(
     }
     sprite(&mut c, "CashIcon");
     numeric(&mut c, "CashDigits", dosh.score as i32, true, None);
+    perk_icon(&mut c, &hud, &vet.vet);
     // DrawWeaponName: GetFontSizeIndex(C, -1), (255, 50, 50, KFHUDAlpha),
     // right edge at 0.983 x ClipX, top at 0.90 x ClipY.
     if !ammo.weapon.is_empty()
@@ -1049,6 +1089,52 @@ fn draw_hud(
         image.rect = Some(q.uv);
         image.color = Color::srgba_u8(q.tint[0], q.tint[1], q.tint[2], q.tint[3]);
         *vis = Visibility::Inherited;
+    }
+}
+
+/// DrawHudPassA's perk icon: OnHUDIcon (level 6: OnHUDGoldIcon at
+/// (255, 255, 255, 192), one gold star), Min(36 x VeterancyMatScaleFactor x
+/// 1.4 x SizeX / 1024, the same unscaled) square at (0.007 ClipX, 0.93
+/// ClipY - size); one star per level (VetStarSize scaled the same way)
+/// from the icon's bottom-right corner upwards. The colour of the normal
+/// icon is not set in that branch: white, full alpha is a guess.
+fn perk_icon(c: &mut Canvas, hud: &Hud, vet: &crate::game::perks::Vet) {
+    let Some(perk) = vet.perk else { return };
+    let (normal, gold) = hud.perk_icons[perk.index()];
+    let (icon, star, stars, tint) = if vet.level > 5 {
+        (gold, hud.vet_star_gold, vet.level - 5, [255, 255, 255, 192])
+    } else {
+        (normal, hud.vet_star, vet.level, [255, 255, 255, 255])
+    };
+    let Some(icon) = icon else { return };
+    let sx = c.clip_x();
+    let phys = c.size * c.scale_factor;
+    let full = 36.0 * hud.vet_scale * 1.4;
+    let size = (full * sx / 1024.0).min(full);
+    let star_size = (hud.vet_star_size * sx / 1024.0).min(hud.vet_star_size);
+    let (mut x, mut y) = (phys.x * 0.007, phys.y * 0.93 - size);
+    let sf = c.scale_factor;
+    let tex = hud.textures[icon].size;
+    c.quads.push(Quad {
+        texture: icon,
+        uv: Rect::from_corners(Vec2::ZERO, tex),
+        screen: Rect::from_corners(Vec2::new(x, y) / sf, Vec2::new(x + size, y + size) / sf),
+        tint,
+        what: format!("PerkIcon:{}:{}", perk.class(), vet.level),
+    });
+    let Some(star) = star else { return };
+    let star_tex = hud.textures[star].size;
+    x += size - star_size;
+    y += size - 2.0 * star_size;
+    for i in 0..stars {
+        c.quads.push(Quad {
+            texture: star,
+            uv: Rect::from_corners(Vec2::ZERO, star_tex),
+            screen: Rect::from_corners(Vec2::new(x, y) / sf, Vec2::new(x + star_size, y + star_size) / sf),
+            tint,
+            what: format!("PerkStar{i}"),
+        });
+        y -= star_size;
     }
 }
 

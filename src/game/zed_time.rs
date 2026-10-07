@@ -46,13 +46,16 @@ pub struct ZedTime {
     /// bHadZED (KF keeps it in the player's ini; ours: once per run).
     had_zed: bool,
     rng: u32,
+    /// ZedTimeExtensionsUsed (the perk's ZedTimeExtensions), reset when zed
+    /// time ends.
+    extensions_used: u32,
 }
 
 impl Default for ZedTime {
     fn default() -> Self {
         // A fixed seed, as elsewhere in the project (runs repeat exactly);
         // its own, so its rolls do not mirror the wave game's.
-        ZedTime { active: false, left: 0.0, speeding_back_up: false, last_event: 0.0, speed: 1.0, had_zed: false, rng: 0x6c07_8965 }
+        ZedTime { active: false, left: 0.0, speeding_back_up: false, last_event: 0.0, speed: 1.0, had_zed: false, rng: 0x6c07_8965, extensions_used: 0 }
     }
 }
 
@@ -117,6 +120,7 @@ impl ZedTime {
             self.active = false;
             self.speeding_back_up = false;
             self.speed = 1.0;
+            self.extensions_used = 0;
             what = Some("end");
         }
         what
@@ -148,7 +152,8 @@ impl Plugin for ZedTimePlugin {
 /// headshot kill (0.03, any killer), each zed once.
 fn kills_roll(
     time: Res<Time>,
-    zt: Res<ZedTime>,
+    mut zt: ResMut<ZedTime>,
+    vet: Res<crate::game::perks::Veterancy>,
     mut zeds: Query<&mut crate::zeds::zed::Zed>,
     player: Query<(&Transform, Option<&crate::player::walk::Walker>), With<crate::engine::camera::FlyCamera>>,
     mut events: MessageWriter<DramaticEvent>,
@@ -159,7 +164,14 @@ fn kills_roll(
             continue;
         }
         z.zed_time_rolled = true;
-        if z.killed_by_player && time.elapsed_secs() - zt.last_event > 0.1 {
+        // KFGameType.Killed: during zed time a kill forces DramaticEvent(1.0)
+        // while the killer's perk has ZedTimeExtensions left.
+        let extensions = vet.vet.zed_time_extensions();
+        if z.killed_by_player && zt.active && extensions > zt.extensions_used {
+            zt.extensions_used += 1;
+            runlog::kv("perk_mod", &format!("kind=zed_time_extension perk={} used={} of={extensions} zed={}", vet.vet.label(), zt.extensions_used, z.id));
+            events.write(DramaticEvent::new(1.0, "perk_extension"));
+        } else if z.killed_by_player && time.elapsed_secs() - zt.last_event > 0.1 {
             // VSizeSquared(Killer.Pawn.Location - KilledPawn.Location) < 22500.
             let near = player_at.is_some_and(|p| (p - z.centre).length() / crate::engine::coords::SCALE < 150.0);
             events.write(DramaticEvent::new(if near { 0.05 } else { 0.025 }, if near { "kill_near" } else { "kill" }));

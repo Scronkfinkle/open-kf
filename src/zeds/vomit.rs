@@ -199,6 +199,7 @@ fn move_globs(
                         kind: crate::game::combat::HurtKind::Vomit,
                         dam_type: crate::game::combat::DamType::Vomit,
                         source: Some(coords::pos(end.to_array())),
+                        dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
                     });
                 }
                 runlog::kv("vomit_touch", &format!("glob={} player=true", g.id));
@@ -228,6 +229,7 @@ fn move_globs(
                     kind: crate::game::combat::HurtKind::Vomit,
                     dam_type: crate::game::combat::DamType::Vomit,
                     source: Some(at_bevy),
+                    dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
                 });
             }
             runlog::kv(

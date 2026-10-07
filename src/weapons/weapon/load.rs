@@ -163,6 +163,51 @@ pub(super) fn fire_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> Option<c
     })
 }
 
+/// A damage type class for the perks: its class chain and
+/// KFWeaponDamageType.bIsMeleeDamage.
+pub(super) fn dam_type(defaults: &ClassDefaults, dt: &ObjectHandle) -> crate::game::perks::DamType {
+    let melee = matches!(defaults.get(dt, "bIsMeleeDamage"), Some((Value::Bool(true), _)));
+    crate::game::perks::intern_dam_type(crate::game::perks::ClassChain::new(defaults.chain_names(dt)), melee)
+}
+
+/// The damage type a class property names (MyDamageType, DamageType...).
+pub(super) fn dam_type_prop(set: &PackageSet, defaults: &ClassDefaults, class: &ObjectHandle, prop: &str) -> Option<crate::game::perks::DamType> {
+    match defaults.get(class, prop) {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).map(|dt| dam_type(defaults, &dt)),
+        _ => None,
+    }
+}
+
+/// Whether a fire class's ModeDoFire applies the perk's fire speed
+/// (GetFireSpeed) and recoil (ModifyRecoilSpread): the nearest class in
+/// its chain that overrides ModeDoFire decides (from the scripts; classes
+/// whose override calls Super pass through).
+fn perk_fire_rules(defaults: &ClassDefaults, fm: &ObjectHandle) -> (bool, bool) {
+    // (class, applies fire speed, applies recoil)
+    const OWNERS: [(&str, bool, bool); 14] = [
+        ("WinchesterFire", true, true),
+        ("KSGFire", true, true),
+        ("NailGunFire", true, true),
+        ("ChainsawFire", true, false),
+        ("BoomStickAltFire", false, true),
+        ("HuskGunFire", false, true),
+        ("PipeBombFire", false, false),
+        ("FragFire", false, false),
+        ("ZEDGunAltFire", false, false),
+        ("SyringeAltFire", false, false),
+        ("KFFire", true, true),
+        ("KFShotgunFire", true, true),
+        ("KFMeleeFire", true, false),
+        ("WeaponFire", false, false),
+    ];
+    for c in defaults.chain_names(fm) {
+        if let Some(&(_, speed, recoil)) = OWNERS.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(&c)) {
+            return (speed, recoil);
+        }
+    }
+    (false, false)
+}
+
 /// Reads a fire mode class's defaults (KFMeleeFire, KFFire, BaseProjectileFire...).
 pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_class: Option<&ObjectHandle>) -> FireMode {
     let mut mode = FireMode {
@@ -207,6 +252,12 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
             headshot_mult: 1.0,
             ..default()
         },
+        mac10_inc: None,
+        perk_speed: false,
+        perk_recoil: false,
+        base_rate: 0.5,
+        base_anim_rate: 1.0,
+        base_damage_delay: 0.0,
     };
     let Some(fm_class) = fm_class else {
         return mode;
@@ -282,7 +333,14 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
         && let Some(dt_class) = set.resolve(&dt_pkg, dt)
     {
         mode.fire = fire_type(defaults, &dt_class);
+        mode.combat.dam = Some(dam_type(defaults, &dt_class));
     }
+    // MAC10Fire.DoTrace: DamageType = GetMAC10DamageType (KFVetFirebug:
+    // DamTypeMAC10MPInc).
+    if defaults.is_a(fm_class, "MAC10Fire") {
+        mode.mac10_inc = crate::zeds::gore::find_class(set, "KFMod.DamTypeMAC10MPInc").map(|dt| dam_type(defaults, &dt));
+    }
+    (mode.perk_speed, mode.perk_recoil) = perk_fire_rules(defaults, fm_class);
     if let Some((Value::Name(n), np)) = fget("FireAnim") {
         mode.anims = vec![np.pkg.name(n).to_string()];
     }
@@ -299,6 +357,9 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
     }
     mode.anim_rate = ffloat("FireAnimRate", 1.0);
     mode.rate = ffloat("FireRate", 0.5);
+    mode.base_anim_rate = mode.anim_rate;
+    mode.base_rate = mode.rate;
+    mode.base_damage_delay = mode.combat.damage_delay;
     let fbool = |p: &str| matches!(fget(p), Some((Value::Bool(true), _)));
     let fname = |p: &str| match fget(p) {
         Some((Value::Name(n), np)) => np.pkg.name(n).to_ascii_lowercase(),
@@ -436,6 +497,9 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
             },
             impact_on_touch: (is_husk || is_zed_bolt).then(|| pfloat("HeadShotDamageMult", 1.5)),
             fire,
+            dam: dam_type_prop(set, defaults, pc, "MyDamageType"),
+            // ZED bolts deal Damage with MyDamageType on touch.
+            impact_dam: if is_zed_bolt { dam_type_prop(set, defaults, pc, "MyDamageType") } else { dam_type_prop(set, defaults, pc, "ImpactDamageType") },
             hurts_self: !(is_husk || is_zed_bolt || is_zed_orb),
             // Explode: LAWProj spawns LawExplosion, the M79 family
             // KFNadeLExplosion; ExplosionDecal RocketMarkDirt / KFScorchMark.
@@ -496,6 +560,7 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
             } else {
                 crate::weapons::projectile::ThrownKind::Frag { fuse: pfloat("ExplodeTimer", 2.0) }
             },
+            dam: dam_type_prop(set, defaults, pc, "MyDamageType"),
         });
         // FlameBurstFire (a CrossbowFire) overrides AllowFire: it needs a
         // round in the magazine and never fires while reloading.
@@ -547,6 +612,7 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
                     Some((Value::Object(r), rp)) => set.resolve(&rp, r).and_then(|dt| fire_type(defaults, &dt)),
                     _ => None,
                 },
+                dam: dam_type_prop(set, defaults, pc, "MyDamageType"),
             },
             per_fire: int("ProjPerFire", 1),
             ammo_per_fire: int("AmmoPerFire", 1),
@@ -587,6 +653,7 @@ pub(super) fn load_weapons(
     main_cam: Query<(Entity, &Transform), With<FlyCamera>>,
     loadout: Res<WeaponLoadout>,
     character: Res<crate::player::character::CharacterChoice>,
+    (vet, mut inv): (Res<crate::game::perks::Veterancy>, ResMut<crate::game::buy_menu::ShopInventory>),
 ) {
     let started = std::time::Instant::now();
     let set = PackageSet::new(&request.install_root);
@@ -622,8 +689,16 @@ pub(super) fn load_weapons(
         ))
         .id();
 
-    // The inventory: KF's starting weapons, then any given with --give.
+    // The inventory: KF's starting weapons (RequiredEquipment), the perk's
+    // (AddDefaultInventory -> CreateInventoryVeterancy, with its SellValue;
+    // skipped if already carried), then any given with --give.
     let mut classes: Vec<String> = STARTING_WEAPONS.iter().map(|c| c.to_string()).collect();
+    let (perk_items, _) = vet.vet.default_inventory(crate::game::dosh::GAME_DIFFICULTY);
+    for (c, _) in &perk_items {
+        if !classes.iter().any(|have| have.eq_ignore_ascii_case(c)) {
+            classes.push(c.to_string());
+        }
+    }
     for c in &loadout.give {
         if !classes.iter().any(|have| have.eq_ignore_ascii_case(c)) {
             classes.push(c.clone());
@@ -635,6 +710,14 @@ pub(super) fn load_weapons(
         match load_weapon(&set, &defaults, class_path, sleeve.as_ref(), &mut meshes, &mut images, &mut materials) {
             Ok(mut def) => {
                 spawn_parts(&mut commands, &mut def, cam);
+                let changes = apply_vet(&mut def, vet.vet, true);
+                if !changes.is_empty() {
+                    runlog::kv("perk_mod", &format!("kind=weapon perk={} weapon={} reason=start {}", vet.vet.label(), def.class, changes.join(" ")));
+                }
+                if let Some(&(_, sell)) = perk_items.iter().find(|(c, _)| c.eq_ignore_ascii_case(class_path)) {
+                    def.sell_value = Some(sell);
+                    runlog::kv("perk_start_weapon", &format!("perk={} weapon={class_path} sell_value={sell}", vet.vet.label()));
+                }
                 runlog::kv(
                     "weapon_loaded",
                     &format!(
@@ -708,14 +791,16 @@ pub(super) fn load_weapons(
         }
     }
     let weight: f32 = defs.iter().map(|d| d.weight).sum();
+    let max_weight = max_carry_weight(&vet.vet);
+    inv.max_weight = max_weight;
     runlog::kv(
         "inventory",
         &format!(
-            "character={character_name} loaded={} failed={} failed_classes={:?} weight={weight} max_carry_weight={MAX_CARRY_WEIGHT} over_limit={} given_by_test_flag={} order={:?}",
+            "character={character_name} loaded={} failed={} failed_classes={:?} weight={weight} max_carry_weight={max_weight} over_limit={} given_by_test_flag={} order={:?}",
             defs.len(),
             failed.len(),
             failed,
-            weight > MAX_CARRY_WEIGHT,
+            weight > max_weight,
             loadout.give.len(),
             defs.iter().map(|d| format!("{}:{}", d.group, d.item_name)).collect::<Vec<_>>()
         ),
@@ -774,15 +859,21 @@ pub(super) fn load_weapons(
         last_click: -10.0,
         sound_rng: 0x1b87_3593,
         torch: TorchState::default(),
+        vet: vet.vet,
     };
     set_action(&mut w, Action::Select);
     commands.insert_resource(w);
-    // KFHumanPawn.ModifyVelocity: the weight counts up to MaxCarryWeight.
-    let encumbrance = weight.min(MAX_CARRY_WEIGHT) / MAX_CARRY_WEIGHT;
+    // KFHumanPawn.ModifyVelocity: the weight counts up to MaxCarryWeight;
+    // the perk's GetMovementSpeedModifier.
+    let perk_speed_mult = vet.vet.movement_speed(crate::game::dosh::GAME_DIFFICULTY);
+    if perk_speed_mult != 1.0 {
+        runlog::kv("perk_mod", &format!("kind=move_speed perk={} ground_speed_mult={perk_speed_mult}", vet.vet.label()));
+    }
     commands.insert_resource(WeaponEffects {
         ground_speed_bonus: 0.0,
-        weight_speed_mult: 1.0 - encumbrance * WEIGHT_SPEED_MODIFIER,
+        weight_speed_mult: weight_speed_mult(weight, &vet.vet),
         fire_velocity_scale: None,
+        perk_speed_mult,
     });
     runlog::kv("weapons_ready", &format!("seconds={:.2}", started.elapsed().as_secs_f64()));
     drop(defaults);
@@ -833,8 +924,10 @@ pub(super) fn load_weapon(
     };
     let display_fov = float("DisplayFOV", 90.0);
     let bob_damping = float("BobDamping", 0.96);
-    let speed_bonus = if matches!(get("bSpeedMeUp"), Some((Value::Bool(true), _))) {
+    let speed_me_up = matches!(get("bSpeedMeUp"), Some((Value::Bool(true), _)));
+    let speed_bonus = if speed_me_up {
         // KFHumanPawn: default.GroundSpeed * BaseMeleeIncrease - Weight * 2
+        // (the perk's GetMeleeMovementSpeedModifier is added by apply_vet).
         200.0 * 0.2 - float("Weight", 0.0) * 2.0
     } else {
         0.0
@@ -871,6 +964,7 @@ pub(super) fn load_weapon(
     ];
     // Ammo, aimed animation and firing effects come from the primary mode.
     let mut ammo = None;
+    let mut ammo_class: Option<crate::game::perks::ClassChain> = None;
     let mut fx = FireFx::default();
     let mut shell_bone_name = None;
     let mut shell2_bone_name = None;
@@ -890,9 +984,10 @@ pub(super) fn load_weapon(
         }
         // Ammo: magazine size from the weapon, starting total from the ammo class.
         if let Some((Value::Object(ac), ac_pkg)) = fget("AmmoClass")
-            && let Some(ammo_class) = set.resolve(&ac_pkg, ac)
+            && let Some(ammo_class_h) = set.resolve(&ac_pkg, ac)
         {
-            let initial = match defaults.get(&ammo_class, "InitialAmount") {
+            let ammo_class = &mut ammo_class;
+            let initial = match defaults.get(&ammo_class_h, "InitialAmount") {
                 Some((Value::Int(i), _)) => i.max(0) as u32,
                 _ => 0,
             };
@@ -900,7 +995,7 @@ pub(super) fn load_weapon(
                 Some((Value::Int(i), _)) => i.max(1) as u32,
                 _ => 1,
             };
-            let max_total = match defaults.get(&ammo_class, "MaxAmmo") {
+            let max_total = match defaults.get(&ammo_class_h, "MaxAmmo") {
                 Some((Value::Int(i), _)) => i.max(0) as u32,
                 _ => initial,
             };
@@ -911,7 +1006,10 @@ pub(super) fn load_weapon(
                 capacity,
                 initial,
                 max_total,
+                default_capacity: capacity,
+                default_max: max_total,
             });
+            *ammo_class = Some(crate::game::perks::ClassChain::new(defaults.chain_names(&ammo_class_h)));
         }
     }
 
@@ -1051,7 +1149,21 @@ pub(super) fn load_weapon(
         t.log(class_path);
         t
     });
-    Ok(WeaponDef {
+    let alt_ammo_h = mode_class(1).and_then(|c| match defaults.get(&c, "AmmoClass") {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
+        _ => None,
+    });
+    let alt_ammo_class = alt_ammo_h.as_ref().map(|h| crate::game::perks::ClassChain::new(defaults.chain_names(h)));
+    let mut def = WeaponDef {
+        perk: crate::game::perks::PerkWeapon {
+            class: crate::game::perks::ClassChain::new(defaults.chain_names(&class)),
+        },
+        ammo_class,
+        alt_ammo_class,
+        alt_default_max: 0,
+        speed_me_up,
+        base_reload_rate: float("ReloadRate", 1.0),
+        base_reload_anim_rate: float("ReloadAnimRate", 1.0),
         torch,
         class: class_path.to_string(),
         item_name,
@@ -1177,7 +1289,9 @@ pub(super) fn load_weapon(
         chop_slow_rate: if defaults.is_a(&class, "KFMeleeGun") { float("ChopSlowRate", 0.5) } else { 1.0 },
         boomstick_reload: defaults.is_a(&class, "BoomStick").then(|| float("ReloadCountDown", 2.5)),
         fx,
-    })
+    };
+    def.alt_default_max = def.alt_ammo.map_or(0, |a| a.1);
+    Ok(def)
 }
 
 /// The weapon's model parts, hidden, under the weapon camera.

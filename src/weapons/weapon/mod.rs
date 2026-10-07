@@ -28,11 +28,13 @@ mod inventory;
 mod sounds;
 mod welder_screen;
 mod torch;
+mod perk;
 pub(crate) use load::*;
 use input::*;
 use animate::*;
 use inventory::*;
 use welder_screen::update_welder_screen;
+use perk::*;
 pub(crate) use sounds::*;
 use torch::*;
 
@@ -128,7 +130,7 @@ impl Plugin for WeaponPlugin {
             )
             .insert_non_send(WeaponAssets::default())
             .add_systems(PostStartup, load_weapons.after(crate::engine::camera::spawn_camera))
-            .add_systems(Update, shop_requests.before(weapon_input))
+            .add_systems(Update, (sync_perk, shop_requests).chain().before(weapon_input))
             .add_systems(
                 Update,
                 (weapon_input, torch_update, animate_weapon, update_welder_screen, torch_beam.in_set(crate::weapons::flashlight::FlashlightBeamSet), weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
@@ -163,6 +165,9 @@ pub struct WeaponEffects {
     /// A shot this frame scales the horizontal velocity (KFFire.ModeDoFire:
     /// x 0.1, or x 0.5 for FireRate <= 0.25); walking applies and clears it.
     pub fire_velocity_scale: Option<f32>,
+    /// The perk's GetMovementSpeedModifier (GroundSpeed x this, after the
+    /// weight and the melee bonus); 1 without a perk.
+    pub perk_speed_mult: f32,
 }
 
 impl Default for WeaponEffects {
@@ -171,6 +176,7 @@ impl Default for WeaponEffects {
             ground_speed_bonus: 0.0,
             weight_speed_mult: 1.0,
             fire_velocity_scale: None,
+            perk_speed_mult: 1.0,
         }
     }
 }
@@ -269,6 +275,20 @@ struct WeaponDef {
     never_throw: bool,
     /// bTorchEnabled: the weapon's flashlight (torch.rs).
     torch: Option<TorchDef>,
+    /// The class chain and pickup class, for the perks.
+    perk: crate::game::perks::PerkWeapon,
+    /// The ammo classes (primary, the alt fire's own), for AddExtraAmmoFor.
+    ammo_class: Option<crate::game::perks::ClassChain>,
+    alt_ammo_class: Option<crate::game::perks::ClassChain>,
+    /// The alt ammo's default MaxAmmo.
+    alt_default_max: u32,
+    /// KFHumanPawn.ChangedWeapon: bSpeedMeUp (`speed_bonus` is then
+    /// GroundSpeed x (BaseMeleeIncrease + the perk's melee speed) - Weight x 2).
+    speed_me_up: bool,
+    /// The default ReloadRate and ReloadAnimRate; the perk's reload speed
+    /// sets `reload_rate` / `reload_anim_rate` at each reload (ReloadMeNow).
+    base_reload_rate: f32,
+    base_reload_anim_rate: f32,
 }
 
 /// A scoped weapon's lens (Crossbow / M99SniperRifle): the model part that
@@ -470,6 +490,20 @@ struct FireMode {
     /// last ammo.
     last_rule: LastShot,
     combat: CombatStats,
+    /// MAC10Fire.DoTrace: the perk's GetMAC10DamageType (the Firebug's
+    /// DamTypeMAC10MPInc burns).
+    mac10_inc: Option<crate::game::perks::DamType>,
+    /// This fire class's ModeDoFire applies the perk's GetFireSpeedMod /
+    /// ModifyRecoilSpread (KFFire, KFShotgunFire, KFMeleeFire and the
+    /// overrides that copy them; see DESIGN.md, "Perks").
+    perk_speed: bool,
+    perk_recoil: bool,
+    /// The class defaults FireRate, FireAnimRate and DamagedelayMin: the
+    /// perk's fire speed divides / multiplies these into `rate`,
+    /// `anim_rate` and `combat.damage_delay` (ModeDoFire).
+    base_rate: f32,
+    base_anim_rate: f32,
+    base_damage_delay: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -644,6 +678,9 @@ struct CombatStats {
     range: f32,
     damage_delay: f32,
     min_dot: f32,
+    /// The damage type (KFFire DamageType, KFMeleeFire hitDamageClass), for
+    /// the perks (AddDamage, GetHeadShotDamMulti).
+    dam: Option<crate::game::perks::DamType>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -654,6 +691,10 @@ struct Ammo {
     /// The ammo class's InitialAmount and MaxAmmo (total, magazine included).
     initial: u32,
     max_total: u32,
+    /// default.MagCapacity and the ammo class's default MaxAmmo, before the
+    /// perk's GetMagCapacityMod / AddExtraAmmoFor.
+    default_capacity: u32,
+    default_max: u32,
 }
 
 /// The weapon's state (KFWeapon ClientState and bIsReloading). Which
@@ -771,6 +812,9 @@ struct Weapons {
     sound_rng: u32,
     /// The flashlight on the weapon in hand (torch.rs).
     torch: TorchState,
+    /// The perk whose values the weapons carry now (perk.rs re-applies
+    /// them when the perk changes).
+    vet: crate::game::perks::Vet,
 }
 
 impl Weapons {
@@ -834,6 +878,8 @@ mod tests {
             impact_headshot_mult: 1.5,
             impact_on_touch: Some(1.5),
             fire: Some(crate::game::combat::FireType::HuskGun),
+            dam: None,
+            impact_dam: None,
             hurts_self: false,
             zap: None,
             arm_dist: 0.0,
@@ -922,8 +968,8 @@ mod tests {
 
     #[test]
     fn dualies_take_the_single_pistols_rounds() {
-        let single = Ammo { mag: 15, spare: 105, capacity: 15, initial: 120, max_total: 240 };
-        let dual = Ammo { mag: 30, spare: 90, capacity: 30, initial: 120, max_total: 240 };
+        let single = Ammo { mag: 15, spare: 105, capacity: 15, initial: 120, max_total: 240, default_capacity: 15, default_max: 240 };
+        let dual = Ammo { mag: 30, spare: 90, capacity: 30, initial: 120, max_total: 240, default_capacity: 30, default_max: 240 };
         let m = merge_dual_ammo(single, dual);
         assert_eq!((m.mag, m.spare), (30, 210));
         // A half-empty single: 7 + 15 in the magazine, 120 + 7 + 40 total.

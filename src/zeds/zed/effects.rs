@@ -331,7 +331,7 @@ pub(super) fn burn_zeds(
     mut meshes: ResMut<Assets<Mesh>>,
     mut effects: Query<&mut crate::render::particles::ParticleEffect>,
     mut zeds: Query<(&mut Zed, &Transform)>,
-    mut kills: ResMut<crate::game::combat::KillCount>,
+    (mut kills, vet): (ResMut<crate::game::combat::KillCount>, Res<crate::game::perks::Veterancy>),
 ) {
     let dt = time.delta_secs();
     for (mut z, t) in &mut zeds {
@@ -357,7 +357,14 @@ pub(super) fn burn_zeds(
                 z.burn_timer += 1.0;
                 let damage = (z.last_burn_damage + (z.random() % 2) as f32 + 3.0).floor();
                 let fire = z.fire_class;
-                let source = crate::game::combat::HitSource { point: b, attacker: b, melee: false, explosive: None, fire: Some(fire) };
+                // KFMonster.Timer: TakeFireDamage(.., BurnInstigator) with
+                // FireDamageClass, through TakeDamage (the perk's AddDamage).
+                let dam = Some(crate::game::perks::known_dam_type(match fire {
+                    crate::game::combat::FireType::Trenchgun => "DamTypeTrenchgun",
+                    crate::game::combat::FireType::Mac10 => "DamTypeMAC10MPInc",
+                    _ => "DamTypeFlamethrower",
+                }));
+                let source = crate::game::combat::HitSource { point: b, attacker: b, melee: false, explosive: None, fire: Some(fire), dam, vet: vet.vet };
                 crate::game::combat::damage_zed(&mut z, damage, false, 1.0, "fire", 0.0, source, &mut kills);
                 z.burn_down -= 1;
                 runlog::kv(

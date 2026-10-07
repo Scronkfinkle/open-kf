@@ -3924,6 +3924,173 @@ switch anim), `flashlight_toggle`, `flashlight_refused`, `flashlight_off`,
 direction, what was hit, distance, FOV, light values), `flashlight_key`,
 `flashlight_pending`, `flashlight_shine` / `flashlight_shine_shown`.
 
+## Perks (veterancy) (stage 1 implemented 2026-10-06)
+
+KF's perks are the seven `KFVeterancyTypes` subclasses (KFMod): Field
+Medic, Support Specialist, Sharpshooter, Commando, Berserker, Firebug,
+Demolitions (PerkIndex 0-6, in that order), each with a level 0-6
+(`KFPlayerReplicationInfo.ClientVeteranSkill` and
+`ClientVeteranSkillLevel`). Every perk effect is a static function of the
+perk class that the game calls from many places; the base class returns
+"no change" (1.0, 0, the same damage). With no perk at all
+(ClientVeteranSkill none) every caller skips the call.
+
+**Stages (your decision).**
+- Stage 1 (now): you pick the perk and the level; no progress tracking.
+- Stage 2 (later, not built): levels earned from stats saved locally.
+  Plan at the end of this section.
+
+### Choosing the perk (stage 1)
+
+- `--perk NAME`: `medic`, `support`, `sharpshooter`, `commando`,
+  `berserker`, `firebug`, `demolitions` (also `demo`, or KF's class name
+  such as `KFVetSupportSpec`). Without it you have no perk, as before.
+- `--perk-level N`: 0 to 6 (default 0). In KF each perk has its own level
+  from your Steam stats (`PerkHighestLevelAvailable`); here the one level
+  is used for whichever perk you pick.
+- In game: the buy menu (at the trader) lists the perks; keys 1-7 pick
+  one (KF's quick perk select, `KFQuickPerkSelect`, sits in the buy menu).
+  Test action `perk:NAME` does the same from `--input`.
+- KF's rule for when a change counts (`KFPlayerController.SelectVeterancy`,
+  `KFGameType.DoWaveEnd`):
+  - During a wave: nothing changes now; the pick is remembered and
+    "You will become a 'X' at the end of this Wave" is shown. At the end
+    of the wave the remembered perk is applied.
+  - Between waves: the change is immediate ("You are now a 'X'"), but
+    only once per wave (after the match has begun): a second change gets
+    "You can only change your Perk once per Wave". The allowance comes back
+    at the end of the next wave.
+  - A change calls `KFHumanPawn.VeterancyChanged`: carry weight is
+    recomputed (weapons over the new limit are dropped; we have no
+    weapon pickups on the floor, so they are just removed, logged) and
+    ammo over the new maximum is cut.
+  - Starting items (`AddDefaultInventory`) come only with a new pawn
+    (game start; we have no respawn), so changing perk later gives none.
+- The buy menu opens on your perk's sale list (`BuyMenuFilterIndex`).
+- HUD (`HUDKillingFloor.DrawHudPassA`): the perk icon bottom left
+  (`OnHUDIcon`; level 6 uses `OnHUDGoldIcon`, (255,255,255,192)), size
+  Min(36 x 1.5 x 1.4 x SizeX/1024, 36 x 1.5 x 1.4) at (0.007 ClipX,
+  0.93 ClipY - size), with one star per level (`Hud_Perk_Star`, level 6:
+  one gold star, `Hud_Perk_Star_Gold`), VetStarSize 12 scaled the same
+  way, stacked upwards from the icon's bottom-right corner.
+- Logs: `perk_selected` at startup (perk, level, source), `perk_change`
+  for every request (accepted, deferred or refused, and why), and a
+  `perk_mod` line whenever a modifier changes a value (what, weapon or
+  damage type, the factor, before and after).
+
+### Every perk effect, where KF applies it, and our status
+
+"Ours" says whether the system the effect changes exists in our code
+(yes / partly / no) and what stage 1 does (done = implemented and
+checked from logs, LATER = left).
+
+| Effect (static function) | Perks using it | KF calls it from | Ours | Stage 1 |
+| --- | --- | --- | --- | --- |
+| AddDamage (damage you deal) | all but Medic, Sharpshooter | KFMonster.TakeDamage (after the burn bookkeeping, before the headshot multiplier) | yes (combat::damage_zed) | done: every hit carries its damage type to damage_zed |
+| GetHeadShotDamMulti | Sharpshooter (all perks 1.0) | KFMonster.TakeDamage, headshots and headless zeds, not melee (DamTypeMelee) or fire | yes | done |
+| GetReloadSpeedModifier | Commando (all weapons), Sharpshooter, Firebug | KFWeapon.ReloadMeNow (ReloadRate = default / mod), ClientReload (anim rate x mod), WeaponTick | yes | done |
+| GetFireSpeedMod | Sharpshooter (Winchester, Crossbow, M99), Berserker (KFMeleeGun: knives, axes, also the Welder) | KFFire / KFShotgunFire / KFMeleeFire.ModeDoFire (FireRate = default / mod, FireAnimRate x mod; melee also DamagedelayMin / mod) and the overrides that copy it (ChainsawFire, KSGFire, NailGunFire, WinchesterFire) | yes | done |
+| ModifyRecoilSpread | Sharpshooter, Commando | KFFire / KFShotgunFire.ModeDoFire (Spread x mod, HandleRecoil kick x mod) and BoomStickAltFire, HuskGunFire, KSGFire, NailGunFire, WinchesterFire | yes (firing.rs) | done |
+| GetMagCapacityMod | Medic (medic guns), Commando (rifles), Firebug (Flamethrower, MAC10) | KFWeapon.UpdateMagCapacity (every tick), GiveAmmo (start ammo x new / default capacity), ServerBuyAmmo (rounds per clip), the buy menu's clip price | yes | done |
+| AddExtraAmmoFor (max ammo) | Support (shotguns, frags), Commando, Firebug, Demolitions (frags, pipe bombs, LAW) | KFWeapon.GiveAmmo / GetAmmoMulti, KFPawn.ServerBuyAmmo, KFAmmunition.HandlePickupQuery, Huskgun.GiveAmmo, VeterancyChanged | yes | done |
+| GetAmmoPickupMod | Medic, Commando, Firebug | KFAmmoPickup.Touch (ammo boxes in the map) | no (no ammo boxes yet) | LATER |
+| GetCostScaling (weapon and armour prices) | all | KFPawn.ServerBuyWeapon, ServerSellWeapon (unpaid weapons), ServerBuyKevlar; KFBuyMenuSaleList / InvList prices | yes (buy menu, armour) | done |
+| GetAmmoCostScaling | Sharpshooter (bolts), Demolitions | KFPawn.ServerBuyAmmo, KFBuyMenuInvList | yes | done |
+| AddDefaultInventory (start weapons, armour) | all (level 5-6; armour: Medic 5+, Berserker 6 below Suicidal, Firebug 6) | KFHumanPawn.AddDefaultInventory -> CreateInventoryVeterancy (SellValue = StartingWeaponSellPriceLevel5 200 / Level6 225; Demolitions' Level5 is 0) | yes | done |
+| GetMovementSpeedModifier | Medic | KFHumanPawn.ModifyVelocity (GroundSpeed x mod after the weight and melee bonus) | yes (walk.rs) | done |
+| GetMeleeMovementSpeedModifier | Berserker | KFHumanPawn.ChangedWeapon: InventorySpeedModifier = GroundSpeed x (BaseMeleeIncrease 0.2 + mod) - Weight x 2 | yes | done |
+| AddCarryMaxWeight | Support | KFHumanPawn.VeterancyChanged (MaxCarryWeight 15 + n) | yes | done |
+| GetWeldSpeedModifier | Support | WeldFire.Timer: weld damage x mod (an int) | yes (door.rs) | done (unit-tested; not tried in a run: no door found for the test) |
+| GetSyringeChargeRate | Medic | Syringe.Tick / KFMedicGun.Tick: +10 x mod per regen tick | yes | done |
+| GetHealPotency | Medic | SyringeAltFire.Timer (self heal), SyringeFire (others), HealingProjectile (darts), MedicNade | yes (self heal, darts; no teammates) | done (self heal); darts only heal teammates, none solo |
+| ReduceDamage (damage you take) | Medic (bile), Berserker (all, bile more), Firebug (fire), Demolitions (explosives) | KFGameType.ReduceDamage (before the self-damage halving); KFPawn.TakeDamage returns early when it gives 0 (no burning) | yes (combat.rs) | done |
+| GetBodyArmorDamageModifier | Medic | KFPawn.ShieldAbsorb (damage x mod before the vest's sums) | yes (armour.rs) | done |
+| ZedTimeExtensions | Commando (3+), Berserker | KFGameType.Killed: a kill during zed time forces DramaticEvent(1.0) while extensions are left; reset when zed time ends | yes (zed_time.rs) | done |
+| CanBeGrabbed | Berserker (not by Clots) | ZombieClot.ClawDamageTarget | yes (think.rs) | done |
+| GetShotgunPenetrationDamageMulti | Support | ShotgunBullet / NailGunProjectile / TrenchgunBullet.ProcessTouch | yes (projectile.rs PenDamageReduction) | done |
+| GetMAC10DamageType | Firebug (DamTypeMAC10MPInc: incendiary) | MAC10Fire.DoTrace | yes (FireType::Mac10 exists) | done |
+| ExtraRange | Firebug (Flamethrower) | FlameTendril.Timer (bursts after 2 + n timers) | yes (projectile.rs flames) | done |
+| GetNadeType | Medic (MedicNade), Firebug 3+ (FlameNade) | FragFire.GetDesiredProjectileClass | no (only the Nade) | LATER |
+| SpecialHUDInfo (zed health bars) | Commando 1+ | HUDKillingFloor.DrawHudPassA | no | LATER |
+| ShowStalkers / GetStalkerViewDistanceMulti | Commando | KFHumanPawn -> ZombieStalker drawing | partly (Stalkers cloak) | LATER |
+| CanMeleeStun | Berserker | no caller in the base game scripts | - | nothing to do |
+| ShouldBecomeIncendiary, KilledShouldExplode | none (base false) | KFMonster.TakeDamage | - | nothing to do |
+
+Weapon and damage-type matching: KF tests classes two ways, and we
+copy which one each line uses: `Item == class'X'` (that exact class)
+and `X(Other) != none` / `class<X>(DmgType) != none` (X or a subclass).
+For the subclass tests we keep each weapon's, damage type's and ammo's
+class chain (read with ClassDefaults at load); Berserker reads the damage
+type's `bIsMeleeDamage` default.
+
+Difficulty: we play Normal (GameDifficulty 2), so the Suicidal / Hell
+on Earth branches (Medic speed, Berserker armour, Sharpshooter's Dualies)
+take their below-5 / below-7 sides.
+
+Integers: KF keeps damage, weld damage, heal amounts and ammo maximums as
+whole numbers; a perk factor's result is cut down to a whole number where
+KF's variable is an int.
+
+### How it is built (stage 1)
+
+- `game/perks.rs`: the perks, `Vet` (perk + level) with one method per
+  KF static function (unit-tested against the scripts' numbers), the
+  `Veterancy` resource (in use, asked for, changed this wave), the change
+  rule and its log.
+- Class tests: weapons, ammo and damage types keep their class chain
+  (`ClassDefaults::chain_names`); `ClassChain::is` / `is_a` copy KF's
+  `==` / IsA tests. Damage types are interned (`DamType`) and carried by
+  every hit: `ShotFired`, `MeleeSwing`, projectile stats, blasts, flames,
+  burn ticks (`HitSource.dam` and `.vet`) and `PlayerDamaged.dam`.
+- Weapons (`weapons/weapon/perk.rs`): each weapon keeps its defaults
+  (FireRate, FireAnimRate, DamagedelayMin, ReloadRate, ReloadAnimRate,
+  MagCapacity, MaxAmmo) and `apply_vet` derives the perk's values when a
+  weapon is given or the perk changes (`sync_perk`). Which fire classes
+  take the fire speed and recoil factors comes from reading each
+  ModeDoFire override in the scripts (`perk_fire_rules`).
+- KF quirks kept: the Sharpshooter's level 0 gets the 0.25 recoil branch
+  (the script's else); prices use 32-bit floats (Support 6 shotgun:
+  500 x 0.29999998 = 149.99997, shown as 149); the wave-end perk change
+  uses up the trader-time change (SelectVeterancy sets
+  bChangedVeterancyThisWave again).
+- Our stand-ins (labelled): ClientMessage texts are shown in the
+  KFCriticalEventPlus style (we have no console message area); weapons
+  dropped by a carry-limit change are removed (no floor pickups yet); the
+  normal (not gold) HUD icon colour is not set by KF's code there: white
+  is a guess.
+- Known differences: with a perk, damage taken is cut to a whole number
+  first (KF's int; without a perk the old code keeps fractions, e.g.
+  3.85 from a Clot); a respawn after death (debug mode) does not give
+  the perk's armour again; the player starts holding the 9mm (KF calls
+  ClientSwitchToBestWeapon, not checked).
+
+### Stage 2 (plan only, not built): earning levels
+
+- KF counts the stats in `KFSteamStatsAndAchievements` (ROEngine) and
+  each perk's level needs (from `Requirements` in the perk classes):
+  Medic: health healed on teammates (DamageHealedStat); Support: welding
+  points (WeldingPointsStat) and shotgun damage (ShotgunDamageStat);
+  Sharpshooter: headshot kills with its weapons (HeadshotKillsStat);
+  Commando: Stalker kills with rifles (StalkerKillsStat) and rifle damage
+  (BullpupDamageStat); Berserker: melee damage (MeleeDamageStat);
+  Firebug: flame damage (FlameThrowerDamageStat); Demolitions: explosive
+  damage (ExplosivesDamageStat).
+- The counting is in script: the damage types' `AwardDamage` /
+  `AwardKill` (KFWeaponDamageType subclasses), WeldFire (welding points),
+  the heal paths (AddDamagedHealStats), headshot kills in KFMonster.
+- The level thresholds are **not** in the scripts:
+  `PerkHighestLevelAvailable` and `GetXProgressDetails` are native
+  (compiled C++). Options: take them from the game's binaries, or from
+  published tables (to be labelled as such). To be decided then.
+- Our plan: a `PerkStats` resource with those counters, filled from the
+  same events (damage_zed with its damage type, welding, healing, kills),
+  saved to a small local file (e.g. `work/` or the user's config folder,
+  never the game install) at wave end and on exit; the level of each perk
+  is then the highest whose thresholds are met, replacing
+  `--perk-level` (which would stay as an override for tests).
+- With teammates gone (solo), healing teammates cannot be earned: KF
+  has the same problem solo; decide then whether self heals count.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

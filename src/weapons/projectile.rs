@@ -43,6 +43,8 @@ pub struct ProjectileStats {
     pub pickup: bool,
     /// The damage type burns (TrenchgunBullet; W7).
     pub fire: Option<crate::game::combat::FireType>,
+    /// MyDamageType, for the perks.
+    pub dam: Option<crate::game::perks::DamType>,
 }
 
 /// How a projectile passes through zeds.
@@ -94,6 +96,10 @@ pub struct ExplosiveStats {
     pub impact_on_touch: Option<f32>,
     /// The blast's damage type burns (DamTypeHuskGun).
     pub fire: Option<crate::game::combat::FireType>,
+    /// MyDamageType (the blast) and ImpactDamageType (a dud or the Husk
+    /// Gun's touch), for the perks.
+    pub dam: Option<crate::game::perks::DamType>,
+    pub impact_dam: Option<crate::game::perks::DamType>,
     /// ZEDMKIISecondaryProjectile.HurtRadius: zaps (SetZapped(ZapAmount))
     /// every living zed in the radius instead of hurting anything.
     pub zap: Option<f32>,
@@ -261,6 +267,8 @@ struct PlayerFlame {
     vel: Vec3,
     stats: FlameStats,
     fire: Option<crate::game::combat::FireType>,
+    /// MyDamageType (DamTypeBurned), for the perks.
+    dam: Option<crate::game::perks::DamType>,
     weapon: &'static str,
     timer: f32,
     runs: u32,
@@ -532,6 +540,7 @@ fn spawn_projectiles(
                 vel,
                 stats: fl,
                 fire: s.stats.fire,
+                dam: s.stats.dam,
                 weapon: s.weapon,
                 timer: FLAME_TIMER,
                 runs: 0,
@@ -652,6 +661,7 @@ fn move_projectiles(
     player: Query<&Transform, With<crate::engine::camera::FlyCamera>>,
     (glass, mut glass_damage): (Query<&crate::world::glass::GlassCollider>, MessageWriter<crate::world::glass::GlassDamage>),
     (mut sounds, mut rng): (MessageWriter<crate::audio::mixer::PlaySound>, Local<u32>),
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     let dt = time.delta_secs();
     let attacker = player.single().map_or(Vec3::ZERO, |t| t.translation - Vec3::Y * crate::game::combat::PLAYER_EYE_HEIGHT * SCALE);
@@ -710,7 +720,7 @@ fn move_projectiles(
                     p.age * p.stats.speed
                 ),
             );
-            let source = crate::game::combat::HitSource { point, attacker, melee: false, explosive: None, fire: p.stats.fire };
+            let source = crate::game::combat::HitSource { point, attacker, melee: false, explosive: None, fire: p.stats.fire, dam: p.stats.dam, vet: vet.vet };
             crate::game::combat::damage_zed(&mut z, damage, head, p.stats.damage_type_headshot_mult, p.weapon, t, source, &mut kills);
             if p.stats.rule == PenRule::Bolt {
                 // CrossbowArrow / M99Bullet.PlayhitNoise: Arrow_hitflesh
@@ -720,8 +730,14 @@ fn move_projectiles(
                 p.vel *= 0.85;
                 continue;
             }
-            p.damage *= p.stats.pen_damage_reduction;
-            if p.damage / p.stats.damage <= p.stats.pen_damage_reduction / p.stats.max_penetrations.max(1e-3) {
+            // ShotgunBullet.ProcessTouch: PenDamageReduction from the perk's
+            // GetShotgunPenetrationDamageMulti.
+            let pen = vet.vet.shotgun_penetration(p.stats.pen_damage_reduction);
+            if pen != p.stats.pen_damage_reduction {
+                runlog::kv("perk_mod", &format!("kind=shotgun_penetration perk={} weapon={} pen_damage_reduction={}->{pen:.4}", vet.vet.label(), p.weapon, p.stats.pen_damage_reduction));
+            }
+            p.damage *= pen;
+            if p.damage / p.stats.damage <= pen / p.stats.max_penetrations.max(1e-3) {
                 stopped = true;
                 break;
             }
@@ -837,6 +853,7 @@ fn move_explosives(
     mut player_damage: MessageWriter<crate::game::combat::PlayerDamaged>,
     mut door_blasts: MessageWriter<crate::world::door::DoorBlast>,
     (mut dramatic, mut sounds, mut rng): (MessageWriter<crate::game::zed_time::DramaticEvent>, MessageWriter<crate::audio::mixer::PlaySound>, Local<u32>),
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -926,7 +943,7 @@ fn move_explosives(
                 let head = crate::game::combat::is_headshot(&z, point, dir, 1.0);
                 z.last_hit = Some((point, dir));
                 let attacker = coords::pos(player_ue.unwrap_or(at).to_array());
-                let source = crate::game::combat::HitSource { point, attacker, melee: false, explosive: None, fire: None };
+                let source = crate::game::combat::HitSource { point, attacker, melee: false, explosive: None, fire: None, dam: p.stats.impact_dam, vet: vet.vet };
                 crate::game::combat::damage_zed(&mut z, p.stats.impact_damage, head, p.stats.impact_headshot_mult, p.weapon, t, source, &mut kills);
             }
             runlog::kv(
@@ -955,7 +972,7 @@ fn move_explosives(
             let head = crate::game::combat::is_headshot(&z, point, dir, 1.0);
             z.last_hit = Some((point, dir));
             let attacker = coords::pos(player_ue.unwrap_or(at).to_array());
-            let source = crate::game::combat::HitSource { point, attacker, melee: false, explosive: None, fire: None };
+            let source = crate::game::combat::HitSource { point, attacker, melee: false, explosive: None, fire: None, dam: p.stats.impact_dam, vet: vet.vet };
             let damage = if head { p.stats.impact_damage * head_mult } else { p.stats.impact_damage };
             runlog::kv("explosive_impact", &format!("id={} weapon={} zed={id} damage={damage:.1} headshot={head}", p.id, p.weapon));
             crate::game::combat::damage_zed(&mut z, damage, head, p.stats.impact_headshot_mult, p.weapon, t, source, &mut kills);
@@ -992,6 +1009,8 @@ fn move_explosives(
                 frag: false,
                 weapon: p.weapon,
                 id: p.id,
+                dam: p.stats.dam,
+                vet: vet.vet,
             },
         );
         if let Some(e) = crate::game::zed_time::blast_event(zeds_killed as usize) {
@@ -1034,6 +1053,7 @@ fn move_flames(
     mut decals: MessageWriter<crate::render::decals::SpawnDecal>,
     mut player_damage: MessageWriter<crate::game::combat::PlayerDamaged>,
     mut rng: Local<u32>,
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1053,7 +1073,8 @@ fn move_flames(
             p.runs += 1;
             let speed = p.stats.speed;
             p.vel = p.vel.normalize_or_zero() * speed;
-            if p.runs >= FLAME_TIMER_RUNS {
+            // FlameTendril.Timer: TimerRunCount >= 2 + the perk's ExtraRange.
+            if p.runs >= FLAME_TIMER_RUNS + vet.vet.flame_extra_range() {
                 // Explode(Location, VRand()).
                 *rng = rng.wrapping_mul(1_103_515_245).wrapping_add(12345 + p.id);
                 let mut r = || {
@@ -1122,12 +1143,13 @@ fn move_flames(
             &p,
             at,
             normal,
+            vet.vet,
         );
         runlog::kv(
             "flame_burst",
             &format!(
-                "id={} weapon={} hit={hit} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} zeds_hit={zeds_hit} self_damage={self_damage}",
-                p.id, p.weapon, at.x, at.y, at.z, p.age
+                "id={} weapon={} hit={hit} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} timer_runs={} zeds_hit={zeds_hit} self_damage={self_damage}",
+                p.id, p.weapon, at.x, at.y, at.z, p.age, p.runs
             ),
         );
         commands.entity(entity).despawn();
@@ -1153,6 +1175,7 @@ fn flame_burst(
     p: &PlayerFlame,
     at: Vec3,
     normal: Vec3,
+    vet: crate::game::perks::Vet,
 ) -> (u32, f32) {
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
     let (damage, radius) = (p.stats.damage, p.stats.radius);
@@ -1185,7 +1208,7 @@ fn flame_burst(
         let point = coords::pos(hit_ue.to_array());
         let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
         z.last_hit = Some((point, dir_b));
-        let source = crate::game::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: None, fire: p.fire };
+        let source = crate::game::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: None, fire: p.fire, dam: p.dam, vet };
         crate::game::combat::damage_zed(&mut z, scale * damage, false, 1.0, p.weapon, dist * SCALE, source, kills);
         zeds_hit += 1;
     }
@@ -1202,6 +1225,7 @@ fn flame_burst(
                     kind: crate::game::combat::HurtKind::Fire,
                     dam_type: crate::game::combat::DamType::Other,
                     source: Some(at_bevy),
+                    dam: p.dam,
                 });
             }
         }
@@ -1358,6 +1382,9 @@ struct Blast {
     frag: bool,
     weapon: &'static str,
     id: u32,
+    /// The damage type and the instigator's perk.
+    dam: Option<crate::game::perks::DamType>,
+    vet: crate::game::perks::Vet,
 }
 
 /// The effect, the decal, and HurtRadius: every zed whose cylinder reaches
@@ -1439,7 +1466,7 @@ fn blast(
         let point = coords::pos(hit_ue.to_array());
         let dir_b = coords::dir(dirs.to_array()).normalize_or_zero();
         z.last_hit = Some((point, dir_b));
-        let source = crate::game::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: b.fleshpound_mult, fire: b.fire };
+        let source = crate::game::combat::HitSource { point, attacker: at_bevy, melee: false, explosive: b.fleshpound_mult, fire: b.fire, dam: b.dam, vet: b.vet };
         let before = z.health;
         crate::game::combat::damage_zed(&mut z, scale * b.damage, false, 1.0, b.weapon, dist * SCALE, source, kills);
         zeds_hit += 1;
@@ -1467,6 +1494,7 @@ fn blast(
                     kind: crate::game::combat::HurtKind::Plain,
                     dam_type: crate::game::combat::DamType::Other,
                     source: Some(at_bevy),
+                    dam: b.dam,
                 });
             }
         }
@@ -1491,6 +1519,8 @@ pub struct ThrownStats {
     pub effect: &'static str,
     pub decal: crate::render::decals::DecalKind,
     pub kind: ThrownKind,
+    /// MyDamageType (DamTypeFrag, DamTypePipeBomb), for the perks.
+    pub dam: Option<crate::game::perks::DamType>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1540,6 +1570,7 @@ fn move_thrown(
     mut player_damage: MessageWriter<crate::game::combat::PlayerDamaged>,
     mut door_blasts: MessageWriter<crate::world::door::DoorBlast>,
     (mut dramatic, mut sounds, mut rng): (MessageWriter<crate::game::zed_time::DramaticEvent>, MessageWriter<crate::audio::mixer::PlaySound>, Local<u32>),
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let to_ue = |v: Vec3| Vec3::new(-v.z, v.x, v.y);
@@ -1694,6 +1725,8 @@ fn move_thrown(
                 frag: matches!(p.stats.kind, ThrownKind::Frag { .. }),
                 weapon: p.weapon,
                 id: p.id,
+                dam: p.stats.dam,
+                vet: vet.vet,
             },
         );
         if let Some(e) = crate::game::zed_time::blast_event(zeds_killed as usize) {

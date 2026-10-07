@@ -374,10 +374,11 @@ fn walk(
     let (zed_ids, zed_cylinders): (Vec<usize>, Vec<Cylinder>) =
         zeds.iter().filter_map(|z| z.blocking_cylinder().map(|c| (z.id, c))).unzip();
     // KFHumanPawn.ModifyVelocity: GroundSpeed x the carried-weight factor,
-    // plus the held weapon's bonus (knife +40). The health factor is not done.
+    // plus the held weapon's bonus (knife +40), x the perk's
+    // GetMovementSpeedModifier. The health factor is not done.
     let ground_speed = effects
         .as_ref()
-        .map_or(kf::GROUND_SPEED, |e| kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus);
+        .map_or(kf::GROUND_SPEED, |e| (kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus) * e.perk_speed_mult);
     // KFFire.ModeDoFire: a shot scales the walking velocity (on the ground).
     let fire_scale = effects.as_mut().and_then(|e| e.fire_velocity_scale.take());
     let dt = time.delta_secs().min(0.1);
@@ -631,7 +632,7 @@ fn walk(
             runlog::kv(
                 "walk",
                 &format!(
-                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} vertical_unreal={:.0} on_ground={} floor_normal_y={:.2} input={} held={held} bob_side_unreal={:.2} bob_up_unreal={:.2}",
+                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} floor_normal_y={:.2} input={} held={held} bob_side_unreal={:.2} bob_up_unreal={:.2}",
                     w.time,
                     -c.z,
                     c.x,

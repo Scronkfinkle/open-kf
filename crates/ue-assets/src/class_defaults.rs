@@ -87,6 +87,20 @@ impl<'a> ClassDefaults<'a> {
         false
     }
 
+    /// The class's name and its parents' names, nearest first (e.g.
+    /// `["DualDeagle", "Dualies", "KFWeapon", ...]`), for IsA tests made
+    /// later without the package set.
+    pub fn chain_names(&self, class: &ObjectHandle) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut current = Some(self.class_info(class));
+        for _ in 0..32 {
+            let Some(info) = current else { break };
+            names.push(info.handle.package.pkg.object_name(crate::package::ObjectRef::Export(info.handle.export)).to_string());
+            current = info.super_class.as_ref().map(|s| self.class_info(s));
+        }
+        names
+    }
+
     /// Default value of element `index` of a fixed-size array property
     /// (e.g. `FireModeClass[1]`), searching up the class chain.
     pub fn get_at(&self, class: &ObjectHandle, prop: &str, index: u32) -> Option<(Value, Rc<LoadedPackage>)> {

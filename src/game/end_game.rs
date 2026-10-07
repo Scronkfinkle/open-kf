@@ -250,6 +250,7 @@ fn test_kill_player(
             armor_stops: false,
             dam_type: crate::game::combat::DamType::Other,
             source: None,
+            dam: None,
         });
         runlog::kv("test_kill_player", &format!("frame={}", frames.0));
     }

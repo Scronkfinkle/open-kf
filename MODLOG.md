@@ -4792,3 +4792,55 @@ data); the NailGun and Benelli were loaded but their light not switched
 on in a test; sounds not listened to; not play-tested by you.
 **Next:** FL2, our own material for baked props so dynamic lights
 (flashlight, later muzzle flashes) light them, checked on all maps.
+
+## 2026-10-06 Perks, stage 1: pick a perk and level, KF's perk effects
+
+**Changed:** new `src/game/perks.rs` (the seven perks, one method per
+KFVeterancyTypes static function, the `Veterancy` resource, KF's
+once-per-wave change rule, logs) and `src/weapons/weapon/perk.rs` (the
+perk's values on each weapon: fire rate, melee delay, reload, magazine,
+max and starting ammo, melee speed bonus, carry weight, dropping
+over-weight weapons). Options `--perk NAME` and `--perk-level 0-6`
+(`main.rs`); buy menu keys 1-7 and test action `perk:NAME`; the menu
+opens on your perk's list and shows "Current Perk". Every hit now carries
+its damage type (`ShotFired`, `MeleeSwing`, projectile stats, blasts,
+flames, burn ticks, `PlayerDamaged`), read with the new
+`ClassDefaults::chain_names`. Effects wired into `combat.rs` (AddDamage,
+headshot multiplier, ReduceDamage, body armour), `buy_menu.rs` /
+`inventory.rs` / `armour.rs` (weapon, ammo, vest prices, sell values,
+carry weight), `input.rs` (recoil and spread, MAC-10 incendiary, weld
+damage, syringe charge and heal), `walk.rs` (Medic speed, melee speed),
+`zed_time.rs` (extensions), `think.rs` (no Clot grab for Berserkers),
+`projectile.rs` (shotgun penetration, flame range), `hud.rs` (perk icon
+and stars, weight limit). DESIGN "Perks" (plan, table of every effect,
+stage 2 plan), README.
+**Why:** your request: perks in stages; stage 1 = choose perk and level,
+copy KF's effects; stage 2 (earning levels) planned only.
+**Tested how:** 10 unit tests of the formulas against the scripts, plus
+vest, menu price and ammo price tests (127 + 24 pass); clippy 0
+warnings. Headless runs on KF-WestLondon comparing no perk with a perk,
+read from `logs/latest.log` (`perk_*`, `hit`, `reload_*`, `shop_*`,
+`walk`, `flame_burst`, `player_hit`, `syringe_inject`, `zed_time`);
+two HUD screenshots.
+**Result:** AK47 reload 3.0 -> 2.22 s, damage 45 -> 67, magazine 30 ->
+37, recoil x 0.6 (Commando 6). Winchester fire 0.9 -> 0.5625 s, reload
+0.667 -> 0.417 s per round (Sharpshooter 6). Axe swing 1.1 -> 0.88 s,
+damage x 2, no Clot grab, hits 3.99 -> 1 (Berserker 6). Walking 198.3 ->
+241.3 (Medic 6), knife 238.3 / axe 279.6 (Berserker 6). Shotgun 500 ->
+149.99997, ammo max 48 -> 62, pellets 35 -> 56, penetration 0.5 -> 0.95,
+carry 15 -> 24, starts with the Hunting Shotgun (Support 6). Vest 300 ->
+90, starts with armour and the MP7M (40-round magazine); syringe heal 50
+-> 75 and +22 charge per tick (Medic 4). Flames 15.8 -> 25, own fire 7
+-> 0, flames fly 3 timers instead of 2, MAC-10 sets zeds on fire
+(Firebug 6). Frag 285.8 -> 457, own blast 66 -> 30, pipe bombs max 8
+(Demolitions 6). A kill in zed time extended it (Commando 6). A perk
+picked during wave 1 was applied at its end; a second pick in the trader
+was refused; Support -> Medic with 19 kg dropped the Hunting Shotgun.
+**Still broken / not tested:** not played by you. Welding speed not
+tried in a run (I could not find a door position for the test; formula
+unit-tested). Buy menu keys 1-7 not pressed (the `perk:` test action
+uses the same rule). Not done: Medic / Firebug grenades, Commando health
+bars and Stalker sight, ammo box pickups (none in the game yet), stage 2.
+This worktree branch starts from 2bf299d, 17 commits behind main: merging
+will need conflict fixes (see the report).
+**Next:** your play test; then the grenades or stage 2.

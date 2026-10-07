@@ -66,7 +66,7 @@ pub(super) fn think_and_move(
         MessageWriter<crate::player::hit_cam::SirenScreamShake>,
     ),
     mut kills: ResMut<crate::game::combat::KillCount>,
-    mut pinned: ResMut<crate::game::combat::PlayerPinned>,
+    (mut pinned, vet): (ResMut<crate::game::combat::PlayerPinned>, Res<crate::game::perks::Veterancy>),
     nav: Res<crate::world::nav::NavNetwork>,
     script: Res<crate::weapons::weapon::ScriptedInput>,
     frames: Res<bevy::diagnostic::FrameCount>,
@@ -671,6 +671,7 @@ pub(super) fn think_and_move(
                             kind: crate::game::combat::HurtKind::Plain,
                             dam_type: c.melee_dam_type,
                             source: Some(z.centre),
+                            dam: None,
                         });
                         let impale = z.attack.is_some_and(|a| c.model.sequence_name(a.seq) == Some("MeleeImpale"));
                         z.sound_events.push(if impale { ZedSound::ImpaleHit } else { ZedSound::MeleeHit });
@@ -751,12 +752,18 @@ pub(super) fn think_and_move(
                             kind: crate::game::combat::HurtKind::Plain,
                             dam_type: c.melee_dam_type,
                             source: Some(z.centre),
+                            dam: None,
                         });
                         // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
                         z.sound_events.push(ZedSound::MeleeHit);
                         // ZombieClot: a landed grab pins the player (not when headless).
+                        // CanBeGrabbed: a Berserker is not grabbed by Clots.
                         if c.grapple_duration > 0.0 && !z.decapitated && walker.is_some() {
-                            pinned.pin(c.grapple_duration, z.id);
+                            if vet.vet.can_be_grabbed_by_clot() {
+                                pinned.pin(c.grapple_duration, z.id);
+                            } else {
+                                runlog::kv("perk_mod", &format!("kind=no_clot_grab perk={} zed={}", vet.vet.label(), z.id));
+                            }
                         }
                         runlog::kv(
                             "zed_melee_hit",
@@ -1306,6 +1313,7 @@ pub(super) fn think_and_move(
                         // ZombieCrawler.Bump: class'KFmod.ZombieMeleeDamage'.
                         dam_type: crate::game::combat::DamType::ZombieMelee,
                         source: Some(z.centre),
+                        dam: None,
                     });
                 z.pouncing = false;
                 runlog::kv("crawler_pounce_hit", &format!("id={} damage={amount:.1}", z.id));

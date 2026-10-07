@@ -22,12 +22,14 @@ pub struct Armour {
 impl Armour {
     /// KFPawn.ShieldAbsorb(int dam): the damage left for health. Copied
     /// line by line; `dam` is an int in KF and so is the result (float to
-    /// int truncates). No perk: GetBodyArmorDamageModifier is skipped.
-    pub fn absorb(&mut self, dam: f32) -> f32 {
+    /// int truncates). `perk_mod` is the perk's GetBodyArmorDamageModifier
+    /// (1 without a perk), applied to the damage before the vest's sums.
+    pub fn absorb(&mut self, dam: f32, perk_mod: f32) -> f32 {
         let mut damage = dam.trunc();
         if self.strength == 0.0 {
             return damage;
         }
+        damage *= perk_mod;
         let mut remaining = 0.0;
         if self.strength > self.small {
             let interval = self.strength - self.small;
@@ -78,10 +80,10 @@ pub enum VestBuy {
 }
 
 /// KFPawn.ServerBuyKevlar, after the CanBuyNow check: `score` is
-/// PRI.Score (a float). No perk discount (GetCostScaling) as perks are
-/// not in.
-pub fn buy_kevlar(armour: &mut Armour, score: &mut f32) -> VestBuy {
-    let cost = VEST_COST * ((100.0 - armour.strength) / 100.0);
+/// PRI.Score (a float); `scaling` the perk's GetCostScaling(class'Vest')
+/// (1 without a perk).
+pub fn buy_kevlar(armour: &mut Armour, score: &mut f32, scaling: f32) -> VestBuy {
+    let cost = VEST_COST * ((100.0 - armour.strength) / 100.0) * scaling;
     if armour.strength == MAX_ARMOUR {
         return VestBuy::Full100;
     }
@@ -91,7 +93,7 @@ pub fn buy_kevlar(armour: &mut Armour, score: &mut f32) -> VestBuy {
         return VestBuy::Full(cost);
     }
     if armour.strength > 0.0 {
-        let cost = VEST_COST / 100.0;
+        let cost = VEST_COST * scaling / 100.0;
         // UnitsAffordable = int(Score / Cost); Score -= int(Cost x Units).
         let units = (*score / cost).trunc();
         let paid = (cost * units).trunc();
@@ -105,9 +107,11 @@ pub fn buy_kevlar(armour: &mut Armour, score: &mut f32) -> VestBuy {
 }
 
 /// The menu's vest row (KFBuyMenuInvList): (points shown, fill price).
-pub fn menu_row(armour: &Armour) -> (i32, i32) {
-    let ammo_cost = (VEST_COST as i32) / 100;
-    (armour.strength as i32, ((100.0 - armour.strength) * ammo_cost as f32) as i32)
+/// ItemCost = int(BuyableVest.ItemCost x GetCostScaling) (kept in a
+/// float); ItemAmmoCost = ItemCost / 100; fill = int(missing x ItemAmmoCost).
+pub fn menu_row(armour: &Armour, scaling: f32) -> (i32, i32) {
+    let ammo_cost = ((VEST_COST * scaling) as i32) as f32 / 100.0;
+    (armour.strength as i32, ((100.0 - armour.strength) * ammo_cost) as i32)
 }
 
 /// Asks to buy the vest (from the menu or the `buy_vest` test action).
@@ -128,7 +132,9 @@ fn buy_vest(
     mut dosh: ResMut<crate::game::dosh::Dosh>,
     (game, shops): (Res<crate::game::waves::WaveGame>, Res<crate::game::trader::Shops>),
     mut sounds: MessageWriter<crate::audio::mixer::PlaySound>,
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
+    let scaling = vet.vet.cost_scaling("vest");
     for _ in requests.read() {
         // CanBuyNow: no wave in progress, touching a shop.
         let can_buy = !matches!(game.phase, crate::game::waves::Phase::Wave | crate::game::waves::Phase::BossWave) && shops.player_inside().is_some();
@@ -137,7 +143,10 @@ fn buy_vest(
             continue;
         }
         let before = armour.strength;
-        match buy_kevlar(&mut armour, &mut dosh.score) {
+        if scaling != 1.0 {
+            runlog::kv("perk_mod", &format!("kind=vest_price perk={} scaling={scaling:.2} full_price={}", vet.vet.label(), VEST_COST * scaling));
+        }
+        match buy_kevlar(&mut armour, &mut dosh.score, scaling) {
             VestBuy::Full100 => runlog::kv("shop_refused", "request=vest reason=armour_full"),
             VestBuy::NoDosh => {
                 runlog::kv("shop_refused", &format!("request=vest reason=dosh score={:.2} armour=0", dosh.score));
@@ -172,36 +181,58 @@ mod tests {
         Armour { strength, small: 0.0 }
     }
 
+    impl Armour {
+        /// No perk.
+        fn absorb_t(&mut self, dam: f32) -> f32 {
+            self.absorb(dam, 1.0)
+        }
+    }
+
+    #[test]
+    fn medic_armour_and_vest_price() {
+        // Medic 6: damage x 0.25 first: 20 -> 5, the vest takes 3.75 and
+        // you take int(1.25) = 1.
+        let mut a = vest(100.0);
+        assert_eq!(a.absorb(20.0, 0.25), 1.0);
+        assert_eq!(a.strength, 96.25);
+        // Vest 70% off: 90 for a full one (0.29999998 in 32-bit floats);
+        // the menu row: ItemCost int(89.99) = 89, 0.89 a point, 100 points 89.
+        let (mut b, mut s) = (vest(0.0), 100.0);
+        let scaling = 0.9 - 0.1 * 6.0;
+        assert_eq!(buy_kevlar(&mut b, &mut s, scaling), VestBuy::Full(300.0 * scaling));
+        assert_eq!(menu_row(&vest(0.0), scaling), (0, 89));
+    }
+
     #[test]
     fn full_vest_takes_three_quarters() {
         let mut a = vest(100.0);
         // 20: the vest takes 15, you take 5.
-        assert_eq!(a.absorb(20.0), 5.0);
+        assert_eq!(a.absorb_t(20.0), 5.0);
         assert_eq!(a, vest(85.0));
         // 7: the vest takes 5.25, you take int(1.75) = 1.
-        assert_eq!(a.absorb(7.0), 1.0);
+        assert_eq!(a.absorb_t(7.0), 1.0);
         assert_eq!(a.strength, 79.75);
         // Fractional damage in is an int in KF.
         let mut b = vest(100.0);
-        assert_eq!(b.absorb(20.9), 5.0);
+        assert_eq!(b.absorb_t(20.9), 5.0);
     }
 
     #[test]
     fn breaking_vest_passes_the_rest_through() {
         // 10 points left, a 20 hit: 15 would be needed; you take 20 - 10.
         let mut a = vest(10.0);
-        assert_eq!(a.absorb(20.0), 10.0);
+        assert_eq!(a.absorb_t(20.0), 10.0);
         assert_eq!(a, vest(0.0));
         // A big hit on a full vest: 200 less the vest's 100.
         let mut b = vest(100.0);
-        assert_eq!(b.absorb(200.0), 100.0);
+        assert_eq!(b.absorb_t(200.0), 100.0);
         assert_eq!(b, vest(0.0));
     }
 
     #[test]
     fn no_armour_no_change() {
         let mut a = vest(0.0);
-        assert_eq!(a.absorb(33.0), 33.0);
+        assert_eq!(a.absorb_t(33.0), 33.0);
         assert_eq!(a, vest(0.0));
     }
 
@@ -211,7 +242,7 @@ mod tests {
         // sets it); checks the copied lines: 30 >= 0.5 x 20, so the vest
         // takes all 20 and you take int(0.25 x 20).
         let mut a = Armour { strength: 30.0, small: 30.0 };
-        assert_eq!(a.absorb(20.0), 5.0);
+        assert_eq!(a.absorb_t(20.0), 5.0);
         assert_eq!(a, Armour { strength: 10.0, small: 10.0 });
     }
 
@@ -219,27 +250,27 @@ mod tests {
     fn buying_follows_server_buy_kevlar() {
         // Empty, 300 dosh: full price.
         let (mut a, mut s) = (vest(0.0), 300.0);
-        assert_eq!(buy_kevlar(&mut a, &mut s), VestBuy::Full(300.0));
+        assert_eq!(buy_kevlar(&mut a, &mut s, 1.0), VestBuy::Full(300.0));
         assert_eq!((a.strength, s), (100.0, 0.0));
         // Full: refused.
-        assert_eq!(buy_kevlar(&mut a, &mut s), VestBuy::Full100);
+        assert_eq!(buy_kevlar(&mut a, &mut s, 1.0), VestBuy::Full100);
         // 79.75 left: 300 x 0.2025 = 60.75, taken off a float score.
         let (mut a, mut s) = (vest(79.75), 100.0);
-        assert_eq!(buy_kevlar(&mut a, &mut s), VestBuy::Full(60.75));
+        assert_eq!(buy_kevlar(&mut a, &mut s, 1.0), VestBuy::Full(60.75));
         assert_eq!((a.strength, s), (100.0, 39.25));
         // Empty and under 300: nothing (KF quirk).
         let (mut a, mut s) = (vest(0.0), 299.0);
-        assert_eq!(buy_kevlar(&mut a, &mut s), VestBuy::NoDosh);
+        assert_eq!(buy_kevlar(&mut a, &mut s, 1.0), VestBuy::NoDosh);
         assert_eq!((a.strength, s), (0.0, 299.0));
         // Some armour, short of dosh: int(50 / 3) = 16 points for 48.
         let (mut a, mut s) = (vest(40.0), 50.0);
-        assert_eq!(buy_kevlar(&mut a, &mut s), VestBuy::Partial { cost: 48.0, points: 16.0 });
+        assert_eq!(buy_kevlar(&mut a, &mut s, 1.0), VestBuy::Partial { cost: 48.0, points: 16.0 });
         assert_eq!((a.strength, s), (56.0, 2.0));
     }
 
     #[test]
     fn menu_row_prices() {
-        assert_eq!(menu_row(&vest(0.0)), (0, 300));
-        assert_eq!(menu_row(&vest(79.75)), (79, 60));
+        assert_eq!(menu_row(&vest(0.0), 1.0), (0, 300));
+        assert_eq!(menu_row(&vest(79.75), 1.0), (79, 60));
     }
 }

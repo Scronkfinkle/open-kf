@@ -131,11 +131,15 @@ pub(super) fn weld_fire(w: &mut Weapons, mode: usize, fm: &FireMode, door: Optio
     play_firing(w, mode, false);
     w.shots_this_press[mode] += 1;
     w.fire_count += 1;
-    w.pending_welds.push((fm.combat.damage_delay, fm.combat.damage_min, fm.combat.range, mode == 1));
+    // WeldFire.Timer: MyDamage x the perk's GetWeldSpeedModifier (an int;
+    // UnWeldFire inherits it).
+    let weld_speed = w.vet.weld_speed();
+    let weld_damage = (fm.combat.damage_min * weld_speed).trunc();
+    w.pending_welds.push((fm.combat.damage_delay, weld_damage, fm.combat.range, mode == 1));
     runlog::kv(
         "weld_fire",
         &format!(
-            "mode={} door={} distance={:.0} screen_percent={:.0} fuel={} damage={} delay={}",
+            "mode={} door={} distance={:.0} screen_percent={:.0} fuel={} damage={weld_damage} weld_speed={weld_speed} base_damage={} delay={}",
             if mode == 1 { "unweld" } else { "weld" },
             door.map_or(0, |d| d.index),
             door.map_or(0.0, |d| d.distance),
@@ -360,14 +364,16 @@ pub(super) fn weapon_input(
         *cd = (*cd - time.delta_secs()).max(-1.0);
     }
     let now_s = time.elapsed_secs();
-    // Syringe.Tick: +10 charge every AmmoRegenRate while under the maximum.
+    // Syringe.Tick / KFMedicGun.Tick: +10 x the perk's GetSyringeChargeRate
+    // (an int) every AmmoRegenRate while under the maximum.
+    let charge_step = (10.0 * w.vet.syringe_charge_rate()) as u32;
     for d in &mut w.defs {
         if let Some(h) = d.heal_charge.as_mut()
             && h.charge < HEAL_CHARGE_MAX
             && h.next_regen < now_s
         {
             h.next_regen = now_s + h.regen_rate;
-            h.charge = (h.charge + 10).min(HEAL_CHARGE_MAX);
+            h.charge = (h.charge + charge_step).min(HEAL_CHARGE_MAX);
         }
     }
     // Welder.Tick: fuel back at AmmoRegenRate while under MaxAmmo.
@@ -389,13 +395,16 @@ pub(super) fn weapon_input(
             w.pending_inject = Some((t, wi, mode));
         } else {
             w.pending_inject = None;
+            let potency = w.vet.heal_potency();
             if let Some(h) = w.defs[wi].heal_charge.as_mut() {
                 if h.cost[mode] <= h.charge {
                     h.charge -= h.cost[mode];
                 }
-                let amount = h.boost;
+                // HealSum = HealBoostAmount x the perk's GetHealPotency;
+                // GiveHealth takes an int.
+                let amount = (h.boost * potency).trunc();
                 heals.write(crate::game::combat::GiveHealth { amount, max: crate::game::combat::PLAYER_HEALTH_MAX, source: "syringe" });
-                runlog::kv("syringe_inject", &format!("heal={amount} charge_left={}", h.charge));
+                runlog::kv("syringe_inject", &format!("heal={amount} base_heal={} heal_potency={potency} charge_left={} charge_per_tick={charge_step}", h.boost, h.charge));
             }
         }
     }
@@ -992,8 +1001,10 @@ pub(super) fn weapon_input(
                     if !w.aiming {
                         start += y * pf.spawn_offset.y + z * pf.spawn_offset.z;
                     }
-                    // KSGFire: wide spread x 2.05.
-                    let spread = if w.defs[cur].wide_spread { pf.spread * 2.05 } else { pf.spread };
+                    // KFShotgunFire.ModeDoFire: Spread = Default.Spread x the
+                    // perk's ModifyRecoilSpread; KSGFire: wide spread x 2.05.
+                    let rec = recoil_mod(&w, cur, &fm);
+                    let spread = if w.defs[cur].wide_spread { pf.spread * rec * 2.05 } else { pf.spread * rec };
                     // KFShotgunFire: ProjPerFire x Load; MP7MAltFire /
                     // M7A3MAltFire: ProjPerFire only (Load is the 250 charge).
                     let count = if pf.per_load { (pf.per_fire * pf.ammo_per_fire.max(1)).max(1) } else { pf.per_fire.max(1) };
@@ -1040,7 +1051,12 @@ pub(super) fn weapon_input(
                     let speed = walker.map_or(0.0, |wk| wk.velocity.length() / coords::SCALE);
                     let r = [w.random(), w.random(), w.random()];
                     let kick = crate::weapons::firing::recoil_kick(fm.recoil, speed, health.health, 100.0, r);
-                    recoil.add(kick, fm.recoil.rate, now);
+                    // HandleRecoil(Rec): the kick x Rec.
+                    let kick = (kick.0 * rec, kick.1 * rec);
+                    recoil.add(kick, recoil_rate(&fm), now);
+                    if rec != 1.0 {
+                        runlog::kv("perk_mod", &format!("kind=recoil_spread perk={} weapon={item_name} mult={rec} spread={spread:.0} recoil_pitch={:.0}", w.vet.label(), kick.0));
+                    }
                     runlog::kv(
                         "pellet_shot",
                         &format!(
@@ -1066,7 +1082,10 @@ pub(super) fn weapon_input(
                     // KFFire.ModeDoFire: GetSpread, then InstantFire's
                     // direction; KFFire.DoTrace deals DamageMax.
                     let mut spread_state = w.spread_state[mode];
-                    let spread = crate::weapons::firing::kf_spread(fm.spread, &mut spread_state, now, w.aiming, fm.wait_for_release);
+                    // KFFire.ModeDoFire: Spread = GetSpread() x the perk's
+                    // ModifyRecoilSpread, and HandleRecoil(Rec).
+                    let rec = recoil_mod(&w, cur, &fm);
+                    let spread = crate::weapons::firing::kf_spread(fm.spread, &mut spread_state, now, w.aiming, fm.wait_for_release) * rec;
                     w.spread_state[mode] = spread_state;
                     let vrand = loop {
                         let v = Vec3::new(w.random() * 2.0 - 1.0, w.random() * 2.0 - 1.0, w.random() * 2.0 - 1.0);
@@ -1076,6 +1095,12 @@ pub(super) fn weapon_input(
                     };
                     let frand = w.random();
                     let dir = crate::weapons::firing::spread_dir(*cam.forward(), spread, vrand, frand);
+                    // MAC10Fire.DoTrace: DamageType = the perk's
+                    // GetMAC10DamageType (the Firebug's burns).
+                    let (dam, fire) = match fm.mac10_inc {
+                        Some(inc) if w.vet.mac10_incendiary() => (Some(inc), Some(crate::game::combat::FireType::Mac10)),
+                        _ => (stats.dam, fm.fire),
+                    };
                     shots.write(ShotFired {
                         origin: cam.translation,
                         dir,
@@ -1084,13 +1109,18 @@ pub(super) fn weapon_input(
                         weapon: item_name,
                         effect_start: w.hand_frames.get(hand).and_then(|h| h.0).map(|t| t.0),
                         max_penetrations: fm.penetrations,
-                        fire: fm.fire,
+                        fire,
+                        dam,
                     });
                     // HandleRecoil; speed in Unreal units/s.
                     let speed = walker.map_or(0.0, |wk| wk.velocity.length() / coords::SCALE);
                     let r = [w.random(), w.random(), w.random()];
                     let kick = crate::weapons::firing::recoil_kick(fm.recoil, speed, health.health, 100.0, r);
-                    recoil.add(kick, fm.recoil.rate, now);
+                    let kick = (kick.0 * rec, kick.1 * rec);
+                    recoil.add(kick, recoil_rate(&fm), now);
+                    if rec != 1.0 {
+                        runlog::kv("perk_mod", &format!("kind=recoil_spread perk={} weapon={item_name} mult={rec} spread={spread:.4} recoil_pitch={:.0}", w.vet.label(), kick.0));
+                    }
                     // ModeDoFire slows the player unless falling.
                     let on_ground = walker.is_some_and(|wk| wk.on_ground);
                     if fm.slows_movement && on_ground {
@@ -1139,6 +1169,7 @@ pub(super) fn weapon_input(
                 weapon: name,
                 hit_sounds,
                 hit_volume,
+                dam: stats.dam,
             });
         }
     }

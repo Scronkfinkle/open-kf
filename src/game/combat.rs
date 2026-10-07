@@ -26,6 +26,8 @@ pub struct ShotFired {
     pub max_penetrations: u32,
     /// A burning damage type (W7), if the shot's is one.
     pub fire: Option<FireType>,
+    /// The fire mode's DamageType, for the perks.
+    pub dam: Option<crate::game::perks::DamType>,
 }
 
 /// A knife swing reaching its damage moment (KFMeleeFire).
@@ -45,6 +47,8 @@ pub struct MeleeSwing {
     /// MeleeHitVolume.
     pub hit_sounds: std::sync::Arc<[String]>,
     pub hit_volume: f32,
+    /// hitDamageClass, for the perks.
+    pub dam: Option<crate::game::perks::DamType>,
 }
 
 /// Damage to the player from a zed attack, or from the player's own
@@ -63,6 +67,10 @@ pub struct PlayerDamaged {
     /// player's side facing it (MeleeDamageTarget's trace, HurtRadius).
     /// None: hit at the player's own Location (bile, burning, the level).
     pub source: Option<Vec3>,
+    /// The damage type when a perk cares (ReduceDamage): DamTypeVomit,
+    /// DamTypeBurned, the player's own explosives; None for zed hits and
+    /// the level.
+    pub dam: Option<crate::game::perks::DamType>,
 }
 
 /// The KF damage class of a hit on the player, as far as the hit effects
@@ -441,6 +449,10 @@ pub(crate) struct HitSource {
     pub explosive: Option<f32>,
     /// A burning damage type, if this is one.
     pub fire: Option<FireType>,
+    /// The damage type and the instigator's perk (KFMonster.TakeDamage:
+    /// AddDamage, GetHeadShotDamMulti).
+    pub dam: Option<crate::game::perks::DamType>,
+    pub vet: crate::game::perks::Vet,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -465,7 +477,7 @@ pub(crate) fn damage_zed(
     let headshot = headshot && !burned_type;
     // KFMonster.TakeDamage: headshots, and every hit on a headless zed, are
     // multiplied by the damage type's HeadShotDamageMult.
-    let mult = if (headshot || z.decapitated) && !burned_type { headshot_mult } else { 1.0 };
+    let head_hit = (headshot || z.decapitated) && !burned_type;
     // ZombieFleshPound.TakeDamage: explosives as listed (x 1, frag and pipe
     // bomb x 2); anything else x 0.5, or x 0.75 for a headshot by a damage
     // type with HeadShotDamageMult >= 1.5.
@@ -488,6 +500,11 @@ pub(crate) fn damage_zed(
     if z.zapped() {
         damage *= z.zap.damage_mod;
     }
+    // GetHeadShotDamMulti: not for DamTypeMelee subclasses (nor fire, as
+    // above).
+    let melee_type = source.dam.is_some_and(|d| d.chain.is_a("damtypemelee"));
+    let perk_head = if melee_type { 1.0 } else { source.vet.headshot_damage(source.dam) };
+    let add = source.vet.add_damage(source.dam);
     // KFMonster.TakeDamage, bDealBurningDamage: remember the hit for the
     // burn ticks, x 1.5 (not the MAC10), and set the zed on fire at 15 or
     // after more than 4 lighter hits (HeatAmount).
@@ -509,6 +526,25 @@ pub(crate) fn damage_zed(
             }
         }
     }
+    // KFMonster.TakeDamage: the instigator's perk AddDamage, after the burn
+    // bookkeeping, before the headshot multipliers (Damage is an int).
+    if let Some(m) = add {
+        let before = damage;
+        damage = (damage * m).trunc();
+        runlog::kv(
+            "perk_mod",
+            &format!("kind=add_damage perk={} weapon={weapon} zed={} dam_type={:?} mult={m:.3} damage={before:.1}->{damage:.1}", source.vet.label(), z.id, source.dam),
+        );
+    }
+    // KFMonster.TakeDamage, headshots and headless zeds: x the damage
+    // type's HeadShotDamageMult, then x the perk's GetHeadShotDamMulti.
+    let mult = if head_hit { headshot_mult * perk_head } else { 1.0 };
+    if head_hit && perk_head != 1.0 {
+        runlog::kv(
+            "perk_mod",
+            &format!("kind=headshot_damage perk={} weapon={weapon} zed={} dam_type={:?} mult={perk_head:.3} damage_type_mult={headshot_mult}", source.vet.label(), z.id, source.dam),
+        );
+    }
     let dealt = damage * mult;
     let mut total = dealt;
     // For the pain sound (KFMonster.PlayTakeHit skips it for fire damage).
@@ -522,7 +558,11 @@ pub(crate) fn damage_zed(
             // RemoveHead: the head explodes for LastDamageAmount + 0.25 x
             // HealthMax more, which goes through TakeDamage again with the
             // zed headless, so it is multiplied again.
-            explosion = (dealt + 0.25 * z.health_max) * headshot_mult;
+            // With a perk that pass gets AddDamage and the perk's headshot
+            // multiplier too.
+            let again = dealt + 0.25 * z.health_max;
+            let again = add.map_or(again, |m| (again * m).trunc());
+            explosion = again * headshot_mult * if burned_type { 1.0 } else { perk_head };
             total += explosion;
             head_off = true;
             runlog::kv(
@@ -597,6 +637,7 @@ fn resolve_shots(
     mut zeds: Query<&mut Zed>,
     mut kills: ResMut<KillCount>,
     (glass, mut glass_damage): (Query<&crate::world::glass::GlassCollider>, MessageWriter<crate::world::glass::GlassDamage>),
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     for shot in shots.read() {
         let max = TRACE_RANGE * SCALE;
@@ -646,6 +687,8 @@ fn resolve_shots(
                     melee: false,
                     explosive: None,
                     fire: shot.fire,
+                    dam: shot.dam,
+                    vet: vet.vet,
                 };
                 let damage = if penetrating { hit_damage.trunc() } else { hit_damage };
                 if penetrating {
@@ -710,6 +753,7 @@ fn resolve_swings(
     spatial: SpatialQuery,
     (glass, mut glass_damage): (Query<&crate::world::glass::GlassCollider>, MessageWriter<crate::world::glass::GlassDamage>),
     (mut sounds, mut rng): (MessageWriter<crate::audio::mixer::PlaySound>, Local<u32>),
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     // Rand(MeleeHitSounds.Length): its own seeded stream.
     let mut hit_sound = |swing: &MeleeSwing, at: crate::audio::mixer::Emitter| {
@@ -757,7 +801,7 @@ fn resolve_swings(
                 "melee_hit",
                 &format!("weapon={} zed={} kind=traced backstab={backstab} damage={my_damage:.1} headshot={head}", swing.weapon, z.id),
             );
-            let source = HitSource { point: hit, attacker: player, melee: true, explosive: None, fire: None };
+            let source = HitSource { point: hit, attacker: player, melee: true, explosive: None, fire: None, dam: swing.dam, vet: vet.vet };
             damage_zed(&mut z, my_damage, head, swing.headshot_mult, swing.weapon, t, source, &mut kills);
             // Weapon.PlaySound(MeleeHitSounds[Rand(..)], SLOT_None, MeleeHitVolume): on the weapon.
             hit_sound(swing, crate::audio::mixer::Emitter::Listener);
@@ -801,7 +845,7 @@ fn resolve_swings(
                     "melee_hit",
                     &format!("weapon={} zed={} kind=wide angle_cos={diff:.2} damage={damage:.1} headshot={head}", swing.weapon, z.id),
                 );
-                let source = HitSource { point, attacker: player, melee: true, explosive: None, fire: None };
+                let source = HitSource { point, attacker: player, melee: true, explosive: None, fire: None, dam: swing.dam, vet: vet.vet };
                 damage_zed(&mut z, damage, head, swing.headshot_mult, swing.weapon, d.length(), source, &mut kills);
                 // Victims.PlaySound(...): on the zed.
                 hit_sound(swing, crate::audio::mixer::Emitter::Point(point));
@@ -825,6 +869,7 @@ fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter
         bile.rng = bile.rng.wrapping_mul(1_103_515_245).wrapping_add(12345);
         let amount = 2.0 + ((bile.rng >> 16) % 3) as f32;
         runlog::kv("player_bile", &format!("damage={amount} left={}", bile.count));
+        // TakeBileDamage: Super.TakeDamage(.., LastBileDamagedByType).
         out.write(PlayerDamaged {
             amount,
             armor_stops: true,
@@ -835,6 +880,7 @@ fn bile_burn(time: Res<Time>, mut bile: ResMut<BileBurn>, mut out: MessageWriter
             dam_type: DamType::Vomit,
             // TakeBileDamage hits at Location: no direction.
             source: None,
+            dam: Some(crate::game::perks::known_dam_type("DamTypeVomit")),
         });
     }
 }
@@ -854,6 +900,7 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
     }
     burn.burn_down -= 1;
     runlog::kv("player_burn", &format!("damage={} left={}", burn.last_damage, burn.burn_down));
+    // TakeFireDamage: TakeDamage(.., class'DamTypeBurned').
     out.write(PlayerDamaged {
         amount: burn.last_damage,
         armor_stops: true,
@@ -861,6 +908,7 @@ fn fire_burn(time: Res<Time>, mut burn: ResMut<Burning>, mut out: MessageWriter<
         kind: HurtKind::Plain,
         dam_type: DamType::Other,
         source: None,
+        dam: Some(crate::game::perks::known_dam_type("DamTypeBurned")),
     });
 }
 
@@ -944,24 +992,49 @@ fn apply_player_damage(
     mut sounds: MessageWriter<crate::audio::player_sound::PlayerSoundEvent>,
     mut hurt: MessageWriter<PlayerHurt>,
     options: Res<crate::game::waves::GameOptions>,
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
     for hit in hits.read() {
         if health.dead {
             continue;
         }
+        let self_hit = hit.zed_id == SELF_DAMAGE;
         // TakeDamage(int Damage): the fraction is cut off (zed claws pass
         // MeleeDamage x 0.95..1.05 to MeleeDamageTarget(int hitdamage)).
-        let amount = hit.amount.trunc();
+        // KFGameType.ReduceDamage: the perk's ReduceDamage first (Damage is
+        // an int), then the self-damage halving.
+        let mut amount = hit.amount.trunc();
+        if vet.vet.perk.is_some() {
+            let reduced = vet.vet.reduce_damage(hit.amount as i32, self_hit, hit.dam) as f32;
+            if reduced != amount {
+                runlog::kv(
+                    "perk_mod",
+                    &format!("kind=reduce_damage perk={} dam_type={:?} self={self_hit} damage={}->{reduced}", vet.vet.label(), hit.dam, hit.amount),
+                );
+            }
+            // KFPawn.TakeDamage: nothing at all (no burning, no bile) if
+            // the perk takes it to 0.
+            if reduced <= 0.0 {
+                runlog::kv("player_hit_ignored", &format!("reason=perk_reduce_damage kind={:?} dam_type={:?} damage={}", hit.kind, hit.dam, hit.amount));
+                continue;
+            }
+            amount = reduced;
+        }
         // KFPawn.TakeDamage reads the burn from the damage before
         // ReduceDamage; the health loss is after it.
-        let mut taken = if hit.zed_id == SELF_DAMAGE { reduce_self_damage(amount) } else { amount };
+        let mut taken = if self_hit { reduce_self_damage(amount) } else { amount };
         let armour_before = armour.strength;
         let damage_in = taken;
         // Pawn.TakeDamage: ShieldAbsorb after ReduceDamage, if the damage
         // type's bArmorStops and the damage is over 0. God mode returns
         // first in KFHumanPawn.TakeDamage, so the vest is not used up.
         if !health.god && hit.armor_stops && taken > 0.0 && armour.strength > 0.0 {
-            taken = armour.absorb(taken);
+            // ShieldAbsorb: x the perk's GetBodyArmorDamageModifier.
+            let m = vet.vet.body_armor();
+            if m != 1.0 {
+                runlog::kv("perk_mod", &format!("kind=body_armor perk={} mult={m} damage={taken}", vet.vet.label()));
+            }
+            taken = armour.absorb(taken, m);
         }
         if !health.god {
             health.health -= taken;
@@ -1065,6 +1138,8 @@ mod tests {
         melee: false,
         explosive: None,
         fire: None,
+        dam: None,
+        vet: crate::game::perks::Vet::NONE,
     };
 
     // The test Clot stands at the origin facing Unreal +X (Bevy -Z); Unreal

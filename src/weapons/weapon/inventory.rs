@@ -115,6 +115,12 @@ pub(super) fn give_weapon(
     let defaults = ClassDefaults::new(set);
     let mut def = load_weapon(set, &defaults, class, assets.1.as_ref(), meshes, images, materials)?;
     spawn_parts(commands, &mut def, w.camera);
+    // KFPawn.ServerBuyWeapon: UpdateMagCapacity, FillToInitialAmmo / GiveAmmo
+    // with the perk's values.
+    let changes = apply_vet(&mut def, w.vet, true);
+    if !changes.is_empty() {
+        runlog::kv("perk_mod", &format!("kind=weapon perk={} weapon={class} reason=given {}", w.vet.label(), changes.join(" ")));
+    }
     let i = match w.defs.iter().position(|d| d.gone && d.class.eq_ignore_ascii_case(class)) {
         Some(i) => {
             for &e in &w.defs[i].entities {
@@ -165,9 +171,12 @@ pub(super) fn shop_requests(
     effects: Option<ResMut<WeaponEffects>>,
     mut inv: ResMut<crate::game::buy_menu::ShopInventory>,
 ) {
-    use crate::game::buy_menu::{DUAL_SINGLES, HALF_PRICE_DUALS, MAX_CARRY_WEIGHT as MAX, ShopRequest};
+    use crate::game::buy_menu::{DUAL_SINGLES, HALF_PRICE_DUALS, ShopRequest};
     let Some(mut w) = weapons else { return };
     let w = &mut *w;
+    let vet = w.vet;
+    // CanCarry: MaxCarryWeight with the perk.
+    let max = max_carry_weight(&vet);
     // CanBuyNow: no wave in progress, touching a shop.
     let can_buy = !matches!(game.phase, crate::game::waves::Phase::Wave | crate::game::waves::Phase::BossWave) && shops.player_inside().is_some();
     let refuse = |what: &str, class: &str, why: &str| runlog::kv("shop_refused", &format!("request={what} weapon={class} reason={why}"));
@@ -191,10 +200,17 @@ pub(super) fn shop_requests(
                 }
                 let single_class = DUAL_SINGLES.iter().find(|(d, _)| d.eq_ignore_ascii_case(class)).map(|(_, s)| *s);
                 let half = HALF_PRICE_DUALS.iter().any(|(d, s)| d.eq_ignore_ascii_case(class) && owned_index(w, s).is_some());
-                let price = if half { item.cost as f32 / 2.0 } else { item.cost as f32 };
+                // ServerBuyWeapon: Cost x GetCostScaling, then halved for
+                // a dual whose single is owned.
+                let scaling = vet.cost_scaling(&item.pickup);
+                let full = item.cost as f32 * scaling;
+                let price = if half { full / 2.0 } else { full };
+                if scaling != 1.0 {
+                    runlog::kv("perk_mod", &format!("kind=price perk={} weapon={class} cost={} scaling={scaling:.2} price={price}", vet.label(), item.cost));
+                }
                 let item_weight = if half { item.weight / 2.0 } else { item.weight };
                 let weight = carried_weight(w);
-                if item_weight > 0.0 && weight + item_weight > MAX {
+                if item_weight > 0.0 && weight + item_weight > max {
                     refuse("buy", class, &format!("too_heavy weight={weight} item_weight={item_weight}"));
                     w.sounds.push(trader_refusal("KF_Trader.TooHeavy"));
                     continue;
@@ -242,8 +258,10 @@ pub(super) fn shop_requests(
                     refuse("sell", class, "never_throw");
                     continue;
                 }
-                let cost = cat.item(class).map_or(0, |it| it.cost);
-                let mut price = w.defs[i].sell_value.unwrap_or((cost as f32 * 0.75).trunc());
+                // ServerSellWeapon: SellValue, or (never bought) int(Cost x
+                // 0.75) x GetCostScaling.
+                let (cost, pickup) = cat.item(class).map_or((0, String::new()), |it| (it.cost, it.pickup.clone()));
+                let mut price = w.defs[i].sell_value.unwrap_or((cost as f32 * 0.75).trunc() * vet.cost_scaling(&pickup));
                 let was_current = i == w.current || matches!(w.action, Action::PutDown { next } if next == i);
                 w.defs[i].gone = true;
                 // Selling duals gives the single back; except for the 9mm,
@@ -279,27 +297,33 @@ pub(super) fn shop_requests(
                     refuse("ammo", weapon, "no_price");
                     continue;
                 };
-                // (AmmoAmount, MaxAmmo, UsedMagCapacity).
-                let (total, max, used) = if *secondary {
-                    let Some((cur, max)) = w.defs[i].alt_ammo.filter(|a| a.1 > 0) else {
+                // (AmmoAmount, MaxAmmo, UsedMagCapacity, rounds in one
+                // clip): UsedMagCapacity is the default MagCapacity (the
+                // Husk Gun's BuyClipSize, 1 for second ammo); one clip is
+                // that x GetMagCapacityMod (the Husk Gun: x AddExtraAmmoFor).
+                let husk = weapon.eq_ignore_ascii_case("KFMod.HuskGun");
+                let (total, max_ammo, used, clip) = if *secondary {
+                    let Some((cur, max_ammo)) = w.defs[i].alt_ammo.filter(|a| a.1 > 0) else {
                         refuse("ammo", weapon, "no_second_ammo");
                         continue;
                     };
-                    (cur, max, 1.0)
+                    (cur, max_ammo, 1.0, vet.mag_capacity(&w.defs[i].perk.class).trunc())
                 } else {
                     let Some(a) = w.defs[i].ammo else {
                         refuse("ammo", weapon, "no_ammo");
                         continue;
                     };
-                    let used = if weapon.eq_ignore_ascii_case("KFMod.HuskGun") { item.buy_clip_size.max(1) as f32 } else { a.capacity as f32 };
-                    (a.mag + a.spare, a.max_total, used)
+                    let used = if husk { item.buy_clip_size.max(1) as f32 } else { a.default_capacity as f32 };
+                    let m = if husk { w.defs[i].ammo_class.as_ref().map_or(1.0, |c| vet.extra_ammo(c)) } else { vet.mag_capacity(&w.defs[i].perk.class) };
+                    (a.mag + a.spare, a.max_total, used, (used * m).trunc())
                 };
-                if total >= max {
+                if total >= max_ammo {
                     refuse("ammo", weapon, "full");
                     continue;
                 }
-                let clip_price = item.ammo_cost as f32;
-                let mut c = if *fill { (max - total) as f32 } else { used };
+                // Clip price: AmmoCost x GetAmmoCostScaling.
+                let clip_price = item.ammo_cost as f32 * vet.ammo_cost_scaling(&item.pickup);
+                let mut c = if *fill { (max_ammo - total) as f32 } else { clip };
                 let price = (c / used * clip_price).trunc();
                 let paid;
                 if dosh.score < price {
@@ -316,7 +340,7 @@ pub(super) fn shop_requests(
                     dosh.score = (dosh.score - price).trunc();
                 }
                 // Ammunition.AddAmmo: up to MaxAmmo.
-                let added = (c as u32).min(max - total);
+                let added = (c as u32).min(max_ammo - total);
                 if *secondary {
                     if let Some(a) = w.defs[i].alt_ammo.as_mut() {
                         a.0 += added;
@@ -327,28 +351,33 @@ pub(super) fn shop_requests(
                 changed = true;
                 runlog::kv(
                     "shop_ammo",
-                    &format!("weapon={weapon} secondary={secondary} fill={fill} added={added} paid={paid:.1} total={} max={max} dosh={:.0}", total + added, dosh.score),
+                    &format!("weapon={weapon} secondary={secondary} fill={fill} added={added} paid={paid:.1} clip_price={clip_price} clip_rounds={clip} total={} max={max_ammo} dosh={:.0}", total + added, dosh.score),
                 );
             }
         }
     }
     if changed && let Some(mut fx) = effects {
-        // KFHumanPawn.ModifyVelocity: the weight counts up to MaxCarryWeight.
-        let encumbrance = carried_weight(w).min(MAX_CARRY_WEIGHT) / MAX_CARRY_WEIGHT;
-        fx.weight_speed_mult = 1.0 - encumbrance * WEIGHT_SPEED_MODIFIER;
+        fx.weight_speed_mult = weight_speed_mult(carried_weight(w), &vet);
     }
+    inv.max_weight = max;
     inv.weight = carried_weight(w);
     inv.owned = w
         .defs
         .iter()
         .filter(|d| !d.gone)
-        .map(|d| crate::game::buy_menu::OwnedWeapon {
-            weapon: d.class.clone(),
-            name: d.item_name.to_string(),
-            sell_value: d.sell_value.unwrap_or_else(|| (cat.item(&d.class).map_or(0, |it| it.cost) as f32 * 0.75).trunc()) as i32,
-            sellable: !d.never_throw,
-            ammo: d.ammo.map(|a| (a.mag + a.spare, a.max_total, a.capacity)),
-            alt_ammo: d.alt_ammo.filter(|a| a.1 > 0),
+        .map(|d| {
+            let (cost, pickup) = cat.item(&d.class).map_or((0, ""), |it| (it.cost, it.pickup.as_str()));
+            crate::game::buy_menu::OwnedWeapon {
+                weapon: d.class.clone(),
+                name: d.item_name.to_string(),
+                // ServerSellWeapon: never bought -> int(Cost x 0.75) x GetCostScaling.
+                sell_value: d.sell_value.unwrap_or_else(|| (cost as f32 * 0.75).trunc() * vet.cost_scaling(pickup)) as i32,
+                sellable: !d.never_throw,
+                ammo: d.ammo.map(|a| (a.mag + a.spare, a.max_total, a.default_capacity)),
+                alt_ammo: d.alt_ammo.filter(|a| a.1 > 0),
+                ammo_scale: vet.ammo_cost_scaling(pickup),
+                mag_mod: vet.mag_capacity(&d.perk.class),
+            }
         })
         .collect();
 }
