@@ -4540,3 +4540,12 @@ explosives, pain volumes) is unchanged.
 run.
 **Next:** your play test.
 
+
+## 2026-10-06 World sounds over volume 1 ignored distance (landing thuds, glass)
+
+**Changed:** `src/audio/mixer.rs`: a sound played in the world (at a zed or a point, not at the listener) has its volume capped at 1 before the distance fade. `sound_play` log lines now show `gain=` (the starting volume after fade and master volume).
+**Why:** The user heard loud thudding when a round starts and glass breaking as if next to them. Some of KF's world sounds have volumes far above 1: the zeds' landing animation has an AnimNotify_Sound `KFPlayerSound.FPStepLeft` at volume 255 (radius 60), and KFHitEmitter's glass sounds use TransientSoundVolume 150. The mixer computed volume x distance fade x master (0.3 from KillingFloor.ini) and only then capped at 1, so these played at gain 1.0 at any distance, more than three times louder than any normal sound (0.3 at most). **A guess** (native code): that the engine clamps a sound's volume to 1 before the distance fade. The player's own sounds keep volumes above 1 (the 9mm select sound needs its 100).
+**Tested how:** `scripts/headless.sh --map KF-WestLondon --mode waves --length short --frames 1500`, before and after, gains read from `sound_play`.
+**Result:** Before: 32 FPStepLeft thuds at gain 1.0 from zeds 1500 units away. After: FPStepLeft max gain 0.109 (271 units away), 0.046 at 715 units; Player_LandDirt max 0.133; Clot_Challenge still 0.3 up close; 9mm_Select still 1.0. Clippy 0 warnings, tests 146 pass.
+**Still broken / not tested:** Glass was not broken in a test run; it goes through the same code path (glass at 1000 units: gain about 0.044, was 1.0). Other world sounds above volume 1 now fade sooner (zed moans 1.5, hit-player 2.0, Siren scream 255): not listened to. Zeds also log a landing for small drops (94 Player_LandDirt in 25 s for about 20 zeds), possibly more often than KF, where walking pawns step down without falling; not changed.
+**Next:** The user listens to a wave start and a breaking window.

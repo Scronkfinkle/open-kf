@@ -708,19 +708,28 @@ fn play_sounds(
                 stop_voice(&mut audio, id, "slot_override");
             }
         }
+        // A sound in the world: its volume capped at 1 before the distance
+        // fade. **A guess** (native code): KF's data has volumes far above
+        // 1 on world sounds (KFHitEmitter glass TransientSoundVolume 150,
+        // the zeds' landing AnimNotify_Sound FPStepLeft 255). Multiplied
+        // into the fade and capped only at the end, they played at full
+        // volume at any distance, louder than the 0.3 master volume allows
+        // other sounds. The player's own sounds (at the listener) keep
+        // theirs: the 9mm select sound needs its 100 (recorded quiet).
+        let volume = if req.emitter == Emitter::Listener { req.volume } else { req.volume.min(1.0) };
         // Too quiet to hear: not started.
         let at = emitter_position(req.emitter, ear, &positions);
         let distance = match (at, ear) {
             (Some(p), Some(e)) => p.distance(e) / crate::engine::coords::SCALE,
             _ => 0.0,
         };
-        if req.emitter != Emitter::Listener && voice_gain(req.volume * distance_gain(distance, req.radius), audio.sound_volume) < MIN_AUDIBLE {
+        if req.emitter != Emitter::Listener && voice_gain(volume * distance_gain(distance, req.radius), audio.sound_volume) < MIN_AUDIBLE {
             runlog::kv("sound_skip", &format!("sound={} reason=too_quiet distance={distance:.0} radius={:.0}", req.sound, req.radius));
             continue;
         }
         // All voices busy: drop the quietest if it is quieter than the new
         // one (a guess at what ALAudio does), else skip the new one.
-        let loudness = req.volume * if req.emitter == Emitter::Listener { 1.0 } else { distance_gain(distance, req.radius) };
+        let loudness = volume * if req.emitter == Emitter::Listener { 1.0 } else { distance_gain(distance, req.radius) };
         if audio.voices.iter().filter(|v| v.ambient.is_none()).count() >= MAX_VOICES {
             let quietest = audio.voices.iter().filter(|v| v.ambient.is_none()).min_by(|a, b| a.loudness.total_cmp(&b.loudness)).map(|v| (v.id, v.loudness));
             match quietest {
@@ -732,17 +741,18 @@ fn play_sounds(
             }
         }
         let clip = bank.pick(&entry);
-        let info = VoiceInfo { id: 0, sound: req.sound.clone(), slot: req.slot, emitter: req.emitter, actor: req.actor, volume: req.volume, radius: req.radius, pitch: req.pitch, clip_rate: clip.rate, loudness, falloff: Falloff::Inverse, ambient: None };
+        let info = VoiceInfo { id: 0, sound: req.sound.clone(), slot: req.slot, emitter: req.emitter, actor: req.actor, volume, radius: req.radius, pitch: req.pitch, clip_rate: clip.rate, loudness, falloff: Falloff::Inverse, ambient: None };
         let id = start_voice(&mut audio, clip.clone(), info, false);
         runlog::kv(
             "sound_play",
             &format!(
-                "id={id} sound={} slot={:?} volume={:.2} radius={:.0} pitch={:.2} distance={distance:.0} length={:.2} voices={}",
+                "id={id} sound={} slot={:?} volume={:.2} radius={:.0} pitch={:.2} distance={distance:.0} gain={:.3} length={:.2} voices={}",
                 req.sound,
                 req.slot,
                 req.volume,
                 req.radius,
                 req.pitch,
+                voice_gain(loudness, audio.sound_volume),
                 clip.duration(),
                 audio.voices.len()
             ),
