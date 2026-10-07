@@ -25,6 +25,7 @@
 
 mod client;
 mod doors;
+mod heals;
 mod pickups;
 pub mod query;
 pub mod lobby;
@@ -48,7 +49,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0007;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0008;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -150,6 +151,7 @@ impl Plugin for NetPlugin {
         doors::build(app, &self.mode);
         zedtime::build(app, &self.mode);
         pickups::build(app, &self.mode);
+        heals::build(app, &self.mode);
         crate::engine::runlog::kv("net_mode", &self.mode.label());
     }
 }

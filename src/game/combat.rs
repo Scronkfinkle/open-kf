@@ -515,10 +515,14 @@ pub enum FireType {
     Burned,
     /// DamTypeHuskGun (a DamTypeBurned subclass).
     HuskGun,
+    /// DamTypeFlameNade (the Firebug's grenade, a DamTypeFlamethrower
+    /// subclass): burns like the flamethrower, but ZombieHusk's
+    /// BurnDamageScale tests DamTypeFlamethrower exactly, so not scaled.
+    FlameNade,
 }
 
 impl FireType {
-    const ALL: [FireType; 5] = [FireType::Flamethrower, FireType::Trenchgun, FireType::Mac10, FireType::Burned, FireType::HuskGun];
+    const ALL: [FireType; 6] = [FireType::Flamethrower, FireType::Trenchgun, FireType::Mac10, FireType::Burned, FireType::HuskGun, FireType::FlameNade];
 
     /// A number for the network.
     pub fn code(self) -> u8 {
@@ -592,7 +596,7 @@ pub(crate) fn damage_zed(
     // multiplier (KFMonster.TakeDamage). KF still looks for a headshot with
     // DamTypeBurned, but its only hits are blasts and burn ticks, which have
     // no hit location; here they never count as headshots.
-    let burned_type = matches!(source.fire, Some(FireType::Flamethrower | FireType::Burned | FireType::HuskGun));
+    let burned_type = matches!(source.fire, Some(FireType::Flamethrower | FireType::Burned | FireType::HuskGun | FireType::FlameNade));
     let headshot = headshot && !burned_type;
     // KFMonster.TakeDamage: headshots, and every hit on a headless zed, are
     // multiplied by the damage type's HeadShotDamageMult.
@@ -639,7 +643,9 @@ pub(crate) fn damage_zed(
             if z.heat > 4 || damage >= 15.0 {
                 z.burn_down = 10;
                 z.burn_timer = 1.0;
-                runlog::kv("zed_ignited", &format!("zed={} weapon={weapon} fire={f:?} damage={damage:.1} heat={}", z.id, z.heat));
+                // BurnInstigator = instigatedBy: its perk for the ticks.
+                z.burn_vet = source.vet;
+                runlog::kv("zed_ignited", &format!("zed={} weapon={weapon} fire={f:?} damage={damage:.1} heat={} igniter_perk={}", z.id, z.heat, source.vet.label()));
             } else {
                 z.heat += 1;
             }
@@ -1399,6 +1405,20 @@ mod tests {
         // A weaker hit while burning keeps the stronger LastBurnDamage.
         damage_zed(&mut z, 2.0, false, 1.0, "t", 1.0, fire_src(FireType::Flamethrower), &mut kills);
         assert_eq!(z.last_burn_damage, 5.0);
+    }
+
+    #[test]
+    fn burn_ticks_keep_the_igniters_perk() {
+        // BurnInstigator is set when the zed catches fire; a later hit by
+        // someone else does not change it.
+        use crate::game::perks::{Perk, Vet};
+        let firebug = Vet { perk: Some(Perk::Firebug), level: 6 };
+        let mut kills = KillCount::default();
+        let mut z = Zed::test_patriarch();
+        damage_zed(&mut z, 20.0, false, 1.0, "t", 1.0, HitSource { vet: firebug, ..fire_src(FireType::Flamethrower) }, &mut kills);
+        assert_eq!(z.burn_vet, firebug);
+        damage_zed(&mut z, 20.0, false, 1.0, "t", 1.0, fire_src(FireType::Flamethrower), &mut kills);
+        assert_eq!(z.burn_vet, firebug);
     }
 
     #[test]

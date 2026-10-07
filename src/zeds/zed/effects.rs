@@ -331,7 +331,7 @@ pub(super) fn burn_zeds(
     mut meshes: ResMut<Assets<Mesh>>,
     mut effects: Query<&mut crate::render::particles::ParticleEffect>,
     mut zeds: Query<(&mut Zed, &Transform)>,
-    (mut kills, vet): (ResMut<crate::game::combat::KillCount>, Res<crate::game::perks::Veterancy>),
+    mut kills: ResMut<crate::game::combat::KillCount>,
 ) {
     let dt = time.delta_secs();
     for (mut z, t) in &mut zeds {
@@ -370,7 +370,9 @@ pub(super) fn burn_zeds(
                     crate::game::combat::FireType::Mac10 => "DamTypeMAC10MPInc",
                     _ => "DamTypeFlamethrower",
                 }));
-                let source = crate::game::combat::HitSource { point: b, attacker: b, melee: false, explosive: None, fire: Some(fire), dam, vet: vet.vet };
+                // The igniter's perk (BurnInstigator), not this game's player's:
+                // on a host the igniter may be a joining player.
+                let source = crate::game::combat::HitSource { point: b, attacker: b, melee: false, explosive: None, fire: Some(fire), dam, vet: z.burn_vet };
                 // KF's BurnInstigator: credited to whoever hurt it last.
                 z.net.next_hit_by = z.net.damaged_by;
                 crate::game::combat::damage_zed(&mut z, damage, false, 1.0, "fire", 0.0, source, &mut kills);

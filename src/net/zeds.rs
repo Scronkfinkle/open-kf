@@ -177,7 +177,18 @@ fn forward_player_events(
     let mut out: Vec<(u64, PlayerEvent)> = Vec::new();
     for h in hits.read() {
         if let Some(peer) = h.to_peer {
-            out.push((peer, PlayerEvent::Hurt { amount: h.amount, zed_id: h.zed_id as u32, kind: h.kind, armor_stops: h.armor_stops, dam_type: h.dam_type, source: h.source.map(|v| v.to_array()) }));
+            out.push((
+                peer,
+                PlayerEvent::Hurt {
+                    amount: h.amount,
+                    zed_id: h.zed_id as u32,
+                    kind: h.kind,
+                    armor_stops: h.armor_stops,
+                    dam_type: h.dam_type,
+                    source: h.source.map(|v| v.to_array()),
+                    dam: h.dam.map(|d| (d.chain.0.clone(), d.melee)),
+                },
+            ));
         }
     }
     for p in pushes.read() {
@@ -473,16 +484,23 @@ fn receive_player_events(
     mut push: MessageWriter<crate::player::walk::PlayerPush>,
     mut pinned: ResMut<crate::game::combat::PlayerPinned>,
     vet: Res<crate::game::perks::Veterancy>,
+    mut healed: MessageWriter<crate::game::healing::HealedByTeammate>,
 ) {
     for mut r in &mut rx {
         for ev in r.receive() {
             runlog::kv("net_player_event", &format!("{ev:?}"));
             match ev {
-                PlayerEvent::Hurt { amount, zed_id, kind, armor_stops, dam_type, source } => {
-                    damage.write(crate::game::combat::PlayerDamaged { amount, zed_id: zed_id as usize, kind, armor_stops, dam_type, source: source.map(Vec3::from_array), dam: None, to_peer: None });
+                PlayerEvent::Hurt { amount, zed_id, kind, armor_stops, dam_type, source, dam } => {
+                    // The damage type travels so this player's own perk can
+                    // reduce it (KFGameType.ReduceDamage runs for the hurt pawn).
+                    let dam = dam.map(|(chain, melee)| crate::game::perks::intern_dam_type(crate::game::perks::ClassChain(chain), melee));
+                    damage.write(crate::game::combat::PlayerDamaged { amount, zed_id: zed_id as usize, kind, armor_stops, dam_type, source: source.map(Vec3::from_array), dam, to_peer: None });
                 }
                 PlayerEvent::Push { momentum } => {
                     push.write(crate::player::walk::PlayerPush { momentum: Vec3::from_array(momentum), to_peer: None });
+                }
+                PlayerEvent::Healed { amount, healer, source } => {
+                    healed.write(crate::game::healing::HealedByTeammate { amount, healer, source });
                 }
                 PlayerEvent::Grab { seconds, zed_id } => {
                     // CanBeGrabbed: a Berserker is not grabbed by Clots.

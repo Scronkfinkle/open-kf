@@ -119,11 +119,34 @@ pub struct ZedSnapshot {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum PlayerEvent {
     /// A `PlayerDamaged` (zed melee, pounce, scream, Patriarch hits).
-    Hurt { amount: f32, zed_id: u32, kind: crate::game::combat::HurtKind, armor_stops: bool, dam_type: crate::game::combat::DamType, source: Option<[f32; 3]> },
+    /// `dam`: the perk damage type (class chain, bIsMeleeDamage) when the
+    /// hit has one (bile, the Husk's fire, the Patriarch's rockets), so the
+    /// hurt player's perk can reduce it (ReduceDamage).
+    Hurt {
+        amount: f32,
+        zed_id: u32,
+        kind: crate::game::combat::HurtKind,
+        armor_stops: bool,
+        dam_type: crate::game::combat::DamType,
+        source: Option<[f32; 3]>,
+        dam: Option<(Vec<String>, bool)>,
+    },
     /// A `PlayerPush` (Unreal units of momentum).
     Push { momentum: [f32; 3] },
     /// A Clot's grab (ZombieClot GrappleDuration).
     Grab { seconds: f32, zed_id: u32 },
+    /// Another player healed this one (KFPawn.GiveHealth(HealSum,
+    /// HealthMax)): the healer's name and how (syringe, dart).
+    Healed { amount: f32, healer: String, source: String },
+}
+
+/// A client's player healed another player (game/healing.rs): the host
+/// sends it on to them.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HealRequest {
+    pub target: u64,
+    pub amount: f32,
+    pub source: String,
 }
 
 /// The host credits a client with a kill (KF: ScoreKill on that player's
@@ -201,6 +224,7 @@ pub fn register(app: &mut App) {
     app.register_message::<crate::game::pickups::PickupRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<crate::game::pickups::PickupNotice>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<crate::game::pickups::DropRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<HealRequest>().add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })

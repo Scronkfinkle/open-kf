@@ -580,6 +580,11 @@ struct PelletFire {
     explosive: Option<crate::weapons::projectile::ExplosiveStats>,
     /// A thrown frag or pipe bomb instead.
     thrown: Option<crate::weapons::projectile::ThrownStats>,
+    /// FragFire.GetDesiredProjectileClass: the perk's GetNadeType instead
+    /// of the Nade (the Firebug's FlameNade from level 3).
+    flame_nade: Option<crate::weapons::projectile::ThrownStats>,
+    /// The Medic's MedicNade (every level).
+    medic_nade: Option<crate::weapons::projectile::ThrownStats>,
     /// Flamethrower flames (FlameTendril) instead.
     flame: Option<crate::weapons::projectile::FlameStats>,
     /// Medic darts (HealingProjectile) instead.
@@ -637,6 +642,9 @@ struct HealCharge {
     next_regen: f32,
     /// HealBoostAmount (Syringe.PostBeginPlay: 50 with one player).
     boost: f32,
+    /// The Syringe's HealBoostAmount default (20): Syringe.PostBeginPlay
+    /// keeps it when more than one player is in the game (50 only solo).
+    boost_team: f32,
     /// AmmoPerFire and InjectDelay of each mode (SyringeFire,
     /// SyringeAltFire).
     cost: [u32; 2],
@@ -817,6 +825,9 @@ struct Weapons {
     /// SyringeAltFire's InjectDelay timer: (seconds left, weapon index,
     /// mode), then the charge is used and the heal given.
     pending_inject: Option<(f32, usize, usize)>,
+    /// SyringeFire.CachedHealee: the player the primary fire's injection
+    /// will heal (peer id), set at AttemptHeal.
+    heal_target: Option<u64>,
     /// The ZED Gun's beam, while it is on.
     beam: Option<BeamState>,
     /// SyringeFire.AttemptHeal's LastHealAttempt (the "no one to heal"

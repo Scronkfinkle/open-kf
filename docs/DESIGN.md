@@ -4262,7 +4262,7 @@ checked from logs, LATER = left).
 | ModifyRecoilSpread | Sharpshooter, Commando | KFFire / KFShotgunFire.ModeDoFire (Spread x mod, HandleRecoil kick x mod) and BoomStickAltFire, HuskGunFire, KSGFire, NailGunFire, WinchesterFire | yes (firing.rs) | done |
 | GetMagCapacityMod | Medic (medic guns), Commando (rifles), Firebug (Flamethrower, MAC10) | KFWeapon.UpdateMagCapacity (every tick), GiveAmmo (start ammo x new / default capacity), ServerBuyAmmo (rounds per clip), the buy menu's clip price | yes | done |
 | AddExtraAmmoFor (max ammo) | Support (shotguns, frags), Commando, Firebug, Demolitions (frags, pipe bombs, LAW) | KFWeapon.GiveAmmo / GetAmmoMulti, KFPawn.ServerBuyAmmo, KFAmmunition.HandlePickupQuery, Huskgun.GiveAmmo, VeterancyChanged | yes | done |
-| GetAmmoPickupMod | Medic, Commando, Firebug | KFAmmoPickup.Touch (ammo boxes in the map) | no (no ammo boxes yet) | LATER |
+| GetAmmoPickupMod | Medic, Commando, Firebug | KFAmmoPickup.Touch (ammo boxes in the map) | yes (weapons/weapon/pickup.rs) | done |
 | GetCostScaling (weapon and armour prices) | all | KFPawn.ServerBuyWeapon, ServerSellWeapon (unpaid weapons), ServerBuyKevlar; KFBuyMenuSaleList / InvList prices | yes (buy menu, armour) | done |
 | GetAmmoCostScaling | Sharpshooter (bolts), Demolitions | KFPawn.ServerBuyAmmo, KFBuyMenuInvList | yes | done |
 | AddDefaultInventory (start weapons, armour) | all (level 5-6; armour: Medic 5+, Berserker 6 below Suicidal, Firebug 6) | KFHumanPawn.AddDefaultInventory -> CreateInventoryVeterancy (SellValue = StartingWeaponSellPriceLevel5 200 / Level6 225; Demolitions' Level5 is 0) | yes | done |
@@ -4271,7 +4271,7 @@ checked from logs, LATER = left).
 | AddCarryMaxWeight | Support | KFHumanPawn.VeterancyChanged (MaxCarryWeight 15 + n) | yes | done |
 | GetWeldSpeedModifier | Support | WeldFire.Timer: weld damage x mod (an int) | yes (door.rs) | done (unit-tested; not tried in a run: no door found for the test) |
 | GetSyringeChargeRate | Medic | Syringe.Tick / KFMedicGun.Tick: +10 x mod per regen tick | yes | done |
-| GetHealPotency | Medic | SyringeAltFire.Timer (self heal), SyringeFire (others), HealingProjectile (darts), MedicNade | yes (self heal, darts; no teammates) | done (self heal); darts only heal teammates, none solo |
+| GetHealPotency | Medic | SyringeAltFire.Timer (self heal), SyringeFire (others), HealingProjectile (darts), MedicNade | yes (game/healing.rs, net/heals.rs) | done (2026-10-07: teammates over the network) |
 | ReduceDamage (damage you take) | Medic (bile), Berserker (all, bile more), Firebug (fire), Demolitions (explosives) | KFGameType.ReduceDamage (before the self-damage halving); KFPawn.TakeDamage returns early when it gives 0 (no burning) | yes (combat.rs) | done |
 | GetBodyArmorDamageModifier | Medic | KFPawn.ShieldAbsorb (damage x mod before the vest's sums) | yes (armour.rs) | done |
 | ZedTimeExtensions | Commando (3+), Berserker | KFGameType.Killed: a kill during zed time forces DramaticEvent(1.0) while extensions are left; reset when zed time ends | yes (zed_time.rs) | done |
@@ -4279,8 +4279,8 @@ checked from logs, LATER = left).
 | GetShotgunPenetrationDamageMulti | Support | ShotgunBullet / NailGunProjectile / TrenchgunBullet.ProcessTouch | yes (projectile.rs PenDamageReduction) | done |
 | GetMAC10DamageType | Firebug (DamTypeMAC10MPInc: incendiary) | MAC10Fire.DoTrace | yes (FireType::Mac10 exists) | done |
 | ExtraRange | Firebug (Flamethrower) | FlameTendril.Timer (bursts after 2 + n timers) | yes (projectile.rs flames) | done |
-| GetNadeType | Medic (MedicNade), Firebug 3+ (FlameNade) | FragFire.GetDesiredProjectileClass | no (only the Nade) | LATER |
-| SpecialHUDInfo (zed health bars) | Commando 1+ | HUDKillingFloor.DrawHudPassA | no | LATER |
+| GetNadeType | Medic (MedicNade), Firebug 3+ (FlameNade) | FragFire.GetDesiredProjectileClass | yes (load.rs `perk_nade`, projectile.rs `medic_pulse`) | done 2026-10-07 |
+| SpecialHUDInfo (zed health bars) | Commando 1+ | HUDKillingFloor.DrawHudPassA -> DrawHealthBar | yes (hud.rs `zed_health_bars`) | done 2026-10-07 |
 | ShowStalkers / GetStalkerViewDistanceMulti | Commando | ZombieStalker.Tick, ZombieBoss.Tick (the red "spotted" glow) | yes | done (see "Commando: seeing cloaked zeds") |
 | CanMeleeStun | Berserker | no caller in the base game scripts | - | nothing to do |
 | ShouldBecomeIncendiary, KilledShouldExplode | none (base false) | KFMonster.TakeDamage | - | nothing to do |
@@ -4299,6 +4299,26 @@ take their below-5 / below-7 sides.
 Integers: KF keeps damage, weld damage, heal amounts and ammo maximums as
 whole numbers; a perk factor's result is cut down to a whole number where
 KF's variable is an int.
+
+The full per-perk audit (every effect, formula by level, status, file)
+is `docs/perks.md` (2026-10-07).
+
+### Healing other players and network perks (2026-10-07)
+
+- `game/healing.rs`: `Teammates` (the other players: position, health,
+  name; filled by `net/heals.rs` from their `NetPawn` / `NetPlayer`,
+  empty solo). The healer's game finds who is healed (SyringeFire's
+  GetHealee: within 80 units in front; a dart touching their cylinder;
+  the MedicNade's 175-unit cloud), pays itself (ReceiveRewardForHealing:
+  int(healed / 100 x 60)) and writes `HealTeammate`; `net/heals.rs`
+  sends it healer -> host -> the healed player's game
+  (`HealRequest`, `PlayerEvent::Healed`), where it becomes GiveHealth.
+- Whose perk: hits carry the shooter's perk to the host; burn ticks keep
+  the igniter's (`Zed.burn_vet`, KF's BurnInstigator); hits the host
+  sends to a player carry their damage type (`PlayerEvent::Hurt.dam`) so
+  that player's own ReduceDamage applies; the Commando's glow and health
+  bars are decided on each game for its own player (puppet zeds run the
+  spotted check; the host sends a spotted Stalker as cloaked).
 
 ### How it is built (stage 1)
 

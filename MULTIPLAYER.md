@@ -58,6 +58,12 @@ way by typing the host's settings itself:
   player.
 - Doors: opening, closing, welding, zeds breaking them.
 - Zed time (slow motion) for everyone at once.
+- Healing each other: the Syringe's left click on a player in front of
+  you, medic gun darts, and the Medic grenade's cloud. The healer earns
+  dosh, as in KF.
+- Every player's own perk: their damage bonuses count on the host's
+  zeds, their resistances on their own game, and a Commando sees cloaked
+  Stalkers and zed health bars on their own screen.
 - Pickups lying in the map, tossed dosh (**B**) and thrown weapons (**\\**).
 - Dying and coming back at the end of the wave; if everyone dies the match
   restarts.

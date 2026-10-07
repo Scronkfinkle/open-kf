@@ -353,6 +353,7 @@ impl Zed {
             heat: 0,
             fire_class: crate::game::combat::FireType::Flamethrower,
             burn_timer: 0.0,
+            burn_vet: crate::game::perks::Vet::default(),
             burn_fx: None,
             burned_scale: 1.0,
             fire_resist: 1.0,

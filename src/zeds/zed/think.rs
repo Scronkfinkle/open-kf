@@ -296,6 +296,15 @@ pub(super) fn think_and_move(
                 pinned.release("grabber_decapitated");
             }
             moan_tick(&mut z, time.elapsed_secs());
+            // The Commando's glow is this game's own look (ZombieStalker /
+            // ZombieBoss.Tick run on every client for its local player).
+            if c.cloak_material.is_some() {
+                z.puppet_stalker_glow_tick(&viewer, dt);
+            }
+            if c.boss.is_some() && c.spotted_material.is_some() {
+                let at = z.centre;
+                z.boss_spot_tick(Some(&viewer), || sees(&spatial, at, local_target), dt);
+            }
             t.translation = z.centre;
             t.rotation = coords::rotation(Rotator { pitch: 0, yaw: z.yaw as i32, roll: 0 });
             continue;

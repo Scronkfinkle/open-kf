@@ -12,5 +12,6 @@ pub mod hud;
 pub mod zed_time;
 pub mod end_game;
 pub mod perks;
+pub mod healing;
 pub mod menus;
 pub mod pickups;
