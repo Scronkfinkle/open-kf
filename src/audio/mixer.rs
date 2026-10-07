@@ -493,12 +493,15 @@ struct VoiceInfo {
 #[derive(Resource)]
 pub struct Audio {
     _sink: Option<rodio::MixerDeviceSink>,
+    /// Everything we play goes into this mixer; its output passes the
+    /// recording tap (capture.rs) on its way to the speakers.
+    output: rodio::mixer::Mixer,
+    /// The recording tap's controls (record.rs).
+    pub capture: Arc<super::capture::Capture>,
     shared: Arc<Mutex<MixState>>,
     voices: Vec<VoiceInfo>,
     next_id: u64,
     out_rate: u32,
-    /// `--mute`: voices are still tracked and logged, at zero volume.
-    pub muted: bool,
     /// The player's KillingFloor.ini SoundVolume and MusicVolume.
     pub sound_volume: f32,
     pub music_volume: f32,
@@ -587,10 +590,8 @@ pub struct AudioSettings {
 
 impl Audio {
     /// PlayerController.PlayMusic: starts streaming `path` at volume 0
-    /// (music.rs fades it). None without a sound device or if the file
-    /// cannot be decoded.
+    /// (music.rs fades it). None if the file cannot be decoded.
     pub fn play_music(&self, path: &std::path::Path) -> Option<MusicHandle> {
-        let sink = self._sink.as_ref()?;
         let file = std::fs::File::open(path).ok()?;
         let inner = match rodio::Decoder::try_from(file) {
             Ok(d) => d,
@@ -601,7 +602,7 @@ impl Audio {
         };
         let volume = Arc::new(std::sync::atomic::AtomicU32::new(0f32.to_bits()));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        sink.mixer().add(MusicSource { inner, volume: volume.clone(), stop: stop.clone() });
+        self.output.add(MusicSource { inner, volume: volume.clone(), stop: stop.clone() });
         Some(MusicHandle { volume, stop })
     }
 
@@ -618,14 +619,25 @@ impl Audio {
         };
         let out_rate = sink.as_ref().map_or(44100, |s| s.config().sample_rate().get());
         let shared = Arc::new(Mutex::new(MixState::default()));
+        let rate = rodio::SampleRate::new(out_rate).unwrap_or(rodio::SampleRate::new(44100).expect("not zero"));
+        let stereo = rodio::ChannelCount::new(2).expect("not zero");
+        // Our voices and the music meet in `output`; its result goes
+        // through the recording tap to the device (or, without one, to a
+        // thread that pulls it at real-time pace). MixSource never ends,
+        // so the mixer stays alive with nothing playing.
+        let (output, mixed) = rodio::mixer::mixer(stereo, rate);
+        output.add(MixSource { shared: shared.clone(), buf: vec![0.0; BLOCK * 2], at: BLOCK * 2, rate });
+        let capture = Arc::new(super::capture::Capture::new(out_rate, settings.muted));
+        let tap = super::capture::TapSource::new(mixed, capture.clone());
         if let Some(s) = &sink {
-            let rate = s.config().sample_rate();
             runlog::kv("audio_device", &format!("ok=true rate={} channels={} muted={}", rate.get(), s.config().channel_count().get(), settings.muted));
-            s.mixer().add(MixSource { shared: shared.clone(), buf: vec![0.0; BLOCK * 2], at: BLOCK * 2, rate });
+            s.mixer().add(tap);
+        } else {
+            super::capture::run_without_device(tap, out_rate);
         }
         let (sound_volume, music_volume) = ini_volumes(root);
         runlog::kv("audio_volumes", &format!("sound={sound_volume} music={music_volume} source=KillingFloor.ini"));
-        Audio { _sink: sink, shared, voices: Vec::new(), next_id: 1, out_rate, muted: settings.muted, sound_volume, music_volume }
+        Audio { _sink: sink, output, capture, shared, voices: Vec::new(), next_id: 1, out_rate, sound_volume, music_volume }
     }
 }
 
@@ -843,7 +855,8 @@ fn update_voices(
     let cam = listener.single().ok();
     let ear = cam.map(|t| t.translation());
     let speed = time.relative_speed() as f64;
-    let master = if audio.muted { 0.0 } else { audio.sound_volume };
+    // Muted or not: `--mute` silences the speakers after the recording tap.
+    let master = audio.sound_volume;
     let out_rate = audio.out_rate as f64;
     // Gains first, then one short lock to hand them over.
     let mut updates = Vec::with_capacity(audio.voices.len());
@@ -973,3 +986,4 @@ mod tests {
         assert_eq!(played, 19);
     }
 }
+

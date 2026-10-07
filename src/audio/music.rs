@@ -190,7 +190,8 @@ fn song_file(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
 }
 
 fn run_music(real: Res<Time<Real>>, mut cues: MessageReader<MusicCue>, audio: Res<Audio>, mut music: ResMut<Music>) {
-    let volume = if audio.muted { 0.0 } else { audio.music_volume };
+    // Muted or not: `--mute` silences the speakers after the recording tap.
+    let volume = audio.music_volume;
     for &cue in cues.read() {
         let Some(h) = music.handler.clone() else {
             continue;

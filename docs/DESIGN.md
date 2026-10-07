@@ -1533,10 +1533,51 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   the shell (its libraries clash with the shell's LD_LIBRARY_PATH).
 - The window title says "REC" while recording; nothing is drawn on screen,
   so the video shows only the game.
+- When the game runs slower than 30 fps, a capture is put in the 1/30 s
+  slot nearest the moment it was taken, and the empty slots before it
+  repeat the *previous* picture (since 2026-10-07; before, the new
+  picture filled them, so it showed up to a slot or more too early).
+- Sound (added 2026-10-07): the recording gets exactly what the game
+  sends to the speakers: our sound mixer plus the music, after the
+  master volumes (KillingFloor.ini SoundVolume / MusicVolume). With
+  `--mute` the recording still has sound, at the volume it would have on
+  the speakers unmuted; the mute only silences the speakers. How:
+  - The audio thread (the one feeding the speakers) copies the output
+    into chunks of 1024 stereo samples (about 23 ms) while a recording
+    runs, and passes them over a bounded queue (256 chunks, about 5 s).
+    It never waits: if the queue is full, the chunk is dropped and
+    counted (`audio_chunks_dropped` in `record_stop`; the gap becomes
+    silence, so later sound stays in place).
+  - An `audio-writer` thread places the chunks on the video's clock:
+    "slot 0" is the moment F9 / `record` was handled; the first chunk is
+    put where its real time falls after that (silence before it), and
+    every later chunk at its sample count after the first. It writes raw
+    samples to `<name>.audio.raw` next to the video.
+  - Two files, then one: ffmpeg encodes the picture to `<name>.video.mp4`
+    as before. When both finish, the raw sound is cut or padded with
+    silence to exactly the video's length (frames / 30), and a second,
+    quick ffmpeg run joins them into `<name>.mp4` (picture copied as is,
+    sound encoded as AAC 192 kb/s), then deletes the two temporary files.
+    We chose this over feeding ffmpeg the sound live through a second
+    pipe: that needs named pipes (not portable to Windows), and ffmpeg
+    reading two live pipes can stall when one runs ahead.
+  - Sync measured on 2026-10-07 (pistol shots, `sound_play` log time vs
+    the start of the shot in the file's sound): 10 to 68 ms late,
+    GPU and software drawing (6.6 fps) alike, no growth over 22 s. The
+    remaining lateness is the sound device asking for sound every 25 to
+    46 ms: a sound waits for the next request. Against the picture
+    (first changed frame after the shot) the sound is 3 to 68 ms late,
+    i.e. within about 2 video frames.
+  - If the sound cannot be added (ffmpeg error), the picture alone is
+    saved as `<name>.mp4` and the raw sound is kept for a look.
 - Stopping, or quitting while recording, closes the pipe and waits for
-  ffmpeg to finish the file. The log has `record_start`, `record_stop`
-  (frames asked, frames written, repeats) and `record_saved` (file,
-  bytes, ffmpeg exit status).
+  ffmpeg to finish the file. The log has `record_start` (sound rate, how
+  long starting took), `record_stop` (frames asked, frames written,
+  repeats, sound chunks dropped), `record_audio` (sound chunks, where the
+  sound starts, its length, gaps, `drift_ms`: how far the chunks' real
+  times stray from their sample count) and `record_saved` (file, video
+  frames and seconds, sound frames before and after fitting, how many
+  were padded or cut, the join's exit status, bytes).
 - Cost: one window-sized copy per recorded frame; expect a lower frame rate
   while recording at high resolutions.
 - Bevy captures a window at most once per frame and silently drops a
@@ -1544,7 +1585,8 @@ is `work/videos/<map>-<unix time>.mp4` (gitignored).
   frame with an F12 / `--screenshot` capture is skipped by the recorder;
   the next capture covers its slot. (Found when a `--screenshot` run never
   quit: its capture had been dropped.)
-- The source is `src/engine/record.rs`.
+- The source is `src/engine/record.rs` (and the sound tap in
+  `src/audio/capture.rs`).
 
 ## Weapons (milestone 7, W1-W9 implemented 2026-10-05)
 
@@ -3346,7 +3388,15 @@ mixer of our own (`src/audio/mixer.rs`). It feeds `rodio`, the library Bevy's
 audio already uses, so nothing new is downloaded. The mixer adds the
 voices together sample by sample. Each frame the game updates every
 voice's volume, left/right balance and pitch from the listener's position.
-If the machine has no sound device, the game logs it and runs silent.
+Our voices and the music meet in one rodio mixer whose output passes a
+"tap" (`src/audio/capture.rs`) on its way to the speakers; the tap copies
+the sound into video recordings (see "Video recording"). `--mute` is
+applied after the tap: the speakers get silence, but everything is still
+mixed at the normal volumes (so recordings keep their sound). If the
+machine has no sound device, the game logs it (`audio_device ok=false`)
+and a small thread pulls the mixed sound at real-time speed and throws it
+away after the tap, so voices still end on time and recordings still
+have sound.
 
 **Distance falloff (a guess, to be checked by ear).** Since S4a: OpenAL's
 "inverse distance clamped" model, the sound's Radius as the reference
