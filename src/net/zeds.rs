@@ -312,6 +312,13 @@ struct SnapshotBuffer {
     bytes: usize,
     second: i64,
     late_frames: u32,
+    /// Smoothness check: each puppet's last drawn centre, and this
+    /// half-second's biggest and summed per-frame moves (Unreal units).
+    prev: HashMap<u32, Vec3>,
+    max_step: f32,
+    sum_step: f32,
+    steps: u32,
+    motion_at: f64,
 }
 
 fn receive_snapshots(time: Res<Time<Real>>, mut rx: Query<&mut MessageReceiver<ZedSnapshot>, (With<Client>, Without<LinkOf>)>, mut buf: ResMut<SnapshotBuffer>) {
@@ -351,8 +358,12 @@ fn yaw_lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// Each host zed where the host had it `INTERP_DELAY` ago (host clock),
-/// blended between the two snapshots around that moment.
-fn sample(snaps: &VecDeque<ZedSnapshot>, at: f64) -> (HashMap<u32, PuppetSample>, bool) {
+/// blended between the two snapshots around that moment. Snapshot times
+/// are real seconds; `speed` (the shared game speed, 0.2 in zed time)
+/// turns the velocity into game units per game second (what the puppet's
+/// ragdoll uses) and scales the coast past the newest snapshot.
+fn sample(snaps: &VecDeque<ZedSnapshot>, at: f64, speed: f32) -> (HashMap<u32, PuppetSample>, bool) {
+    let speed = speed.max(0.05);
     let mut out = HashMap::new();
     let Some(last) = snaps.back() else { return (out, false) };
     // The snapshot pair around `at` (or the newest, moved along).
@@ -370,7 +381,7 @@ fn sample(snaps: &VecDeque<ZedSnapshot>, at: f64) -> (HashMap<u32, PuppetSample>
                 let (ca, cb) = (n.centre(), m.centre());
                 // A jump of more than 400 units is not slid across.
                 let c = if ca.distance(cb) > 400.0 * SCALE { if t < 0.5 { ca } else { cb } } else { ca.lerp(cb, t) };
-                (c, yaw_lerp(n.yaw as f32, m.yaw as f32, t), (cb - ca) / dt)
+                (c, yaw_lerp(n.yaw as f32, m.yaw as f32, t), (cb - ca) / dt / speed)
             }
             _ => (n.centre(), n.yaw as f32, Vec3::ZERO),
         };
@@ -387,8 +398,8 @@ fn sample(snaps: &VecDeque<ZedSnapshot>, at: f64) -> (HashMap<u32, PuppetSample>
                 && dt > 0.0
                 && !s.n.dead()
             {
-                s.velocity = (s.centre - *p) / dt;
-                s.centre += s.velocity * ahead;
+                s.velocity = (s.centre - *p) / dt / speed;
+                s.centre += s.velocity * speed * ahead;
             }
         }
     }
@@ -396,16 +407,46 @@ fn sample(snaps: &VecDeque<ZedSnapshot>, at: f64) -> (HashMap<u32, PuppetSample>
 }
 
 /// The snapshots -> `PuppetFeed` (zeds/zed/net.rs applies it).
-fn feed_puppets(time: Res<Time<Real>>, mut buf: ResMut<SnapshotBuffer>, mut feed: ResMut<PuppetFeed>) {
+fn feed_puppets(time: Res<Time<Real>>, zed_time: Res<crate::game::zed_time::ZedTime>, mut buf: ResMut<SnapshotBuffer>, mut feed: ResMut<PuppetFeed>) {
     let Some(offset) = buf.offset else { return };
     let at = time.elapsed_secs_f64() - offset - INTERP_DELAY;
     // Keep one snapshot older than the moment drawn.
     while buf.snaps.len() > 2 && buf.snaps[1].time <= at {
         buf.snaps.pop_front();
     }
-    let (samples, late) = sample(&buf.snaps, at);
+    let (samples, late) = sample(&buf.snaps, at, zed_time.speed());
     if late {
         buf.late_frames += 1;
+    }
+    // How far each living puppet moves per frame (a jump shows as a max
+    // far above the mean), logged twice a second with the game speed.
+    let mut prev = std::mem::take(&mut buf.prev);
+    for (id, s) in &samples {
+        if s.n.dead() {
+            continue;
+        }
+        if let Some(p) = prev.get(id) {
+            let step = p.distance(s.centre) / SCALE;
+            buf.max_step = buf.max_step.max(step);
+            buf.sum_step += step;
+            buf.steps += 1;
+        }
+        prev.insert(*id, s.centre);
+    }
+    prev.retain(|id, _| samples.contains_key(id));
+    buf.prev = prev;
+    let now = time.elapsed_secs_f64();
+    if now - buf.motion_at >= 0.5 {
+        buf.motion_at = now;
+        if buf.steps > 0 {
+            runlog::kv(
+                "net_puppet_motion",
+                &format!("wall={:.3} game_speed={:.2} puppets={} max_step_uu={:.2} mean_step_uu={:.2} steps={}", wall(), zed_time.speed(), samples.len(), buf.max_step, buf.sum_step / buf.steps as f32, buf.steps),
+            );
+        }
+        buf.max_step = 0.0;
+        buf.sum_step = 0.0;
+        buf.steps = 0;
     }
     feed.samples = samples;
     feed.latest = buf.snaps.back().map(|s| s.zeds.iter().map(|n| n.id).collect());
@@ -511,7 +552,7 @@ mod tests {
             ZedSnapshot { seq: 1, time: 1.0, zeds: vec![zed(7, 0, 65000), zed(8, 50, 0)] },
             ZedSnapshot { seq: 2, time: 1.1, zeds: vec![zed(7, 100, 500)] },
         ]);
-        let (s, late) = sample(&snaps, 1.05);
+        let (s, late) = sample(&snaps, 1.05, 1.0);
         assert!(!late);
         let p = &s[&7];
         // Halfway: x 50 Unreal units; the yaw goes the short way through 0.
@@ -520,7 +561,11 @@ mod tests {
         // A zed only in the earlier snapshot stays where it was.
         assert_eq!(s[&8].velocity, Vec3::ZERO);
         // After the newest: late.
-        assert!(sample(&snaps, 2.0).1);
+        assert!(sample(&snaps, 2.0, 1.0).1);
+        // In zed time the same movement is five times faster in game time.
+        let (z, _) = sample(&snaps, 1.05, 0.2);
+        let (n, _) = sample(&snaps, 1.05, 1.0);
+        assert!((z[&7].velocity - n[&7].velocity * 5.0).length() < 1e-3);
     }
 
     #[test]

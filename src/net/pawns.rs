@@ -236,6 +236,10 @@ pub struct RemotePawn {
     /// Frames drawn past the newest update (it was late) since the last log.
     starved: u32,
     last_log: f64,
+    /// Smoothness check: the last drawn location and the biggest move
+    /// in one frame since the last log line (Unreal units).
+    last_drawn: Option<Vec3>,
+    max_step: f32,
 }
 
 /// Peer id -> the remote pawn entity on this game.
@@ -286,6 +290,8 @@ fn track_remote_pawns(
                         count_second: second,
                         starved: 0,
                         last_log: 0.0,
+                        last_drawn: None,
+                        max_step: 0.0,
                     },
                 ))
                 .id();
@@ -339,8 +345,10 @@ fn angle_lerp(a: f32, b: f32, t: f32) -> f32 {
 /// updates around it (positions, velocity and view angles blended; the
 /// rest, like the weapon and the shot counter, from the earlier one).
 /// Before the first: the first; after the last: the last moved along its
-/// velocity for up to `MAX_EXTRAPOLATE` (`true`: late).
-fn sample(snaps: &VecDeque<Snapshot>, at: f64) -> Option<(PawnUpdate, bool)> {
+/// velocity for up to `MAX_EXTRAPOLATE` (`true`: late). `at` is real time
+/// and the velocity is per game second, so the coast is scaled by the
+/// game speed (`speed`: 0.2 in zed time, which every game shares).
+fn sample(snaps: &VecDeque<Snapshot>, at: f64, speed: f32) -> Option<(PawnUpdate, bool)> {
     let first = snaps.front()?;
     if at <= first.u.time {
         return Some((first.u.clone(), false));
@@ -366,7 +374,7 @@ fn sample(snaps: &VecDeque<Snapshot>, at: f64) -> Option<(PawnUpdate, bool)> {
         let mut u = s.u.clone();
         if u.active && !u.dead {
             let ahead = (at - u.time).clamp(0.0, MAX_EXTRAPOLATE) as f32;
-            u.location = (Vec3::from_array(u.location) + Vec3::from_array(u.velocity) * ahead).to_array();
+            u.location = (Vec3::from_array(u.location) + Vec3::from_array(u.velocity) * ahead * speed).to_array();
         }
         (u, true)
     })
@@ -374,8 +382,9 @@ fn sample(snaps: &VecDeque<Snapshot>, at: f64) -> Option<(PawnUpdate, bool)> {
 
 /// Moves each remote pawn's `PawnState` to where its player was
 /// `INTERP_DELAY` seconds ago (on their clock), for the body code.
-fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &mut RemotePawn, &mut Transform)>) {
+fn drive_remote_pawns(time: Res<Time<Real>>, zed_time: Res<crate::game::zed_time::ZedTime>, mut pawns: Query<(&mut PawnState, &mut RemotePawn, &mut Transform)>) {
     let now = time.elapsed_secs_f64();
+    let speed = zed_time.speed();
     for (mut s, mut r, mut t) in &mut pawns {
         let Some(offset) = r.offset else { continue };
         let at = now - offset - INTERP_DELAY;
@@ -383,12 +392,16 @@ fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &
         while r.snaps.len() > 2 && r.snaps[1].u.time <= at {
             r.snaps.pop_front();
         }
-        let Some((u, late)) = sample(&r.snaps, at) else { continue };
+        let Some((u, late)) = sample(&r.snaps, at, speed) else { continue };
         if late {
             r.starved += 1;
         }
         s.active = u.active;
         s.location = Vec3::from_array(u.location);
+        if let Some(p) = r.last_drawn {
+            r.max_step = r.max_step.max(p.distance(s.location) / SCALE);
+        }
+        r.last_drawn = Some(s.location);
         t.translation = s.location;
         s.velocity = Vec3::from_array(u.velocity);
         s.on_ground = u.on_ground;
@@ -411,7 +424,7 @@ fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &
             runlog::kv(
                 "net_remote_pawn",
                 &format!(
-                    "peer={} wall={:.3} at={at:.3} shown_unreal={} speed={:.0} yaw_deg={:.1} pitch_deg={:.1} active={} on_ground={} weapon={} flash={} reloads={} dead={} newest_seq={newest} newest_age_ms={:.0} buffered={} updates_per_s={} late_frames={}",
+                    "peer={} wall={:.3} at={at:.3} game_speed={speed:.2} shown_unreal={} speed={:.0} yaw_deg={:.1} pitch_deg={:.1} active={} on_ground={} weapon={} flash={} reloads={} dead={} newest_seq={newest} newest_age_ms={:.0} buffered={} updates_per_s={} late_frames={} max_step_uu={:.2}",
                     r.peer,
                     wall(),
                     unreal(u.location),
@@ -428,9 +441,11 @@ fn drive_remote_pawns(time: Res<Time<Real>>, mut pawns: Query<(&mut PawnState, &
                     r.snaps.len(),
                     r.rate,
                     r.starved,
+                    r.max_step,
                 ),
             );
             r.starved = 0;
+            r.max_step = 0.0;
         }
     }
 }
@@ -446,27 +461,29 @@ mod tests {
     #[test]
     fn sample_blends_between_updates() {
         let snaps = VecDeque::from([snap(1, 1.0, 0.0, 3.0), snap(2, 1.1, 1.0, -3.0)]);
-        let (u, late) = sample(&snaps, 1.05).unwrap();
+        let (u, late) = sample(&snaps, 1.05, 1.0).unwrap();
         assert!(!late);
         assert!((u.location[0] - 0.5).abs() < 1e-5);
         // 3.0 -> -3.0 rad goes the short way, through pi.
         let d = (u.yaw.abs() - std::f32::consts::PI).abs();
         assert!(d < 1e-4, "yaw {}", u.yaw);
-        let (u, late) = sample(&snaps, 2.0).unwrap();
+        let (u, late) = sample(&snaps, 2.0, 1.0).unwrap();
         assert!(late);
         assert_eq!(u.seq, 2);
         // Late: coasts along the velocity for at most MAX_EXTRAPOLATE.
         let mut moving = snaps.clone();
         moving[1].u.velocity = [10.0, 0.0, 0.0];
-        assert!((sample(&moving, 1.15).unwrap().0.location[0] - 1.5).abs() < 1e-4);
-        assert!((sample(&moving, 9.0).unwrap().0.location[0] - 2.0).abs() < 1e-4);
-        assert_eq!(sample(&snaps, 0.0).unwrap().0.seq, 1);
+        assert!((sample(&moving, 1.15, 1.0).unwrap().0.location[0] - 1.5).abs() < 1e-4);
+        assert!((sample(&moving, 9.0, 1.0).unwrap().0.location[0] - 2.0).abs() < 1e-4);
+        // In zed time (0.2 of normal speed) it coasts a fifth as far.
+        assert!((sample(&moving, 9.0, 0.2).unwrap().0.location[0] - 1.2).abs() < 1e-4);
+        assert_eq!(sample(&snaps, 0.0, 1.0).unwrap().0.seq, 1);
     }
 
     #[test]
     fn sample_does_not_slide_across_a_teleport() {
         let snaps = VecDeque::from([snap(1, 1.0, 0.0, 0.0), snap(2, 1.1, 100.0, 0.0)]);
-        assert_eq!(sample(&snaps, 1.02).unwrap().0.location[0], 0.0);
-        assert_eq!(sample(&snaps, 1.08).unwrap().0.location[0], 100.0);
+        assert_eq!(sample(&snaps, 1.02, 1.0).unwrap().0.location[0], 0.0);
+        assert_eq!(sample(&snaps, 1.08, 1.0).unwrap().0.location[0], 100.0);
     }
 }

@@ -89,7 +89,8 @@ open-kf/                   Cargo workspace root (the repository)
                            other players' pawns and bodies (pawns.rs), the host's
                            zeds and waves shared with clients (zeds.rs), start
                            spots and wave-end respawns (starts.rs), the scoreboard
-                           (scoreboard.rs), host-owned doors (doors.rs);
+                           (scoreboard.rs), host-owned doors (doors.rs),
+                           zed time decided by the host (zedtime.rs);
                            see docs/multiplayer-prototype.md
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
@@ -3283,6 +3284,16 @@ KFPlayerController.ClientEnterZedTime / ClientExitZedTime). One step,
   end), `dramatic_event` (refused: cooldown or roll). Test action
   `zed_time` and the debug key F2 (DramaticEvent(1.0)). The rolls use a fixed seed like the
   rest of the project (each run repeats exactly).
+
+**In a network game (2026-10-07).** As in KF, only the host decides
+(`ZedTimeRole::Host`): it rolls for every player's kills, with the
+killer's perk (lobby record) for the extensions and the killer's pawn
+for the 3 m check, and sends each start / extension, speed-up and end
+to the clients (`net/zedtime.rs`). Clients (`ZedTimeRole::Client`)
+never roll; they send their explosion and debug rolls to the host and
+follow its commands, running the same countdown, easing and sounds.
+Single player (`ZedTimeRole::Local`) is unchanged. Details and test
+numbers: docs/multiplayer-prototype.md, "Shared zed time".
 
 **Open question (not part of this step): the engine's normal speed.**
 UE2 runs the whole game at TimeDilation 1.1 (LevelInfo default 1.1,

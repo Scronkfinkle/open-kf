@@ -17,6 +17,7 @@
 //! Step 3 (`zeds.rs`): one shared match. The host runs the zeds and the
 //! waves; clients draw puppets of the host's zeds, follow its wave state,
 //! report their hits on zeds, and take the hits the host's zeds deal them.
+//! Shared zed time (`zedtime.rs`): the host decides it for everyone.
 //!
 //! For the next steps: every player has a peer id (`NetPlayer::peer`, 0 is
 //! the host) and the server keeps `NetPlayers` (peer id -> the player's
@@ -31,6 +32,7 @@ mod server;
 mod scoreboard;
 pub mod starts;
 mod zeds;
+mod zedtime;
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -44,7 +46,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0004;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0005;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -139,6 +141,7 @@ impl Plugin for NetPlugin {
         starts::build(app, &self.mode);
         scoreboard::build(app);
         doors::build(app, &self.mode);
+        zedtime::build(app, &self.mode);
         crate::engine::runlog::kv("net_mode", &self.mode.label());
     }
 }
@@ -146,9 +149,8 @@ impl Plugin for NetPlugin {
 /// lightyear sets the speed of Bevy's game clock (`Time<Virtual>`) at the
 /// end of every frame (its clock synchronisation), which undid zed time
 /// (game/zed_time.rs slows that same clock to 0.2). Just before the clock
-/// advances, multiply lightyear's speed by zed time's. Step 1 only: every
-/// game has its own zed time; in KF the server decides it for everyone
-/// (Level.TimeDilation), which is step 3's job.
+/// advances, multiply lightyear's speed by zed time's. The host decides zed
+/// time for everyone (zedtime.rs), so every game's clock slows together.
 fn keep_zed_time_speed(zt: Res<crate::game::zed_time::ZedTime>, mut virt: ResMut<Time<Virtual>>) {
     if zt.speed() != 1.0 {
         let s = virt.relative_speed() * zt.speed();

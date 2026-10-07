@@ -190,6 +190,8 @@ pub fn register(app: &mut App) {
     app.register_message::<ProjectileFx>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<DoorStates>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<crate::world::door::DoorRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<crate::game::zed_time::ZedTimeCommand>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<super::zedtime::ZedTimeRequest>().add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })

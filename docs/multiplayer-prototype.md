@@ -38,15 +38,20 @@ a person yet):
    restarts about 14 s later, both at new start spots.
 7. **Bloats, Husks, the Patriarch**: their bile, fireballs and rockets
    now hurt the joining player too, and the joining player sees them fly.
+8. **Zed time** (slow motion): when it starts, both windows slow down
+   together and both play the zed time sound, whoever made the kill. F2
+   in either window forces one (a debug key). A Commando's kills during
+   zed time extend it for both.
 
 Known limits (details in "Step 4 as built" below):
 - Both windows play sound on one machine; the mouse works in the window
   that has focus.
 - Trusting prototype: each game says where its player is and which zeds
   it hit; fine between friends, not cheat-proof.
-- Each game's own: zed time, pickups, dosh tossing, and the wave-end
+- Each game's own: pickups, dosh tossing, and the wave-end
   team bonus (each player gets the bonus of their own kills; KF splits
-  the team's pot between living players).
+  the team's pot between living players). Zed time is shared (see
+  "Shared zed time" at the end).
 - Scoreboard: no perk icons, no ping, Assists always 0.
 - Players walk through each other. A dead player just waits (no
   spectating the others).
@@ -1076,6 +1081,138 @@ Logs `logs/mp4-<tag>-host.log` / `-client.log` (untracked).
 2. Spectating while dead (KF: Fire cycles through the living players).
 3. The team pot split at the wave end (RewardSurvivingPlayers), dosh
    tossing between players.
-4. Zed time decided by the host for everyone.
+4. ~~Zed time decided by the host for everyone.~~ Done: "Shared zed
+   time" below.
 5. Pickups (ammo boxes, weapons on the floor) owned by the host.
 6. Player-to-player collision.
+
+## Shared zed time (2026-10-07)
+
+Zed time is KF's slow motion: after some kills the whole game runs at
+0.2 of normal speed for about 2.7 seconds. Before this change each game
+in a network match rolled its own (so the host could be in slow motion
+while the client was not). Now, as in KF, the host decides for everyone.
+
+### How KF does it (scripts)
+
+- Only the server runs KFGameType: `Killed` rolls for every zed killed
+  by any player (0.05 within 3 m of the killer, else 0.025, not within
+  0.1 s of the last event), and while zed time is on, forces an
+  extension (`DramaticEvent(1.0)`) for as long as the **killer's** perk
+  has `ZedTimeExtensions` left (KFVetCommando: level - 2 from level 3).
+  `DramaticEvent` has the 10 s cooldown and the x2 / x4 chance after 30 /
+  60 s; `Tick` counts the time down and eases the speed back over the
+  last 16.6%; `DoBossDeath` forces 6 s.
+- `SetGameSpeed` sets `Level.TimeDilation`, which every client receives,
+  and the server calls `ClientEnterZedTime` / `ClientExitZedTime` on
+  every player, which play the Zedtime_Enter / _Exit sounds and the
+  first-time "ZED TIME ACTIVATED!" message on each player's game.
+
+### What was built
+
+- `game/zed_time.rs`: a role (`ZedTimeRole`: Local = single player,
+  unchanged; Host; Client) and a small link resource (`ZedTimeNet`).
+  - **Host**: rolls for every kill, a client's too. A client's hit is
+    applied on the host's zed, so the zed dies there with `damaged_by` =
+    that client (KF's Killer). The roll then uses that client's perk and
+    level (from the lobby record, `NetPlayer`) for the Commando
+    extensions, and that client's pawn for the 3 m check. Every start,
+    extension, speed-up and end is sent to every client
+    (`ZedTimeCommand`).
+  - **Client**: does not roll. Its other rolls (explosions killing 2+ /
+    4+ zeds, the F2 key, the test action `zed_time`) go to the host as
+    `ZedTimeRequest`, and the host rolls them. It follows the host's
+    commands: start / extend (sets the time left, slows to 0.2, plays
+    Zedtime_Enter, shows the first-time message), and end. The countdown
+    and the easing back run on the client with the same rule, so the
+    speed-up and the Zedtime_Exit sound happen there by themselves
+    (logged next to the host's speed-up for comparison).
+- `net/zedtime.rs` (new): the two messages (reliable `GameChannel`),
+  the host's list of players' perks and positions, sending and
+  receiving. `PROTOCOL_ID` `0x4F4B_4600_0005`.
+- **Smooth bodies and zeds in slow motion.** Other players' bodies and
+  the host's zeds are drawn from updates stamped with the sender's real
+  clock, so they slow down by themselves when the sender slows. Two
+  fixes: when an update is late, a body or zed coasts along its last
+  velocity, which is per game second, so the coast is now scaled by the
+  game speed (`net/pawns.rs`, `net/zeds.rs`); and a zed's velocity
+  measured between two snapshots (real time) is turned back into game
+  units per game second (it is what the zed's ragdoll uses when it
+  dies). Animations play on the game clock, which every game now slows
+  together.
+- New log lines: `zed_time ... wall=... role=Host|Client` (network games
+  only), `net_zed_time_sent`, `net_zed_time` (client receives),
+  `zed_time_host` (client: the host's speed-up / end next to its own),
+  `zed_time_request` / `net_zed_time_request`, `dramatic_event ...
+  peer=` (whose kill), `perk_mod kind=zed_time_extension ... peer=`;
+  smoothness: `net_puppet_motion` (the client's zeds: biggest and mean
+  move per frame, twice a second, with the game speed) and
+  `max_step_uu` / `game_speed` on `net_remote_pawn`.
+- `keep_zed_time_speed` (step 1's fix for lightyear resetting the clock
+  speed) stays; it now multiplies in the shared speed.
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+Test script (not in the repository): `work/mpz_test.sh` (as
+`mp4_test.sh`, logs `logs/mpz-<tag>-host.log` / `-client.log`),
+`work/mpz_motion.py LOG FROM TO` prints the motion lines in a wall-clock
+window.
+
+1. **Same moment on both** (wall clock, the same machine): run a, host's
+   forced zed time: host start 133.719, client 133.743 (24 ms later);
+   extension 135.827 / 135.834 (7 ms); speed-up 138.094 / 138.107
+   (13 ms); end 138.546 / 138.560 (14 ms). Run b: 21 ms (natural
+   start), 25 ms (forced start), 21 ms / 37 ms (speed-up / end). A
+   client's request (run a, `zed_time` on the client): client 178.690 ->
+   host 178.703 -> client starts 178.721 (31 ms round trip).
+2. **A client's kill starts it for everyone** (run b): host
+   `dramatic_event reason=kill chance=0.025 started=true roll=0.044
+   chance=0.100 peer=<client>` right after `net_zed_hit_applied
+   peer=<client> zed=19 ... killed=true`; both games then
+   `zed_time event=start reason=kill` (21 ms apart), both played
+   Zedtime_Enter and showed "ZED TIME ACTIVATED!", both played
+   Zedtime_Exit at the speed-up.
+3. **The killer's perk** (run a: client Commando level 5, host no perk):
+   during the host's forced zed time the client killed a zed: host
+   `perk_mod kind=zed_time_extension perk=KFVetCommando:5 used=1 of=3
+   zed=8 peer=<client>`, then `zed_time event=start
+   reason=perk_extension`; the client extended 7 ms later. (With the
+   host's own perk, none, there would have been no extension.)
+4. **Same length, same speed** (run b, forced): host start -> end 2.70 s
+   of real time, client 2.72 s. Game time / real time from start to
+   speed-up: host 0.45 / 2.28 = 0.20, client 0.48 / 2.28 = 0.21;
+   natural one: host 0.20, client 0.21. Run a with the extension: host
+   4.83 s real, client 4.82 s.
+5. **No jumps** (run b, the host walking during zed time, seen on the
+   client): the host's body moved 6-8 Unreal units a frame before, 1.2-1.5
+   during zed time (0.2x), up again during the easing, no spike
+   (`max_step_uu`, 10 lines a second); its game-time speed stayed about
+   198 (so its walk animation plays at the normal rate on the slowed
+   clock). Zeds on the client: mean move per frame 2.2-2.3 units before,
+   0.47-0.59 during, max 1.0-1.6 during (no spike).
+6. lightyear printed no warning or resync during zed time; zed snapshots
+   kept arriving 20 a second (`net_zed_receive_rate`), 0 late frames.
+7. **Single player unchanged** (`logs/spz-waves.log`: waves, `--god`,
+   aim_zed + fire): `dramatic_event reason=kill_near ... started=true`,
+   `zed_time event=start ... game_time=48.85 real_time=49.16`, speed-up,
+   end at real 51.86 (0.45 s of game time in 2.26 s), 0 `net_` or `wall=`
+   lines; Commando 5 (`logs/spz-commando.log`): `perk_mod
+   kind=zed_time_extension perk=KFVetCommando:5 used=1 of=3`, as before.
+8. `cargo clippy --release --workspace`: no warnings (only nix's "git
+   tree is dirty"). `cargo test --release --workspace`: 167 + 24 pass
+   (new: the lobby perk -> extensions; the coast and the zed velocity in
+   zed time).
+
+### Not done / not tested
+
+- A player who joins during zed time stays at normal speed until the
+  next one (no state is sent on join).
+- The client's countdown starts when the host's message arrives, so it
+  ends that much later (on one machine 7-25 ms); the host's end message
+  then ends it at once.
+- The Patriarch's death (6 s) on a network game: not tested (the host
+  runs it as before; clients ignore their own puppet's death).
+- A client's explosions are rolled on the host from the client's own
+  count of zeds killed (client-trusted, like its hits).
+- Two real machines, lag, packet loss; more than one client. Not played
+  by you.
