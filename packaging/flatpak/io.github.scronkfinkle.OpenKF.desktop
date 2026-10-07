@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Open KF
+Comment=Killing Floor rewrite that plays with your own Killing Floor install
+Exec=open-kf-wrapper
+Terminal=false
+Categories=Game;ActionGame;

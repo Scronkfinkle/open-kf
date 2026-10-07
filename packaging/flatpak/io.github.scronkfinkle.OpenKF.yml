@@ -1,0 +1,45 @@
+# Flatpak manifest for Open KF (docs/DESIGN.md, "Release builds", R3).
+# Build with `nix run .#flatpak`, which copies the git-tracked sources so
+# that `../..` below is the project root without target/ or game files.
+id: io.github.scronkfinkle.OpenKF
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: open-kf-wrapper
+finish-args:
+  # Window (Wayland, or X11 when there is no Wayland) and the GPU
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Sound
+  - --socket=pulseaudio
+  # Multiplayer (UDP host/join)
+  - --share=network
+  # Read-only access to the Steam folders where Killing Floor is installed
+  - --filesystem=~/.steam:ro
+  - --filesystem=~/.local/share/Steam:ro
+  - --filesystem=~/.var/app/com.valvesoftware.Steam/.local/share/Steam:ro
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  # Cargo downloads the crates during the build (fine for our own bundle;
+  # Flathub would need an offline crate list instead).
+  build-args:
+    - --share=network
+  env:
+    CARGO_HOME: /run/build/open-kf/cargo
+modules:
+  - name: open-kf
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/open-kf /app/bin/open-kf
+      - install -Dm755 packaging/flatpak/open-kf-wrapper.sh /app/bin/open-kf-wrapper
+      - install -Dm644 packaging/flatpak/io.github.scronkfinkle.OpenKF.desktop /app/share/applications/io.github.scronkfinkle.OpenKF.desktop
+      - install -Dm644 LICENSE-MIT /app/share/licenses/open-kf/LICENSE-MIT
+      - install -Dm644 LICENSE-APACHE /app/share/licenses/open-kf/LICENSE-APACHE
+    sources:
+      - type: dir
+        path: ../..

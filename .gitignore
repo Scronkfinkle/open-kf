@@ -30,6 +30,11 @@ logs/
 # Helper scripts
 !/scripts/*.sh
 
+# Release packaging (Flatpak manifest, desktop file, wrapper)
+!/packaging/flatpak/*.yml
+!/packaging/flatpak/*.desktop
+!/packaging/flatpak/*.sh
+
 # Docs
 !/LICENSE-MIT
 !/LICENSE-APACHE

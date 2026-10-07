@@ -5446,6 +5446,59 @@ or `unknown` when the shared logic refused for another reason),
   through the same boxes as `nu:click:`); the cursor being freed and
   captured again; a joining client's shopping (a host game was run).
 
+## Release builds: Linux, Windows, Flatpak (planned and built 2026-10-07: R1-R3)
+
+Goal: build files we can attach to a GitHub release, for several platforms,
+from this Linux machine. Releases contain only our program. Killing Floor's
+files are never bundled: the game finds the player's own install at run time
+(`KF_ROOT`, then the Steam folders, see `crates/ue-assets/src/install.rs`).
+
+- **R1, Linux Nix package** (`nix build .#open-kf`): the game built by Nix,
+  with the window/sound/GPU libraries written into its library path (rpath),
+  as the dev shell does. For Nix users; also the base the others copy.
+  Built with crane (a Nix library that builds Rust projects, caching the
+  dependencies separately so rebuilds are fast).
+- **R2, Windows** (`nix build .#windows`): cross-compiled (built on Linux for
+  Windows) to `x86_64-pc-windows-gnu` with the MinGW compiler from nixpkgs.
+  The Rust compiler comes from rust-overlay (prebuilt Rust with the Windows
+  standard library, so nothing big is compiled from source). Output:
+  `result/bin/open-kf.exe` plus any DLLs it needs, and a zip for the release.
+- **R3, Flatpak** (`nix run .#flatpak`): Flatpak apps run on Flatpak's own
+  runtime (`org.freedesktop.Platform`), not on Nix's libraries, so a Nix-built
+  binary cannot be put in one. The script uses `flatpak-builder` (from nixpkgs)
+  with the manifest in `packaging/flatpak/`, which compiles the game inside the
+  Flatpak SDK with its Rust extension. Everything it downloads (runtimes, build
+  cache) is kept in `work/flatpak/` (via `FLATPAK_USER_DIR`), not in your home
+  flatpak folder. Output: `work/flatpak/open-kf.flatpak`, a single file people
+  install with `flatpak install --user open-kf.flatpak`.
+  - The game writes `logs/`, `settings/` and `work/` relative to the current
+    folder. Inside the sandbox the app starts in its own data folder
+    (`~/.var/app/io.github.scronkfinkle.OpenKF/data`) so those writes work.
+  - Sandbox permissions: window (Wayland/X11), GPU, sound, network (for
+    multiplayer), and read-only access to the Steam folders where KF lives.
+  - The build downloads crates with network on (allowed for our own bundle;
+    Flathub itself would need a pre-generated crate list, not done).
+- Not in this step: GitHub Actions to build on each tag (can come next).
+
+Results (2026-10-07):
+- The Linux and Windows binaries are stripped of debug symbols in the Nix
+  builds only (about 40% smaller; `cargo build` keeps them for backtraces).
+  Linux 142 MB; Windows exe 147 MB, zip 50 MB.
+- The Windows exe imports only DLLs that ship with Windows (checked with
+  `objdump -p`), so the zip holds just the exe and the licences. It is a
+  console program: on Windows a console window opens next to the game,
+  showing the log.
+- Under Wine on the virtual display, winit (the window library) panics
+  listing monitor modes (`has_flag(mode.dmFields, REQUIRED_FIELDS)`) because
+  of Wine's fake display modes. In a Wine virtual desktop
+  (`wine explorer /desktop=kf,1920x1080 open-kf.exe`) it runs.
+- The Flatpak uses runtime 26.08. Bundle 23 MB. The Steam Flatpak's folder
+  is not in the game's install search, so the wrapper sets `KF_ROOT` to it
+  when it exists. Symlinks outside the granted folders do not resolve in
+  the sandbox (a test with `references/killing_floor` failed until the
+  real path was given).
+- `scripts/headless.sh` takes `HEADLESS_BIN=path` to test a release build.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

@@ -5440,3 +5440,37 @@ shopping; HUD messages show faintly through the backdrop. Not played by
 you. (Note: rtk's `diff` said "Files are identical" for files that
 differed; `rtk proxy diff` is right.)
 **Next:** your play test; then decide whether to drop the KF list.
+
+## 2026-10-07 Release builds: Linux, Windows, Flatpak (R1-R3)
+
+**Changed:** `flake.nix`: new inputs crane and rust-overlay; packages
+`open-kf` (Linux, stripped, rpath to the Bevy libraries) and `windows`
+(MinGW cross build, stripped exe plus `open-kf-windows-x86_64.zip`); app
+`flatpak` (runs flatpak-builder with everything kept in `work/flatpak/`).
+New `packaging/flatpak/` (manifest, desktop file, wrapper that starts the
+game in its data folder and finds a Steam-Flatpak KF). `.gitignore` allows
+those three files. `scripts/headless.sh`: `HEADLESS_BIN` runs a given
+program. Plan and results in `docs/DESIGN.md` ("Release builds"); README
+"Building releases".
+**Why:** Publish releases for several platforms.
+**Tested how:** Built all three. Ran each headless on KF-WestLondon with
+`--mute --frames 120` (Windows through Wine, Flatpak installed into
+`work/flatpak/user` with HOME set to `work/flatpak/home`). Checked the exe's
+DLL imports with `objdump -p`. Looked at one Flatpak screenshot.
+**Result:** All three: `event=shutdown exit=Success` after 120 frames. Linux
+binary 142 MB; Windows exe 147 MB (zip 50 MB), only Windows system DLLs;
+Flatpak bundle 23 MB, ran on the RTX 3090 with sound opened, screenshot
+correct. Failures on the way: crane ran the rpath patch on its
+dependency-only build (fixed by separating it); the MinGW threads library
+cannot go in `depsBuildBuild` (now passed as a linker path); Wine on Xvfb
+panics in winit listing monitor modes (works in a Wine virtual desktop); the
+wrapper first used a wrong variable name `OPEN_KF_ROOT` (the game reads
+`KF_ROOT`).
+**Still broken / not tested:** Real Windows. The Flatpak on a real desktop
+(menu entry, Wayland). Gamepads in the Flatpak. Steam library folders on
+other drives (players set `KF_ROOT`; for the Flatpak also
+`flatpak override --user --filesystem=PATH:ro`). The Windows exe opens a
+console window. No app icon. No GitHub Actions.
+**Next:** Optionally GitHub Actions that run these builds on a tag and
+attach the files to a release.
+

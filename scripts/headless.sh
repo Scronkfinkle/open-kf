@@ -9,6 +9,9 @@
 #   HEADLESS_TIMEOUT=300          kill the game after this many seconds
 #   HEADLESS_SOFTWARE=1           draw on the CPU (Mesa lavapipe) instead of the GPU
 #   HEADLESS_ICD=path.json        Vulkan driver file used by HEADLESS_SOFTWARE
+#   HEADLESS_BIN=path             run this program instead of building and
+#                                 running target/release/open-kf (to test
+#                                 release builds, e.g. result/bin/open-kf)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +25,8 @@ fi
 screen="${HEADLESS_SCREEN:-1920x1080x24}"
 timeout_s="${HEADLESS_TIMEOUT:-300}"
 
-cargo build --release
+game_bin="${HEADLESS_BIN:-target/release/open-kf}"
+[[ -n "${HEADLESS_BIN:-}" ]] || cargo build --release
 
 # Xvfb picks a free display number and writes it to fd 3.
 display_file="$(mktemp)"
@@ -47,6 +51,6 @@ fi
 
 # Unset WAYLAND_DISPLAY so the game uses the virtual X display, not your desktop.
 status=0
-env -u WAYLAND_DISPLAY "${game_env[@]}" timeout "$timeout_s" target/release/open-kf "$@" || status=$?
+env -u WAYLAND_DISPLAY "${game_env[@]}" timeout "$timeout_s" "$game_bin" "$@" || status=$?
 [[ $status -eq 124 ]] && echo "headless: game killed after ${timeout_s}s timeout" >&2
 exit "$status"

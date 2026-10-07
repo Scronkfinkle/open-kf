@@ -111,6 +111,22 @@ cargo run --release -- --join 127.0.0.1 --name ClientGal
 
 Ports, what is shared, and known limits: [MULTIPLAYER.md](MULTIPLAYER.md).
 
+## Building releases
+
+Release files contain only Open KF. Players need their own Killing Floor
+install (found in the Steam folders, or set `KF_ROOT` to its folder).
+
+```sh
+nix build .#open-kf                    # Linux (Nix): result/bin/open-kf
+nix build .#windows -o result-windows  # Windows: result-windows/open-kf-windows-x86_64.zip
+nix run .#flatpak                      # Flatpak: work/flatpak/open-kf.flatpak
+```
+
+Players install the Flatpak with `flatpak install --user open-kf.flatpak`
+and start it from their menu or with
+`flatpak run io.github.scronkfinkle.OpenKF`. Its logs, settings and
+screenshots are in `~/.var/app/io.github.scronkfinkle.OpenKF/data/`.
+
 ## Package inspection tool
 
 ```sh
