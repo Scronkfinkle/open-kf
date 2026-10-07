@@ -143,6 +143,9 @@ pub struct ProjectileSounds {
     pub beep: Option<&'static str>,
     /// LAWProj / M79GrenadeProjectile duds: PTRD_deflect04 at 2.0.
     pub dud: Option<&'static str>,
+    /// DisintegrateSound (or DisintegrateSoundRef): a Siren's scream
+    /// destroyed it (Disintegrate: PlaySound(DisintegrateSound,, 2.0)).
+    pub disintegrate: Option<&'static str>,
 }
 
 impl ProjectileSounds {
@@ -463,7 +466,7 @@ impl Plugin for ProjectilePlugin {
             .add_message::<BoltPickedUp>()
             .init_resource::<BoltRoom>()
             .add_systems(Update, pick_up_bolts)
-            .add_systems(Update, (spawn_projectiles, move_projectiles, move_explosives, move_thrown, move_flames, move_darts, kill_effects_after, sync_bodies).chain());
+            .add_systems(Update, (spawn_projectiles, scream_explosives, move_projectiles, move_explosives, move_thrown, move_flames, move_darts, kill_effects_after, sync_bodies).chain());
     }
 }
 
@@ -1921,6 +1924,152 @@ fn move_thrown(
     }
 }
 
+/// Which TakeDamage a projectile has, for a Siren's scream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScreamTarget {
+    /// Nade (frag, FlameNade, MedicNade): disintegrates (the Siren is a
+    /// Monster, which its TakeDamage asks for).
+    Nade,
+    /// PipeBombProjectile: ignores damage under 25, else disintegrates
+    /// from 5 up.
+    Pipe,
+    /// LAWProj and M79GrenadeProjectile families (LAW, M79, M32, M203,
+    /// Husk Gun, ZED guns): always disintegrates, a dud too.
+    Launched,
+}
+
+impl ScreamTarget {
+    /// CollisionRadius: PipeBombProjectile 8; the others keep
+    /// Projectile's 0.
+    fn collision_radius(self) -> f32 {
+        if self == ScreamTarget::Pipe { 8.0 } else { 0.0 }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ScreamTarget::Nade => "frag",
+            ScreamTarget::Pipe => "pipe",
+            ScreamTarget::Launched => "launched",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScreamResult {
+    Disintegrated,
+    /// In reach, but its TakeDamage does nothing (a pipe bomb under 25).
+    Ignored,
+    /// The level is between the Siren and it (FastTrace).
+    Blocked,
+    OutOfRange,
+}
+
+impl ScreamResult {
+    fn label(self) -> &'static str {
+        match self {
+            ScreamResult::Disintegrated => "disintegrated",
+            ScreamResult::Ignored => "ignored",
+            ScreamResult::Blocked => "blocked",
+            ScreamResult::OutOfRange => "out_of_range",
+        }
+    }
+}
+
+/// ZombieSiren.HurtRadius on one projectile `dist` units from her centre:
+/// VisibleCollidingActors within ScreamRadius (from the projectile's
+/// centre: a guess for the engine's range test) and in sight, then
+/// TakeDamage(int(damageScale x ScreamDamage), SirenScreamDamage) with
+/// damageScale = 1 - max(0, (dist - CollisionRadius) / ScreamRadius).
+/// Returns what happens and that damage.
+fn scream_result(target: ScreamTarget, dist: f32, radius: f32, damage: f32, visible: bool) -> (ScreamResult, i32) {
+    if dist > radius {
+        return (ScreamResult::OutOfRange, 0);
+    }
+    if !visible {
+        return (ScreamResult::Blocked, 0);
+    }
+    let scale = 1.0 - ((dist - target.collision_radius()) / radius).max(0.0);
+    let amount = (scale * damage) as i32;
+    let result = match target {
+        ScreamTarget::Nade | ScreamTarget::Launched => ScreamResult::Disintegrated,
+        // PipeBombProjectile.TakeDamage: (Damage < 25 && SirenScreamDamage)
+        // returns; then Disintegrate if Damage >= 5 (always, past 25).
+        // ScreamDamage is at most 14 (8 x 1.75), so KF's Sirens never
+        // destroy a pipe bomb.
+        ScreamTarget::Pipe if amount < 25 => ScreamResult::Ignored,
+        ScreamTarget::Pipe => ScreamResult::Disintegrated,
+    };
+    (result, amount)
+}
+
+/// A Siren's scream pulse (the DoorBlast her HurtRadius sends, source
+/// "siren_scream") reaching the player's grenades, rockets, frags and pipe
+/// bombs: Disintegrate removes them without an explosion, with
+/// DisintegrateSound (volume 2.0) and the SirenNadeDeflect emitter facing
+/// up. KF hides the projectile at once and destroys it 0.1 s later; we
+/// remove it at once. Also ends a MedicNade's healing cloud.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn scream_explosives(
+    mut commands: Commands,
+    mut screams: MessageReader<crate::world::door::DoorBlast>,
+    spatial: SpatialQuery,
+    explosives: Query<(Entity, &PlayerExplosive)>,
+    thrown: Query<(Entity, &PlayerThrown)>,
+    mut effects: Query<&mut crate::render::particles::ParticleEffect>,
+    library: Option<Res<crate::render::particles::EffectLibrary>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut sounds: MessageWriter<crate::audio::mixer::PlaySound>,
+) {
+    let mut gone: Vec<Entity> = Vec::new();
+    for s in screams.read().filter(|b| b.source == "siren_scream") {
+        let from = coords::pos(s.at.to_array());
+        // (entity, kind, class, weapon, id, position, sound radius, trail)
+        let targets = explosives
+            .iter()
+            .map(|(e, p)| (e, ScreamTarget::Launched, p.stats.class, p.weapon, p.id, p.pos, p.stats.sounds, p.trail))
+            .chain(thrown.iter().map(|(e, p)| {
+                let kind = if matches!(p.stats.kind, ThrownKind::Pipe { .. }) { ScreamTarget::Pipe } else { ScreamTarget::Nade };
+                (e, kind, p.stats.class, p.weapon, p.id, p.pos, p.stats.sounds, None)
+            }));
+        for (entity, kind, class, weapon, id, pos, snd, trail) in targets {
+            if gone.contains(&entity) {
+                continue;
+            }
+            let dist = (pos - s.at).length();
+            let visible = dist <= s.radius && in_sight(&spatial, from, coords::pos(pos.to_array()));
+            let (result, amount) = scream_result(kind, dist, s.radius, s.damage, visible);
+            runlog::kv(
+                "scream_explosive",
+                &format!(
+                    "result={} kind={} class={class} weapon={weapon} id={id} at_unreal=({:.0}, {:.0}, {:.0}) distance_unreal={dist:.0} damage={amount} scream_damage={} zed={}",
+                    result.label(),
+                    kind.label(),
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    s.damage,
+                    s.zed.map_or("none".to_string(), |z| z.to_string())
+                ),
+            );
+            if result != ScreamResult::Disintegrated {
+                continue;
+            }
+            gone.push(entity);
+            if let Some(t) = trail
+                && let Ok(mut fx) = effects.get_mut(t)
+            {
+                fx.kill();
+            }
+            if let Some(d) = snd.disintegrate {
+                sounds.write(sound_at(d, pos).volume(2.0).radius(snd.explode_radius));
+            }
+            if let Some(lib) = library.as_deref() {
+                crate::render::particles::spawn_effect(&mut commands, lib, &mut meshes, "KFMod.SirenNadeDeflect", pos, crate::zeds::fireball::axes_along(Vec3::Z), id);
+            }
+            commands.entity(entity).despawn();
+        }
+    }
+}
 
 /// CrossbowArrow state OnWall: the player touching a stuck bolt (collision
 /// 25 x 25 against the player's cylinder) takes it if the Crossbow has
@@ -1961,6 +2110,20 @@ fn pick_up_bolts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scream_rules() {
+        // A frag or a grenade 300 units away in sight: gone.
+        assert_eq!(scream_result(ScreamTarget::Nade, 300.0, 700.0, 6.0, true), (ScreamResult::Disintegrated, 3));
+        assert_eq!(scream_result(ScreamTarget::Launched, 10.0, 700.0, 14.0, true).0, ScreamResult::Disintegrated);
+        // Behind a wall or past ScreamRadius: untouched.
+        assert_eq!(scream_result(ScreamTarget::Nade, 300.0, 700.0, 6.0, false).0, ScreamResult::Blocked);
+        assert_eq!(scream_result(ScreamTarget::Launched, 701.0, 700.0, 6.0, true).0, ScreamResult::OutOfRange);
+        // A pipe bomb at her feet on Hell on Earth (14): under 25, ignored.
+        assert_eq!(scream_result(ScreamTarget::Pipe, 5.0, 700.0, 14.0, true), (ScreamResult::Ignored, 14));
+        // A (modded) scream of 25 or more would destroy it.
+        assert_eq!(scream_result(ScreamTarget::Pipe, 8.0, 700.0, 30.0, true), (ScreamResult::Disintegrated, 30));
+    }
 
     fn stats(r: f32, max: f32) -> ProjectileStats {
         ProjectileStats {

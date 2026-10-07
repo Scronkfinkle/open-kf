@@ -5547,6 +5547,82 @@ Flatpak (22 MB) installed and ran headless on KF-WestLondon (install found
 through Steam, `exit=Success`); the Windows zip (48 MB) holds the exe and
 both licences. Not run yet: the release job (needs a real tag).
 
+## The Siren's scream destroys explosives (planned 2026-10-07: SX1-SX3)
+
+### What KF does (from the scripts and class defaults)
+
+- `ZombieSiren.SpawnTwoShots` (each scream pulse): unless zapped, and
+  unless her target is a door (then only the door is hit, `ScreamDamage x
+  0.6`), she calls her own `HurtRadius(ScreamDamage, ScreamRadius,
+  SirenScreamDamage, ScreamForce, Location)`.
+- `ZombieSiren.HurtRadius` uses `VisibleCollidingActors`: every colliding
+  actor within `ScreamRadius` (700) of her centre that a line from her
+  centre reaches without hitting the level (a "FastTrace": level only,
+  pawns do not block). Zeds are skipped. Each takes
+  `TakeDamage(damageScale x ScreamDamage)` with `damageScale = 1 -
+  max(0, (distance - CollisionRadius) / ScreamRadius)` (an int).
+- `ScreamDamage` is 8, x `DifficultyDamageModifer` (`KFMonster.
+  PostBeginPlay`: Beginner 0.3, Normal 1.0, Hard 1.25, Suicidal 1.5, Hell
+  on Earth 1.75; x 0.75 alone): never more than 14.
+- Projectiles' `TakeDamage` with `SirenScreamDamage`:
+  - `Nade` (the frag; `FlameNade` and `MedicNade` are subclasses): if the
+    attacker is a `Monster` or the thrower, `Disintegrate`. `MedicNade`
+    has its own `TakeDamage` that only disintegrates; it still does so
+    after it went off, which ends its healing cloud (its `Timer` destroys
+    it 0.1 s later).
+  - `M79GrenadeProjectile` (M79, M32, M203 grenades) and `LAWProj` (LAW
+    rocket; also the Husk Gun's and the ZED guns' projectiles, which are
+    `LAWProj` subclasses without their own `TakeDamage`): always
+    `Disintegrate`, duds too.
+  - `PipeBombProjectile`: returns (nothing happens) if the damage is
+    under 25; otherwise `Disintegrate` if it is 5 or more. Since the
+    scream does at most 14, **a vanilla Siren never destroys a pipe
+    bomb**. (KF's later DLC launchers, `SPGrenadeProjectile`,
+    `SealSquealProjectile`, `SeekerSixRocketProjectile`, also
+    disintegrate; we do not have those weapons.)
+- `Disintegrate` (the same in every class): the projectile is hidden at
+  once and removed 0.1 s later, **with no explosion and no damage**; it
+  plays `DisintegrateSound` (`Inf_Weapons.panzerfaust60.
+  faust_explode_distant02`, at volume 2.0) and spawns the
+  `KFMod.SirenNadeDeflect` emitter at the hit point, facing up.
+- Not part of this: `HealingProjectile` (the medic gun's dart) explodes
+  on any damage, so a scream would pop a dart in flight; not done.
+
+### Our design
+
+- Each scream pulse already sends a `DoorBlast` message with `source:
+  "siren_scream"` (doors and glass read it). A new system in
+  `weapons/projectile.rs`, `scream_explosives`, reads those messages too
+  and checks every player grenade/rocket (`PlayerExplosive`) and every
+  thrown frag or pipe bomb (`PlayerThrown`): within the radius (from the
+  projectile's centre, a guess for the engine's exact range test; only
+  the pipe bomb has a size, 8 units), and a clear line from the Siren
+  through the level. The rule per class is one small function so a unit
+  test can check it.
+- Disintegrate: the projectile entity is removed at once (KF hides it at
+  once; the 0.1 s until it is destroyed changes nothing we draw), its
+  trail is stopped, the sound and the `SirenNadeDeflect` effect play.
+- Log line per projectile the scream reaches or misses:
+  `scream_explosive result=disintegrated|ignored|blocked|out_of_range
+  kind=frag|pipe|grenade weapon=... id=... at_unreal=(x, y, z)
+  distance_unreal=... damage=... zed=...`.
+- Only the host's (or single player's) own projectiles: a network
+  client's grenades live on the client and the host's Siren does not
+  reach them (not handled).
+
+### Steps
+
+- SX1: load `DisintegrateSound` per projectile class; add
+  `KFMod.SirenNadeDeflect` to the effect library.
+- SX2: `scream_explosives` and its rule function, with unit tests.
+- SX3: headless runs: a Siren screaming at the player with a frag, a
+  pipe bomb and a grenade nearby; read the log.
+
+As built (2026-10-07; headless runs, not played by you): SX1-SX3 done as
+above. Frags (resting and in flight) and an M79 dud were destroyed, a
+frag 857 units away survived and exploded on its fuse, a pipe bomb was
+ignored on every pulse (damage 5). Results and commands in MODLOG.md.
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style
