@@ -84,6 +84,8 @@ open-kf/                   Cargo workspace root (the repository)
                            boss_ai, attacks, animate, effects, sounds, methods
     game/                  waves, damage and health, dosh, trader and shop, HUD, zed time
     audio/                 the mixer, music, map / player / trader sounds
+    launcher/              the launcher window (no options given): choices, PLAY
+                           starts the game again with them (see "The launcher")
     net/                   experimental multiplayer (branch multiplayer-lightyear):
                            --host / --join, the lobby over the network (lightyear),
                            other players' pawns and bodies (pawns.rs), the host's
@@ -5122,6 +5124,120 @@ break older games; `key=value` lines do not. A host needs UDP ports P
 and P + 1 open, and two hosts on one machine need ports at least 2
 apart. Test results: docs/multiplayer-prototype.md, "Joining with only
 an address".
+
+## The launcher: choosing options without typing (planned and built 2026-10-07: LA1-LA3)
+
+**Goal.** A window where the player picks how to play (solo, host,
+join), the map, the game options, the perk and character, and the
+window and sound settings, then presses PLAY. No command line needed.
+
+**How it starts.** The launcher opens when the program is started with
+**no arguments at all** (a double-click), or with `--launcher` as the
+first argument. **Any other argument skips it** and runs the game as
+before, so scripts, tests and `scripts/headless.sh` runs are not
+affected. What "no arguments" used to do (KF-WestLondon in debug mode)
+is now `open-kf --mode debug` (the map already defaults to
+KF-WestLondon).
+
+**How PLAY works: a second copy of the program.** The launcher is its own
+small Bevy app (Bevy: the game engine library). Bevy can open its
+window system only once per program run, so the launcher cannot turn
+itself into the game. Instead PLAY starts the program again (the
+same file, found with `std::env::current_exe`) with the options as
+command-line arguments (`std::process::Command`, which works the same
+on Windows), closes the launcher window and waits for the game to end,
+then exits with the game's exit code. The game and its argument parsing
+stay as they are. Before starting, the launcher runs the game's own
+argument check (`parse_args`, changed to take a list instead of reading
+the real command line) on the arguments it built, so a mistake in the
+"extra arguments" field is shown in the launcher instead of the game
+quitting at once.
+
+**What it reuses.** The KF menu drawing in `src/game/menus/gui.rs`:
+`gui::load` (KF's fonts and menu textures from the install), `Painter`
+(KF-style section boxes, buttons, text), `flush` (draws onto the screen).
+These need only the install folder, not a loaded map, so the launcher
+does not load any map. The perk list and icons come from
+`game/perks.rs`, the character list and portraits from
+`player/character.rs` (`model_select_records`, the same 56 characters as
+KF's Select Character window), the map list from the install's `Maps`
+folder (`*.rom` files, without `Entry`, `KFintro` and `KF-Menu`, which
+are not playable maps). The host check uses `net/query.rs`.
+
+**The screen.** One KF-style window (title bar "Open KF"), four
+sections and a bottom row:
+
+- *Play*: Solo / Host / Join buttons. Host: a port field (default 7707).
+  Join: an address field (`192.168.1.20` or `192.168.1.20:7707`) and a
+  CHECK HOST button that asks the host (in the background, so the
+  window does not freeze) and shows its map, mode, length and players.
+- *Map*: the list of maps (click one; mouse wheel scrolls). Hidden when
+  joining: the map comes from the host.
+- *Game*: mode (Waves / Debug), length (Short / Normal / Long), starting
+  wave (From the start / 1-11). Hidden when joining. Length and wave
+  are greyed out in debug mode (they do nothing there).
+- *Player*: name (typed), perk (with its icon; or None), perk level
+  0-6, character (with its portrait), each changed with `<` and `>`.
+- *Display and sound*: window size (Default or a fixed size), frame
+  limit (None, 30-240), vsync on/off, sound on/off.
+- Bottom: an "extra arguments" field (for test options such as
+  `--god`), the command line that PLAY will run (so you can copy it),
+  QUIT and PLAY. A reason is shown when PLAY cannot be used (a bad
+  port, no address).
+
+Typing: click a field (or Tab to the next one), type, Backspace
+deletes, Enter or a click elsewhere finishes. Escape quits.
+
+**Saved choices.** Written when PLAY is pressed, read when the launcher
+opens: `settings/launcher.txt` in the folder the program runs from (next
+to `logs/`), one `key=value` per line. The `.gitignore` whitelist does
+not list it, so git ignores it. `--settings FILE` uses another file
+(tests use this so they do not overwrite your choices).
+
+**Testing without a mouse.** The launcher takes, after `--launcher`:
+`--input FRAME:ACTION,...` (actions `click:ID` presses a button by its
+id, `set:FIELD=VALUE` sets a choice, `dump` logs every button's box),
+`--dry-run` (PLAY logs the command but starts nothing), `--screenshot
+N`, `--frames N`, `--window WxH`, `--log FILE`, `--settings FILE`,
+and `--mute` (the started game gets `--mute` too). It logs to
+`logs/launcher.log`: `launcher_open`, `launcher_change field=... value=...`
+for every change, `launcher_launch args="..."`, `launcher_child_exit`.
+
+**Steps.**
+
+- LA1. `parse_args` takes a list (no behaviour change); the launcher
+  module (`src/launcher/`): the choices and the arguments they make
+  (unit tests), the screen, the input, PLAY (start the game, wait).
+- LA2. Saved choices (`settings/launcher.txt`).
+- LA3. The CHECK HOST button.
+
+**As built (2026-10-07; headless runs, not used by you yet).** As
+planned, with these details:
+
+- Files: `src/launcher/mod.rs` (start-up, input, PLAY, saved file, CHECK
+  HOST), `src/launcher/choices.rs` (the choices, the arguments they make,
+  the saved text; unit tests), `src/launcher/draw.rs` (the screen).
+- The window opens at 1280 x 800. Text that does not fit is drawn in the
+  next smaller KF font. The perk's icon and the character's portrait are
+  shown under the Player rows (small at 1280 x 800).
+- Defaults when nothing is saved: Solo, KF-WestLondon, Waves, Short,
+  from the first wave, no perk, Corporal_Lewis, default window, no frame
+  limit, vsync on, sound on. The launcher defaults to Waves (a real game)
+  while the game's own default stays Debug.
+- An empty name passes no `--name` (the game uses KF's defuser.ini
+  name); the field shows "(KF's default)".
+- The started game always gets `--character` and, unless joining,
+  `--map` and `--mode` (so the command shown is complete).
+- CHECK HOST asks 3 times, 0.5 s each, and shows the answer (map, mode,
+  length, players) in the Map box, which is otherwise empty when joining.
+- Enter outside a text field = PLAY; Escape outside a field = QUIT.
+- `--settings FILE` and `--log FILE` keep test runs away from your saved
+  choices and from `logs/launcher.log`.
+- Test actions: `click:ID` (ids: `play:solo|host|join`,
+  `focus:name|port|address|extra`, `spin:FIELD:-1|1`, `map:INDEX`,
+  `maps.scroll:N`, `check_host`, `launch`, `quit`), `set:FIELD=VALUE`
+  (fields as in the saved file), `type:TEXT`, `key:tab|enter|escape|backspace`,
+  `dump`. Values cannot contain commas (`--input` splits on them).
 
 ## Later milestones (rough order, to be planned in detail when reached)
 

@@ -20,6 +20,10 @@ cargo run --release -- --map KF-Farm --mode waves --length short --host --name H
 cargo run --release -- --join 127.0.0.1 --name ClientGal
 ```
 
+Or run `cargo run --release` with no options: the launcher window has
+Solo / Host / Join buttons, and its CHECK HOST button shows what a host is
+playing before you join.
+
 - `--host [PORT]`: host on UDP port `PORT` (default 7707, KF's game port).
 - `--join ADDR[:PORT]`: an IP address or host name, port 7707 if left out.
   Before it loads anything, the joining game asks the host which map, mode

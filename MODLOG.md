@@ -5100,3 +5100,30 @@ ignored). The facts were taken from `docs/multiplayer-prototype.md`.
 **Still broken / not tested:** The README's links were not checked on GitHub.
 **Next:** Mention the launcher in both files once it is done.
 
+## 2026-10-07 Launcher step LA1: a window to pick the options, PLAY starts the game
+
+**Changed:** new `src/launcher/mod.rs` (opens when the program gets no options or `--launcher` first; its own test options `--dry-run --mute --frames --screenshot --window --input --log`; keyboard, mouse and scripted actions; PLAY builds the arguments, checks them with the game's own parser, starts the same program again with `std::process::Command`, closes the window and waits for the game, then exits with its code; logs to `logs/launcher.log`), `src/launcher/choices.rs` (the choices, the arguments they make, `<`/`>` stepping, problems that block PLAY; 7 unit tests), `src/launcher/draw.rs` (the screen with KF's menu pieces from `game/menus/gui.rs`). `src/main.rs`: `parse_args` takes a list (no behaviour change) and `main` opens the launcher first when wanted. `README.md`: the "no options" line. Docs: `docs/DESIGN.md` ("The launcher"), `WORK_LOG.md`.
+**Why:** The user wants to start games without typing command lines.
+**Tested how:** `scripts/headless.sh --launcher --mute ...` with `--input` actions (`set:`, `click:`, `type:`, `dump`), screenshots (looked at), `--dry-run` runs for Host, Join and a bad extra option; a real solo PLAY with `set:extra=--frames 300`; a real Join PLAY against a headless host on port 7800; `scripts/headless.sh --mode debug --mute --frames 60` to check options still skip it; `cargo test --release --workspace`; `cargo clippy --release --workspace`.
+**Result:** `launcher_open ... maps=37 characters=56`; solo: `launcher_launch args="--map KF-Farm --mode waves --length short --name "Big Al" --perk commando --perk-level 4 --character Corporal_Lewis --mute --frames 300"`, `launcher_child_started pid=...`, the game's log `map_loaded map=KF-Farm`, `perk_selected perk=KFVetCommando ... level=4`, `frame_limit_reached frame=300`, then `launcher_child_exit code=0`. Host: `--host 7707 --map KF-Manor --mode waves --length normal --wave 2 ...`. Join: `--join 192.168.1.20:7800 --character Corporal_Lewis --window 1280x720 --fps 60 --no-vsync --mute` (no map / mode / length). Bad option: `launcher_refused reason="unknown argument: --no-such-thing"`, nothing started. Real join: the started game logged `net_query_answer ... host_map=KF-Farm`, `net_connected server=127.0.0.1:7800`, `same_map=true`. With `--mode debug` the launcher log was not touched and the game loaded KF-WestLondon in debug mode. Tests 201 + 24 pass; clippy 0 warnings (only nix's dirty-tree line; `--all-targets` shows one older warning in `src/zeds/boss.rs` test code).
+**Still broken / not tested:** real mouse clicks, the mouse wheel and real typing were not tested (the virtual display has no mouse or keyboard; scripted actions go through the same button ids but not the same key handling). Not tested on Windows. Not used by you. The known `slab_allocator` start-up error still shows in the started game.
+**Next:** LA2 (saved choices).
+
+## 2026-10-07 Launcher step LA2: the choices are saved
+
+**Changed:** `src/launcher/mod.rs`: choices are read from `settings/launcher.txt` at start and written on PLAY (`key=value` lines, `choices.rs` `to_text` / `from_text`); `--settings FILE` for tests. The name field shows "(KF's default)" when empty (`draw.rs`). `docs/DESIGN.md`.
+**Why:** The user asked that the last choices come back next time.
+**Tested how:** two dry runs with `--settings work/launcher-test.txt`: the first changed eight choices and pressed PLAY, the second pressed PLAY without changing anything; `git check-ignore -v settings/launcher.txt`; unit test `saved_text_round_trips`.
+**Result:** run 1: `launcher_settings_none ...`, then `launcher_settings_saved`; run 2: `launcher_settings_loaded file=work/launcher-test.txt unusable_lines=0 []` and the same command (`--host 7707 --map KF-Manor ... --name "Big Al" --perk medic --perk-level 6 --character Mr_Foster --fps 60 --mute`). git ignores `settings/launcher.txt` (the whitelist's `*` line).
+**Still broken / not tested:** the file sits in the folder the program is started from (like `logs/`); started from another folder it would not be found. Choices are saved only on PLAY, not on QUIT.
+**Next:** LA3 (CHECK HOST).
+
+## 2026-10-07 Launcher step LA3: CHECK HOST
+
+**Changed:** `src/launcher/mod.rs` (`start_host_check` asks the host's query port from a background thread, `poll_host_check` shows the answer), `src/launcher/draw.rs` (the button in the Play box; the answer in the Map box when joining). `docs/DESIGN.md`.
+**Why:** To see what a host plays before joining (cheap: `net/query.rs` already does it).
+**Tested how:** headless launcher with `click:check_host` and no host on port 7800; again with a headless host (`--host 7800 --map KF-Farm --mode waves --length normal`); screenshot.
+**Result:** no host: three `net_query_sent` 0.5 s apart, `launcher_host_check ... state=failed reason="no answer"` after 1.5 s. With the host: `state=answer query_port=7801 map=KF-Farm mode=Waves length=Normal players=0 max_players=6 match_started=false ... same_version=true` after 28 ms; the screenshot shows "Host: KF-Farm / Waves Normal / 0/6 players".
+**Still broken / not tested:** not tested across two machines or with a host name instead of an IP address.
+**Next:** your try of the launcher (`cargo run --release` with no options).
+

@@ -7,6 +7,7 @@ mod zeds;
 mod game;
 mod audio;
 mod net;
+mod launcher;
 
 use engine::{camera, record, runlog, screenshot, view_target};
 use world::{collision, door, glass, map, nav, zones};
@@ -110,9 +111,11 @@ fn lobby_settings(args: &Args) -> game::menus::LobbySettings {
     game::menus::LobbySettings { open, reason, name: args.name.clone() }
 }
 
-fn parse_args() -> Result<Args, String> {
+/// Reads the command-line options (without the program name). Also used
+/// by the launcher to check the options it built before starting the game.
+fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut args = Args::default();
-    let mut it = std::env::args().skip(1).peekable();
+    let mut it = list.into_iter().peekable();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--map" => args.map = Some(it.next().ok_or("--map needs a name")?),
@@ -243,12 +246,18 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() -> AppExit {
+    // No arguments (or `--launcher` first): the launcher window, which
+    // starts the game again with the options picked (launcher/mod.rs).
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if launcher::wanted(&raw) {
+        return launcher::run(&raw);
+    }
     let log_path = runlog::path_from_args(&std::env::args().collect::<Vec<_>>());
     if let Err(e) = runlog::init(&log_path) {
         eprintln!("warning: could not create {log_path}: {e}");
     }
 
-    let args = match parse_args() {
+    let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--log FILE]");

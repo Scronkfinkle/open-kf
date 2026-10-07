@@ -23,7 +23,8 @@ See `docs/DESIGN.md` for how it works and the plan.
 ## Running the map viewer
 
 ```sh
-cargo run --release                        # opens KF-WestLondon
+cargo run --release                        # no options: the launcher (pick map, perk, solo/host/join, then PLAY)
+cargo run --release -- --mode debug        # what no options used to do: KF-WestLondon, no waves
 cargo run --release -- --map KF-Offices    # any map name from the game's Maps folder
 cargo run --release -- --frames 300        # quits by itself after 300 frames (for test runs)
 cargo run --release -- --fly --camera -4090,1300,-3650,-1.5708,0 --screenshot 60   # start at a saved view, screenshot, quit
