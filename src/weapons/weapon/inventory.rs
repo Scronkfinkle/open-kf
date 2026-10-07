@@ -146,6 +146,8 @@ pub(super) fn force_change(w: &mut Weapons, next: usize) {
     if next == w.current {
         return;
     }
+    // KFWeapon.PutDown zooms out; a gone weapon kept the flag before.
+    zoom_out(w, true, "force_switch");
     w.firing = [false; 2];
     if w.defs[w.current].gone || matches!(w.action, Action::Reload | Action::Grenade { .. }) {
         w.current = next;

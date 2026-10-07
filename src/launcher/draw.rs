@@ -161,10 +161,11 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         }
     }
 
-    // Column 2: the map list, and the Audio box under it (the list
-    // scrolls, so it gives up the room).
+    // Column 2: the map list, and the Controls and Audio boxes under it
+    // (the list scrolls, so it gives up the room).
     let audio = audio_section(p, l, b, rh, gap, menu);
-    let b = Rect::new(b.min.x, b.min.y, b.max.x, audio.min.y - gap);
+    let controls = controls_section(p, l, Rect::new(b.min.x, b.min.y, b.max.x, audio.min.y - gap), rh, gap, menu);
+    let b = Rect::new(b.min.x, b.min.y, b.max.x, controls.min.y - gap);
     p.section(b, "Map", false, "Map");
     let list = Painter::section_client(b, [0.0; 4]);
     if join {
@@ -283,6 +284,19 @@ fn audio_section(p: &mut Painter, l: &Launcher, area: Rect, rh: f32, gap: f32, f
         p.slider(&super::volume_slider_id(name), sl, v / max, l.volume_drag == Some(i));
         p.text_in(font, &format!("{v:.2}"), Rect::new(ctl.max.x - vw, ctl.min.y, ctl.max.x, ctl.max.y), Align::Right, true, WHITE, &format!("Audio.{name}.Value"));
     }
+    r
+}
+
+/// The Controls box at the bottom of `area`: aim down sights by toggle
+/// (KF's default) or hold, the same saved line the game's pause menu
+/// changes (DESIGN.md, "Aim down sights"). Returns the box.
+fn controls_section(p: &mut Painter, l: &Launcher, area: Rect, rh: f32, gap: f32, font: &'static str) -> Rect {
+    let r = Rect::new(area.min.x, area.max.y - section_height(1, rh, gap), area.max.x, area.max.y);
+    p.section(r, "Controls", false, "Controls");
+    let mut rows = Rows::new(Painter::section_client(r, [0.0; 4]), rh, gap, 0.42);
+    let (lab, ctl) = rows.next();
+    label(p, lab, "Aim down sights", fit(p, font, "Aim down sights", rows.label_w - 10.0));
+    spinner(p, "aim", ctl, if l.choices.aim_hold { "Hold" } else { "Toggle" }, true, font);
     r
 }
 

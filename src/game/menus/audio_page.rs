@@ -2,8 +2,10 @@
 //! its whole Settings page there (UT2K4SettingsPage, with an Audio tab:
 //! KFGui.KFAudioSettingsTab); ours is one small window with that tab's
 //! "Sound System" box (AudioBK1) and its two volume sliders
-//! (AudioEffectsVolumeSlider, AudioMusicVolume), plus our master volume.
-//! See DESIGN.md, "Volume control".
+//! (AudioEffectsVolumeSlider, AudioMusicVolume), plus our master volume,
+//! and a "Controls" box with the aim mode (Toggle / Hold; KF sets that
+//! by binding the key to ToggleAiming or Aiming). See DESIGN.md, "Volume
+//! control" and "Aim down sights".
 
 use bevy::prelude::*;
 
@@ -17,6 +19,14 @@ pub(crate) struct AudioView {
     pub ini: (f32, f32),
     pub muted: bool,
 }
+
+/// The click id of an aim mode button (`aim.mode:toggle` / `aim.mode:hold`).
+pub(crate) fn aim_id(hold: bool) -> String {
+    format!("aim.mode:{}", crate::launcher::choices::aim_word(hold))
+}
+
+/// The keyboard row of the aim mode (after the sliders).
+pub(crate) const AIM_ROW: usize = SLIDERS.len();
 
 /// The click id of a slider (`volume.slider:master` ...).
 pub(crate) fn slider_id(name: &str) -> String {
@@ -34,9 +44,9 @@ fn caption(p: &Painter, name: &str, ours: &str) -> String {
     if c.is_empty() { ours.to_string() } else { c }
 }
 
-/// `row`: the slider picked with the Up / Down keys; `drag`: the one the
-/// mouse holds.
-pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: Option<usize>) {
+/// `row`: the slider (or `AIM_ROW`) picked with the Up / Down keys;
+/// `drag`: the slider the mouse holds; `aim_hold`: the aim mode.
+pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: Option<usize>, aim_hold: bool) {
     let gui = p.gui;
     let white = [255, 255, 255, 255];
     let (sw, sh) = (p.screen.width(), p.screen.height());
@@ -47,11 +57,12 @@ pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: 
     let gap = (rh * 0.4).round();
     let th = p.line_height(title_font) + 8.0;
     // Our layout (KF's page is full screen): a window in the middle, the
-    // title bar, the section (header 35 + rows + 10 px, see
+    // title bar, the sections (header 35 + rows + 10 px, see
     // `Painter::section_client`), a note line and the Back button.
     let rows = SLIDERS.len() as f32;
     let section_h = 45.0 + rows * rh + (rows - 1.0) * gap;
-    let h = th + gap + section_h + gap + p.line_height(small) + gap + rh + gap;
+    let controls_h = 45.0 + rh;
+    let h = th + gap + section_h + gap + p.line_height(small) + gap + controls_h + gap + rh + gap;
     let w = (0.5 * sw).max(420.0).min(sw);
     let win = Rect::new((sw - w) / 2.0, (sh - h) / 2.0, (sw + w) / 2.0, (sh + h) / 2.0);
     // A dark backing (ours): the frame texture is see-through and the
@@ -60,14 +71,36 @@ pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: 
     p.stretched(gui.tex("KF_InterfaceArt_tex.Menu.Thin_border_SlightTransparent"), win, white, "Audio.Frame");
     let bar = Rect::new(win.min.x, win.min.y, win.max.x, win.min.y + th);
     p.stretched(gui.tex("KF_InterfaceArt_tex.Menu.Tabdark"), bar, white, "Audio.TitleBar");
-    // KFAudioSettingsTab PanelCaption.
-    p.text_in(title_font, "Audio", bar, Align::Center, true, [225, 225, 225, 255], "Audio.Title");
+    // UT2K4SettingsPage's caption (KF's page holds the Audio tab and
+    // the controls).
+    p.text_in(title_font, "Settings", bar, Align::Center, true, [225, 225, 225, 255], "Audio.Title");
 
     let pad = 0.03 * w;
     let sec = Rect::new(win.min.x + pad, bar.max.y + gap, win.max.x - pad, bar.max.y + gap + section_h);
     let bk = gui.comp("KFAudioSettingsTab.AudioBK1").caption;
     p.section(sec, if bk.is_empty() { "Sound System" } else { &bk }, false, "Audio.BK1");
     let client = Painter::section_client(sec, [0.0; 4]);
+    // The Controls box (ours, see the module doc), under the note line.
+    let note_y = sec.max.y + gap;
+    let ctl_top = note_y + p.line_height(small) + gap;
+    let ctl = Rect::new(sec.min.x, ctl_top, sec.max.x, ctl_top + controls_h);
+    p.section(ctl, "Controls", false, "Audio.Controls");
+    let crow = Painter::section_client(ctl, [0.0; 4]);
+    let crow = Rect::new(crow.min.x, crow.min.y, crow.max.x, crow.min.y + rh);
+    let cw = crow.width() * 0.4;
+    let lit = row == AIM_ROW;
+    p.text_in(menu, "Aim down sights", Rect::new(crow.min.x, crow.min.y, crow.min.x + cw, crow.max.y), Align::Left, true, if lit { white } else { [200, 200, 200, 255] }, "Audio.Aim.Caption");
+    let bgap = (rh * 0.3).round();
+    let bw = (crow.width() - cw - bgap) / 2.0;
+    for (i, (hold, cap)) in [(false, "Toggle"), (true, "Hold")].into_iter().enumerate() {
+        let x = crow.min.x + cw + i as f32 * (bw + bgap);
+        // The chosen one lit (as the launcher's Solo / Host / Join).
+        let state = if hold == aim_hold { State::Focused } else { State::Blurry };
+        p.button(&aim_id(hold), Rect::new(x, crow.min.y, x + bw, crow.max.y), cap, state);
+    }
+    let bw = p.text_size(menu, "Back").x + 0.04 * sw * 0.25 + rh;
+    let by = win.max.y - gap - rh;
+    p.button("audio.back", Rect::new(win.max.x - pad - bw, by, win.max.x - pad, by + rh), "Back", State::Blurry);
     let Some(view) = view else {
         p.text_in(menu, "No sound system.", client, Align::Left, false, white, "Audio.None");
         return;
@@ -87,10 +120,6 @@ pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: 
         p.slider(&slider_id(name), sl, v / max, lit);
         p.text_in(menu, &format!("{v:.2}"), Rect::new(row_box.max.x - vw, y, row_box.max.x, y + rh), Align::Right, true, white, &format!("Audio.{name}.Value"));
     }
-    let note_y = sec.max.y + gap;
     let note = if view.muted { "--mute is on: the speakers stay silent whatever the volume." } else { "Effects and Music: KF's sliders (0 to 0.5). Master: both together." };
     p.text_in(small, note, Rect::new(sec.min.x, note_y, sec.max.x, note_y + p.line_height(small)), Align::Left, false, [200, 200, 200, 200], "Audio.Note");
-    let bw = p.text_size(menu, "Back").x + 0.04 * sw * 0.25 + rh;
-    let by = win.max.y - gap - rh;
-    p.button("audio.back", Rect::new(win.max.x - pad - bw, by, win.max.x - pad, by + rh), "Back", State::Blurry);
 }

@@ -313,6 +313,7 @@ fn menu_input(
     mut start_vet: Local<Option<crate::game::perks::Vet>>,
     (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
     mut audio: Option<ResMut<crate::audio::mixer::Audio>>,
+    mut aim: ResMut<crate::weapons::weapon::AimSetting>,
 ) {
     // The perk the weapons were loaded with (start items), for Ready.
     let had = *start_vet.get_or_insert(vet.vet);
@@ -347,6 +348,13 @@ fn menu_input(
             "select.drag" => state.drag = Some(Drag::ModelSelect),
             // GUISlider (bCaptureMouse): the press sets the value at once
             // (InternalOnMousePressed), then it follows the mouse.
+            // The aim mode buttons: the mode changes at once and is saved.
+            s if s.starts_with("aim.mode:") => {
+                if let Ok(hold) = crate::launcher::choices::parse_aim(&s["aim.mode:".len()..]) {
+                    state.audio_row = audio_page::AIM_ROW;
+                    aim.set(hold, "menu_click");
+                }
+            }
             s if s.starts_with("volume.slider:") => {
                 if let Some(i) = SLIDERS.iter().position(|(n, _)| audio_page::slider_id(n) == s) {
                     state.drag = Some(Drag::Volume(i));
@@ -385,9 +393,15 @@ fn menu_input(
         keys_down.extend(actions.iter().filter_map(|a| a.strip_prefix("volume_key:")));
         for k in keys_down {
             let n = SLIDERS.len();
+            // The rows: the sliders, then the aim mode.
+            let rows = n + 1;
             match k {
-                "up" => state.audio_row = (state.audio_row + n - 1) % n,
-                "down" => state.audio_row = (state.audio_row + 1) % n,
+                "up" => state.audio_row = (state.audio_row + rows - 1) % rows,
+                "down" => state.audio_row = (state.audio_row + 1) % rows,
+                // Left = Toggle, Right = Hold (the buttons' order).
+                "left" | "right" if state.audio_row == audio_page::AIM_ROW => {
+                    aim.set(k == "right", "menu_key");
+                }
                 "left" | "right" => {
                     if let Some(a) = audio.as_deref_mut() {
                         let name = SLIDERS[state.audio_row.min(n - 1)].0;
@@ -400,6 +414,30 @@ fn menu_input(
                 _ => runlog::kv("menu_action", &format!("action=volume_key:{k} refused=unknown_key")),
             }
             runlog::kv("audio_page", &format!("event=key key={k} row={}", state.audio_row));
+        }
+    }
+    for a in &actions {
+        // `aim_mode:toggle|hold`: sets the aim mode (any page; for tests).
+        if let Some(m) = a.strip_prefix("aim_mode:") {
+            match crate::launcher::choices::parse_aim(m) {
+                Ok(hold) => {
+                    aim.set(hold, "scripted");
+                }
+                Err(_) => runlog::kv("menu_action", &format!("action={a} refused=not_toggle_or_hold")),
+            }
+        }
+        // `aim_mode_click:toggle|hold`: clicks that button (as drawn last
+        // frame), through the mouse's code.
+        if let Some(m) = a.strip_prefix("aim_mode_click:") {
+            let hold = crate::launcher::choices::parse_aim(m);
+            match hold.ok().filter(|h| hits.0.iter().any(|(id, _)| *id == audio_page::aim_id(*h))) {
+                Some(hold) => {
+                    runlog::kv("audio_page", &format!("event=scripted_click button={}", audio_page::aim_id(hold)));
+                    state.audio_row = audio_page::AIM_ROW;
+                    aim.set(hold, "menu_click");
+                }
+                None => runlog::kv("menu_action", &format!("action={a} refused=no_such_button_on_screen")),
+            }
         }
     }
     for a in &actions {
@@ -814,6 +852,7 @@ fn draw_menus(
     net: Res<crate::net::lobby::NetLobby>,
     mut nu: crate::game::numenu::NuDraw,
     audio: Option<Res<crate::audio::mixer::Audio>>,
+    aim: Res<crate::weapons::weapon::AimSetting>,
 ) {
     if !gui.loaded {
         return;
@@ -872,7 +911,7 @@ fn draw_menus(
                 Some(Drag::Volume(i)) => Some(i),
                 _ => None,
             };
-            audio_page::draw(&mut p, view.as_ref(), state.audio_row, drag);
+            audio_page::draw(&mut p, view.as_ref(), state.audio_row, drag, aim.hold);
         }
         // The trader's NuMenu (game/numenu.rs) uses the same painter.
         None if nu.showing() => crate::game::numenu::draw(&mut p, &mut nu),

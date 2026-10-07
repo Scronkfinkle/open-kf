@@ -5729,3 +5729,67 @@ are not stopped when Effects changes (KF does "stopsounds"; ours keeps
 them). Not play-tested by you.
 **Next:** Your listening test; merge the worktree branch (the launcher
 change is one new box under the map list and three new saved lines).
+
+## 2026-10-07 Aim down sights: Toggle or Hold setting (pause menu Settings + launcher)
+
+**Changed:** A setting for the aim button (right mouse): *Toggle* (KF's
+default: `RightMouse=ToggleAiming` in defuser.ini / User.ini) or *Hold*
+(KF's `Aiming` alias: IronSightZoomIn, onrelease IronSightZoomOut). New
+`src/weapons/weapon/aim.rs` (`AimSetting`); `src/weapons/weapon/input.rs`
+(aim block for both modes, `try_zoom_in`, zoom out on the buy menu
+opening (KF GUIBuyMenu), on the pause menu in Hold, on death including
+debug mode's instant respawn, on a weapon without sights);
+`src/weapons/weapon/inventory.rs` (`force_change` zooms out: throwing the
+aimed weapon used to keep the aim flag); `src/launcher/choices.rs` (the
+`aim=toggle|hold` line, a general "rewrite only these lines" function
+used by the volumes too, unit test); `src/launcher/mod.rs` (`read_aim`,
+`save_aim`); `src/launcher/draw.rs` (a "Controls" box above Audio);
+`src/game/menus/audio_page.rs`, `src/game/menus/mod.rs` (the Settings
+window, retitled "Settings", gets a "Controls" box: "Aim down sights"
+[Toggle] [Hold]; keys Up/Down/Left/Right; test actions `aim_mode:`,
+`aim_mode_click:`, `aim_down`, `aim_up`); `src/main.rs`; DESIGN.md
+"Aim down sights".
+**Why:** You asked for toggle vs hold aiming, changeable in game and in
+the launcher.
+**Tested how:** headless runs on KF-WestLondon with `--input` scripts
+and `--settings work/ads/*.txt` (logs `aim_mode`, `aim_saved`,
+`iron_sights ... reason= mode=`), two pause-menu screenshots and one
+launcher screenshot, a host + client network run on 127.0.0.1:7811,
+`cargo test --release --workspace`, `cargo clippy --release --workspace`.
+**Result:** Toggle (no file: `read=default mode=toggle`): press on/off;
+reload `aiming=false reason=reload`, a press during the reload
+`iron_sights_refused action=Reload`, one press after it aims; in the
+air `refused in_air=true`; pause menu open/close keeps the aim (KF);
+switch `reason=switch`; throw `reason=force_switch` then
+`switched_to=KFMod.Single`; buy menu `reason=buy_menu`, one press after
+closing aims; death (debug, instant respawn) `reason=death`, one press
+aims after. Hold (file `aim=hold`: `read=file`): `hold_press` /
+`hold_release`; held through a reload: `reason=reload` at t=14.525 then
+`hold_retry` at t=16.530 (2.0 s reload); press in the air refused once,
+`hold_retry` on landing 0.5 s later; pause menu `reason=menu`, back to
+aiming on closing (still held); switch away and back `hold_retry`; buy
+menu `reason=buy_menu`, `hold_retry` on closing; waves death
+`reason=death` then nothing (dead). Mode change while playing:
+toggle -> hold while toggled on gives `hold_release`; hold -> toggle while
+held keeps the aim, the next press stops it. Menu: `aim_mode_click:hold`
+-> `aim_mode mode=hold source=menu_click` + `aim_saved`; keys down x3 to
+row 3 + right -> `source=menu_key`; the relaunch read `read=file
+mode=hold`. Saved file keeps every other line (volume lines added next to
+`aim=hold`). Launcher: read `aim="hold"`, the `>` click changed it to
+`toggle`, PLAY (dry run) wrote all 21 lines ending `aim=toggle`.
+Network: client (hold) `hold_press`, `menu` on Escape, `hold_retry`,
+switch to toggle and two toggles; host (toggle) kept the aim through the
+pause menu. Tests 220 + 24 pass (new: `aim_line_parses_and_replaces_only_itself`);
+clippy 0 warnings. Screenshots: the chosen button is the gold one, as
+the launcher's Solo / Host / Join.
+**Still broken / not tested:** A real right mouse button (the virtual
+display has no mouse; scripted presses use the same code after the
+button read). Real arrow keys in the window (the `volume_key` action
+uses the same code). The mouse click on Toggle/Hold (scripted click
+uses the drawn box and the same handler). Not played by you. In Hold,
+holding the button through closing the pause menu with the real mouse:
+the menu clears the mouse state, so you will likely need to press again
+(not tested). KF's other force-zoom-outs (bForceLeaveIronsights,
+ForceZoomOutTime, LAWFire) are not simulated, as before.
+**Next:** Your play test; merge the branch (launcher change: one new box
+and one new saved line).

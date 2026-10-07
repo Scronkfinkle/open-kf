@@ -5823,6 +5823,97 @@ box), `src/main.rs` (`--settings`). Details:
 6. **Game loop (solo):** waves, trader, dosh, perks.
 7. **Sound, music, HUD, menus.**
 
+## Aim down sights: toggle or hold (planned 2026-10-07: AD1-AD3)
+
+**Goal.** A setting for the aim button (right mouse, "iron sights" /
+ADS = aim down sights): *Toggle* (press once to aim, press again to
+stop) or *Hold* (aim only while the button is held). Changeable in the
+pause menu (takes effect at once) and in the launcher, saved in the
+same settings file as the volumes.
+
+**What KF does (read 2026-10-07).** KF has both, as two key commands
+(System/defuser.ini and your User.ini): `ToggleAiming` =
+`ToggleIronSights` and `Aiming` = `IronSightZoomIn | onrelease
+IronSightZoomOut`. The default binding is `RightMouse=ToggleAiming`,
+so **KF's default is Toggle**; Hold means rebinding the key to
+`Aiming`. Both go through the same rules (KFWeapon.uc):
+ToggleIronSights / IronSightZoomIn refuse in the air (PHYS_Falling)
+and while reloading or when CanZoomNow fails, and interrupt a
+one-round-at-a-time reload first; IronSightZoomOut zooms out. Things
+that drop the aim in KF: reloading (ReloadMeNow / ClientReload: ZoomOut),
+putting the weapon down (PutDown: ZoomOut), opening the buy menu
+(GUIBuyMenu.InitComponent: IronSightZoomOut), dying (the pawn and its
+weapons are destroyed; the new ones start not aiming). The mid-game
+(pause) menu does not zoom out in the scripts.
+
+**What Open KF does now.** Toggle only (weapon/input.rs: right mouse
+= ToggleIronSights), so the default stays the same.
+
+**Rules (Toggle = KF; Hold = KF's `Aiming` plus our two choices).**
+
+- Toggle: unchanged. A press aims or stops aiming. Anything that drops
+  the aim leaves you not aiming; the next press aims again (one press,
+  never two).
+- Hold: pressing tries to aim (same refusals as KF). Letting go stops
+  aiming. *Ours:* while the button stays held and you are not aiming
+  (the press was refused, or a reload / switch / grenade / landing
+  ended it), the game aims again as soon as it can (KF would need a new
+  press). Refusals are logged on the press only.
+- Both: the buy menu opening zooms out (KF). Dying zooms out (KF:
+  the weapon is gone). A forced weapon change (throwing or selling the
+  weapon in hand) zooms out (a gap until now: the aim flag survived the
+  change). The pause menu: Toggle keeps the aim (KF); Hold drops it
+  (*ours*: the menu takes the mouse, so the button counts as let go).
+
+**Saved.** `settings/launcher.txt` gets one more line,
+`aim=toggle|hold` (default toggle). The game reads it at start and
+rewrites only that line when it is changed in the menu (the same
+"rewrite only these lines" save as the volumes, made general); the
+launcher saves it with its other choices on PLAY.
+
+**In game.** The pause menu's Settings window (now titled "Settings")
+gets a second box under "Sound System": "Controls", with one row
+"Aim down sights" and two buttons, *Toggle* and *Hold* (the chosen one
+lit, as the launcher's Solo / Host / Join). Up / Down reach the row,
+Left / Right switch it. Test actions: `aim_mode:toggle|hold` (any page),
+`aim_mode_click:toggle|hold` (clicks the button on screen),
+`aim_down` / `aim_up` (hold / let go of the aim button; `aim` stays a
+one-frame press).
+
+**Launcher.** A small "Controls" box above the Audio box in the map
+column, one row "Aim" with a `<` value `>` spinner (Toggle / Hold);
+`set:aim=hold` for tests.
+
+**Logs.** `aim_mode mode=toggle|hold source=...` at start and on every
+change; `aim_saved file=...`; the existing `iron_sights weapon=..
+aiming=true|false reason=..` lines get `mode=` and new reasons
+(`hold_press`, `hold_retry`, `hold_release`, `menu`, `buy_menu`,
+`death`, `force_switch`, `no_sights`).
+
+**Steps.** AD1: the setting (choices field, general line save, game
+resource, log) and the hold/toggle logic with the edge cases and test
+actions. AD2: the pause menu row. AD3: the launcher box.
+
+**As built (2026-10-07; headless runs, not played by you yet).** AD1-AD3
+as planned. Files: `src/weapons/weapon/aim.rs` (new: `AimSetting`, the
+resource read at start and saved on change), `src/weapons/weapon/input.rs`
+(the aim block, `try_zoom_in`, the death zoom out, also on a debug-mode
+instant respawn via the death counter), `src/weapons/weapon/inventory.rs`
+(`force_change` zooms out), `src/launcher/choices.rs` (`aim_hold`, the
+`aim` line, `with_lines` / `with_aim_line`), `src/launcher/mod.rs`
+(`read_aim`, `save_aim`), `src/launcher/draw.rs` (the Controls box),
+`src/game/menus/audio_page.rs` and `mod.rs` (the Controls box in the
+Settings window, clicks, keys, test actions), `src/main.rs` (reads it).
+Details:
+
+- In Hold, a death with the button still held aims again on the next
+  try (debug mode respawns at once, so the same frame): the button is
+  held, so this is consistent, not stuck.
+- Switching Toggle -> Hold while aimed (not holding the button) stops
+  aiming at once (`hold_release`).
+- The window's title is now "Settings" (it holds more than Audio).
+- At 1280 x 800 the launcher's map list shows 5 rows (it scrolls).
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms

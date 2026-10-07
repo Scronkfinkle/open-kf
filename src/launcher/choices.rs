@@ -48,10 +48,13 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 20] = [
+pub const FIELDS: [&str; 21] = [
     "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "sound", "trader", "extra",
-    "volume", "effects_volume", "music_volume",
+    "volume", "effects_volume", "music_volume", "aim",
 ];
+
+/// The aim line of the saved file (the game rewrites only it).
+pub const AIM_FIELD: &str = "aim";
 
 /// The volume lines of the saved file (the game rewrites only these).
 pub const VOLUME_FIELDS: [&str; 3] = ["volume", "effects_volume", "music_volume"];
@@ -155,6 +158,9 @@ pub struct Choices {
     pub extra: String,
     /// The volumes (the game's pause menu changes them too).
     pub volumes: Volumes,
+    /// Aim down sights while the button is held (else a press toggles,
+    /// KF's default). The game's pause menu changes it too.
+    pub aim_hold: bool,
 }
 
 impl Default for Choices {
@@ -178,6 +184,7 @@ impl Default for Choices {
             trader: MenuKind::Nu,
             extra: String::new(),
             volumes: Volumes::default(),
+            aim_hold: false,
         }
     }
 }
@@ -189,6 +196,20 @@ fn kf_volume_text(v: Option<f32>) -> String {
 
 fn parse_volume(v: &str) -> Result<f32, String> {
     v.trim().parse::<f32>().ok().filter(|x| x.is_finite()).ok_or(format!("not a volume: {v}"))
+}
+
+/// The aim setting as saved: "hold" or "toggle".
+pub fn aim_word(hold: bool) -> &'static str {
+    if hold { "hold" } else { "toggle" }
+}
+
+/// "hold" / "toggle" (the saved file, `aim_mode:` test actions).
+pub fn parse_aim(v: &str) -> Result<bool, String> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "hold" => Ok(true),
+        "toggle" => Ok(false),
+        _ => Err(format!("not toggle/hold: {v}")),
+    }
 }
 
 fn on_off(b: bool) -> &'static str {
@@ -227,6 +248,7 @@ impl Choices {
             "volume" => format!("{:.3}", self.volumes.master),
             "effects_volume" => kf_volume_text(self.volumes.effects),
             "music_volume" => kf_volume_text(self.volumes.music),
+            "aim" => aim_word(self.aim_hold).into(),
             _ => String::new(),
         }
     }
@@ -291,6 +313,7 @@ impl Choices {
                     self.volumes.music = x;
                 }
             }
+            "aim" => self.aim_hold = parse_aim(v)?,
             _ => return Err(format!("unknown choice: {field}")),
         }
         Ok(())
@@ -333,6 +356,7 @@ impl Choices {
             "vsync" => self.vsync = !self.vsync,
             "sound" => self.sound = !self.sound,
             "trader" => self.trader = if self.trader == MenuKind::Nu { MenuKind::Kf } else { MenuKind::Nu },
+            "aim" => self.aim_hold = !self.aim_hold,
             _ => {}
         }
     }
@@ -410,7 +434,7 @@ impl Choices {
 
     /// The saved file's text: one `key=value` line per choice.
     pub fn to_text(&self) -> String {
-        let mut s = String::from("# Open KF launcher choices (written when PLAY is pressed; the game rewrites the volume lines)\n");
+        let mut s = String::from("# Open KF launcher choices (written when PLAY is pressed; the game rewrites the volume and aim lines)\n");
         for f in FIELDS {
             s.push_str(&format!("{f}={}\n", self.get(f)));
         }
@@ -440,15 +464,28 @@ impl Choices {
 /// header line first.
 pub fn with_volume_lines(text: &str, v: &Volumes) -> String {
     let c = Choices { volumes: *v, ..Default::default() };
+    let lines: Vec<(&str, String)> = VOLUME_FIELDS.iter().map(|f| (*f, c.get(f))).collect();
+    with_lines(text, &lines)
+}
+
+/// The saved file's text with only the `aim=` line replaced (or added).
+pub fn with_aim_line(text: &str, hold: bool) -> String {
+    with_lines(text, &[(AIM_FIELD, aim_word(hold).to_string())])
+}
+
+/// The saved file's text with only the `key=` lines of `lines` replaced
+/// (or added at the end); every other line stays as it was. An empty
+/// text gets a header line first.
+pub fn with_lines(text: &str, lines: &[(&str, String)]) -> String {
     let mut out: Vec<String> = Vec::new();
-    let mut done = [false; 3];
+    let mut done = vec![false; lines.len()];
     for line in text.lines() {
         let key = line.split_once('=').map(|(k, _)| k.trim());
-        match key.and_then(|k| VOLUME_FIELDS.iter().position(|f| *f == k)) {
+        match key.and_then(|k| lines.iter().position(|(f, _)| *f == k)) {
             // A repeated line is dropped (the first one is replaced).
             Some(i) if done[i] => {}
             Some(i) => {
-                out.push(format!("{}={}", VOLUME_FIELDS[i], c.get(VOLUME_FIELDS[i])));
+                out.push(format!("{}={}", lines[i].0, lines[i].1));
                 done[i] = true;
             }
             None => out.push(line.to_string()),
@@ -457,9 +494,9 @@ pub fn with_volume_lines(text: &str, v: &Volumes) -> String {
     if out.is_empty() {
         out.push("# Open KF settings (the launcher writes its other choices here on PLAY)".into());
     }
-    for (i, f) in VOLUME_FIELDS.iter().enumerate() {
+    for (i, (f, v)) in lines.iter().enumerate() {
         if !done[i] {
-            out.push(format!("{f}={}", c.get(f)));
+            out.push(format!("{f}={v}"));
         }
     }
     let mut s = out.join("\n");
@@ -652,6 +689,26 @@ mod tests {
         let fresh = with_volume_lines("", &v);
         assert!(fresh.starts_with('#') && fresh.lines().count() == 4);
         assert_eq!(Choices::from_text(&fresh).0.volumes, v);
+    }
+
+    #[test]
+    fn aim_line_parses_and_replaces_only_itself() {
+        // Default: KF's toggle (RightMouse=ToggleAiming).
+        assert!(!Choices::default().aim_hold);
+        let (c, bad) = Choices::from_text("aim=HOLD\n");
+        assert!(c.aim_hold && bad.is_empty());
+        let (c, bad) = Choices::from_text("aim=sometimes\n");
+        assert!(!c.aim_hold && bad.len() == 1);
+        let old = "# head\nvolume=0.500\naim=toggle\nmap=KF-Farm\n";
+        assert_eq!(with_aim_line(old, true), "# head\nvolume=0.500\naim=hold\nmap=KF-Farm\n");
+        let added = with_aim_line("map=KF-Farm\n", true);
+        assert_eq!(added, "map=KF-Farm\naim=hold\n");
+        // The volume save keeps the aim line, and the other way round.
+        let both = with_volume_lines(&added, &Volumes::default());
+        assert!(Choices::from_text(&both).0.aim_hold);
+        let mut c = Choices::default();
+        c.step("aim", 1, &[]);
+        assert_eq!(c.get("aim"), "hold");
     }
 
     #[test]

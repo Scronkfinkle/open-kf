@@ -332,6 +332,44 @@ pub(super) fn zoom_out(w: &mut Weapons, fast: bool, reason: &str) {
     runlog::kv("iron_sights", &format!("weapon={} aiming=false reason={reason}", w.defs[cur].class));
 }
 
+/// KFWeapon.ToggleIronSights / IronSightZoomIn: not in the air (Falling),
+/// a one-round reload is interrupted, any other reload or a busy weapon
+/// (switching, grenade) refuses. True if aiming now. `pressed`: a real
+/// press (Hold's retries while held neither interrupt a reload nor log
+/// a refusal: they wait for the weapon to be ready).
+pub(super) fn try_zoom_in(w: &mut Weapons, in_air: bool, reason: &str, mode: &str, pressed: bool) -> bool {
+    let cur = w.current;
+    if w.defs[cur].iron.is_some() && !w.defs[cur].gone && !in_air && {
+        if pressed {
+            interrupt_reload(w, "aim");
+        }
+        w.action == Action::Idle
+    } {
+        let iron = w.defs[cur].iron.as_ref().expect("checked");
+        w.zoom_time = iron.zoom_time;
+        w.aiming = true;
+        // Dualies.ZoomIn plays GOTO_Iron.
+        if w.defs[cur].dual && has_anim(w, "goto_iron") {
+            play(w, "goto_iron", 1.0, false);
+        }
+        runlog::kv("iron_sights", &format!("weapon={} aiming=true reason={reason} mode={mode}", w.defs[cur].class));
+        true
+    } else {
+        if pressed {
+            runlog::kv(
+                "iron_sights_refused",
+                &format!(
+                    "weapon={} has_iron_sights={} action={:?} in_air={in_air} mode={mode}",
+                    w.defs[cur].class,
+                    w.defs[cur].iron.is_some(),
+                    w.action
+                ),
+            );
+        }
+        false
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
 pub(super) fn weapon_input(
     time: Res<Time>,
@@ -366,7 +404,15 @@ pub(super) fn weapon_input(
         Res<crate::game::healing::Teammates>,
         MessageWriter<crate::game::healing::HealTeammate>,
     ),
-    mut scripted_held: Local<[bool; 2]>,
+    (mut scripted_held, aim_in): (
+        Local<[bool; 2]>,
+        (
+            Local<(bool, u32)>,
+            Res<super::AimSetting>,
+            Res<crate::game::menus::MenuState>,
+            Res<crate::game::buy_menu::BuyMenu>,
+        ),
+    ),
 ) {
     let Some(mut w) = weapons else {
         return;
@@ -380,6 +426,8 @@ pub(super) fn weapon_input(
     // ends): no weapon.
     if health.dead {
         w.firing = [false; 2];
+        // Pawn.Died: the weapon is gone; the new pawn's starts not aiming.
+        zoom_out(&mut w, true, "death");
         return;
     }
     let scripted = |action: &str| script.0.iter().any(|(f, a)| *f == frames.0 && a == action);
@@ -600,36 +648,59 @@ pub(super) fn weapon_input(
             runlog::kv("grenade_throw_refused", &format!("frags={frags} action={:?} cooldown={:.2}", w.action, w.fire_cooldown[0]));
         }
     }
-    // Iron sights: right mouse toggles (KFWeapon.ToggleIronSights). Not while
-    // switching or in the air; a one-round reload is interrupted, any other
-    // reload refuses.
-    if (grabbed_now(&cursor) && mouse.just_pressed(MouseButton::Right)) || scripted("aim") {
+    // Iron sights (DESIGN.md, "Aim down sights"). Toggle (KF's default,
+    // RightMouse=ToggleAiming): a press aims or stops aiming. Hold (KF's
+    // `Aiming`: IronSightZoomIn, onrelease IronSightZoomOut): aims while
+    // held. Scripted: `aim` = a one-frame press, `aim_down` / `aim_up` =
+    // hold / let go.
+    let (mut aim_local, aim_setting, menus, buy_menu) = aim_in;
+    let (aim_script_held, seen_deaths) = &mut *aim_local;
+    if scripted("aim_down") {
+        *aim_script_held = true;
+    }
+    if scripted("aim_up") {
+        *aim_script_held = false;
+    }
+    // A death with an instant respawn (not a waves game): a new pawn,
+    // so not aiming (as the death branch above).
+    if health.deaths != *seen_deaths {
+        *seen_deaths = health.deaths;
+        zoom_out(&mut w, true, "death");
+    }
+    let aim_pressed = (grabbed_now(&cursor) && mouse.just_pressed(MouseButton::Right)) || scripted("aim") || scripted("aim_down");
+    let aim_held = (grabbed_now(&cursor) && mouse.pressed(MouseButton::Right)) || scripted("aim") || *aim_script_held;
+    let mode = aim_setting.mode();
+    let in_air = main_cam.single().is_ok_and(|(_, walker)| walker.is_some_and(|wk| !wk.on_ground));
+    // GUIBuyMenu.InitComponent: IronSightZoomOut. The pause menu takes
+    // the mouse: Hold counts the button as let go (ours); Toggle keeps
+    // the aim (KF's mid-game menu does not zoom out).
+    let menu_open = !menus.stack.is_empty();
+    if buy_menu.open {
+        zoom_out(&mut w, true, "buy_menu");
+    } else if menu_open && aim_setting.hold {
+        zoom_out(&mut w, true, "menu");
+    } else if !menu_open {
+        // Aiming with a weapon that has no sights (a forced change kept
+        // the flag): out at once.
         let cur = w.current;
-        let in_air = main_cam.single().is_ok_and(|(_, walker)| walker.is_some_and(|wk| !wk.on_ground));
-        if w.aiming {
-            zoom_out(&mut w, false, "toggle");
-        } else if w.defs[cur].iron.is_some() && !in_air && {
-            interrupt_reload(&mut w, "aim");
-            w.action == Action::Idle
-        } {
-            let iron = w.defs[cur].iron.as_ref().expect("checked");
-            w.zoom_time = iron.zoom_time;
-            w.aiming = true;
-            // Dualies.ZoomIn plays GOTO_Iron.
-            if w.defs[cur].dual && has_anim(&w, "goto_iron") {
-                play(&mut w, "goto_iron", 1.0, false);
+        if w.aiming && (w.defs[cur].iron.is_none() || w.defs[cur].gone) {
+            zoom_out(&mut w, true, "no_sights");
+        }
+        if !aim_setting.hold {
+            if aim_pressed {
+                if w.aiming {
+                    zoom_out(&mut w, false, "toggle");
+                } else {
+                    try_zoom_in(&mut w, in_air, "toggle", mode, true);
+                }
             }
-            runlog::kv("iron_sights", &format!("weapon={} aiming=true reason=toggle", w.defs[cur].class));
-        } else {
-            runlog::kv(
-                "iron_sights_refused",
-                &format!(
-                    "weapon={} has_iron_sights={} action={:?} in_air={in_air}",
-                    w.defs[cur].class,
-                    w.defs[cur].iron.is_some(),
-                    w.action
-                ),
-            );
+        } else if aim_held && !w.aiming {
+            // Ours: still held after a refusal or a forced zoom out
+            // (reload, switch, grenade, landing): aim as soon as allowed.
+            // Refusals are logged on the press only.
+            try_zoom_in(&mut w, in_air, if aim_pressed { "hold_press" } else { "hold_retry" }, mode, aim_pressed);
+        } else if !aim_held && w.aiming {
+            zoom_out(&mut w, false, "hold_release");
         }
     }
     // Firing: left mouse = mode 0, middle mouse = mode 1 (KF's AltFire key).
