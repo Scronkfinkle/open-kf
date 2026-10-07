@@ -550,9 +550,6 @@ pub(super) fn think_and_move(
                 let frame = if a.layered { z.overlay.map_or(0.0, |(_, f, _)| f) } else { z.frame };
                 frame / c.model.length(a.seq).max(1.0)
             });
-            // Damage lands halfway through the attack (KFMonster.MeleeDamageTarget):
-            // the target still within MeleeRange x 1.4 + both radii, roughly
-            // level, the zed not stunned and not in its 2 s after losing its head.
             // The ranged attack's notifies: its AnimNotify_Effects
             // (KFVomitJet on the head, SirenScream) and each SpawnTwoShots
             // (the Bloat's vomit, the Siren's scream pulses).
@@ -691,61 +688,95 @@ pub(super) fn think_and_move(
                     }
                 }
             }
+            // The melee hits: one damage check at each ClawDamageTarget notify
+            // of the attack animation (claw_times; the Gorefast's double
+            // swing hits twice). KFMonster.MeleeDamageTarget: the target
+            // still within MeleeRange x 1.4 + both radii, roughly level, the
+            // zed not stunned and not in its 2 s after losing its head.
             if let (Some(p), Some(a)) = (progress, z.attack)
-                && p >= 0.5
                 && !a.hit_done
                 && !a.ranged
                 && c.boss.is_none()
             {
-                z.attack = Some(Attack { hit_done: true, ..a });
-                let in_range = dist <= z.melee_range * 1.4 + c.collision_radius + PLAYER_RADIUS;
-                let dz = ((target.y - z.centre.y) / SCALE).abs();
-                let level = dz <= c.collision_height.max(50.0) + 0.5 * c.collision_height.min(50.0);
-                let dazed = z.since_decap.is_some_and(|s| s < 2.0);
-                if in_range && level && z.stunned <= 0.0 && !dazed {
-                    // ClawDamageTarget: MeleeDamage -5% .. +5%.
-                    let roll = (z.random() % 1000) as f32 / 1000.0;
-                    let mut amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
-                    // ZombieFleshPound.ClawDamageTarget: repeated-hit attacks do
-                    // less per hit (PoundAttack1 x 0.5, PoundAttack2 x 0.25; we
-                    // land one hit per attack); raging, MeleeDamageTarget x 1.75
-                    // and a landed hit ends the rage.
-                    if c.fp_rage_anim.is_some() {
-                        match c.model.sequence_name(a.seq) {
-                            Some("PoundAttack1") => amount *= 0.5,
-                            Some("PoundAttack2") => amount *= 0.25,
-                            _ => {}
+                let times = claw_times(&c.model, a.seq);
+                let (fired, due) = due_notifies(&times, p, a.shots_fired);
+                z.attack = Some(Attack {
+                    shots_fired: fired,
+                    hit_done: fired.count_ones() as usize >= times.len().min(8),
+                    ..a
+                });
+                if times.is_empty() {
+                    runlog::kv("zed_melee_no_notify", &format!("id={} sequence={}", z.id, c.model.sequence_name(a.seq).unwrap_or("?")));
+                }
+                for i in due {
+                    let in_range = dist <= z.melee_range * 1.4 + c.collision_radius + PLAYER_RADIUS;
+                    let dz = ((target.y - z.centre.y) / SCALE).abs();
+                    let level = dz <= c.collision_height.max(50.0) + 0.5 * c.collision_height.min(50.0);
+                    let dazed = z.since_decap.is_some_and(|s| s < 2.0);
+                    let sequence = c.model.sequence_name(a.seq).unwrap_or("?");
+                    let seconds = p * c.model.length(a.seq).max(1.0) / c.model.rate(a.seq).max(1.0);
+                    if in_range && level && z.stunned <= 0.0 && !dazed {
+                        // ClawDamageTarget: MeleeDamage -5% .. +5%.
+                        let roll = (z.random() % 1000) as f32 / 1000.0;
+                        let mut amount = z.melee_damage * 0.95 + z.melee_damage * 0.1 * roll;
+                        // ZombieFleshPound.ClawDamageTarget: repeated-hit attacks do
+                        // less per hit (PoundAttack1 x 0.5, PoundAttack2 x 0.25);
+                        // raging, MeleeDamageTarget x 1.75 and a landed hit ends
+                        // the rage (the next notify hits at normal damage).
+                        if c.fp_rage_anim.is_some() {
+                            match c.model.sequence_name(a.seq) {
+                                Some("PoundAttack1") => amount *= 0.5,
+                                Some("PoundAttack2") => amount *= 0.25,
+                                _ => {}
+                            }
+                            if z.fp_rage.is_some() {
+                                // MeleeDamageTarget(int hitdamage): the raging
+                                // override passes hitdamage x 1.75, cut again
+                                // in apply_player_damage.
+                                amount = amount.trunc() * 1.75;
+                                z.fp_rage = None;
+                                z.fp_frustrated = false;
+                                z.cloak_dirty = true;
+                                runlog::kv("fleshpound_rage", &format!("id={} end reason=hit", z.id));
+                            }
                         }
-                        if z.fp_rage.is_some() {
-                            // MeleeDamageTarget(int hitdamage): the raging
-                            // override passes hitdamage x 1.75, cut again
-                            // in apply_player_damage.
-                            amount = amount.trunc() * 1.75;
-                            z.fp_rage = None;
-                            z.fp_frustrated = false;
-                            z.cloak_dirty = true;
-                            runlog::kv("fleshpound_rage", &format!("id={} end reason=hit", z.id));
+                        player_damage.write(crate::game::combat::PlayerDamaged {
+                            amount,
+                            armor_stops: true,
+                            zed_id: z.id,
+                            kind: crate::game::combat::HurtKind::Plain,
+                            dam_type: c.melee_dam_type,
+                            source: Some(z.centre),
+                        });
+                        // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
+                        z.sound_events.push(ZedSound::MeleeHit);
+                        // ZombieClot: a landed grab pins the player (not when headless).
+                        if c.grapple_duration > 0.0 && !z.decapitated && walker.is_some() {
+                            pinned.pin(c.grapple_duration, z.id);
                         }
+                        runlog::kv(
+                            "zed_melee_hit",
+                            &format!(
+                                "id={} sequence={sequence} hit={}/{} notify_at={:.3} progress={p:.3} anim_seconds={seconds:.3} damage={amount:.1} distance_unreal={dist:.0}",
+                                z.id,
+                                i + 1,
+                                times.len(),
+                                times[i]
+                            ),
+                        );
+                    } else {
+                        runlog::kv(
+                            "zed_attack_missed",
+                            &format!(
+                                "id={} sequence={sequence} hit={}/{} notify_at={:.3} progress={p:.3} in_range={in_range} level={level} stunned={} dazed={dazed}",
+                                z.id,
+                                i + 1,
+                                times.len(),
+                                times[i],
+                                z.stunned > 0.0
+                            ),
+                        );
                     }
-                    player_damage.write(crate::game::combat::PlayerDamaged {
-                        amount,
-                        armor_stops: true,
-                        zed_id: z.id,
-                        kind: crate::game::combat::HurtKind::Plain,
-                        dam_type: c.melee_dam_type,
-                        source: Some(z.centre),
-                    });
-                    // ClawDamageTarget: MeleeAttackHitSound when the hit lands.
-                    z.sound_events.push(ZedSound::MeleeHit);
-                    // ZombieClot: a landed grab pins the player (not when headless).
-                    if c.grapple_duration > 0.0 && !z.decapitated && walker.is_some() {
-                        pinned.pin(c.grapple_duration, z.id);
-                    }
-                } else {
-                    runlog::kv(
-                        "zed_attack_missed",
-                        &format!("id={} in_range={in_range} level={level} stunned={} dazed={dazed}", z.id, z.stunned > 0.0),
-                    );
                 }
             }
             // ZombieClot.Tick: the grab animation stops if the target gets out

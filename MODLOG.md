@@ -4616,3 +4616,46 @@ through her where the map leaves it on); she is lit like the zeds, not
 by the map's baked light (L4); the HUD trader portrait. Not looked at by
 you; not checked against the real game (pose, height, brightness).
 **Next:** T4b, her collision cylinder.
+
+## 2026-10-06 Zed melee hits at the animation's ClawDamageTarget notifies
+
+**Changed:** `src/zeds/zed/attacks.rs`: `claw_times` (an attack
+animation's ClawDamageTarget notify times, sorted) and `due_notifies`
+(which of them the animation has just passed). `src/zeds/zed/think.rs`:
+the non-Patriarch melee check runs once per notify instead of once at 50%
+of the animation; logs `zed_melee_hit` (sequence, `hit=N/M`, notify
+time, progress, damage) and `zed_attack_missed` with the same fields;
+`zed_melee_no_notify` for an attack without one (no damage, as KF).
+`src/zeds/zed/mod.rs`: unit test `melee_hits_fire_once_at_each_notify`.
+DESIGN: "Melee hit timing" with every zed's notify times.
+**Why:** the Gorefast's double swing hit once, after both blades had
+passed (at 0.53 of the animation). In KF each AnimNotify_Script
+ClawDamageTarget in the animation is one damage check (KFMonster
+.ClawDamageTarget -> MeleeDamageTarget). Read with `kfpkg notifies
+Animations/KF_Freaks_Trip.ukx GoreFast_Anim`: GoreAttack1 0.256 and
+0.445, GoreAttack2 0.268 and 0.466. The same is true for every zed, so
+the fix is shared.
+**Tested how:** `--map KF-WestLondon --spawn <zed> --god --mute
+--autowalk 2 --frames 1500` for the Gorefast, Clot, Stalker, Scrake,
+Fleshpound, Crawler, Bloat, Siren and Husk, before (the old build) and
+after; hits per attack and their time counted from `zed_attack` and
+`player_hit`; unit test; clippy (counted); tests.
+**Result:** Gorefast before: 1 hit per attack, 0.73-0.81 s in (0.52-0.55
+of the swing), ~11 damage. After: 2 hits per attack (33 of 33 finished
+attacks), e.g. `GoreAttack1 hit=1/2 notify_at=0.256 progress=0.262
+damage=11.5` and `hit=2/2 notify_at=0.445 progress=0.449 damage=10.8`,
+0.39 s and 0.66 s in. Others after (before was always 1 hit near 0.5):
+Clot ClotGrapple / ClotGrappleTwo 2 hits, ClotGrappleThree 1 (at 0.70);
+Stalker StalkerAttack1 2, StalkerSpinAttack and JumpAttack 1; Scrake
+SawZombieAttack 2, SawImpaleLoop 1 per loop (0.13 s in instead of 0.30 s);
+Fleshpound PoundAttack1 2 x ~13, PoundAttack2 4 x ~6.4, PoundAttack3 1 x
+~26; Crawler, Bloat, Siren, Husk 1 hit each (unchanged count, earlier or
+later to match the notify). No `zed_melee_no_notify`. Tests 117 pass;
+clippy 0 new warnings (1 old one in boss.rs test code).
+**Still broken / not tested:** zeds with two-hit attacks now do about
+twice the damage per attack (as in KF): not play-tested for feel. The
+raging Fleshpound's FPRageAttack (0.511, 0.515) and the headless Clot's
+Claw / Claw2 not run. Worktree based on 2bf299d, behind main: this edit
+needs merging into main's newer melee block (whole-number damage,
+dam_type, source).
+**Next:** your check in play.

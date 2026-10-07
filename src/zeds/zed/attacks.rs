@@ -396,3 +396,37 @@ pub(super) fn door_bashing(
         &format!("id={} door={} kind={} sequence={}", z.id, d.info.name, if ranged { "ranged" } else { "bash" }, c.model.sequence_name(seq).unwrap_or("?")),
     );
 }
+
+/// The ClawDamageTarget notify times (0..1) of an attack animation, in
+/// order. KF's melee damage comes only from these AnimNotify_Script
+/// notifies in the zed's MeshAnimation: each one calls ClawDamageTarget
+/// (MeleeDamage -5% .. +5%, then MeleeDamageTarget's reach check), so an
+/// attack can hit more than once: the Gorefast's GoreAttack1 at 0.256 and
+/// 0.445, the Clot's Claw at 0.354 and 0.650, the Fleshpound's
+/// PoundAttack2 four times. An animation without one does no damage.
+pub(super) fn claw_times(model: &SkinnedModel, seq: usize) -> Vec<f32> {
+    let mut times: Vec<f32> = model
+        .notifies(seq)
+        .iter()
+        .filter(|n| n.name.eq_ignore_ascii_case("ClawDamageTarget"))
+        .map(|n| n.time)
+        .collect();
+    times.sort_by(f32::total_cmp);
+    times
+}
+
+/// The notifies an animation at `progress` (0..1) has passed and not yet
+/// fired (bit i of `fired` set = notify i done; at most 8). Returns the
+/// updated bits and the indices due now, in order: a long frame can pass
+/// two at once, and each still fires (UE2 runs every notify crossed).
+pub(super) fn due_notifies(times: &[f32], progress: f32, fired: u8) -> (u8, Vec<usize>) {
+    let mut bits = fired;
+    let mut due = Vec::new();
+    for (i, at) in times.iter().enumerate().take(8) {
+        if progress >= *at && bits & (1 << i) == 0 {
+            bits |= 1 << i;
+            due.push(i);
+        }
+    }
+    (bits, due)
+}

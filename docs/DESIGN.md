@@ -859,6 +859,34 @@ ZombieClot only). It has no left forearm (bLeftArmGibbed, HideBone).
 2. Running and charge attacks as above. Check: logs of state changes, speed
    and attacks in a scripted run.
 
+**Melee hit timing (all zeds, 2026-10-06).** KF has no fixed "hit at half
+the swing": each attack animation carries AnimNotify_Script markers named
+ClawDamageTarget (a "notify" is a timed event stored in the animation
+file). Each marker is one damage check (KFMonster.ClawDamageTarget ->
+MeleeDamageTarget: MeleeDamage -5% .. +5%, reach MeleeRange x 1.4 + both
+radii). We used to do one check at 50% of every attack; now each marker
+fires once when the animation passes it (`attacks::claw_times`,
+`due_notifies`; log `zed_melee_hit` / `zed_attack_missed` with
+`hit=N/M notify_at=..`). Times read with `kfpkg notifies
+Animations/KF_Freaks_Trip.ukx <Anim>` (0..1 of the animation):
+
+| Zed | Attack: notify times |
+| --- | --- |
+| Gorefast | GoreAttack1 0.256, 0.445; GoreAttack2 0.268, 0.466 |
+| Clot | Claw 0.354, 0.650; Claw2 0.309, 0.566; ClotGrapple 0.375, 0.691; ClotGrappleTwo 0.271, 0.656; ClotGrappleThree 0.676 |
+| Stalker | StalkerAttack1 0.240, 0.614; StalkerSpinAttack 0.464; JumpAttack 0.530 |
+| Scrake | SawZombieAttack1 0.429, 0.467; SawZombieAttack2 0.353, 0.578; SawImpaleLoop 0.133 |
+| Fleshpound | PoundAttack1 0.284, 0.592; PoundAttack2 0.407, 0.465, 0.539, 0.604; PoundAttack3 0.510; FPRageAttack 0.511, 0.515 |
+| Crawler | ZombieLeapAttack 0.637; ZombieLeapAttack2 0.462; ZombieSpring 0.487 |
+| Bloat | BloatChop2 0.394 |
+| Siren | Siren_Bite / Siren_Bite2 0.484 |
+| Husk (KF_Freaks2_Trip.ukx, Burns_anim) | Strike 0.452 |
+
+So most attacks now hit twice (the Fleshpound's x 0.5 / x 0.25 per-hit
+cut in ZombieFleshPound.ClawDamageTarget exists because of this). An
+attack animation without a ClawDamageTarget notify does no damage (logged
+`zed_melee_no_notify`). The Patriarch already worked this way.
+
 ## Gore steps A-C (steps A-B implemented 2026-10-04)
 
 Order agreed with you: A. gun decapitation (neck stump, brain chunks);

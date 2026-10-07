@@ -880,6 +880,29 @@ mod tests {
         assert_eq!(z.update_running(300.0, false, 0.1), None, "headless: no running");
     }
 
+    /// A melee attack hits once at each ClawDamageTarget notify: the
+    /// Gorefast's GoreAttack1 (notifies at 0.256 and 0.445) twice, each
+    /// once, and a long frame passing both fires both.
+    #[test]
+    fn melee_hits_fire_once_at_each_notify() {
+        let gore_attack1 = [0.256, 0.445];
+        let (bits, due) = attacks::due_notifies(&gore_attack1, 0.2, 0);
+        assert!(due.is_empty(), "before the first swing");
+        let (bits, due) = attacks::due_notifies(&gore_attack1, 0.26, bits);
+        assert_eq!(due, vec![0], "first blade");
+        let (bits, due) = attacks::due_notifies(&gore_attack1, 0.30, bits);
+        assert!(due.is_empty(), "the first blade only once");
+        let (bits, due) = attacks::due_notifies(&gore_attack1, 0.45, bits);
+        assert_eq!(due, vec![1], "second blade");
+        assert_eq!(bits.count_ones(), 2);
+        let (_, due) = attacks::due_notifies(&gore_attack1, 0.9, bits);
+        assert!(due.is_empty(), "nothing after both");
+        let (bits, due) = attacks::due_notifies(&gore_attack1, 0.5, 0);
+        assert_eq!((bits, due), (0b11, vec![0, 1]), "one long frame: both");
+        // No notify: no hit.
+        assert!(attacks::due_notifies(&[], 1.0, 0).1.is_empty());
+    }
+
     #[test]
     fn solo_damage_is_three_quarters_rounded_down() {
         assert_eq!(solo_damage(6.0), 4.0); // Clot claw: 4.5 -> 4
