@@ -4543,6 +4543,231 @@ against the reference and by logs.
   typing (offline); scrolling text boxes; the lobby countdown
   ("Game will auto-commence in"); keyboard focus / tabbing.
 
+## Pickups: weapons, ammo boxes and vests lying in the map (planned and built 2026-10-07)
+
+Words: a **pickup** is an item lying in the map that a player takes by
+walking into it (KF's Pickup actors). A **spawn point** is a map spot
+where KF may put a random weapon or vest (KFRandomItemSpawn). An **ammo
+box** is a map spot with a box of ammo (KFAmmoPickup).
+
+### What KF does (from the scripts and class defaults)
+
+- **The maps**: 34 maps have 541 ammo boxes and 33 maps 468 spawn points
+  (e.g. KF-WestLondon 14 and 14). Only KF-Aperture (3 M79s, 2 vests) and
+  KF-Icebreaker (a Handcannon and a Katana) place weapons directly; one
+  WebPickup in KF-Aperture is deleted in the map file.
+- **Spawn point** (KFRandomItemSpawn, KFRandomSpawn defaults): a list of
+  up to 11 pickup classes with weights. With `bForceDefault` (true by
+  default) the class default list is used: Dual 9mms 3, Shotgun 1,
+  Bullpup 3, Handcannon 3, Lever Action 2, Axe 1, Machete 1, Vest 2.
+  6 spawn points (KF-Waterworks, KF-FilthsCross, KF-Manor, KF-Departed)
+  set `bForceDefault=false` with their own list. A weight of 0 counts as
+  1. The class is drawn with GetWeightedRandClass (Rand(total + 1),
+  walking the tally).
+- **Which are on** (KFGameType.SetupPickups, at the match start and at
+  the start of every wave after the first, the boss wave included):
+  every spawn point is switched off and every ammo box put to sleep, then
+  `int(count x share)` random ones are switched on: Normal (our
+  difficulty) 30% of spawn points and 50% of ammo boxes (Beginner 50/65,
+  Hard 20/35, Suicidal and above 10/10). Ammo boxes appear at once.
+- **A switched-on spawn point** (KFRandomSpawn.Timer, EnableMe 0.1 s):
+  when no player is within 2000 units with a clear line from their eyes
+  (PlayersCanSeeMe), it rolls a class and puts that pickup there
+  (TurnOn); else it tries again 5-10 s later. Every 20-40 s
+  (InitialWaitTime 20 + random) an unseen spawn point rolls again: the
+  item can change while nobody looks. A switched-off one removes its
+  item at once if nobody sees it, else 1-6 s later when unseen.
+- **Taking a weapon from a spawn point** (KFWeaponPickup.Touch,
+  KFGameType.WeaponPickedUp): the pickup is gone for good (its
+  RespawnTime is set to 0), the spawn point is switched off, and another
+  random switched-off spawn point is switched on after 30 s / number of
+  players. A vest is not a KFWeaponPickup: taking it leaves its spawn
+  point on, which rolls a new item at its next 20-40 s timer.
+- **Taking ammo** (KFAmmoPickup.Touch, KFGameType.AmmoPickedUp): the box
+  sleeps (hidden) until the next wave's SetupPickups, and another random
+  sleeping box wakes after RespawnTime / living players (Ammo default 30
+  s; 3 maps set 120), then waits until no player has a clear line to it
+  (checked every second), 0.5 s more, and appears.
+- **Directly placed pickups** (Aperture, Icebreaker): there from the
+  start, not part of SetupPickups; after being taken they come back
+  after their RespawnTime (Aperture's: 12000 s, i.e. never in practice;
+  a KFWeaponPickup's default 100 s, waiting while a player sees it).
+- **Touch** (Pickup.ValidTouch): the player's cylinder (radius 20, half
+  height 50) overlaps the pickup's (weapons 20-35 x 5, ammo 20 x 10,
+  vest 30 x 5) and a straight line from the player's centre to the
+  pickup is clear. Touch happens when the overlap begins, and when a
+  pickup appears on a player already standing in it (state Pickup's
+  Begin: CheckTouching).
+- **Weapons** (KFWeaponPickup.CheckCanCarry, KFWeapon.HandlePickupQuery,
+  Single / Dualies / Deagle / DeaglePickup): too heavy for the carry
+  limit: "You can not carry this weapon" (KFMainMessages 2, at most every
+  0.5 s); already owned: "You already have this weapon" (KFMainMessages
+  1); a Dual 9mm pickup with the 9mm owned turns it into the duals (the
+  single's rounds join, as when buying); a Handcannon pickup with a
+  Handcannon owned gives Dual Handcannons. A fresh pickup gives the
+  weapon with its starting ammo and a full magazine (KFWeapon.GiveAmmo),
+  SellValue -1 (it sells for 75% of its price, like a starting weapon).
+  The new weapon is brought up if its Priority is higher than the held
+  one's (Weapon.ClientWeaponSet, bNeverSwitchOnPickup=false in User.ini).
+- **Ammo box**: every carried ammo type that accepts ammo pickups
+  (KFAmmunition.bAcceptsAmmoPickups; not the chainsaw's) and is not full
+  gets its AmmoPickupAmount (9mm 30, shotgun 8, LAW 2, flamethrower 80,
+  M203 2, ...) x the perk's GetAmmoPickupMod (Medic: medic guns +20% a
+  level up to 5; Commando: assault rifles 1.10 / 1.20 / 1.25; Firebug:
+  fire weapons and MAC10 +10% a level; others 1.0; the Support Specialist
+  has none), up to MaxAmmo. Types with AmmoPickupAmount 1 (frags, pipe
+  bombs) get one round with chance 1 / GameDifficulty (50% on Normal). If
+  nothing could take ammo the box stays. The Hunting Shotgun reloads both
+  barrels if both were empty (BoomStick.AmmoPickedUp).
+- **Vest** (Vest / ShieldPickup.Touch, KFPawn.AddShieldStrength): taken
+  only below 100 armour; armour + 100, at most 100.
+- **Message** (PickupMessagePlus: white, 3 s, at 90% of the screen
+  height): the pickup's PickupMessage: "You got the Shotgun.", "You got
+  the Bullpup", "You found another 9mm handgun", "Found Some Ammo!",
+  "You found a Kevlar Assault Vest", ...
+- **Sound** (Pickup.AnnouncePickup): the pickup's PickupSound at the
+  pickup (SLOT_Interact) with its TransientSoundVolume / Radius: weapons
+  their own (KF_PumpSGSnd.SG_Pickup, ...; default
+  KF_BullpupSnd.Bullpup_Pickup) at 100, ammo KF_InventorySnd.Ammo_GenericPickup
+  at 100, the vest KF_InventorySnd.Vest_Pickup at 150 radius 450.
+- **Looks**: the pickup class's StaticMesh (KF_pickups_Trip.*,
+  kf_generic_sm.pickups.Metal_Ammo_Box; 3 Christmas maps give their ammo
+  boxes Workshop_SM.wsgift02b at DrawScale 0.4), DrawScale, DrawScale3D,
+  PrePivot; CullDistance (ammo 4000, weapons 6500). They fall to the
+  floor (Physics=PHYS_Falling) and lie still: no spin or bob (the base
+  class spins only in PHYS_Rotating, which KF pickups do not use).
+
+### Our design
+
+- `crates/ue-assets/src/level.rs`: placed pickups and spawn points are
+  collected (`LevelContents.pickups`: class, location, rotation, export)
+  and no longer drawn as plain meshes (the 3 Christmas maps drew their
+  gift-box ammo boxes as scenery).
+- **`src/game/pickups/` (new), the pickup core** for every kind of
+  pickup, so dosh tossing and weapon dropping can reuse it:
+  - `classes.rs`: `PickupClass` read from class defaults (kind, mesh,
+    scale, pre-pivot, collision cylinder, sound, message, cull distance,
+    respawn time) and `PickupGives` (what taking it gives: a weapon with
+    its weight and optional carried state, ammo, armour, cash).
+  - `rules.rs`: KF's rules above as plain code with no Bevy in it (spawn
+    points, ammo boxes, placed pickups, SetupPickups, WeaponPickedUp,
+    AmmoPickedUp), fed the time and "can a player see this", unit-tested.
+  - `mod.rs`: the `Pickups` resource: every pickup with a **network id**
+    (spawn points first, then ammo boxes, then placed pickups, in map
+    order; dropped items later get ids from 100000), its class, resting
+    place (dropped to the floor with a trace), and whether it is shown.
+    Systems: start the rules when the match begins (frame 10 and the
+    lobby closed, as the wave timer) and on a restart; call SetupPickups
+    at each wave start; run the timers; draw / remove the meshes; detect
+    the local player's touches; play the sound and show the message.
+  - `src/weapons/weapon/pickup.rs` (new): the inventory side. A
+    `PickupUse` message asks "could my player take this?" (dry run) or
+    "give it" (apply); the answer comes back as `PickupUsed`. It applies
+    KF's weight, owned, ammo and armour rules above.
+- **Who decides**: in single player and on a network host this game runs
+  the rules. A touch is first checked against the player's own inventory
+  (dry run); if it fits, the rules mark the pickup taken (log
+  `pickup_collected`), the item is given, the sound plays, the message
+  shows.
+- **Network games** (the host owns the pickups, like the doors):
+  - the host sends every client the list of shown pickups (id, class,
+    place, rotation, what it gives) when it changes and every 2 s (for
+    late joiners); clients draw exactly that list and run no rules.
+  - a client's touch is dry-run against its own inventory (inventories
+    are each game's own in this prototype), then sent as "I take pickup
+    N (class C)". The host checks it (the pickup exists and is shown,
+    the class has not changed, the player is alive and within reach of
+    it: overlap distance + 150 units, for the 0.1 s the remote pawn is
+    drawn behind); then marks it taken and tells the taker "yours" (its
+    game gives the item and shows the message) and everyone else "gone"
+    (they play the sound). A refused request gets `pickup_denied` with
+    the reason (`not_shown`, `class_changed`, `dead`, `too_far`).
+  - the host's own player goes through the same check, so whoever's
+    request reaches the host first gets the item and the other is
+    refused.
+  - Not KF's model: KF's server knows every inventory and does the whole
+    touch itself; ours trusts the client's own inventory check (fine
+    between friends). A rare race (the client's inventory changed between
+    its check and the host's answer) loses the item (logged
+    `pickup_apply_failed`).
+- **Logs**: `pickups_loaded` (counts per map), `pickup_setup` (which are
+  on), `pickup_spawned` / `pickup_hidden` / `pickup_respawned` (with ids
+  and classes), `pickup_touch`, `pickup_collected`, `pickup_denied`,
+  `pickup_given`, `pickup_refused` (inventory rules), and on the network
+  `net_pickups_sent` / `net_pickups_received`, `net_pickup_request`,
+  `net_pickup_taken`.
+- **Test inputs**: `warp_pickup:KIND[:DIST]` stands the player on (or
+  DIST units from, facing) the lowest-id shown pickup of KIND (weapon,
+  ammo, vest, any); `look_pickup:KIND` turns the view to it.
+- **For dosh tossing and weapon dropping** (next agent): spawn a pickup
+  with `Pickups::spawn_dynamic` (class, place, `PickupGives` with the
+  cash amount or the weapon's magazine, ammo and sell value, lifetime);
+  it gets an id from 100000, is drawn, touched, sent to clients and taken
+  through the same path. The inventory side already applies
+  `PickupGives::Cash` and a weapon's carried state (not tested: nothing
+  creates them yet).
+- **Guesses (not in the scripts)**: our random numbers are a fixed-seed
+  generator (KF's FRand is not reproducible); when a switched-off spawn
+  point removes its item after the 1-6 s delay we stop there (KF's code
+  then falls into the turn-on check; what it does with the destroyed
+  item depends on native engine code we cannot see); pickups lie flat
+  with the spawn point's yaw (KFRandomSpawn tilts them by a random 1000-
+  11000 pitch before they fall; bOrientOnSlope on landing is native and
+  we assume it levels them); KFWeaponPickup's "player sees me"
+  (LineOfSightTo, native) is a clear line from the eyes; the
+  pickup-overlay shine (UV2Texture PickupOverlay) and AmbientGlow are not
+  drawn.
+
+### As built (2026-10-07; headless runs, not played by you)
+
+- Files: `src/game/pickups/{mod,classes,rules}.rs`,
+  `src/weapons/weapon/pickup.rs`, `src/net/pickups.rs`; small changes in
+  `crates/ue-assets/src/level.rs`, `src/world/map.rs`,
+  `src/weapons/weapon/{mod,load}.rs` (`pickup_amount`), `src/game/perks.rs`
+  (`ammo_pickup_mod`), `src/game/hud.rs` (`MessageClass::Pickup`),
+  `src/net/{mod,protocol}.rs`, `src/main.rs`.
+- Loaded on KF-WestLondon (14 spawn points, 14 boxes), KF-Farm (18, 27),
+  KF-EvilSantasLair (15, 20, gift-box meshes), KF-Aperture (9, 20 with
+  RespawnTime 120, 5 placed: 3 M79s, 2 vests; the deleted WebPickup left
+  out), KF-Manor (14, 14, 3 spawn points with their own lists). The
+  plain scenery count drops by those actors (`skipped_actors
+  ... "KFAmmoPickup:pickup": 14`).
+- Setup: Normal gives `spawn_points_on=4/14`, `ammo_on=7/14` on
+  KF-WestLondon at the match start (after the lobby), new random ones at
+  the wave start (`pickup_setup reason=wave_start`; old items removed
+  as nobody saw them). Items appear 0.1 s after the setup where nobody
+  sees them and change every 20-40 s while unseen (`why=rerolled`).
+- Taking: ammo box `ammo=[9mm Tactical:+30:total=150 Frag Grenade:+1]`
+  (the frag at 50%: +1 then +0 in two takes); walking into a Bullpup
+  from 150 units: `pickup_given ... ammo=40+120 switched=true`, "You got
+  the Bullpup", `KF_BullpupSnd.Bullpup_Pickup` at the pickup; vest
+  `armour=0->100`, a second vest `armour_full`; 9mm + Dual 9mm pickup:
+  `replaced_single=true ammo=30+210`; a second Handcannon:
+  `weapon=KFMod.DualDeagle replaced_single=true`; an owned Machete:
+  "You already have this weapon"; too heavy (Shotgun 8 on 9 of 15, and
+  a Handcannon at 15 of 15): "You can not carry this weapon" (KF checks
+  the weight before "already owned", so an owned heavy gun shows the
+  weight message, as in KF).
+- Timers: a box taken at 7.17 s, another box shown at 37.71 s (30 s +
+  0.5 s); a weapon taken at 8.93 s, another spawn point's item out at
+  38.93 s (30 s / 1 player).
+- Looks: screenshots `work/screenshots/KF-WestLondon-pk-c-*` (a Shotgun
+  on the street; the vest), `KF-Farm-pk-*` (ammo box on the barn floor),
+  `KF-EvilSantasLair-pk-*` (the gift box), `KF-Aperture-pk-*`
+  (untracked). The ammo box's mesh is centred by its PrePivot (bounds
+  y -1..43, PrePivot y 21), which confirms the sign. Weapons lie 5
+  units above the floor (their collision cylinder's half height; the
+  meshes start at their own z 0); the gift boxes about 5 units (if UE2
+  scales PrePivot with DrawScale, as we assume; not checked).
+- Network: docs/multiplayer-prototype.md, "Pickups shared".
+- Not done: the pickup shine (UV2Texture overlay) and AmbientGlow, so
+  dark guns on dark floors are hard to see; the random tilt of spawned
+  items; bots' interest in pickups (no bots); KF's InventorySpot
+  navigation marks; dropped weapons and tossed dosh (core ready, not
+  used yet). Found while testing, not changed: on KF-WestLondon the
+  walking player falls through the road at about (-2769, 883, -3858)
+  (a hole in our walking collision there; rays do hit the road).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

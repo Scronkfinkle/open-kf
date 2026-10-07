@@ -191,6 +191,9 @@ pub enum MessageClass {
     /// KFMod.KFCriticalEventPlus: a map's text (ClientMessage with
     /// 'CriticalEvent', HUDKillingFloor.Message), in `text`.
     Critical,
+    /// UnrealGame.PickupMessagePlus: the pickup's PickupMessage
+    /// (PlayerController.HandlePickup), in `text`.
+    Pickup,
 }
 
 /// PlayerController.ReceiveLocalizedMessage / BroadcastLocalizedMessage.
@@ -212,6 +215,11 @@ impl LocalMessage {
     /// a stand-in.
     pub fn text(text: String) -> Self {
         LocalMessage { class: MessageClass::Critical, switch: 0, text: Some(text) }
+    }
+
+    /// PickupMessagePlus with a pickup's PickupMessage.
+    pub fn pickup(text: String) -> Self {
+        LocalMessage { class: MessageClass::Pickup, switch: 0, text: Some(text) }
     }
 }
 
@@ -275,6 +283,17 @@ fn message_style(m: &LocalMessage) -> Option<MessageStyle> {
         }
         // KFCriticalEventPlus: Lifetime 5, DrawColor (244, 237, 205); the
         // rest LocalMessage's (PosY 0.83, FontSize 0).
+        // PickupMessagePlus: bIsUnique, bFadeMessage, PosY 0.9; the rest
+        // LocalMessage's (Lifetime 3, white, FontSize 0).
+        MessageClass::Pickup => Some(MessageStyle {
+            text: m.text.clone()?,
+            lifetime: 3.0,
+            pos_y: 0.9,
+            font_size: 0,
+            color: [255, 255, 255],
+            waiting_font: false,
+            complex: false,
+        }),
         MessageClass::Critical => Some(MessageStyle {
             text: m.text.clone()?,
             lifetime: 5.0,

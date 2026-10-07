@@ -1,0 +1,1091 @@
+//! Pickups: the weapons, ammo boxes and vests lying in a map (KF's Pickup
+//! actors and KFRandomItemSpawn), and the core that dropped weapons and
+//! tossed dosh can reuse. Plan and KF's rules: docs/DESIGN.md, "Pickups".
+//!
+//! Every pickup has a network id: the map's spawn points first, then its
+//! ammo boxes, then pickups placed directly, in map order (the same on
+//! every game that loaded the map); dropped items get ids from
+//! `DYNAMIC_ID_BASE`. In single player and on a network host this game
+//! runs KF's rules (`rules.rs`); a network client draws the host's list
+//! and asks the host for each item it touches (net/pickups.rs).
+
+pub mod classes;
+pub mod rules;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
+
+use avian3d::prelude::*;
+use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
+use ue_assets::class_defaults::ClassDefaults;
+use ue_assets::level::PlacedPickup;
+use ue_assets::package::ObjectRef;
+use ue_assets::package_set::{LoadedPackage, ObjectHandle, PackageSet};
+use ue_assets::properties::{Rotator, Value, read_export_properties};
+use ue_assets::static_mesh::read_static_mesh;
+
+pub use classes::{CarriedWeapon, PickupClass, PickupGives};
+use rules::{AmmoBox, AmmoPhase, Placed, PlacedPhase, RuleEvent, Rules, Senses, SpawnPoint};
+
+use crate::audio::mixer::{Emitter, PlaySound, Slot as SoundSlot};
+use crate::engine::camera::FlyCamera;
+use crate::engine::coords::{self, SCALE};
+use crate::engine::runlog;
+use crate::player::walk::{Walker, kf};
+
+/// Ids of pickups made during the game (dropped weapons, tossed dosh).
+pub const DYNAMIC_ID_BASE: u32 = 100_000;
+/// KFRandomSpawn.PlayersCanSeeMe's distance.
+const SEE_DISTANCE: f32 = 2000.0;
+/// Network host: extra reach allowed between where it draws a client's
+/// pawn (0.1 s behind) and the pickup (Unreal units).
+const REMOTE_REACH_SLACK: f32 = 150.0;
+/// A touch waiting for an answer is forgotten after this long (seconds).
+const PENDING_TIMEOUT: f64 = 2.0;
+
+/// A map place for a pickup (spawn point, ammo box or placed pickup).
+#[derive(Clone, Debug)]
+pub struct Spot {
+    pub name: String,
+    /// Unreal units (a spawn point already 1 lower, as KFRandomSpawn.PostBeginPlay).
+    pub location: Vec3,
+    pub rotation: Rotator,
+    /// The map's own StaticMesh, DrawScale, DrawScale3D, CullDistance
+    /// (the Christmas maps' gift-box ammo boxes).
+    pub mesh: Option<String>,
+    pub draw_scale: Option<f32>,
+    pub draw_scale_3d: Option<[f32; 3]>,
+    pub cull_distance: Option<f32>,
+}
+
+/// One pickup shown in the world, as every game draws it (sent by the
+/// host to clients).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ShownPickup {
+    pub id: u32,
+    /// The pickup class's full path.
+    pub class: String,
+    /// Resting place (on the floor), Unreal units.
+    pub location: [f32; 3],
+    /// Unreal rotator (pitch, yaw, roll).
+    pub rotation: [i32; 3],
+    pub gives: PickupGives,
+}
+
+/// A pickup made during the game (host / single player).
+struct Dynamic {
+    /// Game seconds when it goes away (None: never).
+    expires: Option<f64>,
+}
+
+#[derive(Resource, Default)]
+pub struct Pickups {
+    /// The map's pickup places; index = id.
+    pub spots: Vec<Spot>,
+    /// Pickup classes by lowercase path.
+    pub classes: HashMap<String, PickupClass>,
+    /// KF's rules (single player and host; a client does not run them).
+    rules: Option<Rules>,
+    /// What is shown now, by id.
+    pub shown: BTreeMap<u32, ShownPickup>,
+    dynamic: BTreeMap<u32, Dynamic>,
+    next_dynamic: u32,
+    started: bool,
+    restarts_seen: u32,
+    last_phase: Option<crate::game::waves::Phase>,
+    /// The 30 s summary line last written (game time / 30).
+    last_summary: Option<u64>,
+    /// The last pickup this game saw taken (for the `warp_pickup:taken`
+    /// test input).
+    last_taken: Option<ShownPickup>,
+}
+
+impl Pickups {
+    pub fn class(&self, path: &str) -> Option<&PickupClass> {
+        self.classes.get(&path.to_ascii_lowercase())
+    }
+
+    /// A pickup made during the game (a dropped weapon, tossed dosh): shown
+    /// at `location` (Unreal units, already where it rests) until taken or
+    /// until `lifetime` seconds pass. Host / single player only; the class
+    /// must be loaded (`classes`). Returns its id.
+    pub fn spawn_dynamic(&mut self, class: &str, location: Vec3, rotation: [i32; 3], gives: PickupGives, lifetime: Option<f64>, now: f64) -> u32 {
+        let id = DYNAMIC_ID_BASE + self.next_dynamic;
+        self.next_dynamic += 1;
+        self.dynamic.insert(id, Dynamic { expires: lifetime.map(|l| now + l) });
+        self.shown.insert(id, ShownPickup { id, class: class.to_string(), location: location.to_array(), rotation, gives: gives.clone() });
+        runlog::kv("pickup_spawned", &format!("id={id} class={class} why=dynamic gives={} at=({:.0}, {:.0}, {:.0})", gives.label(), location.x, location.y, location.z));
+        id
+    }
+}
+
+/// Network games: what the host and clients send about pickups
+/// (net/pickups.rs carries it). In single player nothing uses it.
+#[derive(Resource, Default)]
+pub struct PickupNet {
+    pub role: PickupRole,
+    /// Client: requests to send.
+    pub outgoing: Vec<PickupRequest>,
+    /// Host: requests from clients (peer, request).
+    pub incoming: Vec<(u64, PickupRequest)>,
+    /// Host: notices to send.
+    pub notices: Vec<HostNotice>,
+    /// Client: the host's newest list, and notices received.
+    pub from_host: Option<Vec<ShownPickup>>,
+    pub received: Vec<PickupNotice>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PickupRole {
+    #[default]
+    Off,
+    Host,
+    Client,
+}
+
+/// "My player takes pickup `id` (of class `class`)" (client to host).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PickupRequest {
+    pub id: u32,
+    pub class: String,
+}
+
+/// What the host tells a client.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum PickupNotice {
+    /// Pickup `id` was taken; `yours`: by this client's player (its game
+    /// gives the item).
+    Taken { id: u32, class: String, location: [f32; 3], gives: PickupGives, yours: bool },
+    /// This client's request was refused.
+    Denied { id: u32, reason: String },
+}
+
+/// Host side, before it is addressed per client.
+#[derive(Clone, Debug)]
+pub enum HostNotice {
+    /// `taker`: the peer who took it (None: the host's own player).
+    Taken { taker: Option<u64>, id: u32, class: String, location: [f32; 3], gives: PickupGives },
+    Denied { peer: u64, id: u32, reason: String },
+}
+
+/// Ask the inventory (weapons/weapon/pickup.rs) whether this game's
+/// player can take a pickup (`apply` false: a dry run, nothing changes) or
+/// to give it (`apply` true).
+#[derive(Message, Clone, Debug)]
+pub struct PickupUse {
+    pub id: u32,
+    pub class: String,
+    pub gives: PickupGives,
+    pub apply: bool,
+}
+
+/// The inventory's answer.
+#[derive(Message, Clone, Debug)]
+pub struct PickupUsed {
+    pub id: u32,
+    pub class: String,
+    pub apply: bool,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Pickup systems, in this order each frame; the inventory answers
+/// between `Touch` and `Answer`.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PickupSystems {
+    Rules,
+    Touch,
+    Answer,
+}
+
+pub struct PickupPlugin;
+
+impl Plugin for PickupPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Pickups>()
+            .init_resource::<PickupNet>()
+            .init_resource::<LocalTouch>()
+            .insert_non_send(PickupModels::default())
+            .add_message::<PickupUse>()
+            .add_message::<PickupUsed>()
+            .configure_sets(Update, (PickupSystems::Rules, PickupSystems::Touch, PickupSystems::Answer).chain())
+            .add_systems(Update, (run_rules, follow_host).chain().in_set(PickupSystems::Rules))
+            .add_systems(Update, (scripted_pickup_input, touch).chain().in_set(PickupSystems::Touch).after(crate::player::walk::WalkSystems))
+            .add_systems(Update, (answers, host_requests, sync_visuals).chain().in_set(PickupSystems::Answer));
+    }
+}
+
+// ------------------------------------------------------------ map load
+
+fn class_of(set: &PackageSet, path: &str) -> Option<ObjectHandle> {
+    classes::find_class(set, path)
+}
+
+/// Loads a class into `classes` (once); false if it cannot be used.
+fn ensure_class(classes: &mut HashMap<String, PickupClass>, set: &PackageSet, defaults: &ClassDefaults, path: &str) -> bool {
+    let key = path.to_ascii_lowercase();
+    if classes.contains_key(&key) {
+        return true;
+    }
+    match classes::read_class(set, defaults, path) {
+        Ok(c) => {
+            runlog::kv(
+                "pickup_class",
+                &format!(
+                    "class={} gives={} mesh={} draw_scale={} scale3d={:?} pre_pivot={:?} collision={}x{} sound={} volume={} radius={} message=\"{}\" cull={} respawn={}",
+                    c.path,
+                    c.gives.label(),
+                    c.mesh.as_deref().unwrap_or("none"),
+                    c.draw_scale,
+                    c.draw_scale_3d,
+                    c.pre_pivot,
+                    c.radius,
+                    c.height,
+                    c.sound.as_deref().unwrap_or("none"),
+                    c.sound_volume,
+                    c.sound_radius,
+                    c.message,
+                    c.cull_distance,
+                    c.respawn_time
+                ),
+            );
+            classes.insert(key, c);
+            true
+        }
+        Err(e) => {
+            runlog::kv("pickup_class_error", &format!("class={path} error=\"{e}\""));
+            false
+        }
+    }
+}
+
+/// A map export's own object property as a full path.
+fn own_object(set: &PackageSet, lp: &Rc<LoadedPackage>, v: Option<&Value>) -> Option<Option<String>> {
+    match v {
+        Some(Value::Object(r)) if *r == ObjectRef::Null => Some(None),
+        Some(Value::Object(r)) => Some(set.resolve(lp, *r).map(|h| h.path())),
+        _ => None,
+    }
+}
+
+/// Reads the map's pickups (map.rs calls this while loading the map).
+pub fn load(set: &PackageSet, defaults: &ClassDefaults, lp: &Rc<LoadedPackage>, placed: &[PlacedPickup]) -> Pickups {
+    let pkg = &lp.pkg;
+    let mut out = Pickups::default();
+    let mut spawn_spots = Vec::new();
+    let mut ammo_spots = Vec::new();
+    let mut placed_spots = Vec::new();
+    let (mut spawns, mut ammo, mut direct) = (Vec::new(), Vec::new(), Vec::new());
+    let mut custom_lists = 0;
+    for p in placed {
+        let Some(class) = class_of(set, &p.class) else {
+            runlog::kv("pickup_class_error", &format!("class={} error=\"class not found\" actor={}", p.class, p.name));
+            continue;
+        };
+        let props = match read_export_properties(pkg, p.export) {
+            Ok(props) => props,
+            Err(e) => {
+                runlog::kv("pickup_class_error", &format!("actor={} error=\"{e}\"", p.name));
+                continue;
+            }
+        };
+        let own_float = |name: &str| match props.get(pkg, name) {
+            Some(Value::Float(f)) => Some(*f),
+            _ => None,
+        };
+        let mut spot = Spot {
+            name: p.name.clone(),
+            location: Vec3::from_array(p.location),
+            rotation: p.rotation,
+            mesh: own_object(set, lp, props.get(pkg, "StaticMesh")).flatten(),
+            draw_scale: own_float("DrawScale"),
+            draw_scale_3d: match props.get(pkg, "DrawScale3D") {
+                Some(Value::Vector(v)) => Some(*v),
+                _ => None,
+            },
+            cull_distance: own_float("CullDistance"),
+        };
+        if defaults.is_a(&class, "KFRandomSpawn") {
+            // bForceDefault: the class's own list, else the map's (an
+            // element the map did not save keeps the class default).
+            let force = match props.get(pkg, "bForceDefault") {
+                Some(Value::Bool(b)) => *b,
+                _ => matches!(defaults.get(&class, "bForceDefault"), Some((Value::Bool(true), _))),
+            };
+            custom_lists += usize::from(!force);
+            let mut list = Vec::new();
+            for k in 0..11u32 {
+                let own = if force { None } else { own_object(set, lp, props.get_at(pkg, "PickupClasses", k)) };
+                let path = match own {
+                    Some(p) => p,
+                    None => match defaults.get_at(&class, "PickupClasses", k) {
+                        Some((Value::Object(r), from)) if r != ObjectRef::Null => set.resolve(&from, r).map(|h| h.path()),
+                        _ => None,
+                    },
+                };
+                // NumClasses: up to the first None.
+                let Some(path) = path else { break };
+                let weight = match (if force { None } else { props.get_at(pkg, "PickupWeight", k).cloned() }).or_else(|| defaults.get_at(&class, "PickupWeight", k).map(|v| v.0)) {
+                    Some(Value::Int(w)) => w,
+                    _ => 0,
+                };
+                if ensure_class(&mut out.classes, set, defaults, &path) {
+                    let weapon = out.class(&path).is_some_and(|c| c.weapon_pickup);
+                    list.push((path, weight, weapon));
+                }
+            }
+            if list.is_empty() {
+                runlog::kv("pickup_class_error", &format!("actor={} error=\"no usable PickupClasses\"", p.name));
+                continue;
+            }
+            spot.location.z -= 1.0;
+            spawns.push(SpawnPoint::new(list));
+            spawn_spots.push(spot);
+        } else if defaults.is_a(&class, "KFAmmoPickup") {
+            let path = class.path();
+            if !ensure_class(&mut out.classes, set, defaults, &path) {
+                continue;
+            }
+            let respawn_time = own_float("RespawnTime").unwrap_or_else(|| out.class(&path).map_or(30.0, |c| c.respawn_time));
+            ammo.push(AmmoBox { class: path, respawn_time, phase: AmmoPhase::Asleep });
+            ammo_spots.push(spot);
+        } else {
+            let path = class.path();
+            if !ensure_class(&mut out.classes, set, defaults, &path) {
+                continue;
+            }
+            let c = out.class(&path).cloned();
+            let respawn_time = own_float("RespawnTime").unwrap_or_else(|| c.as_ref().map_or(0.0, |c| c.respawn_time));
+            direct.push(Placed { class: path, respawn_time, weapon_pickup: c.is_some_and(|c| c.weapon_pickup), phase: PlacedPhase::Shown });
+            placed_spots.push(spot);
+        }
+    }
+    runlog::kv(
+        "pickups_loaded",
+        &format!(
+            "spawn_points={} custom_lists={custom_lists} ammo_boxes={} placed={} classes={} ammo_respawn={:?} placed_classes=[{}]",
+            spawns.len(),
+            ammo.len(),
+            direct.len(),
+            out.classes.len(),
+            ammo.iter().map(|a| a.respawn_time as i64).collect::<std::collections::BTreeSet<_>>(),
+            direct.iter().map(|d| d.class.as_str()).collect::<Vec<_>>().join(" ")
+        ),
+    );
+    out.spots = spawn_spots.into_iter().chain(ammo_spots).chain(placed_spots).collect();
+    out.rules = Some(Rules::new(spawns, ammo, direct));
+    out
+}
+
+// ------------------------------------------------------------ helpers
+
+/// FastTrace: nothing of the level between two points (Unreal units).
+fn fast_trace(spatial: &SpatialQuery, a: Vec3, b: Vec3) -> bool {
+    let (from, to) = (coords::pos(a.to_array()), coords::pos(b.to_array()));
+    let Ok(dir) = Dir3::new(to - from) else { return true };
+    spatial.cast_ray(from, dir, (to - from).length(), true, &crate::world::collision::world_filter()).is_none()
+}
+
+/// Bevy -> Unreal units.
+fn to_unreal(v: Vec3) -> Vec3 {
+    Vec3::new(-v.z, v.x, v.y) / SCALE
+}
+
+/// Where a pickup comes to rest (Physics PHYS_Falling): straight down to
+/// the floor, its collision cylinder standing on it. Unreal units.
+fn rest_on_floor(spatial: &SpatialQuery, at: Vec3, height: f32) -> Vec3 {
+    let from = coords::pos(at.to_array());
+    let max = 1024.0 * SCALE;
+    match spatial.cast_ray(from, Dir3::NEG_Y, max, true, &crate::world::collision::world_filter()) {
+        Some(hit) => Vec3::new(at.x, at.y, at.z - hit.distance / SCALE + height),
+        None => at,
+    }
+}
+
+/// The player pawns the rules look at (Unreal centres): this game's player
+/// (the camera in fly mode) if alive, and on a host the other living players.
+struct HostSenses<'a, 'w, 's> {
+    spatial: &'a SpatialQuery<'w, 's>,
+    players: Vec<Vec3>,
+    connected: usize,
+    spots: &'a [Spot],
+}
+
+impl HostSenses<'_, '_, '_> {
+    fn at(&self, id: u32) -> Option<Vec3> {
+        self.spots.get(id as usize).map(|s| s.location)
+    }
+}
+
+impl Senses for HostSenses<'_, '_, '_> {
+    fn players_can_see(&self, id: u32) -> bool {
+        let Some(at) = self.at(id) else { return false };
+        self.players.iter().any(|p| p.distance(at) < SEE_DISTANCE && fast_trace(self.spatial, *p + Vec3::Z * kf::EYE_HEIGHT, at))
+    }
+    fn line_to_player(&self, id: u32) -> bool {
+        let Some(at) = self.at(id) else { return false };
+        self.players.iter().any(|p| fast_trace(self.spatial, at, *p))
+    }
+    fn player_sees(&self, id: u32) -> bool {
+        let Some(at) = self.at(id) else { return false };
+        self.players.iter().any(|p| fast_trace(self.spatial, *p + Vec3::Z * kf::EYE_HEIGHT, at))
+    }
+    fn living_players(&self) -> usize {
+        self.players.len().max(1)
+    }
+    fn num_players(&self) -> usize {
+        self.connected.max(1)
+    }
+}
+
+type PlayerQuery<'w, 's> = Query<'w, 's, (&'static Transform, Option<&'static Walker>), With<FlyCamera>>;
+
+/// This game's player's cylinder centre (Unreal units) and whether it has a
+/// walking pawn.
+fn local_player(player: &PlayerQuery) -> Option<(Vec3, bool)> {
+    let (t, walker) = player.single().ok()?;
+    let c = walker.map_or(t.translation - Vec3::Y * kf::EYE_HEIGHT * SCALE, |w| w.center);
+    Some((to_unreal(c), walker.is_some()))
+}
+
+fn role_of(mode: Option<&crate::net::NetMode>) -> PickupRole {
+    match mode {
+        Some(crate::net::NetMode::Host { .. }) => PickupRole::Host,
+        Some(crate::net::NetMode::Client { .. }) => PickupRole::Client,
+        _ => PickupRole::Off,
+    }
+}
+
+/// The rules' changes into the shown list.
+fn apply_events(p: &mut Pickups, spatial: &SpatialQuery) {
+    let Some(rules) = p.rules.as_mut() else { return };
+    let events = std::mem::take(&mut rules.events);
+    for ev in events {
+        match ev {
+            RuleEvent::Shown { id, class, why } => {
+                let Some(spot) = p.spots.get(id as usize) else { continue };
+                let Some(c) = p.classes.get(&class.to_ascii_lowercase()) else { continue };
+                let rest = rest_on_floor(spatial, spot.location, c.height);
+                // Spawn points: the spot's yaw, lying flat (DESIGN.md:
+                // guess); placed pickups and ammo boxes: their rotation.
+                let r = spot.rotation;
+                let rotation = if (id as usize) < p.rules.as_ref().map_or(0, |r| r.spawns.len()) { [0, r.yaw, 0] } else { [r.pitch, r.yaw, r.roll] };
+                runlog::kv(
+                    if why == "respawned" { "pickup_respawned" } else { "pickup_spawned" },
+                    &format!("id={id} class={class} why={why} spot={} at=({:.0}, {:.0}, {:.0}) dropped={:.0}", spot.name, rest.x, rest.y, rest.z, spot.location.z - rest.z),
+                );
+                p.shown.insert(id, ShownPickup { id, class, location: rest.to_array(), rotation, gives: c.gives.clone() });
+            }
+            RuleEvent::Hidden { id, why } => {
+                if let Some(s) = p.shown.remove(&id) {
+                    runlog::kv("pickup_hidden", &format!("id={id} class={} why={why}", s.class));
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ rules (single player, host)
+
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn run_rules(
+    time: Res<Time>,
+    frames: Res<bevy::diagnostic::FrameCount>,
+    menus: Res<crate::game::menus::MenuState>,
+    options: Res<crate::game::waves::GameOptions>,
+    game: Res<crate::game::waves::WaveGame>,
+    mode: Option<Res<crate::net::NetMode>>,
+    mut pickups: ResMut<Pickups>,
+    mut net: ResMut<PickupNet>,
+    spatial: SpatialQuery,
+    player: PlayerQuery,
+    health: Res<crate::game::combat::PlayerHealth>,
+    remote: Res<crate::game::combat::RemotePlayers>,
+) {
+    net.role = role_of(mode.as_deref());
+    if net.role == PickupRole::Client || pickups.rules.is_none() {
+        return;
+    }
+    // MatchInProgress (as the wave timer: after the lobby).
+    if frames.0 < 10 || menus.lobby_open() {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    let p = &mut *pickups;
+    let mut players: Vec<Vec3> = Vec::new();
+    if !health.dead
+        && let Some((c, _)) = local_player(&player)
+    {
+        players.push(c);
+    }
+    players.extend(remote.0.iter().filter(|r| r.alive).map(|r| to_unreal(r.centre)));
+    let spots = std::mem::take(&mut p.spots);
+    let senses = HostSenses { spatial: &spatial, players, connected: 1 + remote.0.len(), spots: &spots };
+    let waves = options.mode == crate::game::waves::GameMode::Waves;
+    let mut setup = None;
+    if !p.started {
+        p.started = true;
+        p.restarts_seen = game.restarts;
+        setup = Some("match_start");
+    } else if waves && game.restarts != p.restarts_seen {
+        p.restarts_seen = game.restarts;
+        if let Some(r) = p.rules.as_mut() {
+            r.reset();
+        }
+        setup = Some("restart");
+    }
+    if waves {
+        use crate::game::waves::Phase;
+        let phase = game.phase;
+        if p.last_phase == Some(Phase::Countdown) && matches!(phase, Phase::Wave | Phase::BossWave) && game.wave_num > 0 && setup.is_none() {
+            setup = Some("wave_start");
+        }
+        p.last_phase = Some(phase);
+    }
+    let rules = p.rules.as_mut().expect("checked");
+    if let Some(why) = setup {
+        let (on_w, on_a) = rules.setup_pickups(now, crate::game::dosh::GAME_DIFFICULTY, &senses);
+        runlog::kv(
+            "pickup_setup",
+            &format!(
+                "reason={why} wave={} difficulty={} spawn_points_on={}/{} {:?} ammo_on={}/{} {:?} placed={}",
+                game.wave_num + 1,
+                crate::game::dosh::GAME_DIFFICULTY,
+                on_w.len(),
+                rules.spawns.len(),
+                on_w,
+                on_a.len(),
+                rules.ammo.len(),
+                on_a,
+                rules.placed.len()
+            ),
+        );
+    }
+    rules.tick(now, &senses);
+    drop(senses);
+    p.spots = spots;
+    apply_events(p, &spatial);
+    // Dropped items whose time is up.
+    let expired: Vec<u32> = p.dynamic.iter().filter(|(_, d)| d.expires.is_some_and(|t| now >= t)).map(|(id, _)| *id).collect();
+    for id in expired {
+        p.dynamic.remove(&id);
+        if let Some(s) = p.shown.remove(&id) {
+            runlog::kv("pickup_hidden", &format!("id={id} class={} why=expired", s.class));
+        }
+    }
+    // A summary line every 30 s of game time.
+    let tick = (now / 30.0) as u64;
+    if p.last_summary != Some(tick)
+        && let Some(r) = p.rules.as_ref()
+    {
+        p.last_summary = Some(tick);
+        let (on, out, ammo, coming) = r.counts();
+        runlog::kv("pickup_summary", &format!("spawn_points_on={on} items_out={out} ammo_shown={ammo} ammo_coming_back={coming} shown_total={}", p.shown.len()));
+    }
+}
+
+/// The take itself (single player / host), after the checks: the rules
+/// (or the dropped item) let go of it, the sound plays at it, the clients
+/// hear of it, this game's player gets it if it was theirs.
+#[allow(clippy::too_many_arguments)]
+fn take(
+    p: &mut Pickups,
+    net: &mut PickupNet,
+    id: u32,
+    class: &str,
+    taker: Option<u64>,
+    now: f64,
+    senses: &dyn Senses,
+    spatial: &SpatialQuery,
+    sounds: &mut MessageWriter<PlaySound>,
+    uses: &mut MessageWriter<PickupUse>,
+) -> Result<(), &'static str> {
+    let Some(shown) = p.shown.get(&id).cloned() else { return Err("not_shown") };
+    if !shown.class.eq_ignore_ascii_case(class) {
+        return Err("class_changed");
+    }
+    if id >= DYNAMIC_ID_BASE {
+        p.dynamic.remove(&id);
+        p.shown.remove(&id);
+    } else {
+        let ok = p.rules.as_mut().is_some_and(|r| r.take(id, now, senses));
+        if !ok {
+            return Err("not_shown");
+        }
+        apply_events(p, spatial);
+        p.shown.remove(&id);
+    }
+    runlog::kv(
+        "pickup_collected",
+        &format!("id={id} class={} by={} gives={} at=({:.0}, {:.0}, {:.0})", shown.class, taker.map_or("local".to_string(), |t| format!("peer:{t}")), shown.gives.label(), shown.location[0], shown.location[1], shown.location[2]),
+    );
+    play_pickup_sound(p, &shown, sounds);
+    p.last_taken = Some(shown.clone());
+    if net.role == PickupRole::Host {
+        net.notices.push(HostNotice::Taken { taker, id, class: shown.class.clone(), location: shown.location, gives: shown.gives.clone() });
+    }
+    if taker.is_none() {
+        uses.write(PickupUse { id, class: shown.class, gives: shown.gives, apply: true });
+    }
+    Ok(())
+}
+
+/// Pickup.AnnouncePickup: PlaySound(PickupSound, SLOT_Interact) at the
+/// pickup, with its TransientSoundVolume / Radius.
+fn play_pickup_sound(p: &Pickups, shown: &ShownPickup, sounds: &mut MessageWriter<PlaySound>) {
+    let Some(c) = p.class(&shown.class) else { return };
+    let Some(sound) = c.sound.clone() else { return };
+    let at = coords::pos(shown.location);
+    sounds.write(PlaySound::new(sound, Emitter::Point(at)).slot(SoundSlot::Interact).volume(c.sound_volume).radius(c.sound_radius));
+}
+
+// ------------------------------------------------------------ client
+
+/// A network client: the host's list is what is shown; the host's notices.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn follow_host(mut pickups: ResMut<Pickups>, mut net: ResMut<PickupNet>, mut touch: ResMut<LocalTouch>, mut sounds: MessageWriter<PlaySound>, mut uses: MessageWriter<PickupUse>) {
+    if net.role != PickupRole::Client {
+        return;
+    }
+    let p = &mut *pickups;
+    if let Some(list) = net.from_host.take() {
+        let new: BTreeMap<u32, ShownPickup> = list.into_iter().map(|s| (s.id, s)).collect();
+        for (id, s) in &new {
+            if p.shown.get(id) != Some(s) {
+                runlog::kv("pickup_spawned", &format!("id={id} class={} why=host at=({:.0}, {:.0}, {:.0})", s.class, s.location[0], s.location[1], s.location[2]));
+            }
+        }
+        for (id, s) in &p.shown {
+            if !new.contains_key(id) {
+                runlog::kv("pickup_hidden", &format!("id={id} class={} why=host", s.class));
+            }
+        }
+        p.shown = new;
+    }
+    for n in std::mem::take(&mut net.received) {
+        match n {
+            PickupNotice::Taken { id, class, location, gives, yours } => {
+                runlog::kv("net_pickup_taken", &format!("id={id} class={class} yours={yours}"));
+                let shown = p.shown.remove(&id).unwrap_or(ShownPickup { id, class: class.clone(), location, rotation: [0; 3], gives: gives.clone() });
+                if p.class(&class).is_some() {
+                    play_pickup_sound(p, &shown, &mut sounds);
+                }
+                p.last_taken = Some(shown);
+                if yours {
+                    touch.pending.remove(&id);
+                    uses.write(PickupUse { id, class, gives, apply: true });
+                }
+            }
+            PickupNotice::Denied { id, reason } => {
+                touch.pending.remove(&id);
+                runlog::kv("pickup_denied", &format!("id={id} reason={reason} by=host"));
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ touching
+
+/// This game's player's touches: what it overlapped last frame, and touches
+/// waiting for an answer (dry run, then on a client the host's).
+#[derive(Resource, Default)]
+pub struct LocalTouch {
+    overlapping: HashSet<(u32, String)>,
+    pending: HashMap<u32, f64>,
+}
+
+/// Touch: the player's cylinder overlaps the pickup's and a clear line
+/// joins their centres (Pickup.ValidTouch), checked when the overlap
+/// begins (or the pickup appears on the player: CheckTouching).
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn touch(
+    time: Res<Time>,
+    pickups: Res<Pickups>,
+    mut state: ResMut<LocalTouch>,
+    player: PlayerQuery,
+    health: Res<crate::game::combat::PlayerHealth>,
+    menus: Res<crate::game::menus::MenuState>,
+    spatial: SpatialQuery,
+    mut uses: MessageWriter<PickupUse>,
+) {
+    let now = time.elapsed_secs_f64();
+    state.pending.retain(|_, t| now - *t < PENDING_TIMEOUT);
+    let Some((me, walking)) = local_player(&player) else { return };
+    if !walking || health.dead || menus.lobby_open() {
+        state.overlapping.clear();
+        return;
+    }
+    let mut now_over = HashSet::new();
+    for s in pickups.shown.values() {
+        let Some(c) = pickups.class(&s.class) else { continue };
+        let at = Vec3::from_array(s.location);
+        let d = at - me;
+        if d.truncate().length() > kf::RADIUS + c.radius || d.z.abs() > kf::HALF_HEIGHT + c.height {
+            continue;
+        }
+        let key = (s.id, s.class.clone());
+        let entering = !state.overlapping.contains(&key);
+        now_over.insert(key);
+        if !entering || state.pending.contains_key(&s.id) {
+            continue;
+        }
+        if !fast_trace(&spatial, me, at) {
+            runlog::kv("pickup_touch", &format!("id={} class={} blocked=true", s.id, s.class));
+            continue;
+        }
+        runlog::kv("pickup_touch", &format!("id={} class={} gives={} player=({:.0}, {:.0}, {:.0}) distance={:.0}", s.id, s.class, s.gives.label(), me.x, me.y, me.z, d.length()));
+        state.pending.insert(s.id, now);
+        uses.write(PickupUse { id: s.id, class: s.class.clone(), gives: s.gives.clone(), apply: false });
+    }
+    state.overlapping = now_over;
+}
+
+/// The inventory's answers: a dry run that fits is taken (single player /
+/// host) or asked for (client); a given item shows its message.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn answers(
+    time: Res<Time>,
+    mut used: MessageReader<PickupUsed>,
+    mut pickups: ResMut<Pickups>,
+    mut net: ResMut<PickupNet>,
+    mut state: ResMut<LocalTouch>,
+    spatial: SpatialQuery,
+    player: PlayerQuery,
+    remote: Res<crate::game::combat::RemotePlayers>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut uses: MessageWriter<PickupUse>,
+    mut messages: MessageWriter<crate::game::hud::LocalMessage>,
+) {
+    let now = time.elapsed_secs_f64();
+    let answers: Vec<PickupUsed> = used.read().cloned().collect();
+    for a in answers {
+        if a.apply {
+            if a.ok {
+                let text = pickups.class(&a.class).map(|c| c.message.clone()).unwrap_or_default();
+                runlog::kv("pickup_given", &format!("id={} class={} {} message=\"{text}\"", a.id, a.class, a.detail));
+                if !text.is_empty() {
+                    messages.write(crate::game::hud::LocalMessage::pickup(text));
+                }
+            } else {
+                runlog::kv("pickup_apply_failed", &format!("id={} class={} reason={}", a.id, a.class, a.detail));
+            }
+            continue;
+        }
+        if !a.ok {
+            state.pending.remove(&a.id);
+            runlog::kv("pickup_refused", &format!("id={} class={} reason={}", a.id, a.class, a.detail));
+            continue;
+        }
+        match net.role {
+            PickupRole::Client => {
+                runlog::kv("net_pickup_request", &format!("id={} class={}", a.id, a.class));
+                net.outgoing.push(PickupRequest { id: a.id, class: a.class.clone() });
+            }
+            PickupRole::Off | PickupRole::Host => {
+                state.pending.remove(&a.id);
+                let p = &mut *pickups;
+                let spots = std::mem::take(&mut p.spots);
+                let mut players = Vec::new();
+                if let Some((c, _)) = local_player(&player) {
+                    players.push(c);
+                }
+                players.extend(remote.0.iter().filter(|r| r.alive).map(|r| to_unreal(r.centre)));
+                let senses = HostSenses { spatial: &spatial, players, connected: 1 + remote.0.len(), spots: &spots };
+                let r = take(p, &mut net, a.id, &a.class, None, now, &senses, &spatial, &mut sounds, &mut uses);
+                drop(senses);
+                p.spots = spots;
+                if let Err(why) = r {
+                    runlog::kv("pickup_denied", &format!("id={} class={} reason={why} by=local", a.id, a.class));
+                }
+            }
+        }
+    }
+}
+
+/// Host: clients' requests, checked and taken as for its own player.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn host_requests(
+    time: Res<Time>,
+    mut pickups: ResMut<Pickups>,
+    mut net: ResMut<PickupNet>,
+    spatial: SpatialQuery,
+    player: PlayerQuery,
+    remote: Res<crate::game::combat::RemotePlayers>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut uses: MessageWriter<PickupUse>,
+) {
+    if net.role != PickupRole::Host || net.incoming.is_empty() {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    let p = &mut *pickups;
+    let spots = std::mem::take(&mut p.spots);
+    let mut players = Vec::new();
+    if let Some((c, _)) = local_player(&player) {
+        players.push(c);
+    }
+    players.extend(remote.0.iter().filter(|r| r.alive).map(|r| to_unreal(r.centre)));
+    let senses = HostSenses { spatial: &spatial, players, connected: 1 + remote.0.len(), spots: &spots };
+    for (peer, req) in std::mem::take(&mut net.incoming) {
+        runlog::kv("net_pickup_request_received", &format!("peer={peer} id={} class={}", req.id, req.class));
+        let check = match (remote.0.iter().find(|r| r.peer == peer), p.shown.get(&req.id)) {
+            (_, None) => Err("not_shown"),
+            (None, _) => Err("no_pawn"),
+            (Some(r), _) if !r.alive => Err("dead"),
+            (Some(r), Some(s)) => {
+                let c = p.class(&s.class);
+                let (radius, height) = c.map_or((30.0, 30.0), |c| (c.radius, c.height));
+                let d = Vec3::from_array(s.location) - to_unreal(r.centre);
+                if d.truncate().length() > kf::RADIUS + radius + REMOTE_REACH_SLACK || d.z.abs() > kf::HALF_HEIGHT + height + REMOTE_REACH_SLACK {
+                    runlog::kv("pickup_reach", &format!("peer={peer} id={} horizontal={:.0} vertical={:.0}", req.id, d.truncate().length(), d.z.abs()));
+                    Err("too_far")
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let result = check.and_then(|_| take(p, &mut net, req.id, &req.class, Some(peer), now, &senses, &spatial, &mut sounds, &mut uses));
+        if let Err(reason) = result {
+            runlog::kv("pickup_denied", &format!("id={} class={} reason={reason} by=peer:{peer}", req.id, req.class));
+            net.notices.push(HostNotice::Denied { peer, id: req.id, reason: reason.to_string() });
+        }
+    }
+    drop(senses);
+    p.spots = spots;
+}
+
+// ------------------------------------------------------------ test inputs
+
+/// Test actions: `warp_pickup:KIND[:DIST]` puts the player on (or DIST
+/// units from, facing) the lowest-id shown pickup of KIND (weapon, ammo,
+/// vest, any; `dynamic`: the newest dropped-style one; `taken`: where the
+/// last pickup this game saw taken was); `look_pickup:KIND`
+/// turns the view to it;
+/// `spawn_pickup:CLASS[:DIST]` (single player / host) makes a dropped-style
+/// pickup of CLASS (e.g. KFMod.ShotgunPickup) DIST units (default 150)
+/// ahead of the player, resting on the floor, for 60 s.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn scripted_pickup_input(
+    time: Res<Time>,
+    script: Res<crate::weapons::weapon::ScriptedInput>,
+    frames: Res<bevy::diagnostic::FrameCount>,
+    mut pickups: ResMut<Pickups>,
+    net: Res<PickupNet>,
+    request: Res<crate::world::map::MapRequest>,
+    spatial: SpatialQuery,
+    mut cams: Query<(&mut Transform, &mut FlyCamera, Option<&mut Walker>)>,
+) {
+    for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+        if let Some(rest) = a.strip_prefix("spawn_pickup:") {
+            let mut parts = rest.split(':');
+            let class = parts.next().unwrap_or("");
+            let dist: f32 = parts.next().and_then(|d| d.parse().ok()).unwrap_or(150.0);
+            if net.role == PickupRole::Client {
+                runlog::kv("scripted_pickup", &format!("action={a} refused=client"));
+                continue;
+            }
+            if pickups.class(class).is_none() {
+                let set = PackageSet::new(&request.install_root);
+                let defaults = ClassDefaults::new(&set);
+                ensure_class(&mut pickups.classes, &set, &defaults, class);
+            }
+            let Some(c) = pickups.class(class).cloned() else { continue };
+            let Some((t, cam, walker)) = cams.iter().next() else { continue };
+            let me = to_unreal(walker.map_or(t.translation - Vec3::Y * kf::EYE_HEIGHT * SCALE, |w| w.center));
+            // The view's forward (Bevy), flattened, in Unreal axes.
+            let f = Vec3::new(-cam.yaw.sin(), 0.0, -cam.yaw.cos());
+            let dir = Vec3::new(-f.z, f.x, 0.0).normalize_or_zero();
+            let at = rest_on_floor(&spatial, me + dir * dist, c.height);
+            let id = pickups.spawn_dynamic(&c.path, at, [0, 0, 0], c.gives.clone(), Some(60.0), time.elapsed_secs_f64());
+            runlog::kv("scripted_pickup", &format!("action={a} id={id}"));
+            continue;
+        }
+        let (warp, rest) = if let Some(r) = a.strip_prefix("warp_pickup:") {
+            (true, r)
+        } else if let Some(r) = a.strip_prefix("look_pickup:") {
+            (false, r)
+        } else {
+            continue;
+        };
+        let mut parts = rest.split(':');
+        let kind = parts.next().unwrap_or("any");
+        let dist: f32 = parts.next().and_then(|d| d.parse().ok()).unwrap_or(0.0);
+        let found = if kind == "taken" {
+            pickups.last_taken.as_ref()
+        } else if kind == "dynamic" { pickups.shown.values().rev().find(|s| s.id >= DYNAMIC_ID_BASE) } else { pickups.shown.values().find(|s| kind == "any" || s.gives.kind() == kind) };
+        let Some(s) = found else {
+            runlog::kv("scripted_pickup", &format!("action={a} found=false shown={}", pickups.shown.len()));
+            continue;
+        };
+        let at = Vec3::from_array(s.location);
+        for (mut t, mut cam, walker) in &mut cams {
+            let me = to_unreal(walker.as_ref().map_or(t.translation - Vec3::Y * kf::EYE_HEIGHT * SCALE, |w| w.center));
+            let centre = if warp {
+                // Standing on the floor where the pickup rests.
+                let c = pickups.class(&s.class).map_or(5.0, |c| c.height);
+                let floor = at.z - c;
+                let mut away = (me - at).truncate().normalize_or_zero();
+                if away == Vec2::ZERO {
+                    away = Vec2::X;
+                }
+                let xy = at.truncate() + away * dist;
+                // The floor where the player will stand (it may be a kerb
+                // higher or lower than the pickup's).
+                let top = Vec3::new(xy.x, xy.y, floor + 120.0);
+                // 25 units up: it drops onto the floor (starting inside a
+                // kerb's edge made the player fall through the world).
+                let stand = rest_on_floor(&spatial, top, kf::HALF_HEIGHT + 25.0);
+                if stand == top { Vec3::new(xy.x, xy.y, floor + kf::HALF_HEIGHT + 1.0) } else { stand }
+            } else {
+                me
+            };
+            let eye = centre + Vec3::Z * kf::EYE_HEIGHT;
+            let d = coords::pos(at.to_array()) - coords::pos(eye.to_array());
+            let d = d.normalize_or_zero();
+            if dist > 0.0 || !warp {
+                cam.yaw = (-d.x).atan2(-d.z);
+                cam.pitch = d.y.clamp(-1.0, 1.0).asin();
+            }
+            if warp {
+                t.translation = coords::pos(eye.to_array());
+                if let Some(mut w) = walker {
+                    w.center = coords::pos(centre.to_array());
+                    w.velocity = Vec3::ZERO;
+                }
+            }
+            t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
+            runlog::kv("scripted_pickup", &format!("action={a} id={} class={} at=({:.0}, {:.0}, {:.0}) player=({:.0}, {:.0}, {:.0})", s.id, s.class, at.x, at.y, at.z, centre.x, centre.y, centre.z));
+        }
+    }
+}
+
+// ------------------------------------------------------------ drawing
+
+/// A static mesh's drawn parts.
+type MeshParts = Vec<(Handle<Mesh>, Handle<StandardMaterial>)>;
+
+/// Meshes per pickup class (non-send: the package set holds `Rc`s).
+#[derive(Default)]
+pub struct PickupModels {
+    set: Option<PackageSet>,
+    /// By lowercase mesh path: the parts, or None if it could not load.
+    cache: HashMap<String, Option<MeshParts>>,
+    /// Drawn pickups: id -> (entity, class, cull distance).
+    drawn: HashMap<u32, (Entity, String, f32)>,
+}
+
+fn load_mesh(set: &PackageSet, path: &str, meshes: &mut Assets<Mesh>, images: &mut Assets<Image>, materials: &mut Assets<StandardMaterial>) -> Option<MeshParts> {
+    let h = set.find_object(path, Some("StaticMesh"))?;
+    let sm = read_static_mesh(&h.package.pkg, h.export).ok()?;
+    let mut parts = Vec::new();
+    for (si, section) in sm.sections.iter().enumerate() {
+        let tris = &sm.indices[section.first_index..section.first_index + section.num_triangles * 3];
+        if tris.is_empty() {
+            continue;
+        }
+        let positions: Vec<[f32; 3]> = sm.positions.iter().map(|p| coords::pos(*p).to_array()).collect();
+        let normals: Vec<[f32; 3]> = sm.normals.iter().map(|n| coords::dir(*n).normalize_or_zero().to_array()).collect();
+        let uvs: Vec<[f32; 2]> = sm.uvs.first().cloned().unwrap_or_else(|| vec![[0.0, 0.0]; sm.positions.len()]);
+        let mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+            .with_inserted_indices(bevy::mesh::Indices::U32(tris.iter().map(|&i| i as u32).collect()));
+        let rf = sm.materials.get(si).copied().unwrap_or(ObjectRef::Null);
+        let simple = ue_assets::material::resolve(set, &ObjectHandle { package: h.package.clone(), export: 0 }, rf);
+        let image = simple.texture.as_ref().and_then(|t| crate::render::skinned::decode_image(t, images));
+        let material = materials.add(StandardMaterial { base_color_texture: image, perceptual_roughness: 0.6, reflectance: 0.2, cull_mode: None, double_sided: true, ..default() });
+        parts.push((meshes.add(mesh), material));
+    }
+    runlog::kv(
+        "pickup_model",
+        &format!(
+            "mesh={path} parts={} bounds_unreal=({:.1}, {:.1}, {:.1})..({:.1}, {:.1}, {:.1})",
+            parts.len(),
+            sm.bounds.min[0],
+            sm.bounds.min[1],
+            sm.bounds.min[2],
+            sm.bounds.max[0],
+            sm.bounds.max[1],
+            sm.bounds.max[2]
+        ),
+    );
+    (!parts.is_empty()).then_some(parts)
+}
+
+/// Draws what is shown and removes what is not; hides pickups beyond
+/// their CullDistance.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn sync_visuals(
+    mut commands: Commands,
+    mut pickups: ResMut<Pickups>,
+    mut models: NonSendMut<PickupModels>,
+    request: Res<crate::world::map::MapRequest>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    camera: Query<&Transform, With<FlyCamera>>,
+    mut visibility: Query<&mut Visibility>,
+) {
+    let models = &mut *models;
+    // Gone or changed.
+    let gone: Vec<u32> = models.drawn.iter().filter(|(id, (_, class, _))| pickups.shown.get(id).is_none_or(|s| !s.class.eq_ignore_ascii_case(class))).map(|(id, _)| *id).collect();
+    for id in gone {
+        if let Some((e, _, _)) = models.drawn.remove(&id) {
+            commands.entity(e).despawn();
+        }
+    }
+    let new: Vec<ShownPickup> = pickups.shown.values().filter(|s| !models.drawn.contains_key(&s.id)).cloned().collect();
+    for s in new {
+        if models.set.is_none() {
+            models.set = Some(PackageSet::new(&request.install_root));
+        }
+        let set = models.set.as_ref().expect("just set");
+        if pickups.class(&s.class).is_none() {
+            let defaults = ClassDefaults::new(set);
+            ensure_class(&mut pickups.classes, set, &defaults, &s.class);
+        }
+        let Some(c) = pickups.class(&s.class).cloned() else {
+            models.drawn.insert(s.id, (commands.spawn(Transform::default()).id(), s.class.clone(), 0.0));
+            continue;
+        };
+        let spot = (s.id < DYNAMIC_ID_BASE).then(|| pickups.spots.get(s.id as usize)).flatten();
+        // An ammo box's own mesh and scale (the Christmas maps).
+        let mesh_path = spot.and_then(|sp| sp.mesh.clone()).or(c.mesh.clone());
+        let draw_scale = spot.and_then(|sp| sp.draw_scale).unwrap_or(c.draw_scale);
+        let scale3d = spot.and_then(|sp| sp.draw_scale_3d).unwrap_or(c.draw_scale_3d);
+        let cull = spot.and_then(|sp| sp.cull_distance).unwrap_or(c.cull_distance);
+        let parts = mesh_path.as_ref().and_then(|m| models.cache.entry(m.to_ascii_lowercase()).or_insert_with(|| load_mesh(set, m, &mut meshes, &mut images, &mut materials)).clone());
+        let rot = Rotator { pitch: s.rotation[0], yaw: s.rotation[1], roll: s.rotation[2] };
+        // UE2: Location + Rotation x (DrawScale x DrawScale3D x (v - PrePivot)).
+        let root = commands
+            .spawn((
+                Name::new(format!("Pickup {} {}", s.id, s.class)),
+                Transform { translation: coords::pos(s.location), rotation: coords::rotation(rot), scale: coords::scale(scale3d) * draw_scale },
+                Visibility::Inherited,
+            ))
+            .id();
+        let offset = coords::pos([-c.pre_pivot[0], -c.pre_pivot[1], -c.pre_pivot[2]]);
+        for (mesh, material) in parts.iter().flatten() {
+            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::from_translation(offset), ChildOf(root)));
+        }
+        runlog::kv(
+            "pickup_drawn",
+            &format!("id={} class={} mesh={} parts={} draw_scale={draw_scale} at=({:.0}, {:.0}, {:.0})", s.id, s.class, mesh_path.as_deref().unwrap_or("none"), parts.as_ref().map_or(0, |p| p.len()), s.location[0], s.location[1], s.location[2]),
+        );
+        models.drawn.insert(s.id, (root, s.class.clone(), cull));
+    }
+    // CullDistance.
+    let Ok(cam) = camera.single() else { return };
+    let eye = to_unreal(cam.translation);
+    for (id, (e, _, cull)) in &models.drawn {
+        let Some(s) = pickups.shown.get(id) else { continue };
+        let want = if *cull > 0.0 && eye.distance(Vec3::from_array(s.location)) > *cull { Visibility::Hidden } else { Visibility::Inherited };
+        if let Ok(mut v) = visibility.get_mut(*e)
+            && *v != want
+        {
+            *v = want;
+        }
+    }
+}

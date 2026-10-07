@@ -170,6 +170,19 @@ pub struct PlayerStart {
     pub primary: bool,
 }
 
+/// A pickup or pickup spawner placed in the map (Pickup subclasses:
+/// KFAmmoPickup, weapon pickups, Vest; KFRandomSpawn: KFRandomItemSpawn).
+/// Only with class defaults. Not drawn as scenery: the game draws them.
+#[derive(Debug, Clone)]
+pub struct PlacedPickup {
+    pub export: usize,
+    pub name: String,
+    /// The class's full path, e.g. "KFMod.KFAmmoPickup".
+    pub class: String,
+    pub location: [f32; 3],
+    pub rotation: Rotator,
+}
+
 #[derive(Debug, Default)]
 pub struct LevelContents {
     /// The `Model` export holding the level geometry.
@@ -190,6 +203,8 @@ pub struct LevelContents {
     pub use_triggers: Vec<UseTriggerInfo>,
     /// Placed Projectors (only with class defaults).
     pub projectors: Vec<ProjectorInfo>,
+    /// Placed pickups and pickup spawners (only with class defaults).
+    pub pickups: Vec<PlacedPickup>,
 }
 
 fn vector(props: &PropertyList, pkg: &Package, name: &str, default: [f32; 3]) -> [f32; 3] {
@@ -401,6 +416,27 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
         }
         if class == "PathNode" {
             out.path_nodes.push(vector(&props, pkg, "Location", [0.0; 3]));
+        }
+        // Pickups and their spawners are the game's (game/pickups), not
+        // scenery; actors deleted in the editor (bDeleteMe) are left out.
+        if let Some((lp, d)) = defaults
+            && let Some(c) = d.class_of(lp, i)
+            && (d.is_a(&c, "Pickup") || d.is_a(&c, "KFRandomSpawn"))
+        {
+            if !matches!(props.get(pkg, "bDeleteMe"), Some(Value::Bool(true))) {
+                out.pickups.push(PlacedPickup {
+                    export: i,
+                    name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                    class: c.path(),
+                    location: vector(&props, pkg, "Location", [0.0; 3]),
+                    rotation: match props.get(pkg, "Rotation") {
+                        Some(Value::Rotator(r)) => *r,
+                        _ => Rotator::default(),
+                    },
+                });
+            }
+            *out.skipped.entry(format!("{class}:pickup")).or_default() += 1;
+            continue;
         }
         if class.contains("PlayerStart") {
             out.player_starts.push(PlayerStart {

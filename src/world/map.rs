@@ -155,8 +155,8 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("UseTrigger", false),
     ("BlockingVolume_Toggleable", false),
     ("KActor", false),
-    ("KFRandomItemSpawn", false),
-    ("KFAmmoPickup", false),
+    ("KFRandomItemSpawn", true),
+    ("KFAmmoPickup", true),
     ("ZoneInfo", false),
 ];
 
@@ -593,6 +593,8 @@ fn load_map(
         commands.insert_resource(crate::game::trader::load_shops(&class_defaults, &lp));
         commands.insert_resource(crate::game::buy_menu::load_catalogue(&set, &class_defaults, &lp));
     }
+    // Weapons, ammo boxes and vests lying in the map (every mode).
+    commands.insert_resource(crate::game::pickups::load(&set, &class_defaults, &lp, &contents.pickups));
     // The trader woman in each shop (WeaponLocker): map content, every mode.
     crate::game::shopkeeper::spawn_shopkeepers(&mut commands, &set, &class_defaults, &lp, &mut meshes, &mut images, &mut materials);
     let mut nav = crate::world::nav::NavNetwork::from_graph(&ue_assets::nav::read_nav(&lp.pkg));

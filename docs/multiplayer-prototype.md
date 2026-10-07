@@ -42,16 +42,22 @@ a person yet):
    together and both play the zed time sound, whoever made the kill. F2
    in either window forces one (a debug key). A Commando's kills during
    zed time extend it for both.
+9. **Pickups** (weapons, ammo boxes, vests lying in the map): both
+   windows show the same ones in the same places (the host decides which
+   are out, as KF does). Walk into one in either window: you get it ("You
+   got the Bullpup", "Found Some Ammo!"), it disappears in both windows,
+   and the other player cannot take it any more. A new item turns up
+   somewhere else later (KF's timers).
 
-Known limits (details in "Step 4 as built" below):
+Known limits (details in "Step 4 as built" and "Pickups" below):
 - Both windows play sound on one machine; the mouse works in the window
   that has focus.
 - Trusting prototype: each game says where its player is and which zeds
   it hit; fine between friends, not cheat-proof.
-- Each game's own: pickups, dosh tossing, and the wave-end
-  team bonus (each player gets the bonus of their own kills; KF splits
-  the team's pot between living players). Zed time is shared (see
-  "Shared zed time" at the end).
+- Each game's own: dosh tossing, and the wave-end team bonus (each
+  player gets the bonus of their own kills; KF splits the team's pot
+  between living players). Zed time and pickups are shared (see "Shared
+  zed time" and "Pickups shared" below).
 - Scoreboard: no perk icons, no ping, Assists always 0.
 - Players walk through each other. A dead player just waits (no
   spectating the others).
@@ -783,7 +789,8 @@ and `logs/mp3-<tag>-client.log` (untracked). Both games ran at about
 - **Where the other players are** for the zeds: their pawns as the host
   draws them (0.1 s in the past plus the trip, about 0.12 s).
 - **Zed time, the trader's shop, doors, welding and pickups are each
-  game's own.** The shop opens and closes with the host's, at the same
+  game's own.** (Doors and welding shared in step 4, pickups on
+  2026-10-07.) The shop opens and closes with the host's, at the same
   shop.
 
 ### What does not work yet / not tested
@@ -1083,7 +1090,8 @@ Logs `logs/mp4-<tag>-host.log` / `-client.log` (untracked).
    tossing between players.
 4. ~~Zed time decided by the host for everyone.~~ Done: "Shared zed
    time" below.
-5. Pickups (ammo boxes, weapons on the floor) owned by the host.
+5. ~~Pickups (ammo boxes, weapons on the floor) owned by the host.~~
+   Done 2026-10-07 ("Pickups shared" below).
 6. Player-to-player collision.
 
 ## Shared zed time (2026-10-07)
@@ -1216,3 +1224,112 @@ window.
   count of zeds killed (client-trusted, like its hits).
 - Two real machines, lag, packet loss; more than one client. Not played
   by you.
+
+## Pickups shared (2026-10-07)
+
+Plan and KF's rules: docs/DESIGN.md, "Pickups". The pickups themselves
+(weapons, ammo boxes and vests lying in the map) were new in single
+player too.
+
+### How it works on the network
+
+- The **host owns the pickups**: it runs KF's rules (which spawn points
+  and ammo boxes are on at the match start and every wave start, items
+  that change while nobody looks, items coming back after a pickup) and
+  sends every client the list of shown pickups (id, class, place,
+  rotation, what it gives) when it changes and every 2 s. A client draws
+  exactly that list and runs no rules of its own.
+- A **client walking into a pickup** first checks its own inventory
+  (inventories are each game's own in this prototype: weight limit,
+  already owned, ammo full, armour full), then sends "I take pickup N
+  (class C)". The host checks that the pickup is still shown with that
+  class, that the player is alive and near it (the overlap distance +
+  150 units, because the host draws the client 0.1 s behind), takes it
+  out of its rules, and tells every client: the taker "yours" (its game
+  gives the item, shows the message), the others "gone" (they hear the
+  pickup sound). A refused request gets a reason (`not_shown`,
+  `class_changed`, `dead`, `too_far`, `no_pawn`).
+- The **host's own player** goes through the same host check, so
+  whoever's request reaches the host first gets the item.
+- Protocol number `0x4F4B_4600_0005` (step 4 builds cannot join). New
+  messages: `PickupStates` (host to clients), `PickupRequest` (client to
+  host), `PickupNotice` (`Taken { yours }` / `Denied`).
+- Logs: host `net_pickups_sent`, `net_pickup_request_received`,
+  `pickup_collected ... by=peer:N`, `net_pickup_notice_sent`,
+  `pickup_denied ... by=peer:N`; client `net_pickups_received`,
+  `pickup_spawned ... why=host`, `pickup_touch`, `net_pickup_request`,
+  `net_pickup_taken ... yours=true/false`, `pickup_given`,
+  `pickup_denied ... by=host`.
+
+### How to see it (two games on one machine)
+
+The commands at the top of this file. In either window, walk into a gun,
+an ammo box or a vest lying on the floor.
+
+Headless test (not in the repository): `work/mp_pickups_test.sh` (env
+`TAG`, `DELAY` seconds before the client starts, `HOST_FRAMES`,
+`CLIENT_FRAMES`, `HOST_EXTRA` / `CLIENT_EXTRA` inputs, `HOST_OPTS` /
+`CLIENT_OPTS`) and `work/mpp_show.py HOST_LOG CLIENT_LOG` (the pickup
+lines). Logs `logs/mpp-<tag>-host.log` / `-client.log` (untracked). New
+test inputs: `warp_pickup:KIND[:DIST]` (KIND weapon, ammo, vest, any,
+dynamic, taken), `look_pickup:KIND`, `spawn_pickup:CLASS[:DIST]`.
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+1. **Same pickups on both** (run a): host `net_pickups_sent clients=1
+   shown=11 [1:BullpupPickup 2:BullpupPickup 4:ShotgunPickup
+   11:WinchesterPickup 14:KFAmmoPickup ...]`, client `pickup_spawned
+   id=1 class=kfmod.BullpupPickup why=host at=(-7280, -512, -3858)` and
+   the same 11 ids, classes and places. Every later change (items
+   changing while unseen: id 2 Bullpup -> Handcannon, id 11 -> Vest, ...)
+   reached the client, in the same order (the two games' clocks are not
+   comparable, so no delay is claimed). The client drew 18 pickup meshes
+   in that run.
+2. **The client takes a weapon** (run a): client `pickup_touch id=1
+   ... distance=64`, `net_pickup_request id=1`; host
+   `net_pickup_request_received ... id=1`, `pickup_collected id=1
+   class=kfmod.BullpupPickup by=peer:<client>`, `net_pickup_notice_sent
+   ... to=[<client>:true]`; client `net_pickup_taken id=1 ...
+   yours=true`, `pickup_given ... weapon=kfmod.Bullpup ammo=40+120
+   switched=true`, "You got the Bullpup". Request to answer: 77 ms (the
+   two logs' clocks differ, measured on the client). 15 s later (30 s /
+   2 players) the host switched on another spawn point (id 13 Machete),
+   which reached the client.
+3. **Ammo and vest by a client** (runs c, f): `pickup_given id=4
+   class=kfmod.Vest armour=0->100` (86 ms round trip),
+   `pickup_given id=14 class=kfmod.KFAmmoPickup ammo=[9mm Tactical:+30
+   Frag Grenade:+1]` (28 ms).
+4. **The host cannot take it afterwards** (runs a, f): the host's
+   player put on the spot of the item the client took
+   (`scripted_pickup action=warp_pickup:taken id=14 ...`) gets nothing:
+   no `pickup_touch` on the host, the item is gone from its list.
+5. **The host takes one, the client sees it go** (run a): host
+   `pickup_collected id=2 class=kfmod.DeaglePickup by=local`,
+   `net_pickup_notice_sent ... to=[<client>:false]`; client
+   `net_pickup_taken id=2 ... yours=false`, `pickup_hidden id=2
+   why=host`.
+6. **A refused request** (run a): the client teleported onto an ammo box
+   (test input); the host still drew the client's pawn where it had
+   been (4814 units away): `pickup_reach ... horizontal=4814`,
+   `pickup_denied id=14 reason=too_far by=peer:<client>`; the client
+   `pickup_denied id=14 reason=too_far by=host` and kept nothing.
+7. **Late joiner** (run b, client started 30 s after the host): it
+   received all 11 shown pickups at once (`net_pickups_received
+   shown=11`) while still in its lobby.
+8. Screenshot `work/screenshots/KF-WestLondon-mpp-g-client-1791380753-1.png`
+   (untracked): the client looking at the host's Bullpup on the floor.
+
+### Not done / not tested
+
+- Two players walking into the same pickup at the same moment (the
+  host's "first request wins" path, `not_shown` refusal) was not caught
+  in a test; only the `too_far` refusal was.
+- The client's own inventory check is trusted (fine between friends). If
+  its inventory changes between its check and the host's answer (e.g.
+  it buys a gun in that 0.1 s), the item is lost (`pickup_apply_failed`).
+- Dropped weapons and tossed dosh: the core supports them
+  (`Pickups::spawn_dynamic`, ids from 100000, sent like the others), but
+  nothing drops them yet; only the `spawn_pickup` test input made some
+  (single player).
+- More than one client, real machines, lag, packet loss: not tested.
+  Not played by you.
