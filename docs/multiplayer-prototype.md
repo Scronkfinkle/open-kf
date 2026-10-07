@@ -253,3 +253,221 @@ All runs with `scripts/headless.sh ... --mute --no-vsync` on one machine.
    matter: zeds target "the" player (`think.rs`), the HUD and damage read
    global resources. For step 2 alone (just seeing each other) they can
    stay; for step 3 (shared zeds) they cannot.
+
+## Step 2: seeing the other players (2026-10-06, overnight)
+
+### Design
+
+Words: **pawn** = a player's body in the world (KF's Pawn).
+**Interpolation** = drawing something between two known positions so it
+moves smoothly although updates arrive only a few times a second.
+**Client-authoritative** = each game decides where its own player is
+and the others believe it.
+
+- **What is sent** (`net/protocol.rs`): `PawnUpdate`, what is needed to
+  draw a pawn on another screen (the same things KF replicates for other
+  players' pawns): position, velocity, on the ground, view yaw and
+  pitch, weapon class, shot counter (KF's FlashCount), firing and fire
+  mode, reload counter, hit counter and where the last hit came from,
+  dead, plus a sequence number and the sender's clock. Positions in
+  Bevy metres, angles in radians (as `PawnState`).
+- **Client to server**: once its match has started, every client sends
+  its `PawnUpdate` 20 times a second as a message on an unreliable,
+  sequenced channel (`PawnChannel`: a lost update is simply replaced by
+  the next one; an old one arriving late is dropped).
+- **On the server**: each player gets a `NetPawn` entity (peer id + the
+  latest update) with their first update; the host's own state is
+  written there directly (it is the server). lightyear copies every
+  `NetPawn` to every game (replication), so late joiners receive all
+  existing pawns at once, and a despawned `NetPawn` disappears
+  everywhere. The player's record (`PlayerSlot.pawn`) points at it;
+  when a player leaves, their `NetPawn` is despawned with the record.
+- **On every game** (`net/pawns.rs`): each `NetPawn` that is not mine
+  gets a local "remote pawn" entity with a `PawnState` (local: false)
+  and a `PawnCharacter` (the character name from that player's
+  `NetPlayer`). The existing body code draws it exactly like the local
+  player's body: same animation rules (idle / move / turn / jump / land,
+  fire, weapon switch, reload, hit), same weapon attachment. Remote
+  bodies are visible in first person; the local body stays hidden in
+  first person as before.
+- **Smoothing**: each update is placed on the sender's clock. The
+  receiver keeps the smallest "arrival time minus send time" it has
+  seen (it drifts up by 1 ms per update so clock drift cannot freeze
+  it), and draws the remote pawn where its player was 0.1 s ago on that
+  clock, blending the two updates around that moment (position,
+  velocity, yaw by the short way round, pitch). The other values (weapon,
+  counters, dead) come from the earlier update. If the next update is
+  late, the pawn keeps moving along its last velocity for at most 0.1 s.
+  A jump of more than 400 units between two updates (a respawn) is not
+  slid across. lightyear's own interpolation was not used: it works on
+  replicated components with its own timeline and prediction settings;
+  for one value per player the hand-made version is small, testable
+  (2 unit tests) and its timing shows in our log.
+- **Characters**: `BodyModels` used to hold one character; it now holds
+  every character loaded so far (`local` = the local player's) and
+  loads another the first time a pawn asks for it (`by_name`).
+  A character change of the local player respawns only the local body.
+- **Not KF's model.** KF is server-authoritative: the client sends its
+  moves (ServerMove), the server moves the pawn itself, checks it, and
+  corrects the client (ClientAdjustPosition), and fire, damage and
+  pickups are decided on the server. That needs the walk on a fixed tick
+  and input as commands (research doc, stages 0-1): later work, not
+  built. Our way trusts each game completely (cheating is trivial; fine
+  for friends on a LAN).
+- **Not added**: no collision with remote pawns (you walk through each
+  other), zeds ignore remote pawns (each game's zeds only chase its own
+  player), your shots do not hit other players, no sounds or muzzle
+  flashes from remote weapons (the body only plays the animations), and
+  no name above their heads.
+
+### How to run it (two players on one machine)
+
+Build once: `cargo build --release`. Then, in two terminals:
+
+```
+# Terminal 1: the host
+cargo run --release -- --map KF-WestLondon --mode waves --length short --host --name HostGuy
+
+# Terminal 2: a player joining it, as Santa
+cargo run --release -- --map KF-WestLondon --mode waves --length short --join 127.0.0.1 --name ClientGal --character Baddest_Santa
+```
+
+Press Ready in both lobbies. After the match starts, each window shows
+the other player's body (the host's Corporal Lewis soldier, the client's
+Santa) moving, turning, aiming up and down, switching weapons (1-5 /
+mouse wheel), firing and reloading. A third player:
+`... --join 127.0.0.1 --name Third --character Ash_Harding --log logs/latest-client2.log`.
+
+New test inputs (for `--input`): `walk_on` / `walk_off` (hold / release
+forward). The test scripts used for this step are in `work/` (not in
+the repository): `work/mp2_test.sh` (host + client), `work/mp2_test3.sh`
+(three games, one joining late) and `work/mp2_analyse.py SENDER_LOG
+RECEIVER_LOG` (lag and error from two logs).
+
+Log lines: `net_pawn_sent` (every update a game sends: seq, its clock,
+wall clock, position in Unreal units, weapon, counters),
+`net_pawn_created` / `net_pawn_relay` (server: a player's first update;
+updates per second per player), `net_remote_pawn_spawned` /
+`net_remote_pawn_removed`, `net_remote_pawn` (10 times a second per
+remote pawn: the position drawn, the moment drawn, the age of the newest
+update, updates per second, frames drawn past the newest update), and
+the body lines now say whose body (`who=local` or
+`who=RemotePawn_<peer>`).
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+All runs `scripts/headless.sh ... --mute --no-vsync --fps 60 --god`.
+With two or three games on one machine each ran at about 28 frames a
+second.
+
+1. **Both see each other.** Host: `net_remote_pawn_spawned
+   peer=... name="ClientGal" character=Baddest_Santa`, `body_loaded
+   character=Baddest_Santa wanted=Baddest_Santa`, `body_spawned
+   character=Baddest_Santa local=false`, `body_visible
+   who=RemotePawn_... visible=true ... first_person=true`. Client: the
+   same for `HostGuy` / `Corporal_Lewis`. Screenshots (untracked, in
+   `work/screenshots/`): `KF-WestLondon-latest-host-1791344960-1.png`
+   (the host sees Santa holding the 9mm, close up) and
+   `KF-WestLondon-latest-client-1791344983-1.png` (the client sees the
+   gas-mask soldier by the ambulance, gun raised); also
+   `...-host-1791344375-3.png` and `...-host-1791344254-2.png` (Santa
+   further down the road).
+2. **Rate**: `net_pawn_relay peer=0:updates=20 peer=...:updates=20`
+   every second; receivers count 20 updates/s (lowest 14-17 in a second).
+3. **Lag and error** (`work/mp2_analyse.py`, comparing the sender's
+   `net_pawn_sent` with the receiver's `net_remote_pawn` by wall clock):
+   - a remote pawn is drawn where its player was **about 115 ms earlier**
+     (median 116-117 ms, 90% under 126 ms, worst 160 ms), both ways;
+   - while walking (198 units/s) it is **19-24 Unreal units behind**
+     (median 22 and 19; a player is 50 units wide); standing still: 0;
+   - the blend itself adds at most 2.6 units (drawn vs. where the sender
+     really was at the moment drawn);
+   - frames drawn past the newest update: about 6-9% on the host (the
+     client sends from a 28 fps game, so its updates come 36 or 71 ms
+     apart), under 1% on the client. Since the 0.1 s coast was added the
+     pawn keeps moving through those frames.
+4. **Animations cross over** (host log, the client's body; the client
+   log shows the same for the host's): `kind=Move reason=moving` while
+   walking, `Turn(false) sequence=TurnR_Single9mm` when turning on the
+   spot, `channel=1 sequence=Fire_Single9mm reason=fire` per shot, then
+   `Blend_Single9mm reason=post_fire_blend`, `body_attachment_held
+   weapon=KFMod.Knife`, `Weapon_Switch`, `Idle_Knife`, `Attack2_Knife
+   reason=fire`, back to the 9mm, `Reload_Single9mm reason=reload`.
+5. **Three players**: each game draws the other two with their own
+   characters (`latest-client2` screenshot `...-client2-1791344549-1.png`:
+   Santa and the soldier). Updates per player 20/s on the server.
+6. **Late joiner** (started 45 s after the host, match already running):
+   on connecting it received both existing pawns at once
+   (`net_remote_pawn_spawned` x2 at t=5.46, before its own Ready); the
+   other two games drew it as soon as it pressed Ready
+   (`net_remote_pawn_spawned ... name="LateLarry" character=Ash_Harding`).
+7. **Leaving**: when a client's game ended, the host logged
+   `net_player_left ... reason=link_removed` and in the same frame
+   `net_remote_pawn_removed`; the other client removed it at the same
+   moment (`net_remote_pawn_removed`, t=37.58 on both). Detected after
+   netcode's 3 s timeout when a game just ends; a Disconnect press is
+   immediate (step 1).
+8. **Character chosen in the lobby**: a client that changed to
+   Captian_Wiggins in the lobby appeared as Captian_Wiggins on the host
+   (`body_spawned character=Captian_Wiggins local=false`).
+9. **Single player unchanged**: `--map KF-WestLondon --behind-view
+   --input 100:fire,200:1,300:reload --frames 400`: 0 `net_` lines, no
+   lightyear output, `body_spawned character=Corporal_Lewis local=true`,
+   the attachment follows the weapon. The lobby character change
+   (`change_character`, `lobby_save`) still gives `body_reloaded
+   character=DAR bodies_respawned=1`.
+10. `cargo clippy --release --workspace`: no warnings (only nix's "git
+    tree is dirty"). With `--all-targets` there is one older warning in
+    test code (`src/zeds/boss.rs:1005`, not touched here). `cargo test
+    --release --workspace`: 161 + 24 pass (2 new: the blend with the
+    coast, and the teleport rule).
+
+### Not done / not tested
+
+- Not tested: a death seen from another game (all runs used `--god`;
+  dead bodies are hidden, as in single player, since the soldier meshes
+  have no death animation), hits seen from another game (zeds of each
+  game only hit their own player), jumping seen from another game
+  (a `jump` input was in a run, but that client's own Clots were holding
+  it, `player_pinned`, so it neither walked nor jumped), a
+  character change in the middle of a match (there is no menu for it;
+  `follow_pawn_character` would respawn the body), two real machines,
+  packet loss, lag, more than 3 players. Not played by you.
+- Both games pick their own start spot, so two players can start inside
+  each other (seen once: both at (-3110, 1313)). KF's server picks
+  them; step 3.
+- A joiner still in the lobby sees the other players' bodies behind its
+  lobby screen (harmless).
+- Zed time is still each game's own, and slows the remote bodies'
+  animations too (their positions keep real time).
+- The `NetPawn` is replicated to its own owner too (ignored there; a
+  little wasted bandwidth).
+- The protocol number is now `0x4F4B_4600_0002`: step 1 builds cannot
+  join step 2 games.
+
+### What step 3 (zeds and waves shared) needs
+
+1. **The server runs the zeds and the waves; clients only draw them.**
+   Each zed becomes a replicated entity (kind, position, velocity,
+   rotation, health state, animation action, head off / limbs off,
+   dead); clients spawn a drawn-only zed per replicated one and blend it
+   like the remote pawns (the same snapshot code can be reused). Client
+   games must not spawn their own zeds or run the wave timer.
+2. **Zeds must see every player.** Today `zeds/zed/think.rs` and the
+   attacks target "the" player (the camera entity, global resources).
+   On the server they need a list of player pawns: positions from the
+   `NetPawn`s (client-authoritative, as now) plus the host's own, and
+   per-player health (today `PlayerHealth` is one global resource).
+   Damage to a client's player must be sent to that client.
+3. **Shots must reach the server.** A client's shot (trace or
+   projectile) has to hit the server's zeds: either the client sends
+   "I fired from here in this direction" and the server traces (KF's
+   way), or the client sends "I hit zed N for X damage" (simpler, more
+   trusting). Then deaths, gibs, dosh and kills come back from the
+   server.
+4. **Shared game state**: wave number, zeds left, the trader time and
+   shop open/closed, the match end, zed time (KF: Level.TimeDilation
+   decided by the server; see step 1's note about lightyear's clock),
+   each player's dosh and kills (on `NetPlayer`, KF's PRI).
+5. **Spawn spots** chosen by the server, so players do not start inside
+   each other.

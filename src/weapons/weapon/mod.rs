@@ -178,7 +178,7 @@ fn publish_pawn_weapon(
 
 /// Scripted input for tests: at frame N do an action ("fire", "fire_down" /
 /// "fire_up" = hold / release, the same for "altfire", "1" to "5" =
-/// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = toggle iron sights, "zed" = spawn a Clot, "zed_drop" =
+/// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = toggle iron sights, "walk_on" / "walk_off" = hold / release forward (walk.rs), "zed" = spawn a Clot, "zed_drop" =
 /// spawn one 200 units up, "gorefast" = spawn a Gorefast,
 /// "gorefast_far" = one 900 units away, "zed_line" = three Clots in a
 /// line ahead ("zed_line_far": 700-900 away), "cycle_zed" = press N,

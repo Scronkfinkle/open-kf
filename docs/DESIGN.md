@@ -85,7 +85,8 @@ open-kf/                   Cargo workspace root (the repository)
     game/                  waves, damage and health, dosh, trader and shop, HUD, zed time
     audio/                 the mixer, music, map / player / trader sounds
     net/                   experimental multiplayer (branch multiplayer-lightyear):
-                           --host / --join, the lobby over the network (lightyear);
+                           --host / --join, the lobby over the network (lightyear),
+                           other players' pawns and bodies (pawns.rs);
                            see docs/multiplayer-prototype.md
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
@@ -3860,8 +3861,12 @@ and by the player in behind view (the end of the match, F4).
   (TakeHitLocation), dead. `PawnBody` holds the animation state and the
   drawn entities. The body systems read only `PawnState`; for the local
   player, small "feed" systems copy the walker, the camera's look
-  angles, the weapon state and the hits into it. A remote player would
-  fill `PawnState` from the network instead (no networking written).
+  angles, the weapon state and the hits into it. Another player's pawn
+  in a network game (branch multiplayer-lightyear, `src/net/pawns.rs`)
+  is a separate entity whose `PawnState` (local: false) is filled from
+  the network, with a `PawnCharacter` naming its character.
+  `BodyModels` holds every character loaded so far (the local player's
+  is `local`; others are loaded the first time a pawn asks for them).
   Today the local pawn is the camera entity (it carries the `Walker`);
   the body's drawn root is a separate entity placed at the pawn's
   Location with the pawn's yaw.
@@ -3926,7 +3931,7 @@ Steps:
   (SPECIES_KFMaleHuman FeetBones), the attached emitter
   (rec.AttachedEmitter), the face skin (the soldier meshes have one
   material slot, so Skins[1] is unused), animations for other pawns
-  (only the local player has a `PawnState` today).
+  (in network games other players' pawns have one: src/net/pawns.rs).
 
 **At the end of the match.** Lost: the view goes behind where the
 player died; the body is hidden (no ragdoll, see TP4). Won: KF's view is

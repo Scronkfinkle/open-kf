@@ -52,14 +52,63 @@ pub struct LobbyRequest {
     pub character: String,
 }
 
+/// One player's pawn as its owner sees it (step 2, client-authoritative):
+/// what is needed to draw it on the other screens (KF replicates the same
+/// things for other players' pawns: Location, Velocity, Physics, Rotation
+/// and ViewPitch, the weapon attachment's FlashCount / FiringMode,
+/// AnimAction, TakeHitLocation, Health). Bevy space (metres) and radians,
+/// as `PawnState`. Sent by each client about 20 times a second; the
+/// server copies it into the player's `NetPawn`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct PawnUpdate {
+    /// Counts up per update (the receiver drops older ones).
+    pub seq: u32,
+    /// The sender's clock (real seconds since it started) when it was
+    /// sent: the receiver places the update on this time line.
+    pub time: f64,
+    /// There is a walking pawn (false while flying or in the lobby).
+    pub active: bool,
+    pub location: [f32; 3],
+    pub velocity: [f32; 3],
+    pub on_ground: bool,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub weapon_class: Option<String>,
+    pub flash_count: u32,
+    pub firing: bool,
+    pub firing_mode: u8,
+    pub reloads: u32,
+    pub hits: u32,
+    pub hit_from: Option<[f32; 3]>,
+    pub dead: bool,
+}
+
+/// A player's pawn on the server, copied to everyone (KF's Pawn, as other
+/// players' games see it). One entity per player once their match has
+/// started; despawned when they leave.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NetPawn {
+    /// The owner (`NetPlayer::peer`).
+    pub peer: u64,
+    pub state: PawnUpdate,
+}
+
 /// Reliable, ordered: lobby requests must all arrive, in order.
 pub struct LobbyChannel;
+
+/// Unreliable, sequenced: pawn updates. A lost one is replaced by the
+/// next; an old one arriving late is dropped.
+pub struct PawnChannel;
 
 pub fn register(app: &mut App) {
     app.component::<NetPlayer>().replicate();
     app.component::<NetGame>().replicate();
+    app.component::<NetPawn>().replicate();
     app.register_message::<LobbyRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<PawnUpdate>().add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
+        .add_direction(NetworkDirection::ClientToServer);
+    app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })
         .add_direction(NetworkDirection::ClientToServer);
 }
 

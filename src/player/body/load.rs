@@ -129,6 +129,11 @@ pub(super) struct AttachmentDef {
 #[derive(Resource, Default)]
 pub(super) struct BodyModels {
     pub characters: Vec<BodyModel>,
+    /// The local player's character (index into `characters`).
+    pub local: usize,
+    /// A wanted character name (lower case; a remote player's, or the
+    /// local one) -> index into `characters` (None: could not load).
+    pub by_name: HashMap<String, Option<usize>>,
     pub attachments: Vec<AttachmentDef>,
     /// Weapon class (lower case) -> attachment index (None: could not load).
     pub by_weapon: HashMap<String, Option<usize>>,
@@ -181,42 +186,109 @@ pub(super) fn load_body_models(
     let started = std::time::Instant::now();
     let set = PackageSet::new(&request.install_root);
     let defaults = ClassDefaults::new(&set);
-    match load_body(&set, &defaults, &request, character.0.as_deref(), &mut meshes, &mut images, &mut materials) {
+    let wanted = character.0.as_deref();
+    match load_body(&set, &defaults, &request, wanted, &mut meshes, &mut images, &mut materials) {
         Ok(b) => {
-            let names = &b.names;
-            let mut wanted: Vec<&str> = names.all();
-            wanted.extend(["Weapon_Switch", "DeathF", "DeathB", "DeathL", "DeathR"]);
-            let missing: Vec<&str> = wanted.into_iter().filter(|n| b.model.sequence(n).is_none()).collect();
-            let m = &b.model.mesh;
-            runlog::kv(
-                "body_loaded",
-                &format!(
-                    "character={} bones={} points={} triangles={} parts={} mesh_scale={:?} mesh_origin={:?} rot_origin={:?} pre_pivot={:?} draw_scale={} fire_root={:?} spine={:?} weapon_bone={:?} seconds={:.2} sequences={:?}",
-                    b.name,
-                    m.bones.len(),
-                    m.points.len(),
-                    m.triangles.len(),
-                    b.model.parts.len(),
-                    m.scale,
-                    m.origin,
-                    m.rot_origin,
-                    b.pre_pivot.to_array(),
-                    b.draw_scale,
-                    b.fire_root.map(|i| m.bones[i].name.clone()),
-                    b.spine.map(|s| s.map(|i| m.bones[i].name.clone())),
-                    b.weapon_bone.map(|i| m.bones[i].name.clone()),
-                    started.elapsed().as_secs_f64(),
-                    b.model.anim.as_ref().map(|a| a.sequences.iter().map(|s| s.name.clone()).collect::<Vec<_>>())
-                ),
-            );
-            if !missing.is_empty() {
-                runlog::kv("body_anims_missing", &format!("character={} source=pawn_class anims={missing:?}", b.name));
+            log_loaded(&b, started, wanted.unwrap_or("-"));
+            models.local = models.characters.len();
+            if let Some(w) = wanted {
+                let local = models.local;
+                models.by_name.insert(w.to_ascii_lowercase(), Some(local));
             }
             models.characters.push(b);
         }
         Err(e) => runlog::kv("body_error", &format!("error=\"{e}\"")),
     }
     kept.0 = Some(set);
+}
+
+/// Logs a loaded body (and the animations the pawn class names that it lacks).
+fn log_loaded(b: &BodyModel, started: std::time::Instant, wanted: &str) {
+    let names = &b.names;
+    let mut wanted_anims: Vec<&str> = names.all();
+    wanted_anims.extend(["Weapon_Switch", "DeathF", "DeathB", "DeathL", "DeathR"]);
+    let missing: Vec<&str> = wanted_anims.into_iter().filter(|n| b.model.sequence(n).is_none()).collect();
+    let m = &b.model.mesh;
+    runlog::kv(
+        "body_loaded",
+        &format!(
+            "character={} wanted={wanted} bones={} points={} triangles={} parts={} mesh_scale={:?} mesh_origin={:?} rot_origin={:?} pre_pivot={:?} draw_scale={} fire_root={:?} spine={:?} weapon_bone={:?} seconds={:.2} sequences={:?}",
+            b.name,
+            m.bones.len(),
+            m.points.len(),
+            m.triangles.len(),
+            b.model.parts.len(),
+            m.scale,
+            m.origin,
+            m.rot_origin,
+            b.pre_pivot.to_array(),
+            b.draw_scale,
+            b.fire_root.map(|i| m.bones[i].name.clone()),
+            b.spine.map(|s| s.map(|i| m.bones[i].name.clone())),
+            b.weapon_bone.map(|i| m.bones[i].name.clone()),
+            started.elapsed().as_secs_f64(),
+            b.model.anim.as_ref().map(|a| a.sequences.iter().map(|s| s.name.clone()).collect::<Vec<_>>())
+        ),
+    );
+    if !missing.is_empty() {
+        runlog::kv("body_anims_missing", &format!("character={} source=pawn_class anims={missing:?}", b.name));
+    }
+}
+
+/// Finds or loads a character by its wanted name: the index into
+/// `characters` (None: it could not be loaded). A name already loaded
+/// under its record name is not loaded twice.
+fn find_or_load(
+    set: &PackageSet,
+    models: &mut BodyModels,
+    request: &MapRequest,
+    wanted: &str,
+    (meshes, images, materials): (&mut Assets<Mesh>, &mut Assets<Image>, &mut Assets<StandardMaterial>),
+) -> Option<usize> {
+    let key = wanted.to_ascii_lowercase();
+    if let Some(i) = models.by_name.get(&key) {
+        return *i;
+    }
+    let index = models.characters.iter().position(|b| b.name.eq_ignore_ascii_case(wanted)).or_else(|| {
+        let started = std::time::Instant::now();
+        let defaults = ClassDefaults::new(set);
+        match load_body(set, &defaults, request, Some(wanted), meshes, images, materials) {
+            Ok(b) => {
+                log_loaded(&b, started, wanted);
+                // `pick` falls back to another record for an unknown name.
+                match models.characters.iter().position(|c| c.name == b.name) {
+                    Some(i) => Some(i),
+                    None => {
+                        models.characters.push(b);
+                        Some(models.characters.len() - 1)
+                    }
+                }
+            }
+            Err(e) => {
+                runlog::kv("body_error", &format!("error=\"{e}\" wanted={wanted}"));
+                None
+            }
+        }
+    });
+    models.by_name.insert(key, index);
+    index
+}
+
+/// Loads the character of every pawn that asks for one (other players'
+/// pawns carry `PawnCharacter`), the first time it is seen.
+pub(super) fn load_pawn_characters(
+    kept: NonSend<BodyPackages>,
+    mut models: ResMut<BodyModels>,
+    request: Res<MapRequest>,
+    pawns: Query<&super::PawnCharacter>,
+    (mut meshes, mut images, mut materials): RenderAssets,
+) {
+    let Some(set) = kept.0.as_ref() else { return };
+    for c in &pawns {
+        if !models.by_name.contains_key(&c.0.to_ascii_lowercase()) {
+            find_or_load(set, &mut models, &request, &c.0, (&mut meshes, &mut images, &mut materials));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -317,7 +389,7 @@ pub(super) fn load_attachments(
         let defaults = ClassDefaults::new(set);
         let index = match load_attachment(set, &defaults, class, &mut meshes, &mut images, &mut materials) {
             Ok(a) => {
-                let missing: Vec<String> = match (&a.names, models.characters.first()) {
+                let missing: Vec<String> = match (&a.names, models.characters.get(models.local)) {
                     (Some(n), Some(b)) => {
                         let mut v = n.all();
                         v.push(&a.reload_anim);
@@ -400,9 +472,10 @@ type RenderAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<Image>>, Re
 
 /// A character change after startup (the perk page's Change Character,
 /// then SAVE: `CharacterChoice` is set by the weapon code's sleeve swap):
-/// the body model is loaded again and every body is despawned, so
-/// `spawn_bodies` gives the pawns the new one. KF swaps the character with
-/// the next pawn (the lobby's Ready spawns it); ours already exists.
+/// the new body model is found or loaded and the local player's body is
+/// despawned, so `spawn_bodies` gives the pawn the new one. Other
+/// players' bodies keep theirs. KF swaps the character with the next pawn
+/// (the lobby's Ready spawns it); ours already exists.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reload_on_character_change(
     mut commands: Commands,
@@ -410,28 +483,28 @@ pub(super) fn reload_on_character_change(
     mut models: ResMut<BodyModels>,
     request: Res<MapRequest>,
     character: Res<crate::player::character::CharacterChoice>,
-    bodies: Query<(Entity, &super::PawnBody)>,
+    bodies: Query<(Entity, &super::PawnBody, &PawnState)>,
     (mut meshes, mut images, mut materials): RenderAssets,
 ) {
     if !character.is_changed() || character.is_added() {
         return;
     }
     let Some(set) = kept.0.as_ref() else { return };
-    let wanted = character.0.as_deref();
-    if models.characters.first().is_some_and(|b| wanted.is_some_and(|w| b.name.eq_ignore_ascii_case(w))) {
+    let Some(wanted) = character.0.as_deref() else { return };
+    if models.characters.get(models.local).is_some_and(|b| b.name.eq_ignore_ascii_case(wanted)) {
         return;
     }
-    let defaults = ClassDefaults::new(set);
-    match load_body(set, &defaults, &request, wanted, &mut meshes, &mut images, &mut materials) {
-        Ok(b) => {
-            runlog::kv("body_reloaded", &format!("character={} bodies_respawned={}", b.name, bodies.iter().count()));
-            models.characters.clear();
-            models.characters.push(b);
-            for (e, body) in &bodies {
-                commands.entity(body.root).despawn();
-                commands.entity(e).remove::<super::PawnBody>();
-            }
+    let Some(i) = find_or_load(set, &mut models, &request, wanted, (&mut meshes, &mut images, &mut materials)) else {
+        runlog::kv("body_error", &format!("wanted={wanted} reason=character_change"));
+        return;
+    };
+    models.local = i;
+    let mut respawned = 0;
+    for (e, body, s) in &bodies {
+        if s.local {
+            body.despawn(&mut commands, e);
+            respawned += 1;
         }
-        Err(e) => runlog::kv("body_error", &format!("error=\"{e}\" reason=character_change")),
     }
+    runlog::kv("body_reloaded", &format!("character={} bodies_respawned={respawned}", models.characters[i].name));
 }

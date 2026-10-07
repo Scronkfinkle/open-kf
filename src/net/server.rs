@@ -26,8 +26,8 @@ const LOBBY_TIMEOUT: i32 = 20;
 pub struct PlayerSlot {
     pub link: Entity,
     pub host: bool,
-    /// The player's pawn entity, once pawns are networked (step 2).
-    #[allow(dead_code)] // filled in step 2
+    /// The player's `NetPawn` entity (made with their first pawn update,
+    /// net/pawns.rs).
     pub pawn: Option<Entity>,
 }
 
@@ -163,6 +163,10 @@ fn drop_left_players(mut commands: Commands, players_q: Query<(Entity, &NetPlaye
             Ok(_) => continue,
         };
         commands.entity(e).despawn();
+        // KF: Logout destroys the pawn too; every game removes its body.
+        if let Some(pawn) = slot.pawn {
+            commands.entity(pawn).despawn();
+        }
         players.0.remove(&p.peer);
         runlog::kv("net_player_left", &format!("peer={} name=\"{}\" reason={reason} players={}", p.peer, p.name, players.0.len()));
     }

@@ -365,7 +365,7 @@ fn walk(
     mut pinned: Option<ResMut<crate::game::combat::PlayerPinned>>,
     mut pushes: MessageReader<PlayerPush>,
     mut kicks: MessageReader<PlayerAddVelocity>,
-    mut last_log: Local<f32>,
+    (mut last_log, mut scripted_walk): (Local<f32>, Local<bool>),
     mut glass: WalkMap,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
@@ -430,7 +430,17 @@ fn walk(
         let forward = Vec3::new(-cam.yaw.sin(), 0.0, -cam.yaw.cos());
         let right = Vec3::new(cam.yaw.cos(), 0.0, -cam.yaw.sin());
         let mut wish = Vec3::ZERO;
-        let auto = settings.autowalk.is_some_and(|d| w.time >= 1.0 && w.time < 1.0 + d);
+        // Test actions "walk_on" / "walk_off": hold / release forward.
+        for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+            match a.as_str() {
+                "walk_on" | "walk_off" => {
+                    *scripted_walk = a == "walk_on";
+                    runlog::kv("scripted_walk", &format!("forward={}", *scripted_walk));
+                }
+                _ => {}
+            }
+        }
+        let auto = *scripted_walk || settings.autowalk.is_some_and(|d| w.time >= 1.0 && w.time < 1.0 + d);
         if keys.pressed(KeyCode::KeyW) || auto {
             wish += forward;
         }

@@ -6,8 +6,9 @@
 //! The body belongs to a pawn, not to the camera: `PawnState` (on the pawn
 //! entity) holds what KF replicates to draw any pawn, and the body systems
 //! read only that. For the local player, `feed_local_pawn` (here) and the
-//! weapon code (`weapons::weapon::publish_pawn_weapon`) fill it in; a
-//! remote player would fill it from the network (none written).
+//! weapon code (`weapons::weapon::publish_pawn_weapon`) fill it in; another
+//! player's pawn in a network game is filled from the network
+//! (`net::pawns`), with a `PawnCharacter` naming its character.
 
 use bevy::prelude::*;
 
@@ -51,6 +52,17 @@ pub struct PawnState {
     pub hit_from: Option<Vec3>,
     pub dead: bool,
 }
+
+/// The character a pawn other than the local player's is drawn with (the
+/// name of a character record, e.g. `Mr_Foster`; KF's PRI
+/// CharacterName). The local player's pawn uses `CharacterChoice` instead.
+/// Changing it gives the pawn a new body.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub struct PawnCharacter(pub String);
+
+/// The body systems (other code that feeds `PawnState`s runs before).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BodySystems;
 
 /// KF's FireState (xPawn): what channel 1 (the upper body) is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -147,9 +159,25 @@ pub struct PawnBody {
     ragdoll_location: Option<Vec3>,
     /// Last whole second logged (body_state).
     log_second: i64,
+    /// Whose body, for the log: "local", else the pawn entity's Name.
+    who: String,
 }
 
 impl PawnBody {
+    /// Removes the body from its pawn and despawns what draws it (the pawn
+    /// entity itself stays). `spawn_bodies` gives the pawn a new one.
+    pub fn despawn(&self, commands: &mut Commands, pawn: Entity) {
+        commands.entity(self.root).despawn();
+        if let Some(r) = &self.ragdoll {
+            for e in r.joints.iter().chain(&r.bodies) {
+                commands.entity(*e).despawn();
+            }
+        }
+        if let Ok(mut p) = commands.get_entity(pawn) {
+            p.remove::<PawnBody>();
+        }
+    }
+
     /// The pawn's Location while it is a ragdoll (the root part's centre;
     /// in KF the actor moves with its ragdoll), for the behind view.
     pub fn ragdoll_location(&self) -> Option<Vec3> {
@@ -166,8 +194,18 @@ impl Plugin for BodyPlugin {
             .add_systems(PostStartup, load::load_body_models)
             .add_systems(
                 Update,
-                (add_local_pawn_state, feed_local_pawn, load::reload_on_character_change, load::load_attachments, animate::spawn_bodies, animate::animate_bodies)
+                (
+                    add_local_pawn_state,
+                    feed_local_pawn,
+                    load::reload_on_character_change,
+                    load::load_pawn_characters,
+                    animate::follow_pawn_character,
+                    load::load_attachments,
+                    animate::spawn_bodies,
+                    animate::animate_bodies,
+                )
                     .chain()
+                    .in_set(BodySystems)
                     .after(crate::player::walk::WalkSystems)
                     .after(crate::weapons::weapon::PublishPawnWeapon),
             );

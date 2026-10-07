@@ -48,15 +48,44 @@ const PLAYER_RAGDOLL: bool = false;
 #[derive(Component)]
 pub(super) struct BodyRoot;
 
+/// Which loaded character a pawn is drawn with: the local player's, or
+/// the one its `PawnCharacter` names. None: not loaded yet (wait); a
+/// character that failed to load is drawn as the local player's.
+fn character_index(models: &BodyModels, s: &PawnState, wanted: Option<&super::PawnCharacter>) -> Option<usize> {
+    match wanted {
+        Some(c) if !s.local => models.by_name.get(&c.0.to_ascii_lowercase()).map(|i| i.unwrap_or(models.local)),
+        _ => Some(models.local),
+    }
+}
+
+/// A pawn whose `PawnCharacter` changed (another player changed
+/// character) loses its body; `spawn_bodies` gives it the new one.
+pub(super) fn follow_pawn_character(
+    mut commands: Commands,
+    models: Res<BodyModels>,
+    pawns: Query<(Entity, &PawnState, &super::PawnCharacter, &PawnBody), Changed<super::PawnCharacter>>,
+) {
+    for (e, s, c, body) in &pawns {
+        if character_index(&models, s, Some(c)) != Some(body.character) {
+            runlog::kv("body_character_change", &format!("wanted={} local={}", c.0, s.local));
+            body.despawn(&mut commands, e);
+        }
+    }
+}
+
+/// Pawns without a body: their state, wanted character and name.
+type BodilessPawn<'a> = (Entity, &'a PawnState, Option<&'a super::PawnCharacter>, Option<&'a Name>);
+
 /// Gives every pawn with a `PawnState` a body (once the model is loaded).
 pub(super) fn spawn_bodies(
     mut commands: Commands,
     models: Res<BodyModels>,
-    pawns: Query<(Entity, &PawnState), Without<PawnBody>>,
+    pawns: Query<BodilessPawn, Without<PawnBody>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Some(b) = models.characters.first() else { return };
-    for (e, s) in &pawns {
+    for (e, s, wanted, name) in &pawns {
+        let Some(character) = character_index(&models, s, wanted) else { continue };
+        let Some(b) = models.characters.get(character) else { continue };
         let handles = b.model.new_instance(&mut meshes);
         let root = commands
             .spawn((Transform::from_translation(s.location), Visibility::Hidden, BodyRoot))
@@ -65,7 +94,7 @@ pub(super) fn spawn_bodies(
             commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(root)));
         }
         commands.entity(e).insert(PawnBody {
-            character: 0,
+            character,
             root,
             meshes: handles,
             weapon_class: None,
@@ -101,8 +130,9 @@ pub(super) fn spawn_bodies(
             frozen_root: None,
             ragdoll_location: None,
             log_second: -1,
+            who: if s.local { "local".into() } else { name.map_or(format!("{e:?}"), |n| n.as_str().replace(' ', "_")) },
         });
-        runlog::kv("body_spawned", &format!("character={} local={} parts={}", b.name, s.local, b.model.parts.len()));
+        runlog::kv("body_spawned", &format!("character={} local={} parts={} pawn={e:?}", b.name, s.local, b.model.parts.len()));
     }
 }
 
@@ -187,7 +217,8 @@ impl PawnBody {
         runlog::kv(
             "body_anim",
             &format!(
-                "channel=0 kind={kind:?} sequence={} tween={tween} reason={why}",
+                "who={} channel=0 kind={kind:?} sequence={} tween={tween} reason={why}",
+                self.who,
                 play.and_then(|p| b.model.sequence_name(p.seq)).unwrap_or("-")
             ),
         );
@@ -203,7 +234,7 @@ impl PawnBody {
         self.upper_ending = false;
         runlog::kv(
             "body_anim",
-            &format!("channel=1 sequence={} looping={looping} fire_state={:?} reason={why}", b.model.sequence_name(seq).unwrap_or("?"), self.fire_state),
+            &format!("who={} channel=1 sequence={} looping={looping} fire_state={:?} reason={why}", self.who, b.model.sequence_name(seq).unwrap_or("?"), self.fire_state),
         );
     }
 
@@ -295,7 +326,7 @@ pub(super) fn animate_bodies(
             let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
             if *vis != want {
                 *vis = want;
-                runlog::kv("body_visible", &format!("visible={visible} active={} local={} first_person={} dead={} no_corpse={no_corpse}", s.active, s.local, view.first_person(), s.dead));
+                runlog::kv("body_visible", &format!("who={} visible={visible} active={} local={} first_person={} dead={} no_corpse={no_corpse}", body.who, s.active, s.local, view.first_person(), s.dead));
             }
         }
         if !s.active {
@@ -324,7 +355,7 @@ pub(super) fn animate_bodies(
             }
             runlog::kv(
                 "body_attachment_held",
-                &format!("weapon={} attachment={}", class.as_deref().unwrap_or("none"), att_index.map_or("none".to_string(), |i| models.attachments[i].class.clone())),
+                &format!("who={} weapon={} attachment={}", body.who, class.as_deref().unwrap_or("none"), att_index.map_or("none".to_string(), |i| models.attachments[i].class.clone())),
             );
             body.weapon_class = class;
             body.attachment = att_index;
@@ -436,7 +467,7 @@ pub(super) fn animate_bodies(
                     }
                 }
                 body.frozen_root = None;
-                runlog::kv("body_anim", "channel=0 kind=Idle reason=revived");
+                runlog::kv("body_anim", &format!("who={} channel=0 kind=Idle reason=revived", body.who));
             }
             // Shots (FlashCount changes), firing stopped, reloads, hits.
             if s.flash_count != body.seen_flash {
@@ -711,7 +742,8 @@ pub(super) fn animate_bodies(
             runlog::kv(
                 "body_state",
                 &format!(
-                    "location_unreal=({:.0}, {:.0}, {:.0}) speed={speed:.0} forward={fwd:.0} right={right:.0} on_ground={} base={:?} base_seq={} weights={:?} phase={:.2} upper={} upper_alpha={:.2} fire_state={:?} pitch_deg={:.1} turn_rate={:.0} visible={visible} weapon={} hand_actor={:?} attachment_bounds_actor={:?} ragdoll_root_unreal={:?}",
+                    "who={} location_unreal=({:.0}, {:.0}, {:.0}) speed={speed:.0} forward={fwd:.0} right={right:.0} on_ground={} base={:?} base_seq={} weights={:?} phase={:.2} upper={} upper_alpha={:.2} fire_state={:?} pitch_deg={:.1} turn_rate={:.0} visible={visible} weapon={} hand_actor={:?} attachment_bounds_actor={:?} ragdoll_root_unreal={:?}",
+                    body.who,
                     -u.z,
                     u.x,
                     u.y,
