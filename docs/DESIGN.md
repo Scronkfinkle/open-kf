@@ -4517,14 +4517,14 @@ skips it. Otherwise it opens only in `--mode waves` when none of
 straight in the game; plain `cargo run --release -- --mode waves`
 opens the lobby). Debug mode (the default) never opens it by itself.
 
-**Perk page.** "3D View" box: KF draws the character model there
-(`KFSpinnyWeap`); **placeholder** until the player's third-person body
-exists (another branch). "Portrait" (KF: toggles 3D view / portrait)
-shows the portrait texture there. "Change Character" (KF: opens
-`KFModelSelect`, a portrait grid, not built) steps to the next
-character record (our stand-in); SAVE applies it: the first-person
-sleeves of every weapon are swapped at once (character.rs). Biography
-from `[DecoText]`.
+**Perk page.** "3D View" box: the character's model, drawn as KF's
+`KFSpinnyWeap` (see "The 3D View and Change Character" below).
+"Portrait" toggles 3D view / portrait. "Change Character" opens the
+character select window (`KFModelSelect`); SAVE applies the character:
+the first-person sleeves of every weapon are swapped at once
+(character.rs), the third-person body is reloaded, and in a network
+game the lobby sends the new character to the others. Biography from
+`[DecoText]`.
 
 **Pause menu.** Escape (KFPlayerController.ShowMidGameMenu) opens it;
 in single player KF pauses the game (`SetPause(true)` when
@@ -4543,7 +4543,9 @@ contents not built.
 
 **Test actions** (`--input FRAME:ACTION`): `lobby_ready`,
 `lobby_select_perk`, `perk_pick:NAME` (highlight a row on the perk page
-or the pause menu's Perks tab), `lobby_save`, `change_character`,
+or the pause menu's Perks tab), `lobby_save`, `change_character` (=
+`char_select_open`), `char_pick:NAME`, `char_select_ok`,
+`char_select_cancel`, `char_scroll:ROWS`, `char_rotate:PIXELS`,
 `toggle_portrait`, `pause_menu` (Escape), `pause_tab:NAME`,
 `pause_select_perk`, `menu_dump` (logs every drawn box). Logs:
 `menu_layout`, `menu_open` / `menu_close` (which page, why),
@@ -4586,12 +4588,99 @@ against the reference and by logs.
 - Quirk found: `PackageSet::find_object("KFGui.LobbyMenu.X")` missed
   most subobjects; the menus load `System/KFGui.u` by its file instead
   (the name KFGui also fits `Textures/KFGui.utx`; cause not looked into).
-- Not done: the movie (Bink); the 3D character (placeholder); KFModelSelect
-  (Change Character steps to the next record instead); the Options /
+- Not done: the movie (Bink); the Options /
   Settings pages; Spectate; KFQuitPage's "Are you sure?"; the
   Communication and Help tabs' contents; the window's close box; chat
   typing (offline); scrolling text boxes; the lobby countdown
   ("Game will auto-commence in"); keyboard focus / tabbing.
+
+### The 3D View and Change Character (planned and built 2026-10-07)
+
+**What KF does (KFTab_Profile, KFModelSelect, UT2k4ModelSelect,
+SpinnyWeap; class defaults read with `kfpkg defaults`).**
+- **The 3D View** (`KFTab_Profile`): a `KFSpinnyWeap` actor (SpinnyWeap:
+  `bUnlit` true, so the model is drawn unlit; SpinRate 0, so no
+  auto-rotation) with the record's mesh and skins (`Skins[0]` BodySkin,
+  `Skins[1]` FaceSkin), `SetDrawScale(0.9)`, looping `Profile_idle`.
+  Its rotation is Yaw 32768 + the player's rotation (it faces the
+  camera). `InternalDraw` places it in front of the camera at
+  `SpinnyDudeOffset.X + (ClipX / ClipY) x 120` (offset (120, 0, 0),
+  ClipX / ClipY the screen's width / height: 333 units at 16:9) and
+  draws it with `DrawActorClipped` into the `DropTarget` box at FOV
+  `nfov` = 15. Dragging the mouse over the box turns it:
+  `Yaw -= 256 x DeltaX`. "Portrait" (`Toggle3DView`) switches to the
+  2D portrait and back.
+- **Change Character** (`PickModel`) opens `KFGui.KFModelSelect`, a
+  LockedFloatingWindow ("Select Character", WinLeft 0.125, WinTop 0.15,
+  0.74 x 0.7 of the screen). Inside: `sb_Main` (AltSectionBackground at
+  0.04, 0.075, 0.680742 x 0.555859, RightPadding 0.5) whose caption is
+  the highlighted character's name, managing `CharList`
+  (KFGUIVertImageListBox: 4 columns x 3 rows of portraits, CELL_FixedCount,
+  borders 2 px, a vertical scroll bar); `i_bk` (changeme_texture at alpha
+  128 with a drop shadow) where a second SpinnyWeap shows the
+  highlighted character (offset (250, 1, -24), FOV 15, DrawScale 0.9,
+  `Profile_idle`); OK and Cancel (AlignButtons: bottom right). The list
+  is every record whose Menu does not contain "DUP" (all 56 have
+  Menu="SP"); locked characters (Steam DLC, the native
+  `CharacterAvailable`) cannot be checked offline: all are shown
+  unlocked. Clicking a portrait highlights it and updates that window's
+  model and caption at once; OK (`ModelSelectClosed`) sets the perk
+  page's character (sChar): its 3D View, portrait and biography
+  change; Cancel keeps the old one. SAVE applies it
+  (`KFTab_Profile.SaveSettings`: ChangeCharacter).
+
+**Plan.**
+- `player/body/preview.rs`: preview slots (the perk page's, the model
+  select's). Each slot: a render-to-texture camera on its own render
+  layer (so the world does not draw it and it does not draw the world),
+  cleared to transparent, sized to its box; the character's meshes
+  (reusing `BodyModels` and its loading, unlit copies of the materials),
+  posed each frame from `Profile_idle`, at KF's distance, offset, yaw and
+  FOV. The menus fill a `CharacterPreview` request each frame (character,
+  box size, yaw, offset, FOV); no request hides the slot.
+- The menus draw the slot's image as a quad in the box (the HUD canvas
+  takes it like any texture), over the section background.
+- `game/menus/model_select.rs`: the window, the grid, OK / Cancel; new
+  page `Page::ModelSelect` above the perk page; mouse wheel and the
+  scroll bar scroll the grid one row at a time (`MyScrollBar.Step =
+  NoVisibleCols`).
+- Drag on the 3D View turns the model (KF's rule).
+- Test actions: `char_select_open`, `char_pick:NAME`, `char_select_ok`,
+  `char_select_cancel`, `char_rotate:PIXELS` (a drag), `char_scroll:ROWS`.
+  Logs: `preview_character`, `preview_state` (every 5 s: the
+  model's top / bottom / left / right in the box, pixels),
+  `model_select` (opened / highlighted / closed).
+
+**As built** (code: `src/player/body/preview.rs`,
+`src/game/menus/model_select.rs`, `profile.rs`, `mod.rs`, `gui.rs`).
+- Checked at 2560 x 1440 against `references/perk_selection.png`: the
+  model's top lands 130 px into the 3D View box (screenshot: about 133),
+  its feet at 1039 (screenshot: about 1009); size and place match by eye.
+  The previews are unlit (SpinnyWeap bUnlit); the screenshot's shading
+  comes from the textures.
+- The model select's model is cut off at the thighs: that is what KF's
+  numbers give (250 units away, FOV 15, 24 units below the view: about
+  77 units of height fit in i_bk). Not compared with KF (no screenshot
+  of it).
+- i_bk draws `InterfaceArt_tex.Menu.changeme_texture` (a red box with a
+  yellow border) at half alpha behind the model, as the data says; not
+  compared with KF.
+- The perk page stays drawn under the window (with its own model);
+  under the window everything is darkened to 80/255 (PopupPageBase's
+  fade, shown at once instead of over 0.35 s).
+- Quirk: `ClassDefaults` cannot find the defaults of KFGui.u classes
+  (it gathers property names from the script packages by name, and the
+  name KFGui finds the texture package, as above). The menus read
+  KFTab_Profile's `nfov` and `SpinnyDudeOffset` with KFGui.u's names
+  added (gui.rs); the asset library is unchanged.
+- Network: a client that picked Mr_Foster in the window and pressed SAVE
+  sent `character=Mr_Foster`; the host drew it (`net_remote_pawn_spawned
+  ... character=Mr_Foster`, `body_spawned character=Mr_Foster
+  local=false`).
+- Not done: locked (DLC) characters (all shown available); the window's
+  close box, moving it, the Mr.Crow name sound; the scroll bar's grip
+  cannot be dragged (wheel, arrow buttons and `char_scroll` scroll);
+  double-click; the 0.35 s fade.
 
 ## Pickups: weapons, ammo boxes and vests lying in the map (planned and built 2026-10-07)
 

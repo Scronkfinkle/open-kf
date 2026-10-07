@@ -2,18 +2,24 @@
 //! the lobby's "Select Perk". Boxes from KFGui.u, relative to the tab
 //! panel (KFProfilePage.Panel).
 //!
-//! PLACEHOLDER: the "3D View" box. KF draws the character model there
-//! (KFSpinnyWeap, `Profile_idle`); we have no third-person player body
-//! yet (built on another branch). Until it is merged the box stays
-//! empty; "Portrait" switches to the 2D portrait, which works.
+//! The "3D View" box shows the character's model (KFSpinnyWeap, drawn
+//! by player/body/preview.rs into an image, see `preview_box`); "Portrait"
+//! switches to the 2D portrait and back.
 
 use bevy::prelude::*;
 
 use super::DrawCtx;
-use super::gui::{Painter, State, named_font};
+use super::gui::{Gui, Painter, State, named_font};
 use super::perk_panel;
 
-pub(super) fn draw(p: &mut Painter, c: &DrawCtx) {
+/// b_DropTarget, where InternalDraw draws the SpinnyDude
+/// (DrawActorClipped into its box) and where dragging turns it.
+pub(super) fn preview_box(gui: &Gui, screen: Rect) -> Rect {
+    let panel = gui.comp("KFProfilePage.Panel").rect(screen);
+    gui.comp("KFTab_Profile.DropTarget").rect(panel)
+}
+
+pub(super) fn draw(p: &mut Painter, c: &DrawCtx, preview_texture: Option<usize>) {
     let gui = p.gui;
     let screen = p.screen;
     let white = [255, 255, 255, 255];
@@ -27,8 +33,15 @@ pub(super) fn draw(p: &mut Painter, c: &DrawCtx) {
         // PlayerRec.Portrait (ImageStyle Scaled).
         let portrait = c.data.characters.iter().find(|(n, _)| n.eq_ignore_ascii_case(&c.state.profile_char)).and_then(|(_, t)| gui.tex(t));
         p.tile(portrait, gui.comp("KFTab_Profile.PlayerPortrait").rect(panel), white, &format!("Portrait:{}", c.state.profile_char));
+    } else {
+        // InternalDraw (i_Portrait's OnDraw, returning bRenderDude): the
+        // model instead of the portrait; drag to turn it.
+        let bx = preview_box(gui, screen);
+        p.hit("profile.drag", bx);
+        if let Some(t) = preview_texture {
+            p.tile(Some(t), bx, white, &format!("SpinnyDude:{}", c.state.profile_char));
+        }
     }
-    // else: the 3D character model (placeholder, see the module comment).
     // b_3DView's caption: ShowPortraitCaption while the model shows.
     let caption = if c.state.profile_portrait { "3D View" } else { "Portrait" };
     p.button("profile.3d", gui.comp("KFTab_Profile.Player3DView").rect(panel), caption, State::Blurry);

@@ -68,7 +68,24 @@ pub const COMPONENTS: &[&str] = &[
     "KFTab_MidGamePerks.PerkSelectList", "KFTab_MidGamePerks.BGPerkEffects", "KFTab_MidGamePerks.PerkEffectsScroll",
     "KFTab_MidGamePerks.BGPerksNextLevel", "KFTab_MidGamePerks.PerkProgressList", "KFTab_MidGamePerks.SaveButton",
     "KFTab_MidGamePerks.SettingsButton", "KFTab_MidGamePerks.SpectateButton", "KFTab_MidGamePerks.LeaveMatchButton",
-    "KFTab_MidGamePerks.QuitGameButton", "KFTab_MidGamePerks.BrowserButton",
+    "KFTab_MidGamePerks.QuitGameButton", "KFTab_MidGamePerks.BrowserButton", "KFModelSelect.vil_CharList",
+];
+
+/// Component paths read from GUI2K4.u (KFModelSelect's inherited parts).
+pub const GUI2K4_COMPONENTS: &[&str] = &[
+    "UT2k4ModelSelect.iBK", "LockedFloatingWindow.InternalFrameImage", "LockedFloatingWindow.LockedOKButton",
+    "LockedFloatingWindow.LockedCancelButton",
+];
+
+/// Class default values the pages use (numbers; vectors as `.X`, `.Y`,
+/// `.Z`, arrays as `[i]`), read from the classes and their parents.
+pub const CLASS_VALUES: &[(&str, &[&str])] = &[
+    ("KFGui.KFTab_Profile", &["nfov", "SpinnyDudeOffset"]),
+    ("KFGui.KFModelSelect", &["nfov", "WinLeft", "WinTop", "WinWidth", "WinHeight", "EdgeBorder"]),
+    ("XInterface.SpinnyWeap", &["DrawScale"]),
+    ("XInterface.GUIButton", &["WinHeight"]),
+    ("XInterface.GUIVertImageListBox", &["HorzBorder", "VertBorder"]),
+    ("XInterface.GUIVertScrollBar", &["WinWidth"]),
 ];
 
 /// The textures the pages use (styles, list items, the wave circle).
@@ -89,6 +106,8 @@ pub const TEXTURES: &[&str] = &[
     "KF_InterfaceArt_tex.Menu.Checkbox",
     "InterfaceArt_tex.Menu.progress_bar",
     "KillingFloorHUD.HUD.Hud_Bio_Circle",
+    "InterfaceArt_tex.Menu.buttonGreyDark01",
+    "KF_InterfaceArt_tex.Menu.scrollbar",
 ];
 
 /// The fonts (GUI2K4.int fntUT2k4Small / Menu / Default, ROEngine.int
@@ -158,12 +177,23 @@ pub struct Gui {
     font_by_name: HashMap<String, usize>,
     /// A 1 x 1 white texture (solid fills: the video panel).
     pub white: Option<usize>,
+    /// `CLASS_VALUES`, by "Package.Class.Prop" (lower case).
+    pub class_values: HashMap<String, f32>,
+    /// The character preview images (player/body/preview.rs), one texture
+    /// per preview slot; the image behind each is swapped when its size
+    /// changes (`sync_previews`).
+    pub previews: Vec<usize>,
     pub loaded: bool,
 }
 
 impl Gui {
     pub fn comp(&self, path: &str) -> Comp {
         self.comps.get(path).cloned().unwrap_or_default()
+    }
+
+    /// A class default value (`CLASS_VALUES`), else `d`.
+    pub fn num(&self, key: &str, d: f32) -> f32 {
+        self.class_values.get(&key.to_ascii_lowercase()).copied().unwrap_or(d)
     }
 
     pub fn tex(&self, path: &str) -> Option<usize> {
@@ -183,14 +213,137 @@ pub fn load(gui: &mut Gui, root: &std::path::Path, extra: &[String], images: &mu
     let mut loader = Loader { set: &set, images, textures: Vec::new(), by_path: HashMap::new(), missing: Vec::new() };
     let mut missing_comps = Vec::new();
     // System/KFGui.u by its file (the name "KFGui" also fits
-    // Textures/KFGui.utx), its exports by path.
-    let kfgui = set.load_path(&root.join("System").join("KFGui.u")).ok();
-    let by_path: HashMap<String, usize> = kfgui
+    // Textures/KFGui.utx), its exports by path; GUI2K4.u the same way.
+    for (file, list) in [("KFGui.u", COMPONENTS), ("GUI2K4.u", GUI2K4_COMPONENTS)] {
+        read_components(gui, &set, &defaults, &root.join("System").join(file), list, &mut missing_comps);
+    }
+    for (class, props) in CLASS_VALUES {
+        // KFGui classes from System/KFGui.u by its file (find_object can
+        // pick Textures/KFGui.utx, see DESIGN.md).
+        let h = match class.strip_prefix("KFGui.") {
+            Some(name) => set.load_path(&root.join("System").join("KFGui.u")).ok().and_then(|lp| {
+                let export = (0..lp.pkg.exports.len()).find(|&i| lp.pkg.object_path(ue_assets::package::ObjectRef::Export(i)).eq_ignore_ascii_case(name))?;
+                Some(ue_assets::package_set::ObjectHandle { package: lp, export })
+            }),
+            None => set.find_object(class, Some("Class")),
+        };
+        let Some(h) = h else {
+            missing_comps.push(format!("{class}:class_not_found"));
+            continue;
+        };
+        // ClassDefaults collects property names from the script packages
+        // by name, which misses KFGui.u's own (same quirk), so it cannot
+        // find where a KFGui class's defaults start: they are read here
+        // with KFGui.u's names added; inherited values still come from
+        // ClassDefaults.
+        let own = class.starts_with("KFGui.").then(|| {
+            let mut names = std::collections::HashSet::new();
+            ue_assets::properties::add_class_property_names(&h.package.pkg, &mut names);
+            for pkg in ["Core", "Engine", "XInterface", "GUI2K4"] {
+                if let Some(lp) = set.load(pkg) {
+                    ue_assets::properties::add_class_property_names(&lp.pkg, &mut names);
+                }
+            }
+            ue_assets::properties::find_class_defaults(&h.package.pkg, h.export, &names).map(|(l, _)| l)
+        });
+        let own = own.flatten();
+        for prop in *props {
+            let key = format!("{class}.{prop}").to_ascii_lowercase();
+            let mut any = false;
+            // Element 0, and 1-3 of arrays (EdgeBorder[4]) as `[i]`.
+            for i in 0..4u32 {
+                let k = if i == 0 { key.clone() } else { format!("{key}[{i}]") };
+                let v = own.as_ref().and_then(|l| l.get_at(&h.package.pkg, prop, i).cloned()).or_else(|| defaults.get_at(&h, prop, i).map(|(v, _)| v));
+                match v {
+                    Some(Value::Float(x)) => {
+                        gui.class_values.insert(k, x);
+                    }
+                    Some(Value::Int(x)) => {
+                        gui.class_values.insert(k, x as f32);
+                    }
+                    Some(Value::Byte(x)) => {
+                        gui.class_values.insert(k, x as f32);
+                    }
+                    Some(Value::Vector(v)) if i == 0 => {
+                        for (axis, x) in ["x", "y", "z"].iter().zip(v) {
+                            gui.class_values.insert(format!("{key}.{axis}"), x);
+                        }
+                    }
+                    _ => continue,
+                }
+                any = true;
+            }
+            if !any {
+                missing_comps.push(format!("{class}.{prop}:no_value"));
+            }
+        }
+    }
+    for path in TEXTURES.iter().map(|s| s.to_string()).chain(extra.iter().cloned()) {
+        let t = loader.texture_path(&path);
+        gui.tex_by_path.insert(path.to_ascii_lowercase(), t);
+    }
+    let mut fonts_missing = Vec::new();
+    for name in FONTS {
+        let Some(h) = set.find_object(name, Some("Font")) else {
+            fonts_missing.push(name.to_string());
+            continue;
+        };
+        match ue_assets::font::read_font(&h.package.pkg, h.export) {
+            Ok(font) => {
+                let pages = font.textures.iter().map(|&t| loader.texture(&h.package, t)).collect();
+                gui.font_by_name.insert(name.to_ascii_lowercase(), gui.fonts.len());
+                gui.fonts.push(HudFont { name: name.to_string(), font, pages });
+            }
+            Err(e) => fonts_missing.push(format!("{name}:{e}")),
+        }
+    }
+    let mut textures = loader.textures;
+    let missing = loader.missing;
+    let white = Image::new_fill(
+        bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        &[255, 255, 255, 255],
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    textures.push(HudTexture { image: images.add(white), size: Vec2::ONE });
+    gui.white = Some(textures.len() - 1);
+    gui.textures = textures;
+    gui.loaded = true;
+    runlog::kv(
+        "menu_layout",
+        &format!(
+            "components={} missing_components=[{}] textures={} missing_textures=[{}] fonts={} missing_fonts=[{}] class_values=[{}] {}",
+            gui.comps.len(),
+            missing_comps.join(" "),
+            gui.textures.len(),
+            missing.join(" "),
+            gui.fonts.len(),
+            fonts_missing.join(" "),
+            {
+                let mut v: Vec<String> = gui.class_values.iter().map(|(k, x)| format!("{k}={x}")).collect();
+                v.sort();
+                v.join(" ")
+            },
+            {
+                let mut v: Vec<String> = gui.comps.iter().map(|(k, c)| format!("{k}:{:?}", c.win)).collect();
+                v.sort();
+                v.join(" ")
+            }
+        ),
+    );
+}
+
+/// Reads the saved values of GUI components (`Outer.Name` paths) from one
+/// GUI package, loaded by its file.
+fn read_components(gui: &mut Gui, set: &PackageSet, defaults: &ClassDefaults, file: &std::path::Path, list: &[&str], missing_comps: &mut Vec<String>) {
+    let pkg = set.load_path(file).ok();
+    let by_path: HashMap<String, usize> = pkg
         .as_ref()
         .map(|lp| (0..lp.pkg.exports.len()).map(|i| (lp.pkg.object_path(ue_assets::package::ObjectRef::Export(i)).to_ascii_lowercase(), i)).collect())
         .unwrap_or_default();
-    for path in COMPONENTS {
-        let Some(h) = kfgui.as_ref().zip(by_path.get(&path.to_ascii_lowercase())).map(|(lp, &export)| ue_assets::package_set::ObjectHandle { package: lp.clone(), export }) else {
+    for path in list {
+        let Some(h) = pkg.as_ref().zip(by_path.get(&path.to_ascii_lowercase())).map(|(lp, &export)| ue_assets::package_set::ObjectHandle { package: lp.clone(), export }) else {
             missing_comps.push(format!("{path}:not_found"));
             continue;
         };
@@ -230,55 +383,6 @@ pub fn load(gui: &mut Gui, root: &std::path::Path, extra: &[String], images: &mu
         };
         gui.comps.insert(path.to_string(), comp);
     }
-    for path in TEXTURES.iter().map(|s| s.to_string()).chain(extra.iter().cloned()) {
-        let t = loader.texture_path(&path);
-        gui.tex_by_path.insert(path.to_ascii_lowercase(), t);
-    }
-    let mut fonts_missing = Vec::new();
-    for name in FONTS {
-        let Some(h) = set.find_object(name, Some("Font")) else {
-            fonts_missing.push(name.to_string());
-            continue;
-        };
-        match ue_assets::font::read_font(&h.package.pkg, h.export) {
-            Ok(font) => {
-                let pages = font.textures.iter().map(|&t| loader.texture(&h.package, t)).collect();
-                gui.font_by_name.insert(name.to_ascii_lowercase(), gui.fonts.len());
-                gui.fonts.push(HudFont { name: name.to_string(), font, pages });
-            }
-            Err(e) => fonts_missing.push(format!("{name}:{e}")),
-        }
-    }
-    let mut textures = loader.textures;
-    let missing = loader.missing;
-    let white = Image::new_fill(
-        bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        bevy::render::render_resource::TextureDimension::D2,
-        &[255, 255, 255, 255],
-        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-        bevy::asset::RenderAssetUsages::RENDER_WORLD,
-    );
-    textures.push(HudTexture { image: images.add(white), size: Vec2::ONE });
-    gui.white = Some(textures.len() - 1);
-    gui.textures = textures;
-    gui.loaded = true;
-    runlog::kv(
-        "menu_layout",
-        &format!(
-            "components={} missing_components=[{}] textures={} missing_textures=[{}] fonts={} missing_fonts=[{}] {}",
-            gui.comps.len(),
-            missing_comps.join(" "),
-            gui.textures.len(),
-            missing.join(" "),
-            gui.fonts.len(),
-            fonts_missing.join(" "),
-            {
-                let mut v: Vec<String> = gui.comps.iter().map(|(k, c)| format!("{k}:{:?}", c.win)).collect();
-                v.sort();
-                v.join(" ")
-            }
-        ),
-    );
 }
 
 /// Horizontal text alignment (eTextAlign).
@@ -461,6 +565,20 @@ impl<'a> Painter<'a> {
             let font = named_font("UT2SmallFont", self.width());
             let strip = Rect::new(rect.min.x + 22.0, rect.min.y, rect.max.x, rect.min.y + 24.0);
             self.text_in(font, caption, strip, Align::Left, true, [200, 200, 200, 200], &format!("{what}.Caption"));
+        }
+    }
+
+    /// AltSectionBackground (GUI2K4): Thin_border_SlightTransparent, and
+    /// with bAltCaption the caption centred (AltCaptionAlign 1) inside
+    /// AltCaptionOffset (40, 8, 40, 25 px). The native drawing is not in
+    /// the scripts: the caption is centred in the strip from 8 to 33 px
+    /// down, 40 px in from each side (a guess), TextLabel colour.
+    pub fn alt_section(&mut self, rect: Rect, caption: &str, what: &str) {
+        self.stretched(self.gui.tex("KF_InterfaceArt_tex.Menu.Thin_border_SlightTransparent"), rect, [255, 255, 255, 255], what);
+        if !caption.is_empty() {
+            let font = named_font("UT2SmallFont", self.width());
+            let strip = Rect::new(rect.min.x + 40.0, rect.min.y + 8.0, rect.max.x - 40.0, rect.min.y + 33.0);
+            self.text_in(font, caption, strip, Align::Center, true, [200, 200, 200, 200], &format!("{what}.Caption"));
         }
     }
 

@@ -5,6 +5,7 @@
 
 pub mod gui;
 mod lobby;
+mod model_select;
 mod pause;
 mod perk_panel;
 mod profile;
@@ -25,6 +26,15 @@ pub enum Page {
     Profile,
     /// KFInvasionLoginMenu (Escape).
     Pause,
+    /// KFModelSelect ("Change Character" on the perk page), above it.
+    ModelSelect,
+}
+
+/// Which preview the mouse is turning (a drag that started on its box).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Drag {
+    Profile,
+    ModelSelect,
 }
 
 /// The pause menu's tabs (KFInvasionLoginMenu keeps Panels 1-3).
@@ -45,6 +55,16 @@ pub struct MenuState {
     pub profile_row: usize,
     pub profile_char: String,
     pub profile_portrait: bool,
+    /// The 3D View's turn by mouse drags (Unreal rotation units, added to
+    /// Opened's Yaw 32768).
+    pub profile_yaw: i32,
+    /// KFModelSelect: the highlighted character (index into
+    /// `MenuData::characters`), the list's top row, the model's turn.
+    pub select_index: usize,
+    pub select_top: usize,
+    pub select_yaw: i32,
+    /// A drag in progress.
+    pub drag: Option<Drag>,
     pub pause_tab: PauseTab,
     /// The pause menu's highlighted perk row.
     pub pause_row: usize,
@@ -60,7 +80,7 @@ impl MenuState {
 
     /// The lobby and its perk page: no pawn yet, so no HUD and no weapon.
     pub fn hides_hud(&self) -> bool {
-        self.stack.iter().any(|p| matches!(p, Page::Lobby | Page::Profile))
+        self.stack.iter().any(|p| matches!(p, Page::Lobby | Page::Profile | Page::ModelSelect))
     }
 
     pub fn top(&self) -> Option<Page> {
@@ -97,8 +117,8 @@ pub struct MenuData {
     /// The map record's Description (KFMapStoryLabel.LoadStoryText).
     pub map_description: String,
     pub player_name: String,
-    /// (DefaultName, portrait texture path) of the characters to step
-    /// through, sorted by name.
+    /// (DefaultName, portrait texture path) of the characters KFModelSelect
+    /// lists (`character::model_select_records`), sorted by name.
     pub characters: Vec<(String, String)>,
     /// KFGui.int [DecoText] biographies (lower-case name -> text).
     pub bios: std::collections::HashMap<String, String>,
@@ -122,7 +142,8 @@ impl Plugin for MenusPlugin {
                 PreUpdate,
                 menu_input.after(bevy::input::InputSystems).before(crate::game::buy_menu::menu_input),
             )
-            .add_systems(PostUpdate, draw_menus);
+            .add_systems(Update, request_previews)
+            .add_systems(PostUpdate, (sync_previews, draw_menus).chain().after(crate::player::body::PreviewSystems));
     }
 }
 
@@ -136,6 +157,7 @@ fn load_menus(
     request: Res<crate::world::map::MapRequest>,
     character: Res<crate::player::character::CharacterChoice>,
     mut images: ResMut<Assets<Image>>,
+    preview: Option<Res<crate::player::body::CharacterPreview>>,
 ) {
     let started = std::time::Instant::now();
     let root = &request.install_root;
@@ -159,14 +181,22 @@ fn load_menus(
     extra.push("InterfaceArt_tex.Menu.changeme_texture".to_string());
     if settings.open {
         // The portraits and biographies are only needed by the lobby.
-        let set = ue_assets::package_set::PackageSet::new(root);
-        let defaults = ue_assets::class_defaults::ClassDefaults::new(&set);
-        data.characters = crate::player::character::selectable_records(&set, &defaults, root).into_iter().map(|r| (r.name, r.portrait)).collect();
+        data.characters = crate::player::character::model_select_records(root).into_iter().map(|r| (r.name, r.portrait)).collect();
         extra.extend(data.characters.iter().map(|(_, p)| p.clone()).filter(|p| !p.is_empty()));
         let kfgui = gui::read_latin1(&root.join("System").join("KFGui.int"));
         data.bios = crate::audio::music::int_section(&kfgui, "DecoText").into_iter().map(|(k, v)| (k, unquote(&v))).collect();
     }
     gui::load(&mut gui, root, &extra, &mut images);
+    // The character previews' images (player/body/preview.rs), drawn like
+    // any other texture; `sync_previews` follows their changes.
+    if let Some(preview) = preview {
+        for image in preview.images.iter().flatten() {
+            let size = images.get(image).map_or(Vec2::ONE, |i| i.size_f32());
+            gui.textures.push(crate::game::hud::HudTexture { image: image.clone(), size });
+            let i = gui.textures.len() - 1;
+            gui.previews.push(i);
+        }
+    }
     for i in 0..POOL {
         commands.spawn((
             Node { position_type: PositionType::Absolute, ..default() },
@@ -213,7 +243,9 @@ fn scripted_to_ids(action: &str, top: Option<Page>) -> Vec<String> {
         "lobby_options" => vec!["lobby.options".into()],
         "lobby_disconnect" => vec!["lobby.disconnect".into()],
         "lobby_save" => vec!["profile.save".into()],
-        "change_character" => vec!["profile.pick".into()],
+        "change_character" | "char_select_open" => vec!["profile.pick".into()],
+        "char_select_ok" => vec!["select.ok".into()],
+        "char_select_cancel" => vec!["select.cancel".into()],
         "toggle_portrait" => vec!["profile.3d".into()],
         "pause_select_perk" => vec!["pause.save".into()],
         "pause_forfeit" => vec!["pause.forfeit".into()],
@@ -230,6 +262,12 @@ fn scripted_to_ids(action: &str, top: Option<Page>) -> Vec<String> {
                 }
             } else if let Some(t) = a.strip_prefix("pause_tab:") {
                 vec![format!("pause.tab:{t}")]
+            } else if let Some(n) = a.strip_prefix("char_pick:") {
+                vec![format!("select.pick:{n}")]
+            } else if let Some(n) = a.strip_prefix("char_scroll:") {
+                vec![format!("select.scroll:{n}")]
+            } else if let Some(n) = a.strip_prefix("char_rotate:") {
+                vec![format!("rotate:{n}")]
             } else {
                 Vec::new()
             }
@@ -275,6 +313,8 @@ fn menu_input(
     if escape {
         match state.top() {
             Some(Page::Pause) => ids.push("pause.close".into()),
+            // A popup page closes on Escape, cancelled (as Cancel).
+            Some(Page::ModelSelect) => ids.push("select.cancel".into()),
             None if !buy.open => ids.push("pause.open".into()),
             _ => {}
         }
@@ -288,7 +328,26 @@ fn menu_input(
         && let Some(pos) = win.physical_cursor_position()
         && let Some((id, _)) = hits.0.iter().rev().find(|(_, r)| r.contains(pos))
     {
-        ids.push(id.clone());
+        // A press on a 3D view starts a drag (the drop target captures the
+        // mouse: OnSpinnyDudeCapturedMouseMove) instead of a click.
+        match id.as_str() {
+            "profile.drag" => state.drag = Some(Drag::Profile),
+            "select.drag" => state.drag = Some(Drag::ModelSelect),
+            _ => ids.push(id.clone()),
+        }
+    }
+    if let Some(d) = state.drag {
+        if !mouse.pressed(MouseButton::Left) {
+            state.drag = None;
+        } else if motion.delta.x != 0.0 {
+            // Yaw -= 256 x DeltaX (mouse movement in pixels).
+            turn(&mut state, d, motion.delta.x);
+        }
+    }
+    // The mouse wheel scrolls the character list one row (Step =
+    // NoVisibleCols items).
+    if state.top() == Some(Page::ModelSelect) && scroll.delta.y != 0.0 {
+        ids.push(format!("select.scroll:{}", if scroll.delta.y > 0.0 { -1 } else { 1 }));
     }
     let was_open = !state.stack.is_empty();
     for id in ids {
@@ -373,6 +432,8 @@ fn apply(
             // KFProfilePage: the list starts on the selected perk.
             state.profile_row = vet.selected.map_or(0, |p| p.index());
             state.profile_portrait = false;
+            // KFTab_Profile.Opened: Yaw 32768 (facing the camera).
+            state.profile_yaw = 0;
             state.stack.push(Page::Profile);
             runlog::kv("menu_open", &format!("page=Profile reason=select_perk row={}", state.profile_row));
         }
@@ -395,13 +456,30 @@ fn apply(
             runlog::kv("menu_close", &format!("page=Profile reason=save perk={} character={}", perk.class(), state.profile_char));
         }
         "profile.pick" if on(Page::Profile) => {
-            // KF opens KFModelSelect (a portrait grid, not built); our
-            // stand-in steps to the next character.
-            if !data.characters.is_empty() {
-                let i = data.characters.iter().position(|(n, _)| n.eq_ignore_ascii_case(&state.profile_char)).map_or(0, |i| (i + 1) % data.characters.len());
-                state.profile_char = data.characters[i].0.clone();
+            // KFTab_Profile.PickModel: OpenMenu("KFGui.KFModelSelect",
+            // PlayerRec.DefaultName); HandleParameters highlights that
+            // character; Opened turns the model to face the camera.
+            state.select_index = data.characters.iter().position(|(n, _)| n.eq_ignore_ascii_case(&state.profile_char)).unwrap_or(0);
+            state.select_top = model_select::top_row_showing(state.select_index, 0, data.characters.len());
+            state.select_yaw = 0;
+            state.stack.push(Page::ModelSelect);
+            runlog::kv("menu_open", &format!("page=ModelSelect reason=change_character current={} characters={}", state.profile_char, data.characters.len()));
+            log_highlight(state, data, "opened");
+        }
+        "select.ok" if on(Page::ModelSelect) => {
+            // LockedFloatingWindow OK: CloseMenu(false); ModelSelectClosed
+            // takes GetDataString (the highlighted name) as sChar and
+            // SetPlayerRec updates the 3D View, portrait and biography.
+            // SAVE applies it.
+            state.stack.pop();
+            if let Some((n, _)) = data.characters.get(state.select_index) {
+                state.profile_char = n.clone();
             }
-            runlog::kv("character_pick", &format!("name={} applied_on=save", state.profile_char));
+            runlog::kv("menu_close", &format!("page=ModelSelect reason=ok character={} applied_on=save", state.profile_char));
+        }
+        "select.cancel" if on(Page::ModelSelect) => {
+            state.stack.pop();
+            runlog::kv("menu_close", &format!("page=ModelSelect reason=cancel character={}", state.profile_char));
         }
         "profile.3d" if on(Page::Profile) => {
             state.profile_portrait = !state.profile_portrait;
@@ -427,6 +505,30 @@ fn apply(
             } else if let Some(i) = id.strip_prefix("pause.perk:").and_then(|n| n.parse::<usize>().ok()).filter(|_| on(Page::Pause)) {
                 state.pause_row = i.min(6);
                 runlog::kv("perk_page", &format!("page=Pause row={} perk={} level={}", state.pause_row, Perk::ALL[state.pause_row].class(), vet.level));
+            } else if let Some(i) = id.strip_prefix("select.cell:").and_then(|n| n.parse::<usize>().ok()).filter(|_| on(Page::ModelSelect)) {
+                // GUIVertImageList.InternalOnClick -> SetIndex -> ListChange.
+                if i < data.characters.len() {
+                    state.select_index = i;
+                    log_highlight(state, data, "click");
+                }
+            } else if let Some(n) = id.strip_prefix("select.pick:").filter(|_| on(Page::ModelSelect)) {
+                match data.characters.iter().position(|(c, _)| c.eq_ignore_ascii_case(n)) {
+                    Some(i) => {
+                        state.select_index = i;
+                        state.select_top = model_select::top_row_showing(i, state.select_top, data.characters.len());
+                        log_highlight(state, data, "scripted");
+                    }
+                    None => runlog::kv("menu_action", &format!("action=char_pick:{n} refused=unknown_character")),
+                }
+            } else if let Some(n) = id.strip_prefix("select.scroll:").and_then(|n| n.parse::<i64>().ok()).filter(|_| on(Page::ModelSelect)) {
+                let max = model_select::max_top_row(data.characters.len()) as i64;
+                state.select_top = (state.select_top as i64 + n).clamp(0, max) as usize;
+                runlog::kv("model_select", &format!("event=scroll top_row={} max_top_row={max}", state.select_top));
+            } else if let Some(px) = id.strip_prefix("rotate:").and_then(|n| n.parse::<f32>().ok()) {
+                // A scripted drag on the top page's 3D view.
+                let d = if on(Page::ModelSelect) { Drag::ModelSelect } else { Drag::Profile };
+                turn(state, d, px);
+                runlog::kv("preview_turn", &format!("view={d:?} pixels={px} profile_yaw={} select_yaw={}", state.profile_yaw, state.select_yaw));
             } else if let Some(t) = id.strip_prefix("pause.tab:").filter(|_| on(Page::Pause)) {
                 state.pause_tab = match t {
                     "communication" => PauseTab::Communication,
@@ -439,6 +541,23 @@ fn apply(
             }
         }
     }
+}
+
+/// Turns a preview by a mouse movement of `dx` pixels
+/// (KFTab_Profile.OnSpinnyDudeCapturedMouseMove: Yaw -= 256 x DeltaX).
+fn turn(state: &mut MenuState, d: Drag, dx: f32) {
+    let delta = -(256.0 * dx).round() as i32;
+    let yaw = match d {
+        Drag::Profile => &mut state.profile_yaw,
+        Drag::ModelSelect => &mut state.select_yaw,
+    };
+    *yaw = (*yaw + delta).rem_euclid(65536);
+}
+
+/// Logs the character list's highlighted character (ListChange).
+fn log_highlight(state: &MenuState, data: &MenuData, why: &str) {
+    let name = data.characters.get(state.select_index).map_or("", |(n, _)| n.as_str());
+    runlog::kv("model_select", &format!("event=highlight why={why} index={} name={name} top_row={}", state.select_index, state.select_top));
 }
 
 /// Quits; a network game first says goodbye (net/lobby.rs `leave`).
@@ -462,7 +581,8 @@ fn start_match(
     cursor: &mut CursorOptions,
     reason: &str,
 ) {
-    state.stack.retain(|p| !matches!(p, Page::Lobby | Page::Profile));
+    state.stack.retain(|p| !matches!(p, Page::Lobby | Page::Profile | Page::ModelSelect));
+    state.drag = None;
     new_pawn.write(crate::game::perks::NewPawn { had });
     cursor.grab_mode = CursorGrabMode::Locked;
     cursor.visible = false;
@@ -470,6 +590,79 @@ fn start_match(
         runlog::kv("lobby_ready", &format!("player=\"{}\" perk={} ", data.player_name, vet.vet.label()));
     }
     runlog::kv("menu_close", &format!("page=Lobby reason={reason}"));
+}
+
+/// Tells player/body/preview.rs what each character preview shows this
+/// frame: the perk page's 3D View (KFTab_Profile.InternalDraw) while the
+/// page is open in 3D mode, and the character select window's model
+/// (UT2k4ModelSelect.InternalOnDraw) while it is open.
+fn request_previews(
+    state: Res<MenuState>,
+    gui: Res<Gui>,
+    data: Res<MenuData>,
+    window: Query<&Window, With<PrimaryWindow>>,
+    preview: Option<ResMut<crate::player::body::CharacterPreview>>,
+) {
+    use crate::player::body::{PREVIEW_MODEL_SELECT, PREVIEW_PROFILE, PreviewRequest};
+    let Some(mut preview) = preview else { return };
+    let Ok(win) = window.single() else { return };
+    let screen = Rect::new(0.0, 0.0, win.physical_width() as f32, win.physical_height() as f32);
+    let size = |r: Rect| UVec2::new(r.width().round().max(1.0) as u32, r.height().round().max(1.0) as u32);
+    // KFTab_Profile.InitComponent / KFModelSelect.InitComponent:
+    // SetDrawScale(0.9).
+    const DRAW_SCALE: f32 = 0.9;
+    let profile = (gui.loaded && state.stack.contains(&Page::Profile) && !state.profile_portrait).then(|| {
+        // SpinnyDudeOffset.X + (ClipX / ClipY) x 120 in front of the
+        // camera (ClipX / ClipY: the whole canvas, saved before the clip
+        // is set).
+        let off = Vec3::new(
+            gui.num("KFGui.KFTab_Profile.SpinnyDudeOffset.X", 120.0),
+            gui.num("KFGui.KFTab_Profile.SpinnyDudeOffset.Y", 0.0),
+            gui.num("KFGui.KFTab_Profile.SpinnyDudeOffset.Z", 0.0),
+        );
+        PreviewRequest {
+            character: state.profile_char.clone(),
+            size: size(profile::preview_box(&gui, screen)),
+            fov_deg: gui.num("KFGui.KFTab_Profile.nfov", 15.0),
+            offset: Vec3::new(off.x + screen.width() / screen.height() * 120.0, off.y, off.z),
+            yaw: 32768 + state.profile_yaw,
+            draw_scale: DRAW_SCALE,
+        }
+    });
+    let select = (gui.loaded && state.top() == Some(Page::ModelSelect)).then(|| data.characters.get(state.select_index)).flatten().map(|(name, _)| {
+        PreviewRequest {
+            character: name.clone(),
+            size: size(model_select::preview_box(&gui, screen)),
+            fov_deg: gui.num("KFGui.KFModelSelect.nfov", 15.0),
+            // KFModelSelect.UpdateSpinnyDude: (250, 1, -24); (250, 1, -14)
+            // for the Juggernaut race and Axon / Cyclops / Virus (UT2004
+            // characters; none of KF's records).
+            offset: Vec3::new(250.0, 1.0, -24.0),
+            yaw: 32768 + state.select_yaw,
+            draw_scale: DRAW_SCALE,
+        }
+    });
+    if preview.requests[PREVIEW_PROFILE] != profile {
+        preview.requests[PREVIEW_PROFILE] = profile;
+    }
+    if preview.requests[PREVIEW_MODEL_SELECT] != select {
+        preview.requests[PREVIEW_MODEL_SELECT] = select;
+    }
+}
+
+/// Points the menus' preview textures at the previews' current images
+/// (an image is replaced when its box changes size).
+fn sync_previews(mut gui: ResMut<Gui>, preview: Option<Res<crate::player::body::CharacterPreview>>, images: Res<Assets<Image>>) {
+    let Some(preview) = preview else { return };
+    for (slot, image) in preview.images.iter().enumerate() {
+        let (Some(&t), Some(image)) = (gui.previews.get(slot), image.as_ref()) else { continue };
+        if gui.textures[t].image != *image
+            && let Some(img) = images.get(image)
+        {
+            let size = img.size_f32();
+            gui.textures[t] = crate::game::hud::HudTexture { image: image.clone(), size };
+        }
+    }
 }
 
 /// What the page drawers read.
@@ -528,9 +721,23 @@ fn draw_menus(
         ready_caption: if net.active && net.local_ready { "Unready" } else { "Ready" },
         lobby_timeout: if net.active { net.lobby_timeout } else { -1 },
     };
+    let previews = |slot: usize| gui.previews.get(slot).copied();
     match state.top() {
         Some(Page::Lobby) => lobby::draw(&mut p, &ctx),
-        Some(Page::Profile) => profile::draw(&mut p, &ctx),
+        Some(Page::Profile) => profile::draw(&mut p, &ctx, previews(crate::player::body::PREVIEW_PROFILE)),
+        Some(Page::ModelSelect) => {
+            // The perk page stays drawn under the popup; only the popup
+            // takes clicks.
+            profile::draw(&mut p, &ctx, previews(crate::player::body::PREVIEW_PROFILE));
+            p.hits.clear();
+            // PopupPageBase.FadeIn: the pages below fade from CurFade 200
+            // to DesiredFade 80 (of 255) over FadeTime 0.35 s. Drawn as a
+            // black layer at once (the fade's animation and the exact
+            // native use of the colour are guesses).
+            let screen = p.screen;
+            p.fill(screen, [0, 0, 0, 255 - 80], "ModelSelect.Fade");
+            model_select::draw(&mut p, &ctx, previews(crate::player::body::PREVIEW_MODEL_SELECT));
+        }
         Some(Page::Pause) => pause::draw(&mut p, &ctx),
         None => {}
     }

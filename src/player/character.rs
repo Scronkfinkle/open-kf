@@ -37,6 +37,9 @@ pub struct PlayerRecord {
     /// The portrait texture, e.g. `KFPortraits.gasmask_portrait` (the
     /// lobby and the perk page show it).
     pub portrait: String,
+    /// xUtil.PlayerRecord.Menu: filters for the character menu
+    /// (UT2k4ModelSelect leaves out records whose Menu has "DUP").
+    pub menu: String,
 }
 
 /// The chosen character, resolved.
@@ -69,6 +72,7 @@ pub fn parse_upl(text: &str) -> Vec<PlayerRecord> {
                 "faceskin" => &mut rec.face_skin,
                 "ragdoll" => &mut rec.ragdoll,
                 "portrait" => &mut rec.portrait,
+                "menu" => &mut rec.menu,
                 _ => continue,
             };
             *slot = value;
@@ -203,13 +207,13 @@ pub fn choose(set: &PackageSet, defaults: &ClassDefaults, install_root: &Path, r
     })
 }
 
-/// The records KFPawn.Setup would accept (a SPECIES_KFMaleHuman species),
-/// sorted by name: the choices of the perk page's "Change Character".
-pub fn selectable_records(set: &PackageSet, defaults: &ClassDefaults, install_root: &Path) -> Vec<PlayerRecord> {
-    read_records(install_root)
-        .into_iter()
-        .filter(|r| set.find_object(&r.species, Some("Class")).is_some_and(|c| defaults.is_a(&c, "SPECIES_KFMaleHuman")))
-        .collect()
+/// The characters KFModelSelect lists (RefreshCharacterList("DUP")):
+/// every record whose Menu does not name "DUP", sorted by name (the order
+/// of the native xUtil.GetPlayerList is not in the scripts: a guess).
+/// The species is not checked: KFPawn.Setup
+/// falls back to the default character for a bad one.
+pub fn model_select_records(install_root: &Path) -> Vec<PlayerRecord> {
+    read_records(install_root).into_iter().filter(|r| !r.menu.split(';').any(|m| m.trim().eq_ignore_ascii_case("DUP"))).collect()
 }
 
 /// The character asked for at runtime (the perk page's SAVE): weapons
@@ -234,6 +238,7 @@ mod tests {
                 face_skin: "KF_Soldier_Trip_T.heads.Officeworker_head_diff".into(),
                 ragdoll: "British_Soldier1".into(),
                 portrait: String::new(),
+                menu: String::new(),
             }]
         );
     }

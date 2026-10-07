@@ -17,6 +17,9 @@ use crate::engine::camera::FlyCamera;
 mod animate;
 mod fire_fx;
 mod load;
+mod preview;
+
+pub use preview::{CharacterPreview, PREVIEW_MODEL_SELECT, PREVIEW_PROFILE, PreviewRequest, PreviewSystems};
 
 /// What is needed to draw a pawn's body (what KF replicates for other
 /// players: Location, Velocity, Physics, Rotation and ViewPitch, the
@@ -195,7 +198,14 @@ impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<load::BodyModels>()
             .insert_non_send(load::BodyPackages::default())
+            .init_resource::<preview::CharacterPreview>()
+            .insert_non_send(preview::PreviewState::default())
+            .add_systems(Startup, preview::spawn_preview_cameras)
             .add_systems(PostStartup, load::load_body_models)
+            .add_systems(
+                PostUpdate,
+                preview::update_previews.in_set(PreviewSystems).before(bevy::transform::TransformSystems::Propagate),
+            )
             .add_systems(
                 Update,
                 (

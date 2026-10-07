@@ -24,7 +24,7 @@ const PAWN_CLASS: &str = "KFMod.KFHumanPawn";
 /// The package set, kept to load attachments later (it holds `Rc`s: a
 /// non-send resource).
 #[derive(Default)]
-pub(super) struct BodyPackages(Option<PackageSet>);
+pub(super) struct BodyPackages(pub(super) Option<PackageSet>);
 
 /// The animation names a pawn plays: the pawn class's own, or the ones
 /// KFPawn.SetWeaponAttachment copies from a KFWeaponAttachment.
@@ -265,7 +265,7 @@ fn log_loaded(b: &BodyModel, started: std::time::Instant, wanted: &str) {
 /// Finds or loads a character by its wanted name: the index into
 /// `characters` (None: it could not be loaded). A name already loaded
 /// under its record name is not loaded twice.
-fn find_or_load(
+pub(super) fn find_or_load(
     set: &PackageSet,
     models: &mut BodyModels,
     request: &MapRequest,
@@ -534,7 +534,7 @@ fn remote_fire_sound(defaults: &ClassDefaults, fm: &ObjectHandle) -> RemoteFireS
     }
 }
 
-type RenderAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<StandardMaterial>>);
+pub(super) type RenderAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<StandardMaterial>>);
 
 /// A character change after startup (the perk page's Change Character,
 /// then SAVE: `CharacterChoice` is set by the weapon code's sleeve swap):
