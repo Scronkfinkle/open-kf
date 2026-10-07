@@ -118,14 +118,18 @@ pub(super) fn apply_vet_all(w: &mut Weapons, vet: Vet, reason: &str) {
 
 /// KFHumanPawn.VeterancyChanged and the weapons' per-tick perk values:
 /// when the perk changes, every weapon is updated, weapons over the new
-/// carry limit are dropped (we have no pickups on the floor: they are
-/// removed) and the walking speed factors are recomputed.
+/// carry limit are dropped on the floor (drop.rs; they leave the
+/// inventory when the pickup is made) and the walking speed factors are
+/// recomputed.
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 pub(super) fn sync_perk(
     weapons: Option<ResMut<Weapons>>,
     vet: Res<crate::game::perks::Veterancy>,
     effects: Option<ResMut<WeaponEffects>>,
     mut inv: ResMut<crate::game::buy_menu::ShopInventory>,
+    mut drops: ResMut<super::drop::WeaponDrops>,
+    mut out: MessageWriter<crate::game::pickups::DropItem>,
+    cam: super::drop::CamQuery,
 ) {
     let Some(mut w) = weapons else { return };
     let w = &mut *w;
@@ -136,19 +140,10 @@ pub(super) fn sync_perk(
     apply_vet_all(w, v, "perk_changed");
     // VeterancyChanged: drop weapons (not bKFNeverThrow) until the weight fits.
     let max = max_carry_weight(&v);
-    let mut dropped = Vec::new();
-    while carried_weight(w) > max {
-        let Some(i) = w.defs.iter().position(|d| !d.gone && !d.never_throw && d.weight > 0.0) else { break };
-        w.defs[i].gone = true;
-        dropped.push(w.defs[i].class.clone());
-        if i == w.current {
-            let next = step_weapon(&slots(&w.defs), w.current, false).unwrap_or(0);
-            force_change(w, next);
-        }
-    }
     let weight = carried_weight(w);
-    if !dropped.is_empty() {
-        runlog::kv("perk_drop", &format!("dropped={dropped:?} weight={weight} max_carry_weight={max} note=no_floor_pickups_removed"));
+    if weight > max {
+        let dropped = super::drop::perk_drops(w, &mut drops, &mut out, &cam, max);
+        runlog::kv("perk_drop", &format!("dropping={dropped:?} weight={weight} max_carry_weight={max}"));
     }
     if let Some(mut fx) = effects {
         fx.weight_speed_mult = weight_speed_mult(weight, &v);

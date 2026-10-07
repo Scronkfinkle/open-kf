@@ -13,7 +13,7 @@ use super::NetMode;
 use super::protocol::{GameChannel, NetPlayer, PickupStates};
 use super::server::PlayerSlot;
 use crate::engine::runlog;
-use crate::game::pickups::{HostNotice, PickupNet, PickupNotice, PickupRequest, PickupSystems, Pickups, ShownPickup};
+use crate::game::pickups::{DropRequest, HostNotice, PickupNet, PickupNotice, PickupRequest, PickupSystems, Pickups, ShownPickup};
 
 /// Resend the list this often even without a change (seconds).
 const RESEND: f32 = 2.0;
@@ -25,10 +25,11 @@ pub(super) fn build(app: &mut App, mode: &NetMode) {
     match mode {
         NetMode::Host { .. } => {
             app.add_systems(Update, receive_requests.before(PickupSystems::Answer).after(PickupSystems::Touch))
+                .add_systems(Update, receive_drops.before(PickupSystems::Rules))
                 .add_systems(Update, (send_notices, send_states).chain().after(PickupSystems::Answer));
         }
         NetMode::Client { .. } => {
-            app.add_systems(Update, (receive_states, receive_notices).before(PickupSystems::Rules)).add_systems(Update, send_requests.after(PickupSystems::Answer));
+            app.add_systems(Update, (receive_states, receive_notices).before(PickupSystems::Rules)).add_systems(Update, (send_requests, send_drops).after(PickupSystems::Answer));
         }
         NetMode::Off => {}
     }
@@ -46,6 +47,29 @@ fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<PickupRequest
     }
 }
 
+fn receive_drops(mut links: Query<(Entity, &mut MessageReceiver<DropRequest>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>) {
+    for (link, mut rx) in &mut links {
+        let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
+        for r in rx.receive() {
+            match peer {
+                Some(p) => net.drop_incoming.push((p, r)),
+                None => runlog::kv("drop_request_dropped", &format!("link={link:?} reason=no_player")),
+            }
+        }
+    }
+}
+
+fn send_drops(mut net: ResMut<PickupNet>, mut tx: Query<&mut MessageSender<DropRequest>, MyConnection>) {
+    if net.drop_outgoing.is_empty() {
+        return;
+    }
+    let Ok(mut tx) = tx.single_mut() else { return };
+    for r in std::mem::take(&mut net.drop_outgoing) {
+        runlog::kv("net_drop_request_sent", &format!("token={} why={:?} class={} gives={}", r.token, r.why, r.class, r.gives.label()));
+        tx.send::<GameChannel>(r);
+    }
+}
+
 fn send_notices(mut net: ResMut<PickupNet>, players: Query<(&NetPlayer, &PlayerSlot)>, mut senders: Query<(Entity, &mut MessageSender<PickupNotice>), RemoteLinks>) {
     for n in std::mem::take(&mut net.notices) {
         match n {
@@ -58,6 +82,11 @@ fn send_notices(mut net: ResMut<PickupNet>, players: Query<(&NetPlayer, &PlayerS
                     sent.push(format!("{}:{yours}", peer.map_or("?".into(), |p| p.to_string())));
                 }
                 runlog::kv("net_pickup_notice_sent", &format!("id={id} class={class} taker={} to=[{}]", taker.map_or("host".into(), |t| t.to_string()), sent.join(" ")));
+            }
+            HostNotice::Dropped { peer, token, id, reason } => {
+                let link = players.iter().find(|(p, _)| p.peer == peer).map(|(_, s)| s.link);
+                let sent = link.and_then(|l| senders.get_mut(l).ok()).map(|(_, mut tx)| tx.send::<GameChannel>(PickupNotice::Dropped { token, id, reason: reason.clone() })).is_some();
+                runlog::kv("net_drop_answer_sent", &format!("peer={peer} token={token} id={} reason={reason} sent={sent}", id.map_or("none".into(), |i| i.to_string())));
             }
             HostNotice::Denied { peer, id, reason } => {
                 let link = players.iter().find(|(p, _)| p.peer == peer).map(|(_, s)| s.link);

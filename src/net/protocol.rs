@@ -200,6 +200,7 @@ pub fn register(app: &mut App) {
     app.register_message::<PickupStates>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<crate::game::pickups::PickupRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<crate::game::pickups::PickupNotice>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<crate::game::pickups::DropRequest>().add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })

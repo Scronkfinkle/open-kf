@@ -48,16 +48,24 @@ a person yet):
    got the Bullpup", "Found Some Ammo!"), it disappears in both windows,
    and the other player cannot take it any more. A new item turns up
    somewhere else later (KF's timers).
+10. **Dosh and dropped weapons**: **B** tosses £50 ahead of you,
+   **Backslash** (\\) throws the gun in your hands (not the knife, 9mm,
+   grenades, syringe or welder). Both fly in an arc in both windows and
+   either player can walk into them: "Found (50) Pounds." and the
+   scoreboard's cash change; a thrown gun keeps its rounds. Dosh fades
+   away about 9 s after it lands; guns stay until the next wave starts.
+   A player who dies drops the gun in hand.
 
 Known limits (details in "Step 4 as built" and "Pickups" below):
 - Both windows play sound on one machine; the mouse works in the window
   that has focus.
 - Trusting prototype: each game says where its player is and which zeds
   it hit; fine between friends, not cheat-proof.
-- Each game's own: dosh tossing, and the wave-end team bonus (each
-  player gets the bonus of their own kills; KF splits the team's pot
-  between living players). Zed time and pickups are shared (see "Shared
-  zed time" and "Pickups shared" below).
+- Each game's own: the wave-end team bonus (each player gets the bonus
+  of their own kills; KF splits the team's pot between living players).
+  Zed time, pickups, tossed dosh and dropped weapons are shared (see
+  "Shared zed time", "Pickups shared" and "Dosh and weapons dropped"
+  below).
 - Scoreboard: no perk icons, no ping, Assists always 0.
 - Players walk through each other. A dead player just waits (no
   spectating the others).
@@ -1327,9 +1335,72 @@ dynamic, taken), `look_pickup:KIND`, `spawn_pickup:CLASS[:DIST]`.
 - The client's own inventory check is trusted (fine between friends). If
   its inventory changes between its check and the host's answer (e.g.
   it buys a gun in that 0.1 s), the item is lost (`pickup_apply_failed`).
-- Dropped weapons and tossed dosh: the core supports them
-  (`Pickups::spawn_dynamic`, ids from 100000, sent like the others), but
-  nothing drops them yet; only the `spawn_pickup` test input made some
-  (single player).
+- Dropped weapons and tossed dosh: done, see the next section.
 - More than one client, real machines, lag, packet loss: not tested.
   Not played by you.
+
+## Dosh and weapons dropped (2026-10-07)
+
+Plan and KF's rules: docs/DESIGN.md, "Tossed dosh and dropped weapons".
+
+### How it works on the network
+
+- A player's **B** (TossCash, £50) or **Backslash** (ThrowWeapon), the
+  gun in hand at death and the guns over the weight limit after a perk
+  change become a **drop request** (pickup class, what it gives: the
+  amount, or the gun's magazine, ammo and sell value; start, velocity).
+- On the host (and in single player) the request is made into a pickup
+  at once: the arc is worked out from the level, and the pickup is
+  host-owned like the map's (ids from 100000), sent to every client with
+  its arc. A client sends its request to the host (`DropRequest`); the
+  host checks that it has the client's pawn, that the start is within 300
+  units of where it draws it, and that the player is alive (except for
+  the death drop), makes the pickup and answers `Dropped { token, id }`
+  (or a refusal with the reason: `no_pawn`, `dead`, `too_far`). The
+  dosh or the gun leaves the client's inventory only then; while it
+  waits, its dosh is reserved and the same gun cannot be thrown again
+  (given up after 3 s without an answer).
+- Clients replay the arc from when the pickup arrives; the host tells
+  them when it lands (`pickup_changed what=landed`) and when dosh starts
+  fading (`what=fading`). Taking it is the same as any pickup (above).
+- Each game sends its own dosh in its pawn update, so the scoreboard's
+  cash follows both the toss and the pickup.
+- Protocol number `0x4F4B_4600_0007`.
+- Logs: `drop_request`, `net_drop_request_sent` / `_received`,
+  `net_drop_answer_sent`, `net_drop_answer`, `drop_done`,
+  `drop_refused`, `drop_denied`, `pickup_spawned ... why=dropped`,
+  `pickup_landed`, `pickup_fading`, `pickup_touch_skipped`.
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+Test script `work/mp_pickups_test.sh` (untracked; now also takes
+`HOST_GOD=` / `CLIENT_GOD=` to drop `--god`), runs d, e, f.
+
+1. **Client tosses, host takes** (run d): client `drop_request token=1
+   why=Toss gives=cash:50`, host `pickup_spawned id=100000 ... why=dropped`,
+   client `net_drop_answer token=1 id=100000` 69 ms after asking,
+   `dosh=250->200`; host walks onto it: `pickup_given ... dosh=250->300
+   message="Found (50) Pounds."`; both scoreboards then show HostGuy 300,
+   ClientGal 200.
+2. **Client throws a Shotgun, host takes it** (run d): client
+   `ammo=8+16 ... switched_to=KFMod.Single` after the answer (33 ms);
+   host `pickup_given ... weapon=kfmod.Shotgun ammo=8+16`.
+3. **Host tosses and throws, client takes** (run e): client
+   `pickup_given id=100000 ... dosh=250->300` (32 ms from request to
+   answer), `pickup_given id=100001 ... weapon=kfmod.Shotgun ammo=8+16`;
+   host scoreboard `ClientGal:dosh=300 | HostGuy(me):dosh=200`.
+4. **Client dies with a Shotgun** (run f, client without god mode, two
+   shots fired: 6 in the magazine, 22 in all): `why=Death ...
+   mag6:total22:died`; the host takes it: `ammo=6+18` (KF: a gun dropped
+   by a dying player gives its magazine and the fresh starting ammo).
+5. Tests are timing-sensitive on one machine (two games at about 30
+   frames a second; clots grab a standing client after about 25 s), so
+   the scripts retry their `warp_pickup` / walk steps every 50 frames.
+
+### Not done / not tested
+
+- Not tested on the network: the perk-change drop and the dual-pistol
+  split (both tested in single player; same request path), two players
+  grabbing one bundle at once, a refused drop (`too_far`).
+- The client trusts its own dosh and inventory (as for pickups).
+
