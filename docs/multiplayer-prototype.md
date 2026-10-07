@@ -11,8 +11,10 @@ cargo build --release
 # Terminal 1: the host (runs the zeds and the waves, and plays)
 cargo run --release -- --map KF-WestLondon --mode waves --length short --host --name HostGuy
 
-# Terminal 2: a second player joining it
-cargo run --release -- --map KF-WestLondon --mode waves --length short --join 127.0.0.1 --name ClientGal --character Baddest_Santa
+# Terminal 2: a second player joining it (only the address is needed:
+# it asks the host which map, mode and length it plays, see "Joining
+# with only an address" below)
+cargo run --release -- --join 127.0.0.1 --name ClientGal --character Baddest_Santa
 ```
 
 What you should see (all checked in headless test runs, none played by
@@ -167,7 +169,9 @@ started), both games leave the lobby and start their match.
 Options:
 - `--host [PORT]`: listen server; port 7707 if none is given.
 - `--join ADDR[:PORT]`: an IP address or a host name, e.g. `127.0.0.1`,
-  `192.168.1.20`, `192.168.1.20:7710`.
+  `192.168.1.20`, `192.168.1.20:7710`. Since 2026-10-07 `--map` /
+  `--mode` / `--length` are not needed: the joiner asks the host (see
+  "Joining with only an address").
 - `--log FILE`: where the log goes (needed for a third game on the same
   machine, e.g. `--log logs/latest-client2.log`).
 - `--name NAME`: as before.
@@ -1404,3 +1408,84 @@ Test script `work/mp_pickups_test.sh` (untracked; now also takes
   grabbing one bundle at once, a refused drop (`too_far`).
 - The client trusts its own dosh and inventory (as for pickups).
 
+
+## Joining with only an address (2026-10-07)
+
+`--join ADDR[:PORT] --name NAME` is now enough: before it loads
+anything, the joining game asks the host which map, mode and length it
+plays and uses those. Plan and message format: docs/DESIGN.md, "Joining
+with only an address: the host-info query".
+
+### How it works
+
+- Like Unreal's QueryPort, a host on game port P also listens on UDP port
+  **P + 1** (7708 for the default 7707) for "what are you playing?"
+  requests, from a small background thread that starts before the map
+  loads. It answers with plain text: `OPENKF-QUERY 1` and then
+  `protocol=`, `game_port=`, `map=`, `mode=`, `length=`, `players=`,
+  `max_players=`, `match_started=` lines. New lines can be added later;
+  older games skip lines they do not know.
+- The joiner asks 5 times, 0.6 s apart (3 s in all), then loads the
+  host's map with the host's mode and length.
+- The host wins: if the joiner typed `--map` / `--mode` / `--length` and
+  they differ, it prints `note: the host plays map KF-Farm; using that
+  instead of your --map KF-WestLondon` (and logs `net_query_override ...
+  differs=true`).
+- No answer: with `--map` typed the joiner warns and tries to join
+  anyway (the old way, for a firewall that only lets the game port
+  through); without it, it stops after 3 s with: `error: no answer from a
+  host at 127.0.0.1 (asked its query port 7801 for 3 s: no answer). Is
+  the host started with --host, and is the address / port right? ...`
+- A host running another version of the network code (`protocol`
+  differs) is refused with a clear message before anything loads.
+- The old check after connecting (`net_game_info same_map=...`) is still
+  there as a safety net.
+- Requests are padded to 512 bytes and the answer (about 150 bytes) is
+  never bigger than the request, so the port cannot be abused to
+  multiply traffic towards someone else.
+
+### Choices to know about
+
+- **Firewall / port forwarding:** the host must now let **two** UDP
+  ports in: 7707 and 7708 (P and P + 1).
+- **Two hosts on one machine** must use ports at least 2 apart (e.g.
+  7707 and 7710): a host on 7707 uses 7708 for queries. If the query port
+  is taken, the host logs `net_query_failed side=host`, prints a warning
+  and plays on; joiners then need `--map` and `--mode waves`.
+- `--wave` on the joiner still does nothing (the host's wave is
+  followed).
+
+### Results (headless, one machine, 127.0.0.1; not played by you)
+
+- Host `scripts/headless.sh --map KF-Farm --mode waves --length short
+  --host --name HostGuy --mute --frames 2500`, then client
+  `scripts/headless.sh --join 127.0.0.1 --name Test --mute --frames
+  900`. Client log: `net_query_answer from=127.0.0.1:7708 after_ms=647
+  host_map=KF-Farm mode=Waves length=Short players=0 max_players=6
+  match_started=false`, `game_options mode=Waves length=Short`,
+  `map_loaded map=KF-Farm`, `net_connected`, `net_game_info
+  host_map=KF-Farm my_map=KF-Farm same_map=true host_mode=Waves ...
+  my_mode=Waves`, the lobby lists both players. (The first request was
+  sent while the host was still starting; the second, 0.65 s later, was
+  answered.) Host log: `net_query_listening addr=0.0.0.0:7708`,
+  `net_query_answered from=127.0.0.1:50318 bytes=146 ok=true`.
+- Host wins: a client with `--map KF-WestLondon --mode debug --length
+  long` printed three notes and loaded KF-Farm in Waves / Short
+  (`same_map=true`). Its answer said `players=1` (the host alone after
+  the first client had left), so the count follows the game.
+- No host (`--join 127.0.0.1:7800`): the error above after 3.6 s,
+  exit code 1, 5 `net_query_sent` lines and `net_query_failed side=client
+  ... reason="no answer" map_given=false`.
+- No host but `--map KF-Farm --mode waves` typed: the warning, then
+  `net_connecting server=127.0.0.1:7800` as before.
+- Unit tests (src/net/query.rs): write/read, unknown keys skipped,
+  garbage and other versions refused, padding, a value cannot add a line,
+  a loopback ask-and-answer, no host fails within 2 s.
+
+### Not done / not tested
+
+- Not tested on two machines, through a firewall, or on Windows (only
+  std::net is used, nothing Linux-specific).
+- No server browser / LAN search yet (the same query could serve one:
+  broadcast the request on the LAN).
+- A host name in `--join` is resolved once (as before).

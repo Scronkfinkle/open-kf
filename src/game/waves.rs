@@ -28,6 +28,17 @@ pub enum GameMode {
     Waves,
 }
 
+impl GameMode {
+    /// `waves` / `debug`, any case (the host-info query sends `Waves`).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "waves" => Some(Self::Waves),
+            "debug" => Some(Self::Debug),
+            _ => None,
+        }
+    }
+}
+
 /// KFGameType.KFGameLength: GL_Short 0 (KF's default, KillingFloor.ini),
 /// GL_Normal 1, GL_Long 2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

@@ -26,6 +26,7 @@
 mod client;
 mod doors;
 mod pickups;
+pub mod query;
 pub mod lobby;
 pub mod pawns;
 pub mod protocol;
@@ -105,6 +106,10 @@ impl NetMode {
 
 pub struct NetPlugin {
     pub mode: NetMode,
+    /// What a host tells joining games on its query port (query.rs):
+    /// the map, mode and length; the rest is filled in here. Unused
+    /// unless hosting.
+    pub info: query::HostInfo,
 }
 
 impl Plugin for NetPlugin {
@@ -124,6 +129,7 @@ impl Plugin for NetPlugin {
                 app.add_plugins((lightyear::prelude::server::ServerPlugins { tick_duration: TICK }, lightyear::prelude::client::ClientPlugins { tick_duration: TICK }));
                 protocol::register(app);
                 server::build(app, *port);
+                start_query(app, *port, &self.info);
             }
             NetMode::Client { server } => {
                 app.add_plugins(lightyear::prelude::client::ClientPlugins { tick_duration: TICK });
@@ -145,6 +151,43 @@ impl Plugin for NetPlugin {
         zedtime::build(app, &self.mode);
         pickups::build(app, &self.mode);
         crate::engine::runlog::kv("net_mode", &self.mode.label());
+    }
+}
+
+/// `--host`: answer host-info queries on the game port + 1 (query.rs),
+/// from now on, so joiners get an answer while this game still loads.
+fn start_query(app: &mut App, port: u16, info: &query::HostInfo) {
+    let Some(qport) = query::query_port(port) else {
+        crate::engine::runlog::kv("net_query_failed", &format!("side=host reason=no_query_port game_port={port}"));
+        return;
+    };
+    let info = query::HostInfo { protocol: PROTOCOL_ID, game_port: port, max_players: MAX_PLAYERS as u32, players: 0, match_started: false, ..info.clone() };
+    let bind = SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), qport);
+    match query::start_responder(bind, info.clone()) {
+        Ok((shared, local)) => {
+            crate::engine::runlog::kv("net_query_listening", &format!("addr={local} map={} mode={} length={}", info.map, info.mode, info.length));
+            app.insert_resource(QueryInfo(shared)).add_systems(Update, update_query_info);
+        }
+        Err(e) => {
+            // The game still works; joiners then have to give --map.
+            crate::engine::runlog::kv("net_query_failed", &format!("side=host addr={bind} reason=\"{e}\""));
+            eprintln!("warning: cannot answer join queries on UDP port {qport} ({e}); players joining must add --map {} --mode {}", info.map, info.mode.to_ascii_lowercase());
+        }
+    }
+}
+
+/// The host's answer to queries, shared with the answering thread.
+#[derive(Resource)]
+struct QueryInfo(query::SharedInfo);
+
+/// Keeps the player count and "match started" in the query answer current.
+fn update_query_info(q: Res<QueryInfo>, players: Res<server::NetPlayers>, game: Query<&protocol::NetGame>) {
+    let n = players.0.len() as u32;
+    let started = game.single().is_ok_and(|g| g.match_started);
+    let mut info = q.0.lock().unwrap_or_else(|e| e.into_inner());
+    if info.players != n || info.match_started != started {
+        info.players = n;
+        info.match_started = started;
     }
 }
 

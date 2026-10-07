@@ -90,7 +90,8 @@ open-kf/                   Cargo workspace root (the repository)
                            zeds and waves shared with clients (zeds.rs), start
                            spots and wave-end respawns (starts.rs), the scoreboard
                            (scoreboard.rs), host-owned doors (doors.rs),
-                           zed time decided by the host (zedtime.rs);
+                           zed time decided by the host (zedtime.rs),
+                           the host-info query on port + 1 (query.rs);
                            see docs/multiplayer-prototype.md
   crates/ue-assets/        library: reads Unreal packages and converts objects into plain
                            Rust data (meshes, textures, actors). No Bevy dependency.
@@ -5063,6 +5064,64 @@ As built (2026-10-07; headless runs, not played by you):
   WeaponPickup.FallingPickup rule that a thrower running after his own
   rising weapon does not catch it (rare; our "inside when it appeared"
   rule covers the usual case); the dropped item's shadow and shine.
+
+## Joining with only an address: the host-info query (planned and built 2026-10-07)
+
+**Problem.** Every game loads its map at startup, before any network
+code runs (`world/map.rs` `load_map` is a Startup system and about 35
+others depend on it). So a joining player had to type the host's `--map`
+and `--mode waves` too; with a wrong map the client quit after
+connecting (`net_map_mismatch`), and without `--mode waves` it silently
+never followed the host's waves (`game/waves.rs` returns early unless the
+mode is Waves).
+
+**What KF does.** An Unreal server answers small "server info" requests
+on a second UDP port, the QueryPort, which is the game port + 1 (7708 for
+KF's 7707). The server browser asks it for the map, the game type and the
+player count before joining.
+
+**Plan.** Do the same, before the Bevy app (the game engine's main
+object) is built:
+
+- Q1. `src/net/query.rs` (new). A "host info" message: a first line
+  `OPENKF-QUERY 1` (a fixed tag, then the format version) and then one
+  `key=value` line per fact: `protocol` (our `PROTOCOL_ID`), `game_port`,
+  `map`, `mode`, `length`, `players`, `max_players`, `match_started`.
+  Plain text, so new facts can be added later without breaking older
+  games: a reader ignores keys it does not know and uses defaults for
+  missing ones. Only a different version number on the first line means
+  "cannot read". Unit tests: write then read; unknown keys ignored;
+  missing keys; garbage refused.
+- Q2. The host (`--host`) opens a plain UDP socket (std::net, works on
+  Windows too) on game port + 1 and answers each request from a small
+  background thread, so it answers even while the host is still loading
+  its map. The map / mode / length are fixed at startup; the player count
+  and "match started" are copied into it by a game system every frame.
+  The request is padded to 512 bytes and the host answers only requests
+  of at least that size, never with more bytes than it got (so the port
+  cannot be used to multiply someone else's traffic). If the port is
+  taken the host logs it and plays on (joiners then need `--map`).
+- Q3. The joiner (`--join`), in `main.rs` before the app is built: send
+  the request (up to 5 tries, 0.6 s each), read the answer, and use the
+  host's map, mode and length in place of its own. The host wins when
+  the player also typed `--map` / `--mode` / `--length` and they differ;
+  the game prints a note and logs it. A different `protocol` (another
+  version of our network code) stops with a clear message. No answer:
+  stop with "no answer from a host at ADDR (query port P)...". The old
+  map check after connecting stays as a safety net.
+- Log lines: `net_query_listening`, `net_query_answered` (host);
+  `net_query_sent`, `net_query_answer`, `net_query_override`,
+  `net_query_failed` (joiner).
+
+**As built.** As planned, with one addition: when the query gets no
+answer but the player typed `--map`, the joiner warns and tries the old
+way (for a firewall that lets only the game port through); without
+`--map` it stops with the error. Why text and not a binary (postcard)
+message: postcard reads fields by position, so adding a field would
+break older games; `key=value` lines do not. A host needs UDP ports P
+and P + 1 open, and two hosts on one machine need ports at least 2
+apart. Test results: docs/multiplayer-prototype.md, "Joining with only
+an address".
 
 ## Later milestones (rough order, to be planned in detail when reached)
 

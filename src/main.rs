@@ -67,6 +67,10 @@ struct Args {
     no_vsync: bool,
     /// `--mode waves|debug` and `--length short|normal|long`.
     game: waves::GameOptions,
+    /// Were `--mode` / `--length` typed (a joiner takes the host's and
+    /// says so when they differ from typed ones).
+    mode_given: bool,
+    length_given: bool,
     /// `--character NAME`: a KF character (System/*.upl); default Corporal_Lewis.
     character: Option<String>,
     /// `--behind-view`: start in behind view (KF's BehindView command; F4
@@ -141,15 +145,13 @@ fn parse_args() -> Result<Args, String> {
             }
             "--mode" => {
                 let n = it.next().ok_or("--mode needs waves or debug")?;
-                args.game.mode = match n.as_str() {
-                    "waves" => waves::GameMode::Waves,
-                    "debug" => waves::GameMode::Debug,
-                    _ => return Err(format!("bad --mode value: {n} (waves or debug)")),
-                };
+                args.game.mode = waves::GameMode::parse(&n).ok_or(format!("bad --mode value: {n} (waves or debug)"))?;
+                args.mode_given = true;
             }
             "--length" => {
                 let n = it.next().ok_or("--length needs short, normal or long")?;
                 args.game.length = waves::GameLength::parse(&n).ok_or(format!("bad --length value: {n}"))?;
+                args.length_given = true;
             }
             "--wave" => {
                 let n = it.next().ok_or("--wave needs a number")?;
@@ -255,6 +257,13 @@ fn main() -> AppExit {
         }
     };
 
+    // `--join`: ask the host what it plays before anything is loaded.
+    let mut args = args;
+    if let Err(e) = ask_host(&mut args) {
+        eprintln!("error: {e}");
+        return AppExit::error();
+    }
+
     let install = match Install::discover() {
         Ok(i) => i,
         Err(e) => {
@@ -309,7 +318,10 @@ fn main() -> AppExit {
     let game_options = args.game;
     let lobby = lobby_settings(&args);
     let veterancy = perks::Veterancy::from_options(args.perk);
-    let net_plugin = net::NetPlugin { mode: args.net.clone() };
+    let net_plugin = net::NetPlugin {
+        mode: args.net.clone(),
+        info: net::query::HostInfo { map: request.map.clone(), mode: format!("{:?}", game_options.mode), length: format!("{:?}", game_options.length), ..default() },
+    };
     runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
     let walk_settings = walk::WalkSettings {
         start_walking: !args.fly,
@@ -389,6 +401,92 @@ fn main() -> AppExit {
 
     runlog::kv("shutdown", &format!("exit={exit:?}"));
     exit
+}
+
+/// How long a joiner waits for the host's query answer: tries, and
+/// seconds per try (3 s in all).
+const QUERY_TRIES: u32 = 5;
+const QUERY_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// `--join`: asks the host's query port (game port + 1, net/query.rs)
+/// for its map, mode and length and uses them, so `--join ADDR` alone is
+/// enough. The host wins over typed `--map` / `--mode` / `--length` (a
+/// note is printed when they differ). No answer: an error, unless `--map`
+/// was typed (then the game goes on with the typed options, as before the
+/// query existed, e.g. when only the game port is open in a firewall).
+fn ask_host(args: &mut Args) -> Result<(), String> {
+    let net::NetMode::Client { server } = args.net else { return Ok(()) };
+    let Some(qport) = net::query::query_port(server.port()) else {
+        return Err(format!("--join port {} has no query port after it", server.port()));
+    };
+    let qaddr = std::net::SocketAddr::new(server.ip(), qport);
+    let host = match net::query::ask(qaddr, QUERY_TRIES, QUERY_WAIT) {
+        Ok((info, took)) => {
+            runlog::kv(
+                "net_query_answer",
+                &format!(
+                    "from={qaddr} after_ms={} host_map={} mode={} length={} players={} max_players={} match_started={} protocol={:#x} game_port={}",
+                    took.as_millis(),
+                    info.map,
+                    info.mode,
+                    info.length,
+                    info.players,
+                    info.max_players,
+                    info.match_started,
+                    info.protocol,
+                    info.game_port
+                ),
+            );
+            info
+        }
+        Err(e) => {
+            let secs = QUERY_WAIT.as_secs_f32() * QUERY_TRIES as f32;
+            runlog::kv("net_query_failed", &format!("side=client to={qaddr} tries={QUERY_TRIES} seconds={secs:.1} reason=\"{e}\" map_given={}", args.map.is_some()));
+            if let Some(m) = &args.map {
+                eprintln!("warning: no answer from a host at {qaddr} (query port) after {secs:.0} s ({e}); trying to join anyway with --map {m}");
+                return Ok(());
+            }
+            return Err(format!(
+                "no answer from a host at {} (asked its query port {qport} for {secs:.0} s: {e}).\n  Is the host started with --host, and is the address / port right? A host on port P answers on UDP port P+1, so both must be reachable.\n  (To join without asking, add --map NAME --mode waves.)",
+                server.ip()
+            ));
+        }
+    };
+    if host.protocol != net::PROTOCOL_ID {
+        runlog::kv("net_query_failed", &format!("side=client reason=protocol_mismatch host_protocol={:#x} my_protocol={:#x}", host.protocol, net::PROTOCOL_ID));
+        return Err(format!("the host at {} runs a different version of Open KF's network code (protocol {:#x}, this game {:#x}); both need the same version", server.ip(), host.protocol, net::PROTOCOL_ID));
+    }
+    if host.players as usize >= net::MAX_PLAYERS {
+        println!("note: the host at {} has {} of {} players; it may refuse you", server.ip(), host.players, host.max_players);
+    }
+    // The host's choices win; say so where the player typed others.
+    let note = |what: &str, typed: Option<String>, hosts: &str| {
+        let differs = typed.as_ref().is_some_and(|t| !t.eq_ignore_ascii_case(hosts));
+        if differs {
+            println!("note: the host plays {what} {hosts}; using that instead of your --{what} {}", typed.as_deref().unwrap_or(""));
+        }
+        runlog::kv("net_query_override", &format!("what={what} host={hosts} typed={} differs={differs}", typed.as_deref().unwrap_or("none")));
+    };
+    note("map", args.map.clone(), &host.map);
+    args.map = Some(host.map.clone());
+    match waves::GameMode::parse(&host.mode) {
+        Some(m) => {
+            note("mode", args.mode_given.then(|| format!("{:?}", args.game.mode)), &host.mode);
+            args.game.mode = m;
+        }
+        None => runlog::kv("net_query_override", &format!("what=mode host={} reason=unknown_kept_mine mine={:?}", host.mode, args.game.mode)),
+    }
+    match waves::GameLength::parse(&host.length) {
+        Some(l) => {
+            note("length", args.length_given.then(|| format!("{:?}", args.game.length)), &host.length);
+            args.game.length = l;
+        }
+        None => runlog::kv("net_query_override", &format!("what=length host={} reason=unknown_kept_mine mine={:?}", host.length, args.game.length)),
+    }
+    if host.match_started {
+        println!("note: the match at {} has already started", server.ip());
+    }
+    Ok(())
 }
 
 /// `--fps N`: at the end of each frame, wait until the next frame is due
