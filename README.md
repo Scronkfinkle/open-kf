@@ -13,23 +13,26 @@ See `docs/DESIGN.md` for how it works and the plan.
 
 ## Requirements
 
-- An installed copy of Killing Floor (Steam). Found automatically at
-  `references/killing_floor`, or through Steam (every Steam library,
-  including the Steam Flatpak and libraries on other drives). Set `KF_ROOT`
-  to override. **This will not work if you don't have the original game assets**
-- Nix with flakes. `direnv allow` or `nix develop` gives you Rust and the system
-  libraries Bevy needs. The flake files must be tracked by git (`git add flake.nix
-  flake.lock`) or Nix will not see them.
+An installed copy of Killing Floor (Steam). Open KF finds it through Steam
+(every Steam library, including the Steam Flatpak and libraries on other
+drives). Set `KF_ROOT` to its folder to override. **This will not work if
+you don't have the original game files.**
 
-## Quick start
+## Playing
 
-With the requirements above in place, run:
+Download the latest build from the
+[Releases page](https://github.com/Scronkfinkle/open-kf/releases):
 
-```sh
-cargo run --release
-```
+- **Windows:** `open-kf-windows-x86_64.zip`. Unzip it and run `open-kf.exe`.
+- **Linux:** `open-kf.flatpak`. Install it with
+  `flatpak install --user open-kf.flatpak`, then start Open KF from your
+  app menu or with `flatpak run io.github.scronkfinkle.OpenKF`. It can read
+  the usual Steam folders; for a Steam library elsewhere, run
+  `flatpak override --user --filesystem=/path/to/library:ro io.github.scronkfinkle.OpenKF`
+  once. Its logs, settings and screenshots are in
+  `~/.var/app/io.github.scronkfinkle.OpenKF/data/`.
 
-The launcher opens. Pick Solo, Host or Join, a map, your name, perk and
+On either system the launcher opens first. Pick Solo, Host or Join, a map, your name, perk and
 character, then press **PLAY**. Your choices are remembered for next time.
 
 ![The Open KF launcher: Solo / Host / Join, the map list, perk and character, game and display options](docs/images/launcher.jpg)
@@ -37,7 +40,22 @@ character, then press **PLAY**. Your choices are remembered for next time.
 *The launcher. The command it will run is shown at the bottom; the same
 options can be typed on the command line (below).*
 
+## Building from source
+
+Needs Nix with flakes: `direnv allow` or `nix develop` gives you Rust and the
+system libraries Bevy needs. The flake files must be tracked by git
+(`git add flake.nix flake.lock`) or Nix will not see them. During
+development the game also looks in `references/killing_floor` (a link to
+your install) before asking Steam.
+
+```sh
+cargo run --release   # opens the launcher, as above
+```
+
 ## Command-line options
+
+The release builds take the same options: `open-kf.exe --map KF-Offices`, or
+`flatpak run io.github.scronkfinkle.OpenKF --map KF-Offices`.
 
 ```sh
 cargo run --release                        # no options: the launcher (pick map, perk, solo/host/join, then PLAY)
@@ -114,10 +132,9 @@ Ports, what is shared, and known limits: [MULTIPLAYER.md](MULTIPLAYER.md).
 
 ## Building releases
 
-Release files contain only Open KF. Players need their own Killing Floor
-install (found through Steam, or set `KF_ROOT` to its folder). The Flatpak
-can only read the usual Steam folders; for a Steam library elsewhere, run
-`flatpak override --user --filesystem=/path/to/library:ro io.github.scronkfinkle.OpenKF`.
+Pushing a tag like `v0.2.0` on a commit on `main` builds the Windows zip and
+the Flatpak on GitHub and publishes them as a release
+(`.github/workflows/release.yml`). To build them locally:
 
 ```sh
 nix build .#open-kf                    # Linux (Nix): result/bin/open-kf
@@ -125,10 +142,7 @@ nix build .#windows -o result-windows  # Windows: result-windows/open-kf-windows
 nix run .#flatpak                      # Flatpak: work/flatpak/open-kf.flatpak
 ```
 
-Players install the Flatpak with `flatpak install --user open-kf.flatpak`
-and start it from their menu or with
-`flatpak run io.github.scronkfinkle.OpenKF`. Its logs, settings and
-screenshots are in `~/.var/app/io.github.scronkfinkle.OpenKF/data/`.
+Release files contain only Open KF, never Killing Floor's files.
 
 ## Package inspection tool
 

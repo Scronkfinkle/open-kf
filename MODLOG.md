@@ -5531,3 +5531,17 @@ flatpak only. `docs/DESIGN.md` updated.
 **Still broken / not tested:** The release job (needs a tag).
 **Next:** First tagged release by the user.
 
+## 2026-10-07 README: playing from a release first, Nix only for building
+
+**Changed:** `README.md`: Requirements now lists only a Killing Floor
+install; new "Playing" section (download the Windows zip or the Flatpak from
+Releases, Flatpak notes, then the launcher); Nix moved to "Building from
+source"; command-line options note that release builds take the same
+options; "Building releases" mentions the tag workflow.
+**Why:** The README read as if players needed Nix.
+**Tested how:** Read the rendered sections in the terminal.
+**Result:** Docs only.
+**Still broken / not tested:** The Releases link has no release behind it
+until the first tag.
+**Next:** First tagged release by the user.
+
