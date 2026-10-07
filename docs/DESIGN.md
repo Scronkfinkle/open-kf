@@ -5547,6 +5547,91 @@ Flatpak (22 MB) installed and ran headless on KF-WestLondon (install found
 through Steam, `exit=Success`); the Windows zip (48 MB) holds the exe and
 both licences. Not run yet: the release job (needs a real tag).
 
+## Players blocking each other in network games (planned and built 2026-10-07: PC1-PC2)
+
+**Problem.** In a network game players walk through each other. KF's
+pawns block each other: Engine.Pawn has bCollideActors and bBlockActors
+true, KFPawn CollisionRadius 20, KFHumanPawn CollisionHeight 50 (class
+defaults, `kfpkg defaults`), and nothing in KFMod switches blocking off
+between team mates. Our walk (`player/walk.rs`) already clips the
+player's move against pawn cylinders (`player/pawn_collision.rs`, from
+"Play-test fixes after combat", step 1), but it is only given the zeds.
+The other players' pawns exist on every game (`net/pawns.rs`: a
+`PawnState` with `local: false`, drawn where that player was 0.1 s ago)
+but were never added to that list. The host's zeds already treat the
+other players as blockers (`zeds/zed/think.rs`).
+
+**How the network splits the work.** Our games are client-authoritative
+(see `docs/multiplayer-prototype.md`, step 2): each game moves its own
+player and the others believe it; the host does not move the clients'
+pawns, so there is no server correction (`ClientAdjustPosition` in KF)
+and nothing to rubber-band. "Blocking on the server" therefore means:
+every game, the host included, blocks its own player against every other
+player's pawn as it sees it. KF's real model is server-authoritative
+(the server re-runs each move and blocks it); that stays later work.
+
+**PC1: the other players block your walk.** Every frame, each living,
+active remote pawn (`PawnState` not local, not dead) becomes a cylinder
+(radius 20, half-height 50) in the walk's list next to the zeds, so
+`clip_move` stops you at 2 x 20 + 0.5 = 40.5 units (centre to centre)
+and slides you round them, on the ground and in the air. You collide
+with the body you see (its drawn, 0.1 s old position). Works for any
+number of players (one cylinder per remote pawn). Standing on another
+player's head is not handled (as with zeds): KF makes you jump off a
+pawn you land on (Pawn.BaseChange -> JumpOffPawn); not done.
+
+**PC2: pushing apart when overlapping.** Since each game sees the other
+players 0.1 s late, two players walking into each other head-on can end
+up overlapping a little (each stops against where the other *was*), and
+two players can also be put on the same spot (a respawn). `clip_move`
+only stops further moves inward, so they would stay overlapped. Fix:
+when my cylinder overlaps a remote one, my game moves me outward by half
+the overlap (the other game moves its player by the other half), at most
+`SEPARATE_SPEED` 50 units/s, through the world sweep so walls still
+stop it. Overlaps up to 1 unit are left alone (a deadband: a player
+stopped by `clip_move` rests exactly at contact, and rounding made it
+push back and forth by under a unit). Exactly on the same spot, the player with the lower peer id
+goes one way and the other the opposite way. **This is our own rule, a
+guess:** KF never lets pawns overlap (its native movement refuses the
+move), so it has no such push. The speed cap keeps it smooth; it can
+leave the two a few units further apart than 40.5 (each keeps pushing
+until it sees the other's push, 0.1 s later).
+
+**Logs.** `walk_blocked by=player <peer>` (as for zeds), and
+`pawn_contact` 10 times a second while another player is within 60
+units: `peer`, centre distance in Unreal units, overlap, how far this
+game pushed its player apart in that time.
+
+**Test.** Host and client on one machine, headless, `--mode debug` (no
+zeds to grab anyone), warped facing each other on KF-WestLondon's road
+(X -4090, Y 100 and 2200), both holding forward (`warp:X;Y;Z;YAW`,
+`walk_on`). Scripts (untracked): `work/pc/mp_collide.sh` (env `TAG`,
+`HOST_IN`, `CLIENT_IN`, `HOST_FRAMES`, `CLIENT_FRAMES`, `MODE`) and
+`work/pc/analyse.py TAG`.
+
+**Results (headless, one machine, 127.0.0.1, 2026-10-07; not played by
+you).**
+- One player standing, the other walking into them: the walker stops at
+  40.5 units (centre to centre) on both games' logs and stays there;
+  walking in slightly off-centre, it slides round the standing player's
+  side (`walk_blocked by=player <peer>`).
+- Head-on, both holding forward: at the impact both games briefly see
+  an overlap (largest 20.8 units, smallest distance 19.7: the 0.1 s
+  delay), pushed apart within about 0.5 s, then held at 40.0-40.5
+  units for the rest of the 12 s push (both games agree on both
+  positions within a unit). Settled (distance staying within 40.5 +- 1)
+  after 1.1 s (host) and 0.45 s (client); each player moved 38 / 43 units
+  in total while close, 6 / 7 direction changes.
+  The first try used 100 units/s and no deadband: settled after 1.2 s
+  but shuffled back and forth all along (139 units moved, 40 direction
+  changes); hence 50 and the deadband. Reason: each game removes the
+  whole overlap it sees, not half, because it sees the other's push
+  only 0.1 s later; a slower push overshoots less.
+- On top of each other (one player warped 4 units from the other):
+  pushed apart in opposite directions within 0.6 s, ending 47.4 units
+  apart (7 more than contact: the overshoot above), on both games.
+- Single player: no change (zeds still block, no `pawn_contact` lines).
+
 ## Later milestones (rough order, to be planned in detail when reached)
 
 2. **Walk around:** collision with BSP and static meshes, plus Unreal-style

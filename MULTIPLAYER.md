@@ -75,7 +75,11 @@ way by typing the host's settings itself:
   which zeds it hit. Fine between friends.
 - The wave-end bonus is per player (your own kills); KF splits the team's
   pot between the living players.
-- No spectating while dead; players walk through each other.
+- No spectating while dead.
+- Players block each other (as in KF), but each game sees the others
+  0.1 s late, so two players running into each other overlap a little
+  for a moment before being pushed apart. You cannot stand on another
+  player's head.
 - A joining player's grenades do not damage doors.
 - Scoreboard: no perk icons, no ping, Assists always 0.
 - No server browser: you need the host's address.

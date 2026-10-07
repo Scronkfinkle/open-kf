@@ -10,7 +10,7 @@ use bevy::prelude::*;
 
 use crate::engine::camera::FlyCamera;
 use crate::engine::coords::SCALE;
-use crate::player::pawn_collision::{Cylinder, clip_move};
+use crate::player::pawn_collision::{Cylinder, clip_move, overlap, push_apart};
 use crate::engine::runlog;
 
 /// Pawn.Bob default (clamped to +-0.01 in CheckBob).
@@ -94,6 +94,23 @@ pub struct PlayerAddVelocity {
 
 /// KFPawn Mass.
 const PLAYER_MASS: f32 = 400.0;
+
+/// Network games: the fastest this game pushes its player out of another
+/// player it overlaps, Unreal units/s (our own rule, a guess: KF never lets
+/// pawns overlap; see DESIGN.md "Players blocking each other", PC2).
+const SEPARATE_SPEED: f32 = 50.0;
+/// `pawn_contact` lines are written while another player is this close
+/// (centre to centre, Unreal units).
+const CONTACT_LOG_DISTANCE: f32 = 60.0;
+
+/// The pawns that block this game's player: the zeds, and in network games
+/// the other players' pawns (`net/pawns.rs`), and this game's peer id
+/// (which way to go when exactly on top of another player).
+type Blockers<'w, 's> = (
+    Query<'w, 's, &'static crate::zeds::zed::Zed>,
+    Query<'w, 's, (&'static crate::player::body::PawnState, &'static crate::net::pawns::RemotePawn)>,
+    Option<Res<'w, crate::net::lobby::NetLobby>>,
+);
 
 /// The walking systems (the pawn's movement for this frame).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -370,11 +387,11 @@ fn walk(
     names: Query<&Name>,
     mut effects: Option<ResMut<crate::weapons::weapon::WeaponEffects>>,
     mut bob: ResMut<ViewBob>,
-    zeds: Query<&crate::zeds::zed::Zed>,
+    (zeds, remote_pawns, lobby): Blockers,
     mut pinned: Option<ResMut<crate::game::combat::PlayerPinned>>,
     mut pushes: MessageReader<PlayerPush>,
     mut kicks: MessageReader<PlayerAddVelocity>,
-    (mut last_log, mut scripted_walk): (Local<f32>, Local<bool>),
+    (mut last_log, mut scripted_walk, mut pushed): (Local<f32>, Local<bool>, Local<f32>),
     mut glass: WalkMap,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
@@ -390,8 +407,26 @@ fn walk(
     }
     let mover = Mover::new(&spatial, kf::RADIUS, kf::HALF_HEIGHT, crate::world::collision::player_filter());
     // Living zeds block the player (pawn cylinders, see pawn_collision).
-    let (zed_ids, zed_cylinders): (Vec<usize>, Vec<Cylinder>) =
+    let (zed_ids, mut blocking_cylinders): (Vec<usize>, Vec<Cylinder>) =
         zeds.iter().filter_map(|z| z.blocking_cylinder().map(|c| (z.id, c))).unzip();
+    // Network games: the other living players block too (KF: Pawn
+    // bBlockActors; KFPawn CollisionRadius 20, KFHumanPawn CollisionHeight
+    // 50), where this game draws them. Their cylinders follow the zeds'
+    // in the same list; `zed_ids.len()..` are players.
+    let my_peer = lobby.as_ref().and_then(|l| l.my_peer).unwrap_or(0);
+    let players: Vec<(u64, Cylinder)> = remote_pawns
+        .iter()
+        .filter(|(s, _)| !s.local && s.active && !s.dead)
+        .map(|(s, r)| (r.peer, Cylinder { centre: s.location, radius: kf::RADIUS * SCALE, half_height: kf::HALF_HEIGHT * SCALE }))
+        .collect();
+    let player_cylinders: Vec<Cylinder> = players.iter().map(|(_, c)| *c).collect();
+    // Exactly on the same spot: the lower peer id goes +X, the other -X.
+    let ties: Vec<Vec2> = players.iter().map(|(p, _)| if my_peer < *p { Vec2::X } else { Vec2::NEG_X }).collect();
+    blocking_cylinders.extend(player_cylinders.iter().copied());
+    let blocker_name = |i: usize| match zed_ids.get(i) {
+        Some(id) => format!("zed {id}"),
+        None => format!("player {}", players[i - zed_ids.len()].0),
+    };
     // KFHumanPawn.ModifyVelocity: GroundSpeed x the carried-weight factor,
     // plus the held weapon's bonus (knife +40), x the perk's
     // GetMovementSpeedModifier. The health factor is not done.
@@ -546,6 +581,16 @@ fn walk(
         }
         for _ in 0..steps {
             w.time += h;
+            // Network games: overlapping another player (each game sees the
+            // others 0.1 s late), move half way out, at most SEPARATE_SPEED,
+            // through the world sweep (PC2, our own rule).
+            let push = push_apart(&me(w.center), &player_cylinders, &ties);
+            if push != Vec3::ZERO {
+                let push = push.clamp_length_max(SEPARATE_SPEED * SCALE * h);
+                let (pos, _) = mover.slide(w.center, push);
+                *pushed += (pos - w.center).with_y(0.0).length() / SCALE;
+                w.center = pos;
+            }
             let accel = wish * kf::ACCEL_RATE * SCALE;
             if w.on_ground && jump {
                 w.velocity.y = kf::JUMP_Z * SCALE;
@@ -562,9 +607,9 @@ fn walk(
                     h,
                 );
                 w.velocity = hv;
-                let (step, by_zed) = clip_move(&me(w.center), hv * h, &zed_cylinders);
-                if let Some(i) = by_zed {
-                    last_block = Some((format!("zed {}", zed_ids[i]), Vec3::ZERO));
+                let (step, by_pawn) = clip_move(&me(w.center), hv * h, &blocking_cylinders);
+                if let Some(i) = by_pawn {
+                    last_block = Some((blocker_name(i), Vec3::ZERO));
                 }
                 let (moved, blocked) = mover.ground_move(w.center, step);
                 let wanted = (hv * h).length();
@@ -612,9 +657,9 @@ fn walk(
                 );
                 w.velocity.x = air.x;
                 w.velocity.z = air.z;
-                let (step, by_zed) = clip_move(&me(w.center), w.velocity * h, &zed_cylinders);
-                if let Some(i) = by_zed {
-                    last_block = Some((format!("zed {}", zed_ids[i]), Vec3::ZERO));
+                let (step, by_pawn) = clip_move(&me(w.center), w.velocity * h, &blocking_cylinders);
+                if let Some(i) = by_pawn {
+                    last_block = Some((blocker_name(i), Vec3::ZERO));
                     w.velocity.x = step.x / h;
                     w.velocity.z = step.z / h;
                 }
@@ -683,6 +728,27 @@ fn walk(
                     bob.up / SCALE
                 ),
             );
+            // Other players close by: centre distance, overlap, and how far
+            // this game pushed its player apart since the last line.
+            for (peer, c) in &players {
+                let d = (c.centre - w.center).with_y(0.0).length() / SCALE;
+                if d < CONTACT_LOG_DISTANCE {
+                    runlog::kv(
+                        "pawn_contact",
+                        &format!(
+                            "t={:.1} peer={peer} distance_unreal={d:.1} overlap_unreal={:.1} pushed_unreal={:.1} me_unreal=({:.0}, {:.0}) other_unreal=({:.0}, {:.0})",
+                            w.time,
+                            overlap(&me(w.center), c) / SCALE,
+                            *pushed,
+                            -w.center.z / SCALE,
+                            w.center.x / SCALE,
+                            -c.centre.z / SCALE,
+                            c.centre.x / SCALE
+                        ),
+                    );
+                }
+            }
+            *pushed = 0.0;
             if let Some((name, n)) = &last_block {
                 runlog::kv(
                     "walk_blocked",

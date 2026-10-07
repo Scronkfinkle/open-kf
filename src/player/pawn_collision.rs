@@ -72,9 +72,66 @@ pub fn clip_move(me: &Cylinder, delta: Vec3, others: &[Cylinder]) -> (Vec3, Opti
     (Vec3::new(moved.x, delta.y, moved.y), blocker)
 }
 
+/// How far apart two cylinders' centres are kept (horizontal, metres):
+/// the radii plus the skin, where `clip_move` stops.
+pub fn contact_distance(a: &Cylinder, b: &Cylinder) -> f32 {
+    a.radius + b.radius + SKIN
+}
+
+/// Horizontal overlap of two cylinders (metres; 0 when apart or when their
+/// heights do not overlap).
+pub fn overlap(a: &Cylinder, b: &Cylinder) -> f32 {
+    if (a.centre.y - b.centre.y).abs() >= a.half_height + b.half_height {
+        return 0.0;
+    }
+    (contact_distance(a, b) - a.centre.xz().distance(b.centre.xz())).max(0.0)
+}
+
+/// Overlaps up to this (metres, 1 Unreal unit) are left alone by
+/// `push_apart`: a cylinder stopped by `clip_move` rests at the contact
+/// distance, and rounding would otherwise push it back and forth.
+const PUSH_DEADBAND: f32 = 1.0 * crate::engine::coords::SCALE;
+
+/// Our own rule for network games (not KF's, see DESIGN.md "Players
+/// blocking each other", PC2): the move that takes `me` half way out of
+/// every cylinder in `others` it overlaps (the other player's game moves
+/// them the other half). `tie[i]` is the way to go when exactly on top of
+/// `others[i]` (opposite on the two games). Horizontal only.
+pub fn push_apart(me: &Cylinder, others: &[Cylinder], tie: &[Vec2]) -> Vec3 {
+    let mut push = Vec2::ZERO;
+    for (i, o) in others.iter().enumerate() {
+        let depth = overlap(me, o);
+        if depth <= PUSH_DEADBAND {
+            continue;
+        }
+        let away = me.centre.xz() - o.centre.xz();
+        let dir = if away.length_squared() > 1e-8 { away.normalize() } else { tie.get(i).copied().unwrap_or(Vec2::X) };
+        push += dir * depth * 0.5;
+    }
+    Vec3::new(push.x, 0.0, push.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_apart_halves_the_overlap() {
+        // 0.3 apart, contact at 0.8 + SKIN: overlap 0.5 + SKIN, half each.
+        let p = push_apart(&cyl(0.0, 0.0), &[cyl(0.3, 0.0)], &[]);
+        assert!((p.x + (0.5 + SKIN) * 0.5).abs() < 1e-5, "{p}");
+        assert_eq!(p.z, 0.0);
+        // Apart: no push.
+        assert_eq!(push_apart(&cyl(0.0, 0.0), &[cyl(2.0, 0.0)], &[]), Vec3::ZERO);
+        // Same spot: the tie direction, opposite on the two games.
+        let a = push_apart(&cyl(0.0, 0.0), &[cyl(0.0, 0.0)], &[Vec2::X]);
+        let b = push_apart(&cyl(0.0, 0.0), &[cyl(0.0, 0.0)], &[-Vec2::X]);
+        assert!(a.x > 0.0 && b.x < 0.0 && (a.x + b.x).abs() < 1e-6);
+        // At different heights: no push.
+        let mut high = cyl(0.3, 0.0);
+        high.centre.y = 2.5;
+        assert_eq!(push_apart(&cyl(0.0, 0.0), &[high], &[]), Vec3::ZERO);
+    }
 
     fn cyl(x: f32, z: f32) -> Cylinder {
         Cylinder {

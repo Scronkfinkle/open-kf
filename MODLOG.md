@@ -5545,3 +5545,44 @@ options; "Building releases" mentions the tag workflow.
 until the first tag.
 **Next:** First tagged release by the user.
 
+
+## 2026-10-07 Players block each other in network games (PC1-PC2)
+
+**Changed:** `src/player/walk.rs`: the walk now also clips the player's
+move against every other living player's pawn (the remote pawns' drawn
+positions, radius 20, half-height 50), next to the zeds; when it overlaps
+one it pushes itself half way out (at most 50 units/s, through the world
+sweep, lower peer id goes +X when exactly on the same spot); new log
+lines `pawn_contact` and `walk_blocked by=player <peer>`.
+`src/player/pawn_collision.rs`: `contact_distance`, `overlap`,
+`push_apart` (1-unit deadband) and a unit test. Docs: `docs/DESIGN.md`
+(new section "Players blocking each other in network games": cause, plan,
+results), `MULTIPLAYER.md` and `docs/multiplayer-prototype.md` (known
+limits).
+**Why:** Players walked through each other. KF's pawns block each other
+(Engine.Pawn bCollideActors / bBlockActors true, KFPawn CollisionRadius
+20, KFHumanPawn CollisionHeight 50). Our pawn-vs-pawn code already
+existed for zeds, but the other players' pawns were never handed to the
+walk. Our games are client-authoritative (each game moves its own player),
+so each game blocks its own player; there is no server correction to
+rubber-band.
+**Tested how:** Headless host + client on 127.0.0.1, `--mode debug`,
+KF-WestLondon road, `warp:` and `walk_on` test inputs
+(`work/pc/mp_collide.sh`, `work/pc/analyse.py`, untracked): one player
+standing and the other walking in; both walking head-on for 12 s; one
+warped onto the other. Single player with `--autowalk 3 --zed`.
+`cargo test --release --workspace`, `cargo clippy --release --workspace`.
+**Result:** Standing: the walker stops at 40.5 units centre to centre on
+both games, slides round when off-centre. Head-on: largest overlap 20.8
+units at the impact (the 0.1 s view delay), settled at 40.0-40.5 after
+1.1 s (host) / 0.45 s (client), 38 / 43 units moved while close. With the
+first setting (100 units/s, no deadband) it shuffled all along (139
+units moved, 40 direction changes), so 50 and the deadband. Same spot:
+pushed apart in opposite directions within 0.6 s, ending 47.4 apart. Both
+games agree on both positions within a unit. Single player: zeds still
+block, no `pawn_contact`. Tests 215 + 24 pass; clippy no warnings.
+**Still broken / not tested:** 3+ players, two machines, lag or packet
+loss, jumping onto another player's head (KF's JumpOffPawn not done),
+real play by you. The push-apart is our own rule (KF never lets pawns
+overlap); 50 units/s is a guess tuned from the logs.
+**Next:** Play-test with two windows (commands in MULTIPLAYER.md).

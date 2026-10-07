@@ -69,7 +69,8 @@ Known limits (details in "Step 4 as built" and "Pickups" below):
   "Shared zed time", "Pickups shared" and "Dosh and weapons dropped"
   below).
 - Scoreboard: no perk icons, no ping, Assists always 0.
-- Players walk through each other. A dead player just waits (no
+- Players block each other since 2026-10-07 (DESIGN.md, "Players
+  blocking each other in network games"). A dead player just waits (no
   spectating the others).
 - A joining player's grenades do not damage doors (the host's doors).
 - Not tested: Patriarch rockets hitting a client (same code as the
