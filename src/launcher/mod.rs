@@ -25,7 +25,7 @@ use choices::{Choices, PlayType, command_line};
 const LOG_PATH: &str = "logs/launcher.log";
 /// The saved choices, next to `logs/` (gitignored: not in the whitelist).
 /// The game reads and writes its volume lines too (`read_volumes`,
-/// `save_volumes`).
+/// `save_volumes`), and its aim line (`read_aim`, `save_aim`).
 pub const SETTINGS_PATH: &str = "settings/launcher.txt";
 
 /// The volumes saved in the settings file, and whether the file had them
@@ -45,6 +45,29 @@ pub fn read_volumes(path: &std::path::Path) -> (choices::Volumes, &'static str) 
 pub fn save_volumes(path: &std::path::Path, v: &choices::Volumes) -> Result<(), String> {
     let old = std::fs::read_to_string(path).unwrap_or_default();
     let new = choices::with_volume_lines(&old, v);
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| std::fs::write(path, new))
+        .map_err(|e| e.to_string())
+}
+
+/// The aim setting saved in the settings file (true = hold), and whether
+/// the file had it ("file") or not ("default": KF's toggle).
+pub fn read_aim(path: &std::path::Path) -> (bool, &'static str) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let has = text.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() == choices::AIM_FIELD));
+            (Choices::from_text(&text).0.aim_hold, if has { "file" } else { "default" })
+        }
+        Err(_) => (false, "default"),
+    }
+}
+
+/// The game's save: rewrites only the `aim=` line of the settings file.
+pub fn save_aim(path: &std::path::Path, hold: bool) -> Result<(), String> {
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    let new = choices::with_aim_line(&old, hold);
     path.parent()
         .filter(|d| !d.as_os_str().is_empty())
         .map_or(Ok(()), std::fs::create_dir_all)

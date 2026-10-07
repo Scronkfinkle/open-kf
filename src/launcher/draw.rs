@@ -186,13 +186,14 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         map_list(p, l, list, menu);
     }
 
-    // Column 3: Game, Sound, menus, then Audio (3 + 2 + 3 rows). On a short
-    // window its rows get a little smaller so all fit above the bottom row.
-    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(2, h, g) + g + section_height(SLIDERS.len(), h, g);
+    // Column 3: Game, Sound, menus, Audio, then Controls (3 + 2 + 3 + 1
+    // rows). On a short window its rows get a little smaller so all fit
+    // above the bottom row.
+    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(2, h, g) + g + section_height(SLIDERS.len(), h, g) + g + section_height(1, h, g);
     let (rh3, gap3) = if need(rh, gap) <= c.height() {
         (rh, gap)
     } else {
-        let s = ((c.height() - 135.0 - 2.0 * gap) / ((5 + SLIDERS.len()) as f32 * (rh + gap))).max(0.5);
+        let s = ((c.height() - 180.0 - 3.0 * gap) / ((6 + SLIDERS.len()) as f32 * (rh + gap))).max(0.5);
         ((rh * s).floor(), (gap * s).floor())
     };
     let game_h = section_height(3, rh3, gap3);
@@ -225,7 +226,8 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
     label(p, lab, "Trader menu", menu);
     spinner(p, "trader", ctl, if c_.trader == crate::game::buy_menu::MenuKind::Nu { "NuMenu (new)" } else { "KF classic" }, true, menu);
     let audio_h = section_height(SLIDERS.len(), rh3, gap3);
-    audio_section(p, l, Rect::new(c.min.x, disp.max.y + gap3, c.max.x, disp.max.y + gap3 + audio_h), rh3, gap3, menu);
+    let audio = audio_section(p, l, Rect::new(c.min.x, disp.max.y + gap3, c.max.x, disp.max.y + gap3 + audio_h), rh3, gap3, menu);
+    controls_section(p, l, Rect::new(c.min.x, audio.max.y + gap3, c.max.x, audio.max.y + gap3 + section_height(1, rh3, gap3)), rh3, gap3, menu);
 
 
     // The bottom rows.
@@ -321,6 +323,19 @@ fn graphics_section(p: &mut Painter, l: &Launcher, c: &super::choices::Choices, 
     row(p, "Brightness", "brightness", &format!("{} %", c.brightness), true);
     row(p, "Anti-aliasing", "msaa", &if c.msaa <= 1 { "Off".to_string() } else { format!("MSAA {}x", c.msaa) }, true);
     row(p, "Texture filtering", "anisotropy", &if c.anisotropy <= 1 { "Trilinear".to_string() } else { format!("Anisotropic {}x", c.anisotropy) }, true);
+}
+
+/// The Controls box at the bottom of `area`: aim down sights by toggle
+/// (KF's default) or hold, the same saved line the game's pause menu
+/// changes (DESIGN.md, "Aim down sights"). Returns the box.
+fn controls_section(p: &mut Painter, l: &Launcher, area: Rect, rh: f32, gap: f32, font: &'static str) -> Rect {
+    let r = Rect::new(area.min.x, area.max.y - section_height(1, rh, gap), area.max.x, area.max.y);
+    p.section(r, "Controls", false, "Controls");
+    let mut rows = Rows::new(Painter::section_client(r, [0.0; 4]), rh, gap, 0.42);
+    let (lab, ctl) = rows.next();
+    label(p, lab, "Aim down sights", fit(p, font, "Aim down sights", rows.label_w - 10.0));
+    spinner(p, "aim", ctl, if l.choices.aim_hold { "Hold" } else { "Toggle" }, true, font);
+    r
 }
 
 /// The largest of KF's menu fonts, up to `font`, that fits `text` into

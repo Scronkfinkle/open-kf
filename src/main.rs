@@ -103,8 +103,8 @@ struct Args {
     log: Option<String>,
     /// `--trader-menu nu|kf`: our NuMenu (default) or the KF-style list.
     trader_menu: buy_menu::MenuKind,
-    /// `--settings FILE`: the settings file the volumes are read from and
-    /// saved to (default: the launcher's, `settings/launcher.txt`).
+    /// `--settings FILE`: the settings file the volumes and the aim mode
+    /// are read from and saved to (default: the launcher's, `settings/launcher.txt`).
     settings: Option<String>,
 }
 
@@ -392,6 +392,7 @@ fn main() -> AppExit {
         .insert_resource(graphics_settings)
         .add_plugins(graphics::GraphicsPlugin)
         .insert_resource(audio::mixer::AudioSettings { muted: args.mute, settings: args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into() })
+        .insert_resource(weapons::weapon::AimSetting::load(args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into()))
         .insert_resource(args)
         .insert_resource(request)
         .insert_resource(ClearColor(Color::srgb(0.32, 0.36, 0.42)))
