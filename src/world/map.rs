@@ -618,6 +618,7 @@ fn load_map(
     commands.insert_resource(crate::render::decals::MapProjectors(contents.projectors.clone()));
     log_map_features(&lp.pkg);
     commands.insert_resource(crate::player::pain::load(&lp, &class_defaults));
+    commands.insert_resource(crate::world::physvol::load(&lp, &class_defaults));
     if game_options.mode == crate::game::waves::GameMode::Waves {
         commands.insert_resource(crate::game::waves::load_game_data(&set, &class_defaults, &lp, game_options.length));
         commands.insert_resource(crate::game::trader::load_shops(&class_defaults, &lp));

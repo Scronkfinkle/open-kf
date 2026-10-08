@@ -22,7 +22,6 @@ pub(crate) mod kf {
     pub const ACCEL_RATE: f32 = 1000.0; // KFHumanPawn
     pub const JUMP_Z: f32 = 325.0; // KFHumanPawn
     pub const AIR_CONTROL: f32 = 0.15; // KFHumanPawn
-    pub const GRAVITY: f32 = 950.0; // PhysicsVolume
     pub const GROUND_FRICTION: f32 = 8.0; // PhysicsVolume
     pub const RADIUS: f32 = 20.0; // KFPawn CollisionRadius
     pub const HALF_HEIGHT: f32 = 50.0; // KFHumanPawn CollisionHeight
@@ -79,6 +78,11 @@ pub struct Walker {
     pub walking: bool,
     /// Pawn.EyeHeight and the landing dip (eye.rs).
     pub eye: crate::player::eye::Eye,
+    /// The physics volume the centre is in (for the log), and the jump's
+    /// start and highest centre height (Bevy y), for the `jump_apex` line.
+    pub phys_volume: String,
+    pub air_start_y: f32,
+    pub air_max_y: f32,
 }
 
 /// Momentum on the player from damage (Unreal units: mass x velocity),
@@ -134,6 +138,7 @@ impl Plugin for WalkPlugin {
             .add_message::<PlayerAddVelocity>()
             .init_resource::<WalkSettings>()
             .init_resource::<ViewBob>()
+            .init_resource::<crate::world::physvol::PhysicsVolumes>()
             .insert_resource(MoveMode::Fly)
             .add_systems(PostStartup, apply_start_mode.after(crate::engine::camera::spawn_camera))
             .add_systems(
@@ -393,6 +398,7 @@ type WalkMap<'w, 's> = (
     MessageWriter<'w, crate::world::glass::GlassBump>,
     Option<Res<'w, crate::world::nav::NavNetwork>>,
     Local<'s, Option<usize>>,
+    Res<'w, crate::world::physvol::PhysicsVolumes>,
 );
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -641,6 +647,20 @@ fn walk(
             }
             let accel = wish * kf::ACCEL_RATE * SCALE;
             let sub_start = w.center;
+            // The physics volume at the centre: gravity and ZoneVelocity
+            // (Unreal axes -> Bevy).
+            let vol = glass.4.at(Vec3::new(-w.center.z, w.center.x, w.center.y) / SCALE);
+            let to_bevy = |v: Vec3| Vec3::new(v.y, v.z, -v.x) * SCALE;
+            let (gravity, zone_velocity) = (to_bevy(vol.gravity), to_bevy(vol.zone_velocity));
+            if w.phys_volume != vol.name {
+                runlog::kv(
+                    "physics_volume",
+                    &format!("t={:.2} name={} gravity_z={} zone_velocity_z={} priority={}", w.time, vol.name, vol.gravity.z, vol.zone_velocity.z, vol.priority),
+                );
+                w.phys_volume = vol.name.clone();
+            }
+            let max_fall_speed = if vol.gravity.z > crate::world::physvol::DEFAULT_GRAVITY_Z { 2.0 * kf::MAX_FALL_SPEED } else { kf::MAX_FALL_SPEED };
+            let was_on_ground = w.on_ground;
             if w.on_ground && jump {
                 w.velocity.y = kf::JUMP_Z * SCALE;
                 w.on_ground = false;
@@ -709,7 +729,11 @@ fn walk(
                     _ => w.on_ground = false,
                 }
             } else {
-                w.velocity.y -= kf::GRAVITY * SCALE * h;
+                if was_on_ground || w.air_start_y == 0.0 {
+                    w.air_start_y = w.center.y;
+                    w.air_max_y = w.center.y;
+                }
+                w.velocity += gravity * h;
                 let air = calc_velocity(
                     w.velocity.with_y(0.0),
                     accel * kf::AIR_CONTROL,
@@ -719,14 +743,17 @@ fn walk(
                 );
                 w.velocity.x = air.x;
                 w.velocity.z = air.z;
-                let (step, by_pawn) = clip_move(&me(w.center), w.velocity * h, &blocking_cylinders);
+                // The move adds the volume's ZoneVelocity; the velocity
+                // does not keep it.
+                let (step, by_pawn) = clip_move(&me(w.center), (w.velocity + zone_velocity) * h, &blocking_cylinders);
                 if let Some(i) = by_pawn {
                     last_block = Some((blocker_name(i), Vec3::ZERO));
-                    w.velocity.x = step.x / h;
-                    w.velocity.z = step.z / h;
+                    w.velocity.x = step.x / h - zone_velocity.x;
+                    w.velocity.z = step.z / h - zone_velocity.z;
                 }
                 let (pos, hit) = mover.slide(w.center, step);
                 w.center = pos;
+                w.air_max_y = w.air_max_y.max(w.center.y);
                 if let Some(n) = hit.map(|h| h.normal) {
                     if n.y >= kf::MIN_FLOOR_NORMAL_Y && w.velocity.y <= 0.0 {
                         // Pawn.Landed: a landing faster than 200 down dips
@@ -736,8 +763,20 @@ fn walk(
                         old_z = w.center.y + kf::SKIN * SCALE;
                         runlog::kv("land_dip", &format!("t={:.3} landing_speed_unreal={:.0} dip={dip}", w.time, -vz));
                         // KFPawn.TakeFallingDamage (from Pawn.Landed).
-                        if let Some(amount) = falling_damage(vz, kf::MAX_FALL_SPEED) {
-                            runlog::kv("fall_damage", &format!("landing_speed_unreal={:.0} max_fall_speed={} damage={amount:.1}", -vz, kf::MAX_FALL_SPEED));
+                        runlog::kv(
+                            "jump_apex",
+                            &format!(
+                                "t={:.3} apex_above_start_unreal={:.1} drop_below_apex_unreal={:.1} gravity_z={} volume={}",
+                                w.time,
+                                (w.air_max_y - w.air_start_y) / SCALE,
+                                (w.air_max_y - w.center.y) / SCALE,
+                                gravity.y / SCALE,
+                                w.phys_volume
+                            ),
+                        );
+                        w.air_start_y = 0.0;
+                        if let Some(amount) = falling_damage(vz, max_fall_speed) {
+                            runlog::kv("fall_damage", &format!("landing_speed_unreal={:.0} max_fall_speed={max_fall_speed} damage={amount:.1}", -vz));
                             fall_damage.write(crate::game::combat::PlayerDamaged {
                                 amount,
                                 zed_id: crate::game::combat::LEVEL_DAMAGE,
