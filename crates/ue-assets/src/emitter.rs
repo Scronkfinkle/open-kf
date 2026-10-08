@@ -12,7 +12,7 @@ use std::rc::Rc;
 use crate::class_defaults::ClassDefaults;
 use crate::package::ObjectRef;
 use crate::package_set::{LoadedPackage, ObjectHandle, PackageSet};
-use crate::properties::{PropertyList, Value, read_export_properties_ext};
+use crate::properties::{PropertyList, Rotator, Value, read_export_properties_ext};
 use crate::reader::Reader;
 
 /// A (min, max) range.
@@ -93,6 +93,14 @@ pub struct EmitterDef {
     pub damp_rotation: bool,
     /// EParticleRotationSource: 0 none, 1 actor, 2 offset, 3 normal.
     pub use_rotation_from: u8,
+    /// Used by UseRotationFrom Offset (and with Actor).
+    pub rotation_offset: Rotator,
+    /// Used by UseRotationFrom Normal: the rotation of this vector.
+    pub rotation_normal: [f32; 3],
+    /// EParticleEffectAxis: 0 negative X, 1 positive Z.
+    pub effect_axis: u8,
+    /// Turn VelocityLossRange with the start rotation too.
+    pub rotate_velocity_loss_range: bool,
     // Drawing.
     /// EParticleDrawStyle: 0 regular, 1 alpha blend, 2 modulated, 3
     /// translucent (additive), 4 alpha modulate, 5 darken, 6 brighten.
@@ -289,6 +297,13 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         spins_per_second_range: range_vector("SpinsPerSecondRange", (0.0, 0.0)),
         damp_rotation: boolean("DampRotation"),
         use_rotation_from: byte("UseRotationFrom"),
+        rotation_offset: match get("RotationOffset") {
+            Some((Value::Rotator(r), _)) => r,
+            _ => Rotator::default(),
+        },
+        rotation_normal: vector("RotationNormal", [0.0; 3]),
+        effect_axis: byte("EffectAxis"),
+        rotate_velocity_loss_range: boolean("RotateVelocityLossRange"),
         draw_style: byte("DrawStyle"),
         use_direction_as: byte("UseDirectionAs"),
         projection_normal: vector("ProjectionNormal", [0.0, 0.0, 1.0]),

@@ -881,7 +881,31 @@ fn spawn_count(d: &EmitterDef, s: &mut EmitterState, dt: f32) -> u32 {
     n
 }
 
-/// `start`: StartVelocityRange and LifetimeRange as a script last set them.
+/// The rotation KF gives a new particle's start position and velocity
+/// (UseRotationFrom): Actor = the effect's axes (then RotationOffset;
+/// the order is assumed, RotationOffset is zero in all of KF's data),
+/// Offset = RotationOffset, Normal = the rotation of RotationNormal (a
+/// quarter turn down for EffectAxis PositiveZ), None = world axes.
+fn start_rotation(d: &EmitterDef, axes: Mat3) -> Mat3 {
+    match d.use_rotation_from {
+        1 => axes * coords::ue_rotation_matrix(d.rotation_offset),
+        2 => coords::ue_rotation_matrix(d.rotation_offset),
+        3 => {
+            let [x, y, z] = d.rotation_normal;
+            let to_units = 32768.0 / std::f32::consts::PI;
+            let mut pitch = (z.atan2(x.hypot(y)) * to_units) as i32;
+            if d.effect_axis == 1 {
+                pitch -= 16384;
+            }
+            coords::ue_rotation_matrix(Rotator { pitch, yaw: (y.atan2(x) * to_units) as i32, roll: 0 })
+        }
+        _ => Mat3::IDENTITY,
+    }
+}
+
+/// `base`: world position of another emitter's particle to start from
+/// (AddLocationFromOtherEmitter). `start`: StartVelocityRange and
+/// LifetimeRange as a script last set them.
 fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, start: (Option<Vec3>, Option<f32>), rng: &mut u32) -> Particle {
     // Start location: a box, plus a sphere shell for Sphere / All.
     let mut offset = in_ranges(rng, &d.start_location_range);
@@ -894,18 +918,24 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, star
         };
         offset += dir * in_range(rng, d.sphere_radius_range);
     }
-    let relative = d.coordinate_system == 1;
-    // Relative: kept in the effect's frame. Otherwise world: the offset and
-    // the start velocity are turned with the effect, then the particle
-    // moves in world space (assumed from KF's data: KFVomitJet's notify
-    // turns the effect with OffsetRotation and its spray flies along X).
-    let vel = start.0.unwrap_or_else(|| in_ranges(rng, &d.start_velocity_range));
-    let vel = if relative { vel } else { frame.1 * vel };
-    let pos = match (relative, base) {
-        (_, Some(b)) => b + offset,
-        (true, None) => offset,
-        (false, None) => frame.0 + frame.1 * offset,
-    };
+    // Another emitter's particle (AddLocationFromOtherEmitter): its offset
+    // from the effect, added before turning, as KF does.
+    if let Some(b) = base {
+        offset += b - frame.0;
+    }
+    // KF turns the start position and velocity only by UseRotationFrom
+    // (None = world axes), whatever the coordinate system; then an
+    // Independent particle gets the effect's location added, a Relative one
+    // stays local (drawn with the effect's location and rotation, so
+    // Relative + Actor turns twice, as in KF), an Absolute one is used as is.
+    let rot = start_rotation(d, frame.1);
+    let vel = rot * start.0.unwrap_or_else(|| in_ranges(rng, &d.start_velocity_range));
+    let offset = rot * offset;
+    let pos = if d.coordinate_system == 0 { frame.0 + offset } else { offset };
+    let mut velocity_loss = in_ranges(rng, &d.velocity_loss_range);
+    if d.rotate_velocity_loss_range {
+        velocity_loss = rot * velocity_loss;
+    }
     let mut size = in_ranges(rng, &d.start_size_range);
     if d.uniform_size {
         size = Vec3::splat(size.x);
@@ -927,7 +957,7 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, star
         spin: if d.spin_particles { in_ranges(rng, &d.start_spin_range) } else { Vec3::ZERO },
         spin_rate: if d.spin_particles { spin_rate } else { Vec3::ZERO },
         damping: in_ranges(rng, &d.damping_factor_range),
-        velocity_loss: in_ranges(rng, &d.velocity_loss_range),
+        velocity_loss,
         subdivision: if d.use_random_subdivision { (frand(rng) * subdivisions as f32) as u32 % subdivisions } else { 0 },
     }
 }
@@ -1238,6 +1268,132 @@ fn build_mesh_particles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sub-emitter with the engine's defaults (as in our reader's
+    /// fallbacks), for tests.
+    fn def() -> EmitterDef {
+        EmitterDef {
+            name: "test".into(),
+            kind: EmitterKind::Sprite,
+            max_particles: 10,
+            respawn_dead_particles: false,
+            automatic_initial_spawning: false,
+            initial_particles_per_second: 0.0,
+            particles_per_second: 0.0,
+            lifetime: (4.0, 4.0),
+            seconds_before_inactive: 1.0,
+            reset_after_change: false,
+            start_location_range: [(0.0, 0.0); 3],
+            start_location_shape: 0,
+            sphere_radius_range: (0.0, 0.0),
+            add_location_from_other_emitter: -1,
+            coordinate_system: 0,
+            start_velocity_range: [(0.0, 0.0); 3],
+            get_velocity_direction_from: 0,
+            velocity_loss_range: [(0.0, 0.0); 3],
+            max_abs_velocity: [0.0; 3],
+            acceleration: [0.0; 3],
+            use_collision: false,
+            damping_factor_range: [(1.0, 1.0); 3],
+            use_velocity_scale: false,
+            velocity_scale: Vec::new(),
+            start_size_range: [(100.0, 100.0); 3],
+            uniform_size: false,
+            use_size_scale: false,
+            use_regular_size_scale: false,
+            size_scale: Vec::new(),
+            scale_size_by_velocity_multiplier: [1.0; 3],
+            scale_size_by_velocity_max: 10_000_000.0,
+            scale_size_by_velocity: [false; 3],
+            use_color_scale: false,
+            color_scale: Vec::new(),
+            opacity: 1.0,
+            fade_in: false,
+            fade_in_end_time: 0.0,
+            fade_out: false,
+            fade_out_start_time: 0.0,
+            spin_particles: false,
+            start_spin_range: [(0.0, 0.0); 3],
+            spins_per_second_range: [(0.0, 0.0); 3],
+            damp_rotation: false,
+            use_rotation_from: 0,
+            rotation_offset: Rotator::default(),
+            rotation_normal: [0.0; 3],
+            effect_axis: 0,
+            rotate_velocity_loss_range: false,
+            draw_style: 1,
+            use_direction_as: 0,
+            projection_normal: [0.0, 0.0, 1.0],
+            texture: None,
+            texture_u_subdivisions: 0,
+            texture_v_subdivisions: 0,
+            blend_between_subdivisions: false,
+            use_random_subdivision: false,
+            static_mesh: None,
+            disabled: false,
+            trigger_disabled: false,
+            reset_on_trigger: false,
+            spawn_on_trigger: (0.0, 0.0),
+            spawn_on_trigger_pps: 0.0,
+        }
+    }
+
+    /// The effect turned a quarter turn (its X axis along world Y).
+    fn turned_frame() -> (Vec3, Mat3) {
+        (Vec3::new(100.0, 0.0, 0.0), coords::ue_rotation_matrix(Rotator { pitch: 0, yaw: 16384, roll: 0 }))
+    }
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (a - b).length() < 1e-3
+    }
+
+    /// UseRotationFrom None: start offset and velocity stay in world axes
+    /// however the effect is turned.
+    #[test]
+    fn rotation_none_keeps_world_axes() {
+        let mut d = def();
+        d.start_location_range = [(10.0, 10.0), (0.0, 0.0), (0.0, 0.0)];
+        d.start_velocity_range = [(0.0, 0.0), (0.0, 0.0), (50.0, 50.0)];
+        d.velocity_loss_range = [(1.0, 1.0), (0.0, 0.0), (0.0, 0.0)];
+        d.rotate_velocity_loss_range = true;
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(0.0, 0.0, 50.0)));
+        assert!(close(p.pos, Vec3::new(110.0, 0.0, 0.0)));
+        assert!(close(p.velocity_loss, Vec3::X));
+    }
+
+    /// UseRotationFrom Actor: turned with the effect (X along world Y).
+    #[test]
+    fn rotation_actor_turns_with_effect() {
+        let mut d = def();
+        d.use_rotation_from = 1;
+        d.start_location_range = [(10.0, 10.0), (0.0, 0.0), (0.0, 0.0)];
+        d.start_velocity_range = [(50.0, 50.0), (0.0, 0.0), (0.0, 0.0)];
+        d.velocity_loss_range = [(1.0, 1.0), (0.0, 0.0), (0.0, 0.0)];
+        d.rotate_velocity_loss_range = true;
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(0.0, 50.0, 0.0)));
+        assert!(close(p.pos, Vec3::new(100.0, 10.0, 0.0)));
+        assert!(close(p.velocity_loss, Vec3::Y));
+        // Relative: kept local but turned (drawn turned again, as in KF).
+        d.coordinate_system = 1;
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.pos, Vec3::new(0.0, 10.0, 0.0)));
+    }
+
+    /// UseRotationFrom Normal: the rotation of RotationNormal.
+    #[test]
+    fn rotation_normal() {
+        let mut d = def();
+        d.use_rotation_from = 3;
+        d.rotation_normal = [0.0, 1.0, 0.0];
+        d.start_velocity_range = [(50.0, 50.0), (0.0, 0.0), (0.0, 0.0)];
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(0.0, 50.0, 0.0)), "{:?}", p.vel);
+        d.rotation_normal = [0.0; 3];
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(50.0, 0.0, 0.0)));
+    }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.
     #[test]

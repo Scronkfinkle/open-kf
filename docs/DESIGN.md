@@ -1293,6 +1293,9 @@ attacks; no flipping over.
 Particle change made for the vomit jet: world-space emitters now turn their
 start velocity with the effect (before, velocities stayed in world axes);
 PTDU_Up sprites (stretched along their velocity) are drawn.
+(Corrected 2026-10-08, P2: only emitters with UseRotationFrom Actor turn
+with the effect, as in KF; the vomit spray is one of them, the head jet's
+chunks (None) fly up world Z again.)
 Known gaps: the glob's own look (plain lit material), VomGroundSplash (an
 xEmitter, old particle system), leading a moving target, vomit hurting
 other zeds.

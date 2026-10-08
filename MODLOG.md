@@ -6215,3 +6215,23 @@ before/after screenshots of a shot Clot (see P7 entry for the run).
 **Result:** test passes. Mesh particles unchanged (Size is a scale there).
 **Still broken / not tested:** not compared with KF by you.
 **Next:** P2 rotation rules.
+
+## 2026-10-08 P2: particles turn with the effect only by UseRotationFrom (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads RotationOffset,
+RotationNormal, EffectAxis, RotateVelocityLossRange);
+`src/render/particles.rs` (`start_rotation`; `spawn_particle` turns the
+start offset, velocity and, if asked, the velocity loss by it; 3 tests);
+DESIGN.md (vomit-jet note corrected).
+**Why:** KF turns a new particle's start position and velocity only by
+UseRotationFrom (None = world axes, Actor = the effect's rotation, Offset,
+Normal), for every coordinate system. We turned every non-Relative emitter
+with the effect, and never turned Relative ones' velocity.
+**Tested how:** unit tests rotation_none_keeps_world_axes,
+rotation_actor_turns_with_effect, rotation_normal; headless run at the end
+of the series (see the last fix/particles entry).
+**Result:** tests pass.
+**Still broken / not tested:** the order of the effect's rotation and
+RotationOffset for Actor is assumed (RotationOffset is zero in all KF
+data). Head-jet chunks flying up world Z: not checked in a game run.
+**Next:** P3 spawn rates.
