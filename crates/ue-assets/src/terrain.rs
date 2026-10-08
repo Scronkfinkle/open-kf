@@ -82,7 +82,7 @@ fn int_array(value: Option<&Value>) -> Vec<u32> {
 /// Reads every TerrainInfo in a map. Errors are returned per terrain as text.
 pub fn read_terrains(set: &PackageSet, lp: &std::rc::Rc<LoadedPackage>) -> Vec<Result<Terrain, String>> {
     let pkg = &lp.pkg;
-    (0..pkg.exports.len())
+    pkg.level_actor_exports()
         .filter(|&i| pkg.export_class_name(i) == "TerrainInfo")
         .map(|i| read_terrain(set, lp, i))
         .collect()

@@ -45,7 +45,7 @@ const KILL_Z: f32 = -10000.0;
 pub fn load(map: &Rc<LoadedPackage>, defaults: &ClassDefaults) -> PainVolumes {
     let pkg = &map.pkg;
     let mut out = Vec::new();
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         let Some(class) = defaults.class_of(map, i) else { continue };
         if !pkg.export_class_name(i).ends_with("Volume") || !defaults.is_a(&class, "PhysicsVolume") {
             continue;

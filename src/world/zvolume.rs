@@ -141,7 +141,7 @@ pub fn brush_polys(pkg: &ue_assets::package::Package, props: &PropertyList) -> V
 pub fn load(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<LoadedPackage>, zed_classes: &[String]) -> (Vec<ZombieVolume>, HashMap<String, ZedInfo>) {
     let pkg = &map.pkg;
     let mut volumes = Vec::new();
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         if pkg.export_class_name(i) != "ZombieVolume" {
             continue;
         }

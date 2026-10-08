@@ -191,8 +191,27 @@ zone/portal visibility culling, emitters.
   path is `Package.Group.Object`. The lookup matches the import's class too,
   because one package can hold two objects with the same path and different
   classes.
-- `level.rs` scans the map's exports. The BSP is the largest `Model` that is
-  not referenced by an actor's `Brush` property. An actor is drawn as a static
+- **Which objects are actors (2026-10-08).** A map package keeps every
+  object something still references, including actors deleted in the editor
+  (`bDeleteMe` set). KF does not play those: it builds the level from the
+  `Level` object's actor list (after its empty property list: count,
+  capacity, one object reference per slot; then the level URL; then the BSP
+  `Model` reference). `actor_list.rs` reads that list once per package and
+  `Package::level_actor_exports()` hands out the listed exports, in list
+  order (KF's own iteration order). Every map reader uses it: `level.rs`
+  (meshes, brushes, lights, path nodes, pickups, projectors, player starts,
+  use triggers), terrain, shops and teleporters, shopkeepers, zombie and pain
+  volumes, map sounds, music trigger, level rules, emitters, jump pads,
+  LevelInfo lookups. ReachSpecs whose start or end is not listed are left out
+  of the nav graph (no live node's path list holds them). Objects that are
+  not actors (Models, Polys, ReachSpecs, materials) are found by reference
+  as before. Checked on all 40 maps with `kfpkg actors all`: the objects left
+  out are exactly the `bDeleteMe` ones, no BSP zone uses a left-out ZoneInfo,
+  and the Level's model equals the old "largest unowned Model" guess.
+  Packages without a readable list fall back to every export
+  (`level_actors_error` in the log).
+- `level.rs` takes the BSP model from the level (fallback: the largest
+  `Model` not referenced by an actor's `Brush` property). An actor is drawn as a static
   mesh if it has a `StaticMesh`, is not `bHidden`, and has `DrawType = 8`. If
   `DrawType` is unset, the class must be `StaticMeshActor` or end in `Mover`:
   class default values are not decoded yet, so this list stands in for them.

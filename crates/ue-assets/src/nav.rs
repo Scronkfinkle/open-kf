@@ -48,6 +48,9 @@ pub struct NavGraph {
     pub edges: Vec<NavEdge>,
     /// ReachSpecs that could not be used (missing start or end).
     pub broken_specs: usize,
+    /// ReachSpecs left out because their start or end is not a level actor
+    /// (deleted in the editor; no live node's path list holds them).
+    pub deleted_specs: usize,
 }
 
 impl NavGraph {
@@ -122,6 +125,10 @@ pub fn read_nav(pkg: &Package) -> NavGraph {
             g.broken_specs += 1;
             continue;
         };
+        if !pkg.is_level_actor(s) || !pkg.is_level_actor(e) {
+            g.deleted_specs += 1;
+            continue;
+        }
         let (Some(from), Some(to)) = (node(&mut g, s), node(&mut g, e)) else {
             g.broken_specs += 1;
             continue;

@@ -79,7 +79,7 @@ pub struct SkyInfo {
 /// LevelInfo, which is a ZoneInfo), own values else class defaults.
 fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &ClassDefaults, model: &ue_assets::bsp::Model) -> Vec<crate::world::zones::ZoneFog> {
     let pkg = &lp.pkg;
-    let level_info = (0..pkg.exports.len()).find(|&i| pkg.export_class_name(i).ends_with("LevelInfo"));
+    let level_info = pkg.level_actor_exports().find(|&i| pkg.export_class_name(i).ends_with("LevelInfo"));
     (0..model.num_zones.max(1))
         .map(|z| {
             let export = match model.zone_actors.get(z) {
@@ -171,9 +171,38 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("ZoneInfo", false),
 ];
 
+/// The level's actor list: how many actors KF plays with, and which saved
+/// objects of the same classes are left out (deleted in the editor).
+fn log_level_actors(pkg: &ue_assets::package::Package) {
+    match pkg.level_actor_list() {
+        Ok(list) => {
+            let classes: std::collections::HashSet<&str> = list.actors.iter().map(|&a| pkg.export_class_name(a)).collect();
+            let mut dropped: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+            for i in 0..pkg.exports.len() {
+                let class = pkg.export_class_name(i);
+                if classes.contains(class) && !list.set.contains(&i) {
+                    *dropped.entry(class).or_default() += 1;
+                }
+            }
+            runlog::kv(
+                "level_actors",
+                &format!(
+                    "actors={} exports={} dropped={} dropped_classes=[{}] bsp_model={:?}",
+                    list.actors.len(),
+                    pkg.exports.len(),
+                    dropped.values().sum::<usize>(),
+                    dropped.iter().map(|(c, n)| format!("{c}:{n}")).collect::<Vec<_>>().join(" "),
+                    list.model
+                ),
+            );
+        }
+        Err(e) => runlog::kv("level_actors_error", &format!("error=\"{e}\" fallback=all_exports")),
+    }
+}
+
 fn log_map_features(pkg: &ue_assets::package::Package) {
     let mut counts: HashMap<&str, usize> = HashMap::new();
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         let class = pkg.export_class_name(i);
         if let Some((name, _)) = MAP_FEATURES.iter().find(|(n, _)| *n == class) {
             *counts.entry(name).or_default() += 1;
@@ -613,6 +642,7 @@ fn load_map(
     };
     let defaults_started = Instant::now();
     let class_defaults = ClassDefaults::new(&set);
+    log_level_actors(&lp.pkg);
     let contents = read_level_with(&lp, &class_defaults);
     door_setup.triggers = contents.use_triggers.clone();
     commands.insert_resource(crate::render::decals::MapProjectors(contents.projectors.clone()));
@@ -706,7 +736,9 @@ fn load_map(
                     ),
                 );
                 // KFSPLevelInfo.bUseVisionOverlay (only KF-Crash has one).
-                let vision_overlay = (0..lp.pkg.exports.len())
+                let vision_overlay = lp
+                    .pkg
+                    .level_actor_exports()
                     .filter(|&i| lp.pkg.export_class_name(i) == "KFSPLevelInfo")
                     .filter_map(|i| read_export_properties(&lp.pkg, i).ok())
                     .all(|p| !matches!(p.get(&lp.pkg, "bUseVisionOverlay"), Some(Value::Bool(false))));
@@ -1462,7 +1494,7 @@ fn load_map(
 /// The map's display name from LevelInfo.Title, if set.
 fn level_title(lp: &ue_assets::package_set::LoadedPackage) -> String {
     let pkg = &lp.pkg;
-    (0..pkg.exports.len())
+    pkg.level_actor_exports()
         .find(|&i| pkg.export_class_name(i) == "LevelInfo")
         .and_then(|i| read_export_properties(pkg, i).ok())
         .and_then(|p| match p.get(pkg, "Title") {

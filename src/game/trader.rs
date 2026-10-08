@@ -162,7 +162,7 @@ pub fn load_shops(defaults: &ClassDefaults, map: &Rc<LoadedPackage>) -> Shops {
         ..default()
     };
     let mut tags: Vec<(String, String, String)> = Vec::new();
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         let class = pkg.export_class_name(i);
         let is_shop = class == "ShopVolume";
         let is_teleporter = defaults.class_of(map, i).is_some_and(|c| defaults.is_a(&c, "Teleporter"));
