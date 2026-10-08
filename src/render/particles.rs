@@ -1054,8 +1054,9 @@ fn velocity_direction(d: &EmitterDef, origin: Vec3, pos: Vec3, vel: Vec3, rng: &
 /// (AddLocationFromOtherEmitter). `start`: StartVelocityRange and
 /// LifetimeRange as a script last set them.
 fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, start: (Option<Vec3>, Option<f32>), rng: &mut u32) -> Particle {
-    // Start location: a box, plus a sphere shell for Sphere / All.
-    let mut offset = in_ranges(rng, &d.start_location_range);
+    // Start location: StartLocationOffset, plus a box, plus a sphere shell
+    // for Sphere / All.
+    let mut offset = Vec3::from_array(d.start_location_offset) + in_ranges(rng, &d.start_location_range);
     if matches!(d.start_location_shape, 1 | 3) {
         let dir = loop {
             let v = Vec3::new(frand(rng) * 2.0 - 1.0, frand(rng) * 2.0 - 1.0, frand(rng) * 2.0 - 1.0);
@@ -1376,6 +1377,7 @@ mod tests {
             initial_delay_range: (0.0, 0.0),
             seconds_before_inactive: 1.0,
             reset_after_change: false,
+            start_location_offset: [0.0; 3],
             start_location_range: [(0.0, 0.0); 3],
             start_location_shape: 0,
             sphere_radius_range: (0.0, 0.0),
@@ -1630,6 +1632,20 @@ mod tests {
         s.delay = 0.52;
         assert_eq!(run(&d, &mut s, 0.5), (false, 0));
         assert_eq!(run(&d, &mut s, 0.05).1, 5);
+    }
+
+    /// StartLocationOffset (KFLawMuzzFlash-like 5 along X): added before
+    /// turning, so with UseRotationFrom Actor it follows the effect's X.
+    #[test]
+    fn start_location_offset() {
+        let mut d = def();
+        d.start_location_offset = [5.0, 0.0, 0.0];
+        d.start_location_range = [(0.0, 0.0), (0.0, 0.0), (1.0, 1.0)];
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.pos, Vec3::new(105.0, 0.0, 1.0)), "{:?}", p.pos);
+        d.use_rotation_from = 1;
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.pos, Vec3::new(100.0, 5.0, 1.0)), "{:?}", p.pos);
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.

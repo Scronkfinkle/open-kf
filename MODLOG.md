@@ -6301,3 +6301,17 @@ update after.
 **Result:** test passes.
 **Still broken / not tested:** not looked at in a game run.
 **Next:** P6 StartLocationOffset.
+
+## 2026-10-08 P6: StartLocationOffset (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads StartLocationOffset);
+`src/render/particles.rs` (start position = offset + box + sphere; test
+start_location_offset).
+**Why:** KF starts every particle at StartLocationOffset, then adds the
+start shapes, then turns the sum (P2). Not read before; 40 of our
+sub-emitters set it (muzzle flashes: KFLawMuzzFlash, MuzzleFlash3rd*).
+**Tested how:** unit test: offset 5 along X lands 5 along world X with
+UseRotationFrom None and along the effect's X (world Y) with Actor.
+**Result:** test passes.
+**Still broken / not tested:** flash positions not checked in a game run.
+**Next:** P7 fading per draw style.

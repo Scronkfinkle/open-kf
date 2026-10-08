@@ -46,6 +46,8 @@ pub struct EmitterDef {
     pub seconds_before_inactive: f32,
     pub reset_after_change: bool,
     // Start location.
+    /// Added to every start position before the shapes (and turned with them).
+    pub start_location_offset: [f32; 3],
     pub start_location_range: [Range; 3],
     /// EParticleStartLocationShape: 0 box, 1 sphere, 2 polar, 3 all.
     pub start_location_shape: u8,
@@ -268,6 +270,7 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         initial_delay_range: range("InitialDelayRange", (0.0, 0.0)),
         seconds_before_inactive: float("SecondsBeforeInactive", 1.0),
         reset_after_change: boolean("ResetAfterChange"),
+        start_location_offset: vector("StartLocationOffset", [0.0; 3]),
         start_location_range: range_vector("StartLocationRange", (0.0, 0.0)),
         start_location_shape: byte("StartLocationShape"),
         sphere_radius_range: range("SphereRadiusRange", (0.0, 0.0)),
