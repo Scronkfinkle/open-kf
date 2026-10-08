@@ -151,9 +151,12 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("ClientMover", false),
     ("KFElevator", false),
     ("KFTraderDoor", true),
-    ("ShopVolume", false),
-    ("KFTraderTeleporter", false),
-    ("Teleporter", false),
+    // trader.rs: shops, and every Teleporter (incl. KFTraderTeleporter) as
+    // a spot to put a player outside a shop. Teleporters with a URL would
+    // teleport, but no KF map enables one.
+    ("ShopVolume", true),
+    ("KFTraderTeleporter", true),
+    ("Teleporter", true),
     ("JumpSpot", false),
     ("WaterVolume", false),
     ("PhysicsVolume", false),
@@ -163,6 +166,7 @@ const MAP_FEATURES: &[(&str, bool)] = &[
     ("ScriptedTrigger", false),
     ("Trigger", false),
     ("KFProxyTrigger", false),
+    ("TriggerLight", false),
     ("UseTrigger", false),
     ("BlockingVolume_Toggleable", false),
     ("KActor", false),
@@ -188,7 +192,54 @@ fn log_map_features(pkg: &ue_assets::package::Package) {
             .join(" ")
     };
     // ZoneInfo is listed for its distance fog, which KF's sight checks use.
-    runlog::kv("map_features", &format!("simulated=[{}] not_simulated=[{}]", list(true), list(false)));
+    // Not simulated either, counted from the actors' own saved values:
+    // physics volumes that change gravity or push pawns (ZoneVelocity),
+    // movers that only map events move (InitialState Trigger*, not doors:
+    // door.rs logs those), and player starts that fire an Event on spawn.
+    let mut overrides = Vec::new();
+    let mut event_movers = Vec::new();
+    let mut start_events = 0usize;
+    for i in 0..pkg.exports.len() {
+        let class = pkg.export_class_name(i);
+        let volume = matches!(class, "PhysicsVolume" | "KFPhysicsVolume" | "DefaultPhysicsVolume" | "WaterVolume" | "LavaVolume");
+        let mover = matches!(class, "Mover" | "ClientMover" | "KFElevator");
+        if !volume && !mover && class != "PlayerStart" {
+            continue;
+        }
+        let Ok(props) = read_export_properties(pkg, i) else { continue };
+        let name = || pkg.object_name(ObjectRef::Export(i)).to_string();
+        if volume {
+            let mut what = Vec::new();
+            for field in ["Gravity", "ZoneVelocity"] {
+                if let Some(Value::Vector(v)) = props.get(pkg, field) {
+                    what.push(format!("{field}=({:.0},{:.0},{:.0})", v[0], v[1], v[2]));
+                }
+            }
+            if !what.is_empty() {
+                overrides.push(format!("{}:{}", name(), what.join(",")));
+            }
+        } else if mover {
+            if let Some(Value::Name(n)) = props.get(pkg, "InitialState")
+                && pkg.name(*n).starts_with("Trigger")
+            {
+                event_movers.push(format!("{}:{}", name(), pkg.name(*n)));
+            }
+        } else if matches!(props.get(pkg, "Event"), Some(Value::Name(n)) if !pkg.name(*n).is_empty() && pkg.name(*n) != "None") {
+            start_events += 1;
+        }
+    }
+    runlog::kv(
+        "map_features",
+        &format!(
+            "simulated=[{}] not_simulated=[{}] physics_volume_overrides={} [{}] event_driven_movers={} [{}] player_start_events={start_events}",
+            list(true),
+            list(false),
+            overrides.len(),
+            overrides.join(" "),
+            event_movers.len(),
+            event_movers.join(" ")
+        ),
+    );
 }
 
 /// Every map entity gets this, so they can be counted or removed later.

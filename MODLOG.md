@@ -6219,3 +6219,24 @@ way from key 1 to key 2 (x = 120).
 **Still broken / not tested:** not checked in a game run on its own
 (multi-key movers are trader doors only; the effect is at most one frame).
 **Next:** MOV-2 (doors push pawns).
+
+## 2026-10-08 map_features log: shops and teleporters counted as simulated (branch fix/movers)
+
+**Changed:** `src/world/map.rs` `MAP_FEATURES` / `log_map_features`:
+ShopVolume, Teleporter and KFTraderTeleporter now show under
+`simulated` (trader.rs uses them); TriggerLight added (not simulated).
+The `map_features` line also gives `physics_volume_overrides` (volumes
+that save their own Gravity or ZoneVelocity, with the values),
+`event_driven_movers` (plain movers whose InitialState is a Trigger*
+state, which only map events move) and `player_start_events`.
+**Why:** audit finding MOV-6: the line listed simulated classes as not
+simulated, and left out the unsimulated map features found by the audit.
+**Tested how:** headless runs on KF-MoonBase and KF-WestLondon
+(`--mute --frames 30`), read the `map_features` line.
+**Result:** KF-MoonBase: ShopVolume:3 Teleporter:18 under simulated;
+physics_volume_overrides=8 (DefaultPhysicsVolume13 Gravity -320
+ZoneVelocity 15, seven KFPhysicsVolumes at -150), as the audit found.
+KF-WestLondon: event_driven_movers=2 [Mover2 Mover1 TriggerOpenTimed],
+player_start_events=6.
+**Still broken / not tested:** log only; nothing new is simulated.
+**Next:** MOV-1 (map gravity) and MOV-4 (event movers) are separate fixes.
