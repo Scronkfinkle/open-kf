@@ -19,8 +19,9 @@
 //!   normal), an int, material, node count, PolyFlags, lightmap texture
 //! - LightMaps: 7 compact, a matrix, 3 vectors, lights (ref, shadow bits,
 //!   7 ints), a compact and an int (skipped: the vertices carry the UVs)
-//! - LightMapTextures: compact + lightmap list, 8 bytes, an int, two mips
-//!   (int file offset, compact length, data), format, width, height, an int
+//! - LightMapTextures: compact + lightmap list, 8 bytes, the page's
+//!   revision, two mips (int file offset, compact length, data), format,
+//!   width, height, the revision the saved mips were made from
 
 use crate::package::{ObjectRef, Package};
 use crate::properties::read_export_properties;
@@ -357,21 +358,75 @@ pub struct BspSection {
 }
 
 /// A lightmap page. `format` is the Unreal texture format (7 = DXT3).
+///
+/// A page is built from its surface lightmaps; the saved texture is a
+/// compressed copy of that build made in the editor, and KF uses it only
+/// when it is up to date: when the revision it was made from equals the
+/// page's revision (`saved_is_current`). Otherwise (every page of
+/// KF-Clandestine, KF-Forgotten and KF-Hell, saved empty with junk sizes)
+/// KF builds the page again at load.
 #[derive(Debug, Clone)]
 pub struct LightmapTexture {
     pub format: u8,
     pub width: u32,
     pub height: u32,
-    /// Mip data, largest first. Empty if the map saved the page empty.
+    /// Mip data, largest first. Empty when the saved copy is not current.
     pub mips: Vec<Vec<u8>>,
+    /// The surface lightmaps (indices into `BspLighting::surface_lightmaps`)
+    /// placed on this page.
+    pub lightmaps: Vec<i32>,
+    /// The page's revision and the revision its saved copy was made from.
+    pub revision: i32,
+    pub saved_revision: i32,
+}
+
+impl LightmapTexture {
+    /// KF's rule: the saved copy is used only when its revision equals the
+    /// page's.
+    pub fn saved_is_current(&self) -> bool {
+        self.saved_revision == self.revision
+    }
+}
+
+/// One light's part of a surface lightmap: a shadow bit per texel inside
+/// the light's box (rows of `stride` bytes, lowest bit first; set = the
+/// light reaches the texel).
+#[derive(Debug, Clone)]
+pub struct LightBitmap {
+    /// The light actor.
+    pub actor: ObjectRef,
+    pub bits: Vec<u8>,
+    /// Two ints before the stride; [1] is the number of bit rows.
+    pub size: [i32; 2],
+    pub stride: i32,
+    /// The box in lightmap texels, inclusive.
+    pub min: [i32; 2],
+    pub max: [i32; 2],
+}
+
+/// A surface's lightmap (LightMaps entry): `size` texels placed at
+/// `offset` on page `texture`. Texel (x, y)'s centre in the world is
+/// `base + (x + 0.5) x_axis + (y + 0.5) y_axis`.
+#[derive(Debug, Clone)]
+pub struct SurfaceLightmap {
+    pub texture: i32,
+    pub surf: i32,
+    pub zone: i32,
+    pub offset: [i32; 2],
+    pub size: [i32; 2],
+    pub base: [f32; 3],
+    pub x_axis: [f32; 3],
+    pub y_axis: [f32; 3],
+    pub lights: Vec<LightBitmap>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct BspLighting {
     pub sections: Vec<BspSection>,
     pub textures: Vec<LightmapTexture>,
-    /// Surface lightmaps (LightMaps entries) read past.
+    /// Number of surface lightmaps (LightMaps entries).
     pub lightmaps: usize,
+    pub surface_lightmaps: Vec<SurfaceLightmap>,
 }
 
 /// Reads the render sections and lightmap textures after `model.tail`.
@@ -417,19 +472,39 @@ pub fn read_lighting(pkg: &Package, export: usize, model: &Model) -> Result<BspL
     }
 
     let lightmaps = count(&mut r, 100, "lightmap")?;
+    let mut surface_lightmaps = Vec::with_capacity(lightmaps);
     for _ in 0..lightmaps {
-        for _ in 0..7 {
-            index(&mut r)?;
+        let mut c = [0i32; 7];
+        for v in &mut c {
+            *v = index(&mut r)?;
         }
-        r.bytes(64 + 36)?;
-        let lights = count(&mut r, 29, "lightmap light")?;
-        for _ in 0..lights {
-            index(&mut r)?;
-            let bits = count(&mut r, 1, "shadow bit")?;
-            r.bytes(bits + 28)?;
+        r.bytes(64)?;
+        let (base, x_axis, y_axis) = (vec3(&mut r)?, vec3(&mut r)?, vec3(&mut r)?);
+        let n_lights = count(&mut r, 29, "lightmap light")?;
+        let mut lights = Vec::with_capacity(n_lights);
+        for _ in 0..n_lights {
+            let actor = ObjectRef::from_raw(index(&mut r)?);
+            let n_bits = count(&mut r, 1, "shadow bit")?;
+            let bits = r.bytes(n_bits)?.to_vec();
+            let mut v = [0i32; 7];
+            for x in &mut v {
+                *x = r.i32()?;
+            }
+            lights.push(LightBitmap { actor, bits, size: [v[0], v[1]], stride: v[2], min: [v[3], v[4]], max: [v[5], v[6]] });
         }
         index(&mut r)?;
         r.i32()?;
+        surface_lightmaps.push(SurfaceLightmap {
+            texture: c[0],
+            surf: c[1],
+            zone: c[2],
+            offset: [c[3], c[4]],
+            size: [c[5], c[6]],
+            base,
+            x_axis,
+            y_axis,
+            lights,
+        });
     }
 
     let n = count(&mut r, 1, "lightmap texture")?;
@@ -437,8 +512,9 @@ pub fn read_lighting(pkg: &Package, export: usize, model: &Model) -> Result<BspL
     for _ in 0..n {
         index(&mut r)?;
         let held = count(&mut r, 4, "lightmap index")?;
-        r.bytes(held * 4 + 8)?;
-        r.i32()?;
+        let page_lightmaps = (0..held).map(|_| r.i32()).collect::<Result<Vec<i32>>>()?;
+        r.bytes(8)?;
+        let revision = r.i32()?;
         let mut mips = Vec::new();
         for _ in 0..2 {
             let _end = r.i32()?;
@@ -448,18 +524,18 @@ pub fn read_lighting(pkg: &Package, export: usize, model: &Model) -> Result<BspL
         let format = r.u8()?;
         let width = r.i32()?;
         let height = r.i32()?;
-        r.i32()?;
-        // Some maps (KF-Clandestine, KF-Forgotten, KF-Hell) save the pages
-        // empty, with junk sizes: the engine rebuilds them from the
-        // LightMaps entries at load. Kept with no mips.
-        if mips.iter().all(|m| m.is_empty()) {
-            textures.push(LightmapTexture { format, width: 0, height: 0, mips: Vec::new() });
+        let saved_revision = r.i32()?;
+        // A saved copy that is out of date is not used (KF-Clandestine,
+        // KF-Forgotten, KF-Hell: saved empty, with junk sizes); KF builds
+        // the page at load from the LightMaps entries. Kept with no mips.
+        if saved_revision != revision || mips.iter().all(|m| m.is_empty()) {
+            textures.push(LightmapTexture { format, width: 0, height: 0, mips: Vec::new(), lightmaps: page_lightmaps, revision, saved_revision });
             continue;
         }
         if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
             return Err(invalid(&r, format!("implausible lightmap size {width} x {height}")));
         }
-        textures.push(LightmapTexture { format, width: width as u32, height: height as u32, mips });
+        textures.push(LightmapTexture { format, width: width as u32, height: height as u32, mips, lightmaps: page_lightmaps, revision, saved_revision });
     }
     if r.remaining() != 0 {
         return Err(invalid(&r, format!("{} bytes left after the lightmap textures", r.remaining())));
@@ -469,5 +545,67 @@ pub fn read_lighting(pkg: &Package, export: usize, model: &Model) -> Result<BspL
             return Err(invalid(&r, format!("section {i} lightmap texture {} >= {}", s.lightmap_texture, textures.len())));
         }
     }
-    Ok(BspLighting { sections, textures, lightmaps })
+    Ok(BspLighting { sections, textures, lightmaps, surface_lightmaps })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A map's BSP model and lighting from the local install, or None (with
+    /// a note) when there is no install.
+    pub(crate) fn map_lighting(map: &str) -> Option<(Package, usize, Model, BspLighting)> {
+        let Ok(install) = crate::install::Install::discover() else {
+            eprintln!("no Killing Floor install: skipped");
+            return None;
+        };
+        let pkg = Package::open(&install.root.join("Maps").join(format!("{map}.rom"))).expect("map opens");
+        let m = crate::level::read_level(&pkg).bsp_model.expect("map has a BSP model");
+        let model = read_model(&pkg, m).expect("model reads");
+        let lighting = read_lighting(&pkg, m, &model).expect("lighting reads");
+        Some((pkg, m, model, lighting))
+    }
+
+    /// KF's revision rule: every page of KF-Hell is out of date, none of
+    /// KF-WestLondon's.
+    #[test]
+    fn stale_pages_by_revision() {
+        if let Some((_, _, _, l)) = map_lighting("KF-Hell") {
+            assert!(!l.textures.is_empty());
+            assert!(l.textures.iter().all(|t| !t.saved_is_current() && t.mips.is_empty()));
+        }
+        if let Some((_, _, _, l)) = map_lighting("KF-WestLondon") {
+            assert_eq!(l.textures.len(), 12);
+            assert!(l.textures.iter().all(|t| t.saved_is_current() && !t.mips.is_empty()));
+        }
+    }
+
+    /// The surface lightmap fields: each sits inside its 512 x 512 page and
+    /// is listed by it; each light's bits are `stride` bytes per row of its
+    /// box, enough for the box's width.
+    #[test]
+    fn surface_lightmap_layout() {
+        for map in ["KF-WestLondon", "KF-Hell"] {
+            let Some((_, _, model, l)) = map_lighting(map) else { return };
+            assert_eq!(l.surface_lightmaps.len(), l.lightmaps);
+            let (mut lights, mut odd) = (0, Vec::new());
+            for (i, s) in l.surface_lightmaps.iter().enumerate() {
+                let page = &l.textures[s.texture as usize];
+                assert!(page.lightmaps.contains(&(i as i32)), "{map} lightmap {i} not on page {}", s.texture);
+                assert!(s.offset[0] >= 0 && s.offset[0] + s.size[0] <= 512 && s.offset[1] >= 0 && s.offset[1] + s.size[1] <= 512);
+                assert!((s.surf as usize) < model.surfs.len() && (s.zone as usize) < model.num_zones.max(1));
+                for b in &s.lights {
+                    lights += 1;
+                    let (w, h) = (b.max[0] - b.min[0] + 1, b.max[1] - b.min[1] + 1);
+                    let ok = b.min[0] >= 0 && b.min[1] >= 0 && b.max[0] < s.size[0] && b.max[1] < s.size[1]
+                        && b.stride * 8 >= w
+                        && (b.bits.is_empty() || b.bits.len() as i32 == b.stride * h && b.size[1] == h);
+                    if !ok {
+                        odd.push(format!("{i}: size {:?} stride {} min {:?} max {:?} bits {} lm {:?}", b.size, b.stride, b.min, b.max, b.bits.len(), s.size));
+                    }
+                }
+            }
+            assert!(odd.is_empty(), "{map}: {} of {lights} odd: {:?}", odd.len(), &odd[..odd.len().min(5)]);
+        }
+    }
 }

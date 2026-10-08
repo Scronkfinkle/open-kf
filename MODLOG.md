@@ -6321,3 +6321,41 @@ linear light (small colour difference where layers overlap); KF samples
 the alpha maps per pixel, we per vertex; not compared with real KF
 screenshots of a fogged terrain map; not looked at by you.
 **Next:** your look at KF-Manor and KF-MountainPass in fog.
+## 2026-10-08 Out-of-date lightmap pages built at load, as KF does (branch fix/stale-lightmaps)
+
+**Changed:** `crates/ue-assets/src/bsp.rs` reads both revision numbers of
+each lightmap page and the surface lightmap entries (placement, lights,
+shadow bits); new `crates/ue-assets/src/lightmap_build.rs` builds a page
+the way KF does at load; `src/world/map.rs` builds the out-of-date pages
+and drops the made-up sun fallback for BSP polygons;
+`src/render/lighting.rs` (image from RGBA bytes; K = 2 now documented as
+KF's rule); `kfpkg lightmaps <map>`; DESIGN.md "Baked lighting" L1b.
+Three commits: revision rule, page build, fallback removal.
+**Why:** KF-Clandestine, KF-Forgotten and KF-Hell had their BSP lit by
+our made-up sun. Their saved pages are not empty by accident: KF uses a
+saved page only when its revision equals the page's revision, and builds
+the page at load otherwise (rules read from KF's native code; details in
+the local RE.md).
+**Tested how:** `cargo test --workspace` (265 pass, new: revision rule
+on KF-Hell / KF-WestLondon, entry layout, filter, colour table, HSV, and
+KF-WestLondon built vs saved pages); `kfpkg lightmaps` on maps whose saved
+pages are current; start-view screenshots of all 37 maps before and
+after (`--screenshot 8 --mute`), mean brightness of each.
+**Result:** revisions differ on exactly those three maps (15, 22 and 14
+pages), on no other map. Built vs saved, mean difference per channel:
+KF-WestLondon 0.95 of 255, KF-Farm 0.99, KF-Manor 1.12, KF-Offices 0.69,
+KF-Biohazard 1.80; averaged over 4 x 4 blocks (the saved pages' DXT
+block size) 0.59, worst block 3.1, so the remaining texel differences
+are compression. Log `bsp_lightmaps_built` (KF-Hell: 14 pages, 4488
+lights used, 109 ms). Screenshots: KF-Clandestine 43.7 -> 6.9,
+KF-Forgotten 74.1 -> 8.3, KF-Hell 50.8 -> 46.4; the other 34 maps within
+0.33 (most 0.00). These two maps' lights are dim by design (most at
+LightBrightness 12-42, many at 0: corona-only lights).
+**Still broken / not tested:** not compared with the real game on the
+three maps (please look: they are now much darker). Pulse lights use the
+middle of their wave; light effects other than none / spotlight /
+sunlight / negative would be drawn as point lights (none on these maps).
+TriggerLights are taken at their saved brightness. Terrain lighting is
+another branch.
+**Next:** your look at KF-Clandestine and KF-Forgotten in the real game
+at the start view.

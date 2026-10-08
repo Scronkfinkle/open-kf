@@ -10,6 +10,7 @@ pub mod font;
 pub mod install;
 pub mod karma;
 pub mod level;
+pub mod lightmap_build;
 pub mod lighting;
 pub mod material;
 pub mod nav;
