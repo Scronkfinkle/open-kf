@@ -112,7 +112,12 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         PlayType::Join => {
             let (lab, ctl) = rows.next();
             label(p, lab, "Address", menu);
-            text_field(p, l, Field::Address, ctl, menu);
+            // A Paste button after the field (Ctrl+V works too); the field
+            // starts right after its label to keep its room.
+            let pw = p.text_size(menu, "Paste").x + rh * 0.4;
+            let x0 = (lab.min.x + p.text_size(menu, "Address").x + gap).min(ctl.min.x);
+            text_field(p, l, Field::Address, Rect::new(x0, ctl.min.y, ctl.max.x - pw - gap * 0.5, ctl.max.y), menu);
+            p.button("paste:address", Rect::new(ctl.max.x - pw, ctl.min.y, ctl.max.x, ctl.max.y), "Paste", State::Blurry);
             let (lab, ctl) = rows.next();
             let full = Rect::new(lab.min.x, lab.min.y, ctl.max.x, ctl.max.y);
             note(p, full, "The map, mode and length come from the host.", small, DIM, "JoinNote");
@@ -259,7 +264,7 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         y += lines as f32 * p.line_height(small);
     }
     // A short help text at the bottom.
-    let help = "Click a field to type in it (Tab: next field). Enter: play. Escape: quit. Your choices are saved when you press PLAY.";
+    let help = "Click a field to type in it (Tab: next field; Ctrl+V or right-click: paste). Enter: play. Escape: quit. Your choices are saved when you press PLAY.";
     let hh = p.line_height(small);
     note(p, Rect::new(line_box.min.x, y + 4.0, line_box.max.x, y + 4.0 + hh), help, small, DIM, "Help");
 }
