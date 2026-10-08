@@ -20,6 +20,9 @@ pub struct ZoneFog {
     pub start: f32,
     pub end: f32,
     pub color: [u8; 4],
+    /// ZoneInfo.bClearToFogColor: with fog, KF clears the screen to the fog
+    /// colour before drawing a view from this zone (otherwise black).
+    pub clear_to_fog: bool,
     /// The vision overlay's colour in this zone (overlay.rs): the fog
     /// colour, or KFOverlayColor with bNewKFColorCorrection; None with
     /// bNoKFColorCorrection.
@@ -85,6 +88,7 @@ impl Plugin for ZonesPlugin {
 fn track_player_zone(
     zones: Option<Res<Zones>>,
     mut player: ResMut<PlayerZone>,
+    mut clear: ResMut<ClearColor>,
     mut commands: Commands,
     cams: Query<(Entity, &Transform), With<crate::engine::camera::FlyCamera>>,
     mut last: Local<Option<usize>>,
@@ -110,6 +114,16 @@ fn track_player_zone(
             z.map_or(0.0, |z| z.end)
         ),
     );
+    // What shows where nothing is drawn: black, or the fog colour when the
+    // camera's zone (not zone 0) has fog and bClearToFogColor (KF's rule).
+    let clear_rgb = z
+        .filter(|z| zone != 0 && z.fog && z.clear_to_fog)
+        .map_or([0, 0, 0], |z| [z.color[0], z.color[1], z.color[2]]);
+    let new_clear = Color::srgb_u8(clear_rgb[0], clear_rgb[1], clear_rgb[2]);
+    if clear.0 != new_clear {
+        clear.0 = new_clear;
+        runlog::kv("clear_colour", &format!("zone={zone} rgb={},{},{}", clear_rgb[0], clear_rgb[1], clear_rgb[2]));
+    }
     match z.filter(|z| z.fog) {
         Some(z) => {
             commands.entity(cam).insert(distance_fog(z.start, z.end, z.color));

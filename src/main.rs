@@ -395,7 +395,7 @@ fn main() -> AppExit {
         .insert_resource(weapons::weapon::AimSetting::load(args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into()))
         .insert_resource(args)
         .insert_resource(request)
-        .insert_resource(ClearColor(Color::srgb(0.32, 0.36, 0.42)))
+        .insert_resource(ClearColor(Color::BLACK)) // KF: black unless the zone clears to its fog colour (world/zones.rs)
         .add_plugins((
             map::MapPlugin,
             camera::FlyCameraPlugin,
