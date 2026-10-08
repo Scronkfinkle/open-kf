@@ -6201,3 +6201,47 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Decals fade with the surface angle; back faces get none (branch fix/decals)
+
+**Changed:** `render/decals.rs`: each projected triangle gets KF's
+projector strength max(0, -direction . surface normal) (`angle_factor`),
+multiplied into the vertex colour with the gradient and the fades
+(alpha for modulate decals, rgb for additive ones). Back faces and
+edge-on surfaces get nothing and are left out. BSP and terrain triangles
+have a known winding, so their back faces are dropped; static-mesh
+collision does not (mirrored props), so it takes the decal on the side
+facing the projector. bProjectOnBackfaces (read for placed Projectors in
+`ue-assets/level.rs`, and for the decal classes) turns the rule off. The
+ragdoll blood streak now traces from the body's side of the surface: the
+physics contact normal was used without checking which collider was the
+body, so about half the streaks projected upward from under the floor
+(this used to work by accident because both faces were accepted). Logs:
+`decal_spawned` and `map_decal` gain `angle_min` / `angle_max` /
+`backfaces_dropped`; `map_decals` the total; `decal_class_loaded`
+`backfaces`. Four unit tests. DESIGN.md (blood decals, M6).
+**Why:** audit finding DEC-1: KF's native projector code sets each
+vertex's strength from the surface angle; ours drew every surface at full
+strength on both sides.
+**Tested how:** `cargo test --workspace`; clippy; headless runs before
+(base build) and after: KF-WestLondon and KF-BioticsLab load logs,
+KF-WestLondon screenshot of the road splats by the ambulance
+(`--fly --camera " -3150,1350,-3600,-1.5708,-1.3"`), and the decapitation
+view with a Clot and 6 shots.
+**Result:** tests 239 + 24 pass (4 new); clippy only the old `boss.rs`
+warning. KF-WestLondon: still 71 built, 1 empty (Projector2, as before),
+885 back-face triangles dropped; the road splats near the ambulance now
+draw at 0.748 (their projectors are tilted ~41 degrees), splats facing a
+surface square-on at 1.000. KF-BioticsLab: still 49 built, 0 empty, 2047
+dropped. Screenshot: the road splats are visibly lighter; mean colour of
+the centre (400x500 px) 44.1/26.4/14.3 -> 46.7/30.5/16.2. Spawned: floor
+splat 1.000, bullet holes 0.996-1.000; streaks: before the streak fix,
+3 of 3 projected up (dir z +1) and were dropped as back faces; after it,
+dir z -1, angle 1.000, landed.
+**Still broken / not tested:** how KF's modulate projectors apply the
+strength (we fade the texture toward neutral grey, as for particles) is
+not read from the native code. Static-mesh decals still show on both
+sides. Not looked at by you. A floor splat 40 units above the floor
+(decal 6 in the run) reached nothing; unrelated to this change, not
+looked into.
+**Next:** DEC-2 (spawned decals use their FOV).

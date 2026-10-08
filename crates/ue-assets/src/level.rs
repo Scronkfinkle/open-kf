@@ -70,6 +70,8 @@ pub struct ProjectorInfo {
     pub project_bsp: bool,
     pub project_static_mesh: bool,
     pub project_terrain: bool,
+    /// bProjectOnBackfaces: no fall-off with the surface angle, back faces too.
+    pub project_on_backfaces: bool,
     /// 0 = no limit.
     pub cull_distance: f32,
 }
@@ -441,6 +443,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                 project_bsp: v.bool("bProjectBSP"),
                 project_static_mesh: v.bool("bProjectStaticMesh"),
                 project_terrain: v.bool("bProjectTerrain"),
+                project_on_backfaces: v.bool("bProjectOnBackfaces"),
                 cull_distance: v.float("CullDistance", 0.0),
             });
         }
