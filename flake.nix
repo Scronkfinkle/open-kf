@@ -178,5 +178,13 @@
 
     };
 
+    # Reverse-engineering shell for scripts/re.sh (docs/reverse-engineering.md):
+    # Ghidra (headless) and binutils' objdump, kept out of the default shell
+    # because Ghidra and its Java runtime are large.
+    devShells."x86_64-linux".re = pkgs.mkShell {
+      buildInputs = [ pkgs.ghidra pkgs.binutils ];
+      GHIDRA_HOME = "${pkgs.ghidra}/lib/ghidra";
+    };
+
   };
 }

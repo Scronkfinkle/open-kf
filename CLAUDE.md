@@ -33,6 +33,13 @@ A complete rewrite of the killing floor games engine to play with its assets
   what I should see. "Done" without a test procedure is not done.
 - **Ask before large refactors.** If you think the architecture is wrong, say so
   and explain, then wait for me.
+- **Native code: look, don't guess.** When a mechanic is in KF's compiled
+  engine code rather than its scripts, read it with `scripts/re.sh`
+  (Ghidra, headless). Follow the rules in `docs/reverse-engineering.md`:
+  decompiled output stays in `work/re/`; committed docs, MODLOG and code
+  comments describe behaviour only (no DLL/function names or addresses),
+  the pointers go in the gitignored `RE.md`; stay away from anti-cheat, DRM
+  and login code.
 - **Explain in plain language.** I am not the programmer here. If you use a term,
   explain it the first time.
 

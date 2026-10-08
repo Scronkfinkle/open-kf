@@ -29,6 +29,7 @@ logs/
 
 # Helper scripts
 !/scripts/*.sh
+!/scripts/ghidra/*.java
 
 # Release CI (GitHub Actions)
 !/.github/workflows/*.yml
@@ -49,6 +50,7 @@ logs/
 !/STATUS-handoff.md
 !/STATUS.md
 !/docs/**/*.md
+# RE.md (reverse-engineering pointers) is deliberately not listed: local only.
 
 # README screenshots (our renderer, saved small as JPEG)
 !/docs/images/*.jpg
