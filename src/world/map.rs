@@ -636,8 +636,15 @@ impl Loader<'_> {
             }
             let size = tex.as_ref().map_or(UVec2::splat(256), |t| t.1);
             let two_sided = simple.two_sided || force_two_sided;
+            // A Combiner's texture x ConstantColor: the colour multiplies the
+            // texture. Texture values are sRGB, so the tint is too.
+            let base_color = match (tex.is_some(), simple.tint) {
+                (true, Some([r, g, b])) => Color::srgb(r, g, b),
+                (true, None) => Color::WHITE,
+                (false, _) => Color::srgb(0.5, 0.5, 0.5),
+            };
             let mat = StandardMaterial {
-                base_color: if tex.is_some() { Color::WHITE } else { Color::srgb(0.5, 0.5, 0.5) },
+                base_color,
                 base_color_texture: tex.map(|t| t.0),
                 alpha_mode: match simple.blend {
                     Blend::Masked => AlphaMode::Mask(0.5),
@@ -667,10 +674,21 @@ impl Loader<'_> {
             if simple.blend == Blend::Additive
                 && !simple.modulate
                 && let Some(t) = &simple.texture
-                && let Some(image) = crate::render::particles::decode(t, true, false, self.images)
+                && let Some(image) = crate::render::particles::decode_tinted(t, true, false, simple.tint, self.images)
             {
                 let m = self.blend_materials.add(crate::render::particles::BlendMaterial { texture: image, draw_style: 3 });
                 self.special.insert(handle.id(), SpecialMaterial::Additive(m));
+            }
+            if let Some([r, g, b]) = simple.tint {
+                let drawn = self.special.get(&handle.id()).map_or("standard", SpecialMaterial::kind);
+                runlog::kv(
+                    "material_tint",
+                    &format!(
+                        "material={} tint={r:.3},{g:.3},{b:.3} drawn={drawn} texture={}",
+                        from.package.pkg.object_path(rf),
+                        simple.texture.as_ref().map_or("none".into(), |t| t.path())
+                    ),
+                );
             }
             Some((handle, size))
         };

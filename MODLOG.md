@@ -7140,3 +7140,50 @@ instead of dulling it (FB_Translucent is additive in UE2, so assumed
 right; not compared with the game). Additive meshes are drawn unlit
 (assumed). Spawn-view screenshots of the other maps not looked at.
 **Next:** the Combiner colour (CO_Multiply by a ConstantColor).
+
+## 2026-10-08 Light cones get their colour (Combiner multiplied by a ConstantColor)
+
+**Changed:** `crates/ue-assets/src/material.rs`: a Combiner with
+CombineOperation CO_Multiply and a ConstantColor as one of its two inputs
+now gives the material a colour (`tint`) that multiplies the texture.
+Modulate2X / Modulate4X double / quadruple it. The texture choice is
+unchanged. Only the map loader uses the colour; zeds, weapons, characters
+and particles ignore it. `src/world/map.rs`: additive map materials have
+their texture multiplied by the colour before it is uploaded; ordinary
+(non-additive) map materials use it as their base colour. New log line
+`material_tint` (material, tint, drawn=additive|standard, texture); the
+material chain in `material_see_through` gains a `Tint` step.
+`src/render/particles.rs`: `decode_tinted` (`decode` with a colour).
+Two unit tests: the colour maths, and KF's purple cone Shader resolved from
+the install (skipped if no install is found).
+**Why:** KF-ThrillsChills' light cones (Asylum_T.Lighting.Light_Cone_SHDR,
+Cone_Red_SHDR, ...) are a white cone texture times a purple / red / green /
+orange colour; we drew only the texture, so they were pale white.
+**Tested how:** the Combiner's options were read from KF's own script text
+(Engine.Combiner): the colour operations are, in order,
+Use_Color_From_Material1, Use_Color_From_Material2, Multiply, Add, Subtract,
+AlphaBlend_With_Mask, Add_With_Mask_Modulation, Use_Color_From_Mask, and
+Modulate2X / Modulate4X are separate flags with no default set. Headless
+runs of KF-ThrillsChills (two views), KF-Hellride, KF-Bedlam and
+KF-AbusementPark, reading the `material_tint` lines; screenshot of the
+Fireball ride on ThrillsChills (`--camera 960,-8400,300,-1.5708,0.1`).
+Workspace tests pass (286 + 39); clippy: 1 warning, already there
+(zeds/boss.rs).
+**Result:** ThrillsChills: Light_Cone_SHDR tint 0.286,0,0.643 and
+Cone_Red_SHDR 0.643,0,0 (both additive); the Fireball ride's spotlights
+show as red beams. Bedlam: purple, orange (0.651,0.247,0), red, green
+(0.078,0.643,0). Hellride: Bronze_Light_Cone_Shader 0.627,0.545,0.373 plus
+purple and red. One non-additive material picked it up:
+Foundry_T.Security_Monitor.Static_PAN_SHDR (monitor static, grey 0.451,
+on Hellride and Bedlam), which is now drawn darker.
+**Still broken / not tested:** plain Multiply is taken as texture x colour
+(1x). That is a guess from the Modulate2X / Modulate4X flags existing; the
+engine's native drawing code was not read. If KF really draws it 2x, the
+cones and the monitor static are half as bright as they should be. The
+trader-room beams on ThrillsChills (the `270,-13050,150` view) are a
+different material (PatchTex.Common.LightBeamsShader, the flashlight beam
+texture, no Combiner), so they stay white; whether they are coloured in KF
+is not checked. Not compared with the real game. Clandestine, Steamland,
+IceCave and Aperture not run.
+**Next:** check the brightness in game against KF; if the cones look too
+dim, read the native Combiner drawing code.

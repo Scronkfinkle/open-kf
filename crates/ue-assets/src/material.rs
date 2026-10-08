@@ -41,6 +41,12 @@ pub struct SimpleMaterial {
     /// multiplied by twice the texture (mid-grey = no change). `blend`
     /// stays Translucent for the loaders that do not draw modulation.
     pub modulate: bool,
+    /// A colour the texture is multiplied by, per channel (R, G, B; 1.0 =
+    /// unchanged), in the texture's own 0-1 colour values. Set when a
+    /// Combiner multiplies a texture by a ConstantColor (KF's coloured light
+    /// cones: a white cone texture times a purple, red, green... colour).
+    /// Only the map loader reads it; the other loaders ignore it.
+    pub tint: Option<[f32; 3]>,
 }
 
 const MAX_DEPTH: usize = 8;
@@ -96,6 +102,57 @@ fn combiner_inputs(set: &PackageSet, combiner: &ObjectHandle) -> Vec<ObjectHandl
             m.texture
         })
         .collect()
+}
+
+/// Engine.Combiner's EColorOperation (from its script): CO_Use_Color_From_Material1,
+/// CO_Use_Color_From_Material2, CO_Multiply, CO_Add, CO_Subtract, ...
+const CO_MULTIPLY: u8 = 2;
+
+/// The colour a Combiner multiplies its texture by: CombineOperation
+/// CO_Multiply with a ConstantColor as Material1 or Material2 (the other
+/// input being the texture). Modulate2X / Modulate4X (Combiner flags, off by
+/// default) scale it by 2 / 4.
+fn combiner_tint(set: &PackageSet, h: &ObjectHandle, props: &crate::properties::PropertyList) -> Option<[f32; 3]> {
+    let pkg = &h.package.pkg;
+    let byte = |name: &str| match props.get(pkg, name) {
+        Some(Value::Byte(b)) => *b,
+        _ => 0,
+    };
+    let flag = |name: &str| matches!(props.get(pkg, name), Some(Value::Bool(true)));
+    if byte("CombineOperation") != CO_MULTIPLY {
+        return None;
+    }
+    let color = ["Material1", "Material2"].iter().find_map(|name| {
+        let Some(Value::Object(rf)) = props.get(pkg, name) else {
+            return None;
+        };
+        let c = set.resolve(&h.package, *rf)?;
+        if c.class_name() != "ConstantColor" {
+            return None;
+        }
+        let cp = read_export_properties(&c.package.pkg, c.export).ok()?;
+        match cp.get(&c.package.pkg, "Color") {
+            Some(Value::Color(rgba)) => Some(*rgba),
+            // An unset Color keeps the struct default, black.
+            _ => Some([0, 0, 0, 0]),
+        }
+    })?;
+    Some(multiply_tint(color, flag("Modulate2X"), flag("Modulate4X")))
+}
+
+/// A ConstantColor (R, G, B, A bytes) as a multiplier. Plain CO_Multiply is
+/// taken as texture x colour (1x); Modulate2X doubles it and Modulate4X
+/// quadruples it. The 1x default is inferred from those flags existing in
+/// the Combiner script, not read from the engine's drawing code (a guess).
+pub fn multiply_tint(color: [u8; 4], modulate2x: bool, modulate4x: bool) -> [f32; 3] {
+    let k = if modulate4x {
+        4.0
+    } else if modulate2x {
+        2.0
+    } else {
+        1.0
+    };
+    [0, 1, 2].map(|i| color[i] as f32 / 255.0 * k)
 }
 
 fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usize) {
@@ -236,6 +293,11 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             if out.opacity_from_combiner {
                 out.blend = before;
             }
+            if let Some(t) = combiner_tint(set, h, &props) {
+                let prev = out.tint.unwrap_or([1.0; 3]);
+                out.tint = Some([prev[0] * t[0], prev[1] * t[1], prev[2] * t[2]]);
+                out.chain.push("Tint".into());
+            }
         }
         "MaterialSwitch" => {
             let current = match props.get(pkg, "Current") {
@@ -274,5 +336,44 @@ pub fn surface_type(set: &PackageSet, from: &ObjectHandle, rf: ObjectRef) -> u8 
             _ => 0,
         },
         Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiply_tint_scales() {
+        let purple = [73, 0, 164, 0];
+        let t = multiply_tint(purple, false, false);
+        assert!((t[0] - 73.0 / 255.0).abs() < 1e-6 && t[1] == 0.0 && (t[2] - 164.0 / 255.0).abs() < 1e-6);
+        assert!((multiply_tint(purple, true, false)[2] - 2.0 * 164.0 / 255.0).abs() < 1e-6);
+        assert!((multiply_tint(purple, true, true)[0] - 4.0 * 73.0 / 255.0).abs() < 1e-6);
+    }
+
+    /// Against the real install (skipped when none is found): KF's purple
+    /// light cone Shader resolves to the cone texture, additive, tinted by
+    /// Purple_Constant (73, 0, 164).
+    #[test]
+    fn light_cone_shader_is_tinted() {
+        let Ok(install) = crate::install::Install::discover() else {
+            eprintln!("no Killing Floor install: skipped");
+            return;
+        };
+        let set = PackageSet::new(&install.root);
+        let Some(h) = set.find_object("Asylum_T.Lighting.Light_Cone_SHDR", Some("Shader")) else {
+            eprintln!("Asylum_T.Lighting.Light_Cone_SHDR not found: skipped");
+            return;
+        };
+        let mut m = SimpleMaterial::default();
+        walk(&set, &h, &mut m, 0);
+        assert_eq!(m.blend, Blend::Additive);
+        let tex = m.texture.as_ref().map(|t| t.path().to_ascii_lowercase());
+        assert_eq!(tex.as_deref(), Some("asylum_t.lighting.light_cone"));
+        let t = m.tint.expect("tint");
+        assert!((t[0] - 73.0 / 255.0).abs() < 1e-6, "{t:?}");
+        assert_eq!(t[1], 0.0);
+        assert!((t[2] - 164.0 / 255.0).abs() < 1e-6, "{t:?}");
     }
 }

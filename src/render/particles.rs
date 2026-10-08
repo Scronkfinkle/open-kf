@@ -547,6 +547,18 @@ fn to_ue_dir(v: Vec3) -> Vec3 {
 /// KF's blood textures have a grey background). Multiply blending cannot
 /// brighten, so anything above mid-grey is clamped to "no change".
 pub fn decode(h: &ObjectHandle, opaque: bool, modulate2x: bool, images: &mut Assets<Image>) -> Option<Handle<Image>> {
+    decode_tinted(h, opaque, modulate2x, None, images)
+}
+
+/// `decode`, with the colour multiplied by `tint` per channel (a map
+/// material's Combiner colour, see `SimpleMaterial::tint`), clamped to 255.
+pub fn decode_tinted(
+    h: &ObjectHandle,
+    opaque: bool,
+    modulate2x: bool,
+    tint: Option<[f32; 3]>,
+    images: &mut Assets<Image>,
+) -> Option<Handle<Image>> {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let tex = read_texture(&h.package.pkg, h.export).ok()?;
     let mip = tex.mips.first()?;
@@ -554,6 +566,11 @@ pub fn decode(h: &ObjectHandle, opaque: bool, modulate2x: bool, images: &mut Ass
     for p in rgba.as_chunks_mut::<4>().0.iter_mut() {
         if opaque {
             p[3] = 255;
+        }
+        if let Some(t) = tint {
+            for (c, k) in p[..3].iter_mut().zip(t) {
+                *c = (*c as f32 * k).round().clamp(0.0, 255.0) as u8;
+            }
         }
         if modulate2x {
             for c in &mut p[..3] {
