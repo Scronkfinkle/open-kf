@@ -70,26 +70,46 @@ pub(super) fn animate_weapon(
     }
 
     // Advance the animation; finished one-shots lead to the next action.
-    w.frame += dt * w.play_rate;
+    // The clock waits for a tween, then runs the leftover time of the tick
+    // the tween ends in.
+    let play_dt = match w.tween.as_mut().map(|t| t.advance(dt)) {
+        None => dt,
+        Some(None) => 0.0,
+        Some(Some(left)) => {
+            w.tween = None;
+            left
+        }
+    };
+    w.frame += play_dt * w.play_rate;
     let length = w.sequence.map_or(1.0, |s| w.defs[w.current].model.length(s));
+    // A one-shot ends on its last key (N - 1) and holds it there; a loop
+    // runs through all N frames (last key back to the first) and wraps.
+    let end = if w.looping { length } else { w.sequence.map_or(0.0, |s| w.defs[w.current].model.last_frame(s)) };
     // Sound notifies passed this frame (reloads, the shotgun's pump), also
     // across a loop's wrap.
-    let (from, to) = (w.notify_frame, w.frame.min(length));
+    let (from, to) = (w.notify_frame, w.frame.min(end));
     anim_sounds(&mut w, from, to);
     if w.looping && w.frame >= length {
         let wrapped = w.frame % length.max(1e-3);
-        anim_sounds(&mut w, -1.0, wrapped);
+        // From frame 0, exclusive: a notify at time 0 never fires (KF).
+        anim_sounds(&mut w, 0.0, wrapped);
         w.notify_frame = wrapped;
     } else {
         w.notify_frame = w.frame;
     }
-    if w.frame >= length {
+    if w.frame >= end {
+        if !w.looping && w.frame - play_dt * w.play_rate < end {
+            runlog::kv(
+                "weapon_anim_end",
+                &format!("weapon={} anim={} action={:?} held_frame={end:.1} frames={length:.0}", w.defs[w.current].class, w.anim, w.action),
+            );
+        }
         if w.looping {
             w.frame %= length.max(1e-3);
         } else {
             match w.action {
                 // Switching runs on timers (weapon_input); hold the last frame.
-                Action::PutDown { .. } | Action::Select | Action::Grenade { .. } => w.frame = length,
+                Action::PutDown { .. } | Action::Select | Action::Grenade { .. } => w.frame = end,
                 // Weapon.AnimEnd: after FireAnim comes FireEndAnim if the
                 // weapon has it; otherwise idle unless a mode is firing
                 // (then the last frame holds until the next shot).
@@ -118,7 +138,7 @@ pub(super) fn animate_weapon(
                     } else if !w.firing.iter().any(|&f| f) {
                         play_idle(&mut w);
                     } else {
-                        w.frame = length;
+                        w.frame = end;
                     }
                 }
             }
@@ -179,7 +199,14 @@ pub(super) fn animate_weapon(
 
     // Pose, then mesh space -> drawn: subtract MeshOrigin, scale by MeshScale (UE2).
     let def = &w.defs[w.current];
-    let (skinned, bones) = def.model.pose_with_bones(w.sequence, w.frame);
+    let mut locals = def.model.sample_locals(w.sequence, w.frame);
+    if let Some(tw) = w.tween.as_ref().filter(|t| t.from.len() == locals.len()) {
+        let mut from = tw.from.clone();
+        def.model.blend_locals(&mut from, &locals, tw.weight(), None);
+        locals = from;
+    }
+    let bones = def.model.pose_from_locals(&locals, &[]);
+    let skinned = def.model.skin(&bones, &[]);
     let scale = Vec3::from_array(def.model.mesh.scale);
     let origin = Vec3::from_array(def.model.mesh.origin);
     def.model.upload(&skinned, |p| coords::pos(((p - origin) * scale).to_array()), &mut meshes);
@@ -200,6 +227,7 @@ pub(super) fn animate_weapon(
         Err(_) => Vec::new(),
     };
     w.hand_frames = frames;
+    w.last_locals = (w.current, locals);
     // The flashlight's LightBone (torch.rs).
     let light = main_cam.single().ok().and_then(|main| light_frame(&w.defs[w.current], &bones, part_translation, main));
     w.torch.frame = light;

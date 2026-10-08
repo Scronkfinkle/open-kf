@@ -312,6 +312,7 @@ impl Zed {
             hidden_bones: Vec::new(),
             severed: Vec::new(),
             last_pose: Vec::new(),
+            anim: ZedAnim::default(),
             next_piece: 0,
             effects: Vec::new(),
             since_hit: f32::MAX,

@@ -85,6 +85,11 @@ fn sample(track: &Track, frame: f32, track_time: f32) -> (Quat, Vec3) {
     (q(k).slerp(q(k2), a), p(k).lerp(p(k2), a))
 }
 
+/// Last frame of an N-frame sequence (keys sit at 0..N-1).
+pub fn last_frame(num_frames: usize) -> f32 {
+    num_frames.saturating_sub(1) as f32
+}
+
 /// Decodes a texture to RGBA (mip 0 only).
 pub fn decode_image(h: &ObjectHandle, images: &mut Assets<Image>) -> Option<Handle<Image>> {
     use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -282,6 +287,13 @@ impl SkinnedModel {
     /// Length of a sequence in frames.
     pub fn length(&self, seq: usize) -> f32 {
         self.anim.as_ref().map_or(1.0, |a| a.sequences[seq].track_time)
+    }
+
+    /// The frame a sequence played once stops on and holds: its last key,
+    /// N - 1 for N frames (KF ends a one-shot there and fires AnimEnd).
+    /// Frame N would show the wrap segment's end, which is key 0 again.
+    pub fn last_frame(&self, seq: usize) -> f32 {
+        self.anim.as_ref().map_or(0.0, |a| last_frame(a.sequences[seq].num_frames))
     }
 
     /// Every sound named by the animations' sound notifies (for preloading).
@@ -554,5 +566,42 @@ impl SkinnedModel {
             let positions: Vec<[f32; 3]> = positions.iter().map(|p| p.to_array()).collect();
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(positions));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-bone track of 4 keys at frames 0..3 (N = 4), each key turned
+    /// a bit more about Z.
+    fn track() -> Track {
+        let key = |i: usize| {
+            let q = Quat::from_rotation_z(0.3 * i as f32);
+            [q.x, q.y, q.z, q.w]
+        };
+        Track {
+            rotations: (0..4).map(key).collect(),
+            positions: (0..4).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            times: vec![0.0, 1.0, 2.0, 3.0],
+        }
+    }
+
+    #[test]
+    fn one_shot_holds_last_key_not_key_zero() {
+        let t = track();
+        let n = 4;
+        let last = last_frame(n);
+        assert_eq!(last, 3.0);
+        let (q, p) = sample(&t, last, n as f32);
+        assert!(q.angle_between(Quat::from_rotation_z(0.9)) < 1e-4);
+        assert_eq!(p, Vec3::new(3.0, 0.0, 0.0));
+        // The trap: frame N is the end of the last key -> key 0 wrap
+        // segment, i.e. key 0 again.
+        let (q, p) = sample(&t, n as f32, n as f32);
+        assert!(q.angle_between(Quat::IDENTITY) < 1e-4);
+        assert_eq!(p, Vec3::ZERO);
+        assert_eq!(last_frame(1), 0.0);
+        assert_eq!(last_frame(0), 0.0);
     }
 }

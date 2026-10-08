@@ -511,7 +511,7 @@ pub(super) fn think_and_move(
             runlog::kv("zed_hit_reaction", &format!("id={} reaction=KnockDown", z.id));
         }
         if matches!(z.state, ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging) {
-            if z.sequence.is_some_and(|s| z.frame < c.model.length(s) - 0.5) {
+            if z.sequence.is_some_and(|s| z.frame < c.model.last_frame(s)) {
                 t.translation = z.centre;
                 continue;
             }
@@ -939,7 +939,7 @@ pub(super) fn think_and_move(
                 runlog::kv("zed_grab_broken", &format!("id={} distance_unreal={dist:.0}", z.id));
             }
             let full_body_busy = z.attack.is_some_and(|a| !a.layered)
-                && z.sequence.is_some_and(|s| z.frame < c.model.length(s) - 0.5);
+                && z.sequence.is_some_and(|s| z.frame < c.model.last_frame(s));
             if z.attack.is_some_and(|a| !a.layered) && !full_body_busy {
                 z.attack = None;
             }
@@ -1544,8 +1544,10 @@ pub(super) fn think_and_move(
                 // or a turn-in-place animation while turning. The engine picks
                 // these natively; this is an approximation of that rule.
                 let speed = if dt > 0.0 { (z.centre - old_centre).with_y(0.0).length() / SCALE / dt } else { 0.0 };
+                let velocity = if dt > 0.0 { (z.centre - old_centre) / SCALE / dt } else { Vec3::ZERO };
                 let turn_rate = if dt > 0.0 { (z.yaw - old_yaw) / dt } else { 0.0 };
-                let anim = if speed >= STANDING_SPEED {
+                let moving = speed >= STANDING_SPEED;
+                let anim = if moving {
                     if z.decapitated {
                         c.headless_walk.or(c.walk)
                     } else if z.zapped() || (z.burn_down > 0 && z.burn_down < CRISP_UP_THRESHOLD) {
@@ -1572,10 +1574,10 @@ pub(super) fn think_and_move(
                 } else {
                     c.idle
                 };
-                start_anim(&mut z, anim, true)
+                play_chase_anim(&mut z, c, moving, anim, anim, velocity)
             }
             ZedState::Falling => start_anim(&mut z, c.air_anim.or(c.idle), true),
-            ZedState::Idle => start_anim(&mut z, c.idle, true),
+            ZedState::Idle => start_anim_tween(&mut z, c.idle, true, IDLE_TWEEN),
             ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::BossBusy | ZedState::DoorBashing | ZedState::Dead => {}
         }
         if z.sequence != old_sequence {
@@ -1603,7 +1605,7 @@ pub(super) fn think_and_move(
             runlog::kv(
                 "zed",
                 &format!(
-                    "id={} state={:?} centre_unreal=({:.0}, {:.0}, {:.0}) distance_to_player={dist:.0} yaw={:.0} sequence={:?} frame={:.1} speed_unreal={:.0} running={}",
+                    "id={} state={:?} centre_unreal=({:.0}, {:.0}, {:.0}) distance_to_player={dist:.0} yaw={:.0} sequence={:?} frame={:.1} anim_rate={:.2} speed_unreal={:.0} running={}",
                     z.id,
                     z.state,
                     -u.z,
@@ -1612,6 +1614,7 @@ pub(super) fn think_and_move(
                     z.yaw,
                     z.sequence,
                     z.frame,
+                    z.anim.rate,
                     z.velocity.with_y(0.0).length() / SCALE,
                     z.running
                 ),

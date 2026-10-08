@@ -250,6 +250,27 @@ pub(super) fn load_class(
         .get_array_names(&class, "HeadlessWalkAnims")
         .first()
         .and_then(|n| model.sequence(n));
+    let merged = |p: &str, n: usize| -> Vec<(Option<String>, Option<usize>)> {
+        defaults
+            .get_array_names_merged(&class, p, n)
+            .into_iter()
+            .map(|name| {
+                let seq = name.as_deref().and_then(|n| model.sequence(n));
+                (name, seq)
+            })
+            .collect()
+    };
+    let (walk_list, headless_list, burning_list) = (merged("MovementAnims", 4), merged("HeadlessWalkAnims", 4), merged("BurningWalkAnims", 3));
+    let walk_dirs: [Option<usize>; 4] = std::array::from_fn(|i| walk_list[i].1);
+    let headless_dirs: [Option<usize>; 4] = std::array::from_fn(|i| headless_list[i].1.or(walk_dirs[i]));
+    let burning_dirs: [Option<usize>; 3] = std::array::from_fn(|i| burning_list[i].1);
+    let show = |l: &[(Option<String>, Option<usize>)]| {
+        l.iter().map(|(n, s)| format!("{}{}", n.as_deref().unwrap_or("-"), if s.is_some() { "" } else { "(missing)" })).collect::<Vec<_>>().join(",")
+    };
+    runlog::kv(
+        "zed_move_anims",
+        &format!("class={class_path} movement=[{}] headless=[{}] burning=[{}]", show(&walk_list), show(&headless_list), show(&burning_list)),
+    );
     let s = model.mesh.scale;
     if s[0] != s[1] || s[1] != s[2] || s[0] <= 0.0 {
         runlog::kv("ragdoll_warning", &format!("class={class_path} mesh_scale={s:?} (ragdolls assume a uniform positive scale)"));
@@ -262,6 +283,9 @@ pub(super) fn load_class(
         health_max: float("HealthMax", float("Health", 100.0)),
         bleed_out_duration: float("BleedOutDuration", 5.0),
         headless_walk,
+        walk_dirs,
+        headless_dirs,
+        burning_dirs,
         hit_reactions,
         hit_anims,
         knock_down,

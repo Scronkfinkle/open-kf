@@ -499,6 +499,9 @@ struct FireMode {
     end_aimed_anim: String,
     loop_anim_rate: f32,
     end_anim_rate: f32,
+    /// WeaponFire TweenTime: the tween into FireAnim / FireAimedAnim /
+    /// FireEndAnim (FireLoopAnim tweens 0; SyringeAltFire plays all with 0).
+    tween_time: f32,
     /// DualiesFire: the other hand's FireAnim2 / FireAimedAnim2 (swapped
     /// with FireAnim / FireAimedAnim after every shot).
     anim2: String,
@@ -803,8 +806,12 @@ struct Weapons {
     play_rate: f32,
     looping: bool,
     /// The frame up to which the sequence's sound notifies have played
-    /// (-1 at the start, so notifies at time 0 play).
+    /// (0 at the start: a notify at time 0 never plays).
     notify_frame: f32,
+    /// The tween into the playing animation (its clock waits for it), and
+    /// the weapon and local bone pose last shown, which tweens start from.
+    tween: Option<crate::render::anim::Tween>,
+    last_locals: (usize, Vec<(Quat, Vec3)>),
     /// Seconds until each fire mode may fire again (NextFireTime).
     fire_cooldown: [f32; 2],
     fire_count: usize,

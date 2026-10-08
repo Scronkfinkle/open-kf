@@ -19,7 +19,13 @@ pub(super) fn set_action(w: &mut Weapons, action: Action) {
             (def.select_anim.clone(), def.select_anim_rate)
         }
         Action::Idle => return play_idle(w),
-        Action::Reload => (def.reload_anim.clone(), def.reload_anim_rate),
+        // KFWeapon.ClientReload: PlayAnim(ReloadAnim, .., 0.1).
+        Action::Reload => {
+            let (anim, rate) = (def.reload_anim.clone(), def.reload_anim_rate);
+            play_tween(w, &anim, rate, false, 0.1);
+            runlog::kv("weapon_action", &format!("weapon={} action={action:?} anim={anim}", w.defs[w.current].class));
+            return;
+        }
         Action::Grenade { .. } => return,
         Action::PutDown { .. } => {
             // Weapon.PutDown: wait DownDelay first if a mode fired just now
@@ -47,29 +53,44 @@ pub(super) fn has_anim(w: &Weapons, name: &str) -> bool {
 }
 
 /// Plays an animation on the weapon in hand (PlayAnim / LoopAnim) at
-/// `rate` x its own rate.
+/// `rate` x its own rate, with no tween.
 pub(super) fn play(w: &mut Weapons, name: &str, rate: f32, looping: bool) {
+    play_tween(w, name, rate, looping, 0.0);
+}
+
+/// `play` with a tween (PlayAnim's TweenTime): from the pose on screen to
+/// the animation's first frame over `tween` seconds, the animation's clock
+/// starting after it. Asking for the looping animation that is already
+/// looping only changes its rate (as KF).
+pub(super) fn play_tween(w: &mut Weapons, name: &str, rate: f32, looping: bool, tween: f32) {
     let def = &w.defs[w.current];
-    w.sequence = def.model.sequence(name);
+    let seq = def.model.sequence(name);
+    if looping && w.looping && seq.is_some() && seq == w.sequence {
+        w.play_rate = seq.map_or(30.0, |s| def.model.rate(s)) * rate;
+        return;
+    }
+    w.tween = if w.last_locals.0 == w.current { crate::render::anim::Tween::start(&w.last_locals.1, tween) } else { None };
+    w.sequence = seq;
     w.anim = name.to_ascii_lowercase();
     w.frame = 0.0;
-    w.notify_frame = -1.0;
+    // Notifies count from frame 0, exclusive: one at time 0 never fires (KF).
+    w.notify_frame = 0.0;
     w.looping = looping;
     w.play_rate = w.sequence.map_or(30.0, |s| def.model.rate(s)) * rate;
     if w.sequence.is_none() {
         runlog::kv("weapon_anim_missing", &format!("weapon={} anim={name}", def.class));
     } else if !looping || name != "idle" {
-        runlog::kv("weapon_anim", &format!("weapon={} anim={} rate={rate} looping={looping}", def.item_name, w.anim));
+        runlog::kv("weapon_anim", &format!("weapon={} anim={} rate={rate} looping={looping} tween={tween}", def.item_name, w.anim));
     }
 }
 
-/// KFWeapon.PlayIdle: IdleAimAnim while aiming, else Idle, looping.
+/// KFWeapon.PlayIdle: IdleAimAnim while aiming, else Idle, looping, tween 0.2.
 pub(super) fn play_idle(w: &mut Weapons) {
     let name = match &w.defs[w.current].iron {
         Some(iron) if w.aiming => iron.idle_anim.to_ascii_lowercase(),
         _ => w.defs[w.current].idle_anim.clone(),
     };
-    play(w, &name, 1.0, true);
+    play_tween(w, &name, 1.0, true, 0.2);
 }
 
 /// KFFire.PlayFiring: the first shot after pressing plays FireAnim (aimed:
@@ -163,7 +184,7 @@ pub(super) fn play_firing(w: &mut Weapons, mode: usize, last: bool) {
             (m.last_anim.clone(), m.anim_rate)
         };
         if has_anim(w, &name) {
-            return play(w, &name, rate, false);
+            return play_tween(w, &name, rate, false, m.tween_time);
         }
     }
     // DualiesFire: the left gun's turn plays FireAnim2 / FireAimedAnim2.
@@ -177,16 +198,17 @@ pub(super) fn play_firing(w: &mut Weapons, mode: usize, last: bool) {
     }
     let fire = m.anims[w.fire_count % m.anims.len()].to_ascii_lowercase();
     let later = w.shots_this_press[mode] > 0;
-    let (name, rate) = if later && w.aiming && has_anim(w, &m.loop_aimed_anim) {
-        (m.loop_aimed_anim, m.loop_anim_rate)
+    // FireLoopAnim / FireLoopAimedAnim tween 0, the others TweenTime.
+    let (name, rate, tween) = if later && w.aiming && has_anim(w, &m.loop_aimed_anim) {
+        (m.loop_aimed_anim, m.loop_anim_rate, 0.0)
     } else if w.aiming && has_anim(w, &m.aimed_anim) {
-        (m.aimed_anim, m.anim_rate)
+        (m.aimed_anim, m.anim_rate, m.tween_time)
     } else if later && !w.aiming && has_anim(w, &m.loop_anim) {
-        (m.loop_anim, m.loop_anim_rate)
+        (m.loop_anim, m.loop_anim_rate, 0.0)
     } else {
-        (fire, m.anim_rate)
+        (fire, m.anim_rate, m.tween_time)
     };
-    play(w, &name, rate, false);
+    play_tween(w, &name, rate, false, tween);
 }
 
 /// KFFire.PlayFireEnd (Weapon.StopFire on release): FireEndAimedAnim while
@@ -197,11 +219,11 @@ pub(super) fn play_fire_end(w: &mut Weapons, mode: usize) {
     if m.high_rof && m.wait_for_release {
         return;
     }
-    let (aimed, end, rate) = (m.end_aimed_anim.clone(), m.end_anim.clone(), m.end_anim_rate);
+    let (aimed, end, rate, tween) = (m.end_aimed_anim.clone(), m.end_anim.clone(), m.end_anim_rate, m.tween_time);
     if w.aiming && has_anim(w, &aimed) {
-        play(w, &aimed, rate, false);
+        play_tween(w, &aimed, rate, false, tween);
     } else if has_anim(w, &end) {
-        play(w, &end, rate, false);
+        play_tween(w, &end, rate, false, tween);
     }
 }
 
@@ -983,7 +1005,9 @@ pub(super) fn weapon_input(
                 } else {
                     (fm.loop_anim.clone(), fm.loop_anim_rate)
                 };
-                play(&mut w, &name, rate, true);
+                // KFHighROFFire: LoopAnim(FireLoopAnim, .., TweenTime).
+                let tween = fm.tween_time;
+                play_tween(&mut w, &name, rate, true, tween);
             }
         }
         // Charging: HoldTime grows until the release.

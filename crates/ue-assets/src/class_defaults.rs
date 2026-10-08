@@ -145,6 +145,29 @@ impl<'a> ClassDefaults<'a> {
         Vec::new()
     }
 
+    /// Elements 0..n of a fixed-size name array default, each from the
+    /// nearest class in the chain that sets that element (UnrealScript
+    /// inherits array defaults element by element).
+    pub fn get_array_names_merged(&self, class: &ObjectHandle, prop: &str, n: usize) -> Vec<Option<String>> {
+        let mut out: Vec<Option<String>> = vec![None; n];
+        let mut current = Some(self.class_info(class));
+        for _ in 0..32 {
+            let Some(info) = current else { break };
+            if let Some(list) = &info.defaults {
+                let pkg = &info.handle.package.pkg;
+                for p in list.props.iter().filter(|p| pkg.name(p.name).eq_ignore_ascii_case(prop)) {
+                    if let (Value::Name(name), Some(slot)) = (&p.value, out.get_mut(p.array_index as usize))
+                        && slot.is_none()
+                    {
+                        *slot = Some(pkg.name(*name).to_string());
+                    }
+                }
+            }
+            current = info.super_class.as_ref().map(|s| self.class_info(s));
+        }
+        out
+    }
+
     /// All elements of a fixed-size array default holding object references
     /// (e.g. `Splats`, `Splats[1]`, ...), resolved, ordered by index, from
     /// the nearest class in the chain that sets any of them.

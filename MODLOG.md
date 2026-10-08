@@ -6671,3 +6671,123 @@ time I could not read reliably). KF adds the acceleration before turning
 the velocity; we add it in world axes (differs only for turned emitters,
 over part of a frame).
 **Next:** your look at fire, muzzle flashes and trails against KF.
+## 2026-10-08 ANIM-1: one-shot animations end and hold on their last key (branch fix/animation)
+
+**Changed:** `src/render/skinned.rs` (`last_frame` = N - 1, unit test);
+`src/zeds/zed/animate.rs` (zed one-shots and the upper-body layer stop on
+N - 1); `src/zeds/zed/think.rs`, `src/zeds/zed/attacks.rs` ("animation
+done" checks use N - 1 instead of N - 0.5); `src/weapons/weapon/animate.rs`
+(one-shots and the PutDown / Select / grenade holds stop on N - 1; new log
+`weapon_anim_end`); `src/player/body/animate.rs` (same for the body's
+channels). DESIGN.md "Animation playback rules".
+**Why:** an N-frame animation has keys at frames 0..N-1. KF ends a played-once
+animation on frame N - 1 and holds it. We ran to frame N, which is the end of
+the loop segment back to the first key, so a finished one-shot showed its
+first pose (the 9mm jumped back up near the end of PutDown).
+**Tested how:** unit test (frame N - 1 gives the last key, frame N gives key
+0); `cargo test` (all pass); headless weapon switch: see the ANIM-2 entry.
+**Result:** see the test numbers in the last entry of this series.
+**Still broken / not tested:** not looked at in game.
+**Next:** ANIM-8.
+
+## 2026-10-08 ANIM-8: animation notifies at time 0 never fire (branch fix/animation)
+
+**Changed:** `src/zeds/zed/animate.rs` (`notify_spans` / `notify_in_spans`
+split out of `passed_notifies`, spans start at frame 0 exclusive instead of
+-1; unit test); `src/weapons/weapon/animate.rs`, `input.rs`, `load.rs` (the
+weapon's sound notifies count from 0, exclusive, at start and after a loop
+wraps).
+**Why:** KF fires a notify (timed event in an animation) only when the frame
+moves from strictly before it to at or after it, and an animation starts on
+frame 0 or just after; so a notify at exactly 0 never fires. Ours fired them,
+for loops every cycle. 7 notifies in the game sit at 0 (player jog-back
+footsteps with some weapons, the L85 reload, the Crawler's leap idle).
+**Tested how:** unit test: a notify at 0 fires 0 times over two loops of a
+30-frame animation, one at 0.001 and one at 0.5 fire twice; `cargo test`
+(237 + 24 pass).
+**Result:** as above.
+**Still broken / not tested:** not checked in game (the affected notifies are rare).
+**Next:** ANIM-7.
+
+## 2026-10-08 ANIM-7: the zed upper-body layer tweens in and fades out (branch fix/animation)
+
+**Changed:** new `src/render/anim.rs` (`Tween`: linear-in-time move from the
+pose last shown to a new animation's first frame, the clock waiting for
+it; `Fade`: KF's linear layer-weight fade; unit tests);
+`src/zeds/zed/animate.rs` (`ZedAnim`: last shown local pose, layer tween,
+fading layer; a new layer tweens in over 0.1 s, a finished one holds its
+last key while its weight fades 1 -> 0 over 0.12 s; the pose is now built
+from local transforms); `mod.rs`, `spawn.rs`, `methods.rs` (the new field).
+**Why:** KF plays the zed's flinch / grab / ranged layer with a 0.1 s tween
+and, when it ends, fades the layer out over 0.12 s. Ours snapped in and out.
+**Tested how:** unit tests (tween weight 0.25 / 0.75 / 1 at 25 / 75 / 110 ms
+of 100, leftover 15 ms; fade 0.75 / 0.5 / 0.25 / 0 every 30 ms of 120);
+`cargo test` (239 + 24 pass). Headless: see the last entry of this series.
+**Result:** as above.
+**Still broken / not tested:** the layer's clock waits 0.1 s, so layered
+attacks (Clot grab, Husk / Patriarch fire) reach their notifies 0.1 s later,
+as in KF. Not looked at in game.
+**Next:** ANIM-3.
+
+## 2026-10-08 ANIM-3: zed movement animation rate from speed, and direction (branch fix/animation)
+
+**Changed:** `src/zeds/zed/animate.rs` (`four_way`, `move_rate`,
+`play_chase_anim`, `ZedAnim::rate` applied to the main sequence's clock,
+unit tests); `src/zeds/zed/load.rs` (MovementAnims / HeadlessWalkAnims /
+BurningWalkAnims per direction, log `zed_move_anims`); `src/zeds/zed/mod.rs`
+(the fields; standing threshold 10 -> 5 uu/s); `src/zeds/zed/think.rs` (the
+Chase branch calls `play_chase_anim`; `anim_rate=` on the `zed` line);
+`crates/ue-assets/src/class_defaults.rs` (`get_array_names_merged`: array
+defaults inherited element by element).
+**Why:** KF plays the movement animation at speed / (class default
+GroundSpeed x 1.1) and picks forward / back / left / right by the 0.82 rule;
+we played the forward one at rate 1 (feet sliding, raging Fleshpound and
+running Gorefast legs too slow). A direction the mesh lacks keeps the current
+animation, as in KF.
+**Tested how:** unit tests (0.82 rule incl. 45 deg -> side; Clot 115.5 uu/s ->
+1.0, Fleshpound 299 uu/s -> 2.09); `cargo test` 241 + 24 pass; headless
+KF-WestLondon `--spawn clot` and `--spawn gorefast`.
+**Result:** `zed_move_anim ... sequence=ClotWalk dir=0 speed_unreal=105
+rate=0.91`; Gorefast running `ZombieRun ... speed_unreal=225 rate=1.70`.
+`zed_move_anims` per class, e.g. Clot [ClotWalk,RunR,RunL,RunR], Fleshpound
+[PoundWalk,WalkB,RunL,RunR], Crawler [ZombieScuttle,B,L,R].
+**Still broken / not tested:** side / back animations not seen in a run (zeds
+mostly walk forward); turn-in-place stays our guess (ANIM-5).
+**Next:** ANIM-2.
+
+## 2026-10-08 ANIM-2: tweens into new animations for zeds and the first-person weapon (branch fix/animation)
+
+**Changed:** `src/render/anim.rs` (`Tween` ignores the frame it starts in);
+`src/zeds/zed/animate.rs` (`start_anim_tween`, main-channel tween from the
+pose last shown: 0.1 s for actions / movement / turning / air, 0.25 s for the
+idle; the clock, notifies and attack progress wait for it; log
+`zed_anim_tween ... start/end`; clock unit test); `src/zeds/zed/think.rs`
+(the Idle state uses the 0.25 s tween); `src/weapons/weapon/input.rs`
+(`play_tween`: idle 0.2, reload 0.1, fire / fire-end the fire mode's
+TweenTime, fire loops 0; asking for the looping animation already looping
+only changes its rate); `animate.rs` (weapon clock waits for the tween, pose
+blended from the last shown pose); `load.rs`, `mod.rs` (TweenTime per fire
+mode; SyringeAltFire 0). Also a clippy fix in the ANIM-3 test.
+**Why:** KF starts most animations with a tween: every bone moves linearly in
+time from the pose on screen to the new animation's first frame, and only
+then does the animation run. We snapped. Because the clock waits, zed claw
+hits and attack ends now come later, as in KF. KF updates animations before
+the scripts in each tick, so an animation started in a tick first moves in
+the next one; the tween does the same.
+**Tested how:** unit tests (clock waits during the tween; a notify at 0.5 of a
+30-frame 30 fps animation fires at 0.6 s; the one-shot ends at 0.1 + 29/30 s);
+`cargo test` 242 + 24 pass; clippy: no new warnings (one old one in boss.rs).
+Headless KF-WestLondon `--spawn gorefast --god --frames 1200` before and
+after; `--spawn clot --god` with fire and weapon switches.
+**Result:** Gorefast full-body attack start -> first claw hit: before 0.393 s
+mean (0.376..0.409, 25 attacks), after 0.528 s (0.511..0.546, 26 attacks);
+tween logged 0.113 s mean (ends on the first frame past 0.1). The extra ~0.035 s
+beyond the 0.1 s tween is the one frame of head start the old code gave
+(it advanced the animation in the frame it started). Weapon: `weapon_anim
+... anim=fire ... tween=0.025` (9mm TweenTime), PutDown `held_frame=10.0
+frames=11`. Clot layer: start 8.234 -> end 9.505 (1.27 s = 0.1 + 35/30).
+**Still broken / not tested:** a layer fade running to 0 was not seen in a
+run (the Clot's next grab starts one frame after the last one ends and
+cancels the fade, as in KF); body (third person) tweens unchanged (ANIM-4);
+not looked at in game.
+**Next:** your look at a zed starting an attack and at the 9mm switch.

@@ -294,6 +294,7 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
         end_aimed_anim: "none".into(),
         loop_anim_rate: 1.0,
         end_anim_rate: 1.0,
+        tween_time: 0.1,
         anim2: "none".into(),
         aimed_anim2: "none".into(),
         penetrations: 1,
@@ -444,6 +445,9 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
     mode.end_aimed_anim = fname("FireEndAimedAnim");
     mode.loop_anim_rate = ffloat("FireLoopAnimRate", 1.0);
     mode.end_anim_rate = ffloat("FireEndAnimRate", 1.0);
+    // WeaponFire.TweenTime (0.1 by default); SyringeAltFire.PlayFiring
+    // plays its animations with tween 0.
+    mode.tween_time = if defaults.is_a(fm_class, "SyringeAltFire") { 0.0 } else { ffloat("TweenTime", 0.1) };
     mode.chainsaw = defaults.is_a(fm_class, "ChainsawFire");
     mode.extra_damage = match fget("maxAdditionalDamage") {
         Some((Value::Int(i), _)) => i.max(0) as u32,
@@ -905,7 +909,9 @@ pub(super) fn load_weapons(
         frame: 0.0,
         play_rate: 30.0,
         looping: false,
-        notify_frame: -1.0,
+        notify_frame: 0.0,
+        tween: None,
+        last_locals: (usize::MAX, Vec::new()),
         fire_cooldown: [0.0; 2],
         fire_count: 0,
         firing: [false; 2],
