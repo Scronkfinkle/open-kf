@@ -24,12 +24,20 @@ use bevy::shader::ShaderRef;
 
 pub type BakedMaterial = ExtendedMaterial<StandardMaterial, BakedExt>;
 
-/// No settings of its own (the uniform keeps the bind group non-empty).
+/// Settings: 0 for baked meshes; terrain layers use the `TERRAIN_*` bits.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct BakedExt {
     #[uniform(100)]
-    pub unused: u32,
+    pub flags: u32,
 }
+
+/// Opaque terrain layer 0: the colour (baked light and dynamic light) is
+/// scaled by the vertex alpha, which holds the layer's weight.
+pub const TERRAIN_WEIGHTED: u32 = 1;
+/// Additive terrain layers: fog fades them toward black instead of adding
+/// the fog colour, so the fog colour is counted once (by layer 0) and each
+/// layer's own colour fades with distance as under KF's alpha blending.
+pub const TERRAIN_FOG_BLACK: u32 = 2;
 
 const BAKED_SHADER: Handle<bevy::shader::Shader> = bevy::asset::uuid_handle!("2c7e5a91-4f0b-4d6a-8e13-9b5c0d7f3a21");
 
@@ -42,7 +50,14 @@ const BAKED_WGSL: &str = r#"
     pbr_functions::alpha_discard,
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_types,
+    mesh_view_bindings as view_bindings,
 }
+#ifdef DISTANCE_FOG
+#import bevy_pbr::pbr_functions::apply_fog
+#endif
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> baked_flags: u32;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -63,7 +78,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var out: FragmentOutput;
     let dynamic = apply_pbr_lighting(pbr_input);
     out.color = vec4<f32>(baked + dynamic.rgb, alpha);
-    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    // Terrain layer 0 (TERRAIN_WEIGHTED): opaque, scaled by its weight.
+    if (baked_flags & 1u) != 0u {
+        out.color = vec4<f32>(out.color.rgb * alpha, 1.0);
+    }
+    var post = pbr_input;
+#ifdef DISTANCE_FOG
+    // Additive terrain layers (TERRAIN_FOG_BLACK): fog toward black.
+    if (baked_flags & 2u) != 0u && (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u {
+        var fog = view_bindings::fog;
+        fog.base_color = vec4<f32>(0.0, 0.0, 0.0, fog.base_color.a);
+        fog.directional_light_color = vec4<f32>(0.0);
+        out.color = apply_fog(fog, out.color, pbr_input.world_position.xyz, view_bindings::view.world_position.xyz, pbr_input.frag_coord.xy);
+        post.material.flags = post.material.flags & ~pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT;
+    }
+#endif
+    out.color = main_pass_post_lighting_processing(post, out.color);
     return out;
 }
 "#;

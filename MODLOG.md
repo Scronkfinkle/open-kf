@@ -6244,3 +6244,38 @@ counted twice (REN-3, next); decoration layers (grass) still not drawn;
 KF blends in gamma space, we in linear light (small difference); not
 looked at by you.
 **Next:** REN-3 (terrain layers fog once).
+
+## 2026-10-08 Terrain layers add fog once, not once per layer (REN-3) (branch fix/terrain)
+
+**Changed:** `src/render/baked.rs` (the baked-mesh material gets a flags
+uniform: TERRAIN_WEIGHTED scales layer 0's colour by the weight in its
+vertex alpha, TERRAIN_FOG_BLACK makes fog fade a layer toward black
+instead of adding the fog colour); `src/world/map.rs` (terrain with
+stored light, outside the sky, always uses that material with the black
+lightmap instead of the unlit/lit swap; weights moved into
+`layer_weights` with a unit test; `terrain_loaded` logs
+`lit_by_stored_light`); DESIGN.md "Terrain lighting (L3)".
+**Why:** layer 0 is drawn opaque and the other layers added on top; Bevy
+fogged each added layer too, so the fog colour was counted 1 + (sum of
+upper-layer weights) times: up to double fog on painted terrain. KF
+alpha-blends each fogged layer over the one below, so fog counts once.
+**Tested how:** unit test (weights sum to 1; weighted sum = layer-over-
+layer blend; fog-once sum = KF's per-layer fog); workspace tests and
+clippy; headless screenshots of 10 terrain views (60 frames) and all 34
+start views (8 frames) against the REN-1 build; terrain-only crop
+(lower left 700x250) brightness; frame times on the KF-Farm view (600
+frames, two runs each); flashlight on/off on KF-Farm terrain.
+**Result:** terrain crop REN-1 -> REN-3: Manor 40.0 -> 35.9, MountainPass
+66.2 -> 53.7 (same both runs), Farm 10.6 -> 9.2, Hell 11.4 -> 9.6,
+HillbillyHorror 29.7 -> 28.9; Crash, SirensBelch, Stronghold, Wyre
+unchanged (no painted upper layers in view or little fog). The 21 maps
+without terrain in their start view: identical to the REN-1 build (so
+baked meshes are unchanged). Frame time KF-Farm view: about 37.5 ms ->
+38.8 ms. Flashlight centre 7.4 -> 26.6 (REN-1 build 8.7 -> 35.0, which
+over-counted the light on painted spots). Tests 236 + 26 pass; clippy
+no new warnings.
+**Still broken / not tested:** KF blends layers in gamma space, we in
+linear light (small colour difference where layers overlap); KF samples
+the alpha maps per pixel, we per vertex; not compared with real KF
+screenshots of a fogged terrain map; not looked at by you.
+**Next:** your look at KF-Manor and KF-MountainPass in fog.

@@ -393,6 +393,21 @@ for a 64 x 64 heightmap) the first ones.
 3. Log `terrain_light terrain=N stored= vertices= drawn_vertices= nonblack=
    mean_rgb=` per terrain.
 
+**Fog on terrain layers (planned and built 2026-10-08).** KF draws layer 0
+opaque and every further layer alpha-blended over it, each fogged, so the
+fog colour counts once whatever is painted. Ours adds the upper layers
+(order-independent), and before this fix each added layer brought its own
+share of fog colour: up to double fog where an upper layer is painted.
+Now layer 0 is fogged normally and the added layers fade toward black with
+distance instead; the sum equals KF's blend exactly (unit test
+`terrain_layer_weights_match_blending_and_sum_to_one`). To do that the
+terrain always uses the baked-mesh material (render/baked.rs) with a flag
+per layer (layer 0: scaled by its weight carried in the vertex alpha;
+upper layers: fog to black). Being always lit costs about 1 ms a frame on
+KF-Farm (headless: 37.5 -> 38.8 ms); the flashlight on terrain is now
+scaled by the layer weights too. Terrain in the sky zone (no fog there)
+and terrain without stored colours keep the plain material.
+
 Effect on zeds and players standing on terrain: none. Actor lighting
 already uses the map's own lights and zone ambient, not the terrain's
 colours, and the made-up sun is not an actor light source.
