@@ -1485,6 +1485,7 @@ pub(super) fn think_and_move(
             // zeds over is not known, so this is an approximation.
             let pc = nav.points[pad.point].pos;
             z.centre = Vec3::new(pc.x, z.centre.y, pc.z);
+            z.router.launched_from(pad.point);
             z.state = ZedState::Falling;
             z.vertical_speed = pad.velocity.y;
             z.air_velocity = pad.velocity.with_y(0.0);
