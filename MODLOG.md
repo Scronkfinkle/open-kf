@@ -6201,3 +6201,42 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Zed pathfinding from KF's rules (branch fix/zed-nav)
+
+**Changed:** logging (`zed_fall_long` after 3 s of falling, the player
+distance on `zed_stuck`); KF's anchor search for routes (up to 32 nav
+points within 1200 units, nearest first, a line-of-sight check before the
+reach test, the first success is the one start and the one goal;
+`world/nav.rs` `anchor`, also the trader's guide path); falling zeds land
+in a V between two steep slopes (KF's ditch rule) and lose the speed a
+blocked fall cannot use (`zeds/zed/motion.rs`, `think.rs`); the escaping
+Patriarch heals at once when no route to his hiding spot exists
+(`boss_ai.rs`, `Router.no_route`).
+**Why:** the zed-navigation audit (local work/re/audits/zed-navigation.md).
+**Tested how:** cargo test (236 + 24; new ditch test); the same headless
+wave runs before and after on KF-WestLondon, KF-Manor, KF-Farm (waves,
+short, god mode, 20 zeds, 2400 frames); the B6 Patriarch escape run
+(`--spawn patriarch --god`, hurt_zeds at the knockdown levels).
+**Result:** stuck lines Farm 872 -> 596, Manor 821 -> 802, WestLondon
+560 -> 489; falls over 3 s 4 -> 1; links given up 20 -> 1; one ditch
+landing on KF-Manor. New: KF-Manor logs 4 "no route" picks per run (both
+ends found, no route between; KF's single anchor would do the same).
+Patriarch: three escapes and heals on both builds; the old stuck case
+does not happen any more with the base build either, so the new "no path
+-> heal" rule did not trigger in a run.
+**Tried and reverted / not committed:** (1) NAV-6, ending the move when a
+zed lands moving away from its target (KF's NotifyLanded): on
+KF-WestLondon zeds whose fence jump-pad launch falls short re-planned
+straight back onto the pad (pad launches 16 -> 52 per run); two fixes to
+the failed-link count did not cure it without breaking KF-Farm / KF-Manor
+routes, so it is reverted (commits kept). (2) NAV-1, walking straight at
+the destination instead of along the facing: no clear gain on Farm /
+Manor (attacks and first contact about equal) and pad launches 82 per run
+on KF-WestLondon; patch in work/re/patches/zed-nav-NAV1-not-committed.patch.
+Both need our jump-pad launch fixed first (we launch from the pad's
+centre; KF launches where the zed touches it).
+**Still broken / not tested:** ledge handling (NAV-3) and the tactical
+side-step when no route exists (NAV-2 for normal zeds) not done; the
+Patriarch rule unit-free and not seen in a run. Not played by you.
+**Next:** fix the jump-pad launch, then retry NAV-6 and NAV-1.
