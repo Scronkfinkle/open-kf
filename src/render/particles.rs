@@ -1098,7 +1098,14 @@ fn update_effects(
     }
 }
 
-/// Sprites: one quad per particle, full width = size (assumed), facing the
+/// A sprite's four corners (Unreal units): KF puts them at centre +- right
+/// x Size.X +- up x Size.Y, so a sprite is 2 x Size wide and tall (Size is
+/// the half-width). Order: top-left, top-right, bottom-right, bottom-left.
+fn sprite_corners(centre: Vec3, right: Vec3, up: Vec3, size: Vec2) -> [Vec3; 4] {
+    [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(sx, sy)| centre + right * (sx * size.x) + up * (sy * size.y))
+}
+
+/// Sprites: one quad per particle, 2 x size wide (see `sprite_corners`), facing the
 /// camera (UseDirectionAs None), with its up (Up) or right (Right) along the
 /// velocity, or, for UpAndNormal, stretched along the velocity in the plane
 /// of ProjectionNormal.
@@ -1178,10 +1185,9 @@ fn build_sprites(
             let q = Quat::from_axis_angle(cam_forward.normalize_or(Vec3::X), angle);
             (q * cam_right, q * cam_up)
         };
-        let h = size * 0.5;
         let base = positions.len() as u32;
-        for (sx, sy) in [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
-            positions.push(coords::pos((centre + right * (sx * h.x) + up * (sy * h.y)).to_array()).to_array());
+        for corner in sprite_corners(centre, right, up, size) {
+            positions.push(coords::pos(corner.to_array()).to_array());
         }
         // Texture subdivision: by age unless random (BlendBetweenSubdivisions
         // is not blended here).
@@ -1226,5 +1232,19 @@ fn build_mesh_particles(
             indices.extend(section.indices.iter().map(|i| base + i));
         }
         write_mesh(&mut mesh, positions, normals, uvs, Vec::new(), indices);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.
+    #[test]
+    fn sprite_is_twice_size_wide() {
+        let c = sprite_corners(Vec3::new(5.0, 0.0, 0.0), Vec3::Y, Vec3::Z, Vec2::splat(10.0));
+        assert!(((c[1] - c[0]).length() - 20.0).abs() < 1e-5);
+        assert!(((c[1] - c[2]).length() - 20.0).abs() < 1e-5);
+        assert_eq!(c[0], Vec3::new(5.0, -10.0, 10.0));
     }
 }

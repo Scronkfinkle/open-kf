@@ -6201,3 +6201,17 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 P1: particle sprites drawn at KF's size (branch fix/particles)
+
+**Changed:** `src/render/particles.rs` (`sprite_corners`: corners at
+centre +- Size, not +- Size / 2; unit test); DESIGN.md "Particle rules
+read from KF's engine" (plan P1-P7).
+**Why:** KF's engine puts a sprite's corners Size away from its centre, so
+a sprite is 2 x Size across; we drew every sprite at half that width.
+**Tested how:** `cargo test --bin open-kf particles`
+(sprite_is_twice_size_wide: Size 10 gives corners 20 apart); headless
+before/after screenshots of a shot Clot (see P7 entry for the run).
+**Result:** test passes. Mesh particles unchanged (Size is a scale there).
+**Still broken / not tested:** not compared with KF by you.
+**Next:** P2 rotation rules.
