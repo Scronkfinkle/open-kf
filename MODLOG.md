@@ -6372,3 +6372,22 @@ still not fogged (KF fogs them toward grey = no change); that material is
 shared with the decals, left alone. Fire / muzzle flash brightness not
 compared with KF by you.
 **Next:** draw sub-emitters in order, spread spawns along the path.
+
+## 2026-10-08 P9: an effect's sub-emitters drawn in their list order (branch fix/particles)
+
+**Changed:** `src/render/particles.rs` (`draw_anchor`, `add_anchor`: two
+unused vertices centre each sub-emitter mesh's bounds on the effect's
+location, nudged 0.05 Unreal units toward the camera per list position;
+test draw_order_anchor).
+**Why:** KF draws an effect's sub-emitters in their Emitters list order.
+Bevy sorts see-through meshes back to front by the centre of their
+bounds, so our sub-emitters were ordered by where their particles
+happened to be (smoke over fire could swap from frame to frame).
+**Tested how:** unit test (bounds centred on the anchor and holding every
+vertex; a later index is nearer the camera); headless KF-WestLondon run
+as in P7 (5 screenshots, no errors besides the known slab_allocator line).
+**Result:** test passes; screenshots look as in P8.
+**Still broken / not tested:** I did not see a case where the order
+mattered (e.g. KFNadeExplosion) in a game run. Whole effects are now
+sorted by their location, as KF sorts actors (assumed).
+**Next:** spread one frame's spawns along a moving effect's path.

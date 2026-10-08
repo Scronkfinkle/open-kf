@@ -1276,8 +1276,8 @@ fn update_effects(
             let live: Vec<Particle> = s.slots.iter().filter(|p| p.alive).copied().collect();
             // Draw.
             match d.kind {
-                EmitterKind::Sprite => build_sprites(d, &frame, &live, (cam_right, cam_up, cam_forward), &s.meshes, &mut meshes),
-                EmitterKind::Mesh => build_mesh_particles(d, &e.mesh, &frame, &live, &s.meshes, &mut meshes),
+                EmitterKind::Sprite => build_sprites(d, &frame, &live, (cam_right, cam_up, cam_forward), &s.meshes, &mut meshes, draw_anchor(&frame, cam_forward, i)),
+                EmitterKind::Mesh => build_mesh_particles(d, &e.mesh, &frame, &live, &s.meshes, &mut meshes, draw_anchor(&frame, cam_forward, i)),
                 _ => {}
             }
         }
@@ -1328,6 +1328,31 @@ fn update_effects(
             commands.entity(entity).despawn();
         }
     }
+}
+
+/// Where a sub-emitter's mesh is sorted for drawing (Bevy units). KF
+/// draws an effect's sub-emitters in their list order; Bevy sorts see-through
+/// meshes back to front by the centre of their bounds. So every sub-emitter
+/// mesh of an effect gets the same centre, the effect's location, moved
+/// toward the camera by a hair per list position (0.05 Unreal units), so
+/// later ones draw over earlier ones.
+fn draw_anchor(frame: &(Vec3, Mat3), cam_forward: Vec3, index: usize) -> Vec3 {
+    coords::pos((frame.0 - cam_forward * (index as f32 * 0.05)).to_array())
+}
+
+/// Adds two unused vertices so the mesh's bounds are centred on `anchor`
+/// and still hold every particle (see `draw_anchor`). No-op when empty.
+fn add_anchor(positions: &mut Vec<[f32; 3]>, anchor: Vec3) {
+    if positions.is_empty() {
+        return;
+    }
+    let mut half = Vec3::ZERO;
+    for p in positions.iter() {
+        half = half.max((Vec3::from_array(*p) - anchor).abs());
+    }
+    half += Vec3::splat(0.01);
+    positions.push((anchor - half).to_array());
+    positions.push((anchor + half).to_array());
 }
 
 /// A sprite particle's vertex colour (RGBA, 0..1), as KF's engine computes
@@ -1393,6 +1418,7 @@ fn build_sprites(
     (cam_right, cam_up, cam_forward): (Vec3, Vec3, Vec3),
     handles: &[Handle<Mesh>],
     meshes: &mut Assets<Mesh>,
+    anchor: Vec3,
 ) {
     let Some(mut mesh) = handles.first().and_then(|h| meshes.get_mut(h)) else {
         return;
@@ -1467,6 +1493,7 @@ fn build_sprites(
         colors.extend([color.to_array(); 4]);
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
+    add_anchor(&mut positions, anchor);
     write_mesh(&mut mesh, positions, Vec::new(), uvs, colors, indices);
 }
 
@@ -1479,6 +1506,7 @@ fn build_mesh_particles(
     particles: &[Particle],
     handles: &[Handle<Mesh>],
     meshes: &mut Assets<Mesh>,
+    anchor: Vec3,
 ) {
     for (section, handle) in sections.iter().zip(handles) {
         let Some(mut mesh) = meshes.get_mut(handle) else {
@@ -1500,6 +1528,7 @@ fn build_mesh_particles(
             uvs.extend_from_slice(&section.uvs);
             indices.extend(section.indices.iter().map(|i| base + i));
         }
+        add_anchor(&mut positions, anchor);
         write_mesh(&mut mesh, positions, normals, uvs, Vec::new(), indices);
     }
 }
@@ -1841,6 +1870,24 @@ mod tests {
         assert_eq!(f(4), (F::One, F::OneMinusSrcAlpha));
         assert_eq!(f(5), (F::Zero, F::OneMinusSrc));
         assert_eq!(f(6), (F::One, F::OneMinusSrc));
+    }
+
+    /// The sort anchor: the mesh bounds are centred on it and hold every
+    /// vertex; later sub-emitters sit nearer the camera.
+    #[test]
+    fn draw_order_anchor() {
+        let mut positions = vec![[1.0, 2.0, 3.0], [-4.0, 0.5, 9.0]];
+        let anchor = Vec3::new(0.0, 1.0, 2.0);
+        add_anchor(&mut positions, anchor);
+        let (lo, hi) = positions.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(Vec3::from_array(*p)), hi.max(Vec3::from_array(*p))));
+        assert!(close((lo + hi) * 0.5, anchor));
+        assert!(lo.x <= -4.0 && hi.z >= 9.0);
+        let frame = (Vec3::ZERO, Mat3::IDENTITY);
+        let forward = Vec3::X;
+        let cam = coords::pos([-100.0, 0.0, 0.0]);
+        let d0 = (draw_anchor(&frame, forward, 0) - cam).length();
+        let d1 = (draw_anchor(&frame, forward, 1) - cam).length();
+        assert!(d1 < d0);
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.
