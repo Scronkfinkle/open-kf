@@ -6000,3 +6000,22 @@ value="192.168.1.50:7707"` and the command line `--join
 192.168.1.50:7707`; screenshot at 1280x800 looked at.
 **Not tested:** Ctrl+V with a real keyboard after the merge (the branch
 tested it with xdotool on X11).
+
+## 2026-10-07 In-game sliders: dragging works (VC fix)
+
+**Changed:** `src/game/menus/mod.rs` `menu_input`: whether the left mouse
+button is held now comes from the raw `MouseButtonInput` press / release
+messages (a `Local<bool>`), not `ButtonInput<MouseButton>`.
+**Why:** you reported the in-game volume sliders snap on click but do not
+drag. `menu_input` calls `mouse.reset_all()` every frame a menu is open
+(so the weapons do not fire through it); that also cleared "Left is
+pressed", so every drag ended one frame after the press. The same bug ended
+the 3D character view drags. The clearing stays (the weapons need it).
+**Tested how:** real mouse events on a private Xvfb with xdotool
+(`work/drag-test.sh`, untracked): press on the Master knob, move left in 4
+steps, release. Before the fix: `volume_saved master=1.000` right after the
+press, no change. After: master 1.000 -> 0.846 -> 0.614 -> 0.383 -> 0.058,
+then `volume_saved ... why=slider_released`. The launcher's sliders were
+tested the same way and already dragged (0.952 -> 0.070). cargo test and
+clippy clean.
+**Not tested:** by you; the 3D character view drag (same code path).

@@ -314,7 +314,17 @@ fn menu_input(
     (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
     mut audio: Option<ResMut<crate::audio::mixer::Audio>>,
     mut aim: ResMut<crate::weapons::weapon::AimSetting>,
+    (mut buttons, mut left_held): (MessageReader<bevy::input::mouse::MouseButtonInput>, Local<bool>),
 ) {
+    // Whether the left button is held, from the raw press / release
+    // messages: `mouse` cannot tell, because this system clears it every
+    // frame a menu is open (so the weapons do not fire), which ended every
+    // slider and 3D-view drag one frame after the press.
+    for b in buttons.read() {
+        if b.button == MouseButton::Left {
+            *left_held = b.state.is_pressed();
+        }
+    }
     // The perk the weapons were loaded with (start items), for Ready.
     let had = *start_vet.get_or_insert(vet.vet);
     let actions: Vec<&str> = script.0.iter().filter(|(f, _)| *f == frames.0).map(|(_, a)| a.as_str()).collect();
@@ -365,7 +375,7 @@ fn menu_input(
         }
     }
     if let Some(d) = state.drag {
-        if !mouse.pressed(MouseButton::Left) {
+        if !*left_held {
             state.drag = None;
             // Let go of a slider: the value is saved (KF writes the ini on
             // every change; we write once per drag).
