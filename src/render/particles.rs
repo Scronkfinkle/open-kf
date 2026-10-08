@@ -185,8 +185,14 @@ const MODULATE_WGSL: &str = r#"
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let t = textureSample(particle_texture, particle_sampler, in.uv);
-    let a = in.color.a;
-    return vec4<f32>(t.rgb * in.color.rgb * a, a);
+#ifdef VERTEX_COLORS
+    let c = in.color;
+#else
+    // Map meshes (Shader OB_Modulate) have no vertex colours.
+    let c = vec4<f32>(1.0);
+#endif
+    let a = c.a;
+    return vec4<f32>(t.rgb * c.rgb * a, a);
 }
 "#;
 

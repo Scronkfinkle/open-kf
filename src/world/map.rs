@@ -318,6 +318,10 @@ struct Loader<'a> {
     /// Baked-mesh copies of materials (render/baked.rs).
     baked_materials: &'a mut Assets<crate::render::baked::BakedMaterial>,
     baked_cache: HashMap<AssetId<StandardMaterial>, Handle<crate::render::baked::BakedMaterial>>,
+    /// Modulated (Shader OB_Modulate) materials: the material drawn in
+    /// place of the StandardMaterial `material` returned for them.
+    modulate_materials: &'a mut Assets<crate::render::particles::ModulateMaterial>,
+    modulate: HashMap<AssetId<StandardMaterial>, Handle<crate::render::particles::ModulateMaterial>>,
 }
 
 impl Loader<'_> {
@@ -586,13 +590,17 @@ impl Loader<'_> {
         // on KF-WestLondon's Clot gibs): masked, so the mesh hides its own
         // far side (blending writes no depth). Looks the same.
         if simple.blend == Blend::Translucent
+            && !simple.modulate
             && let Some(t) = simple.opacity.clone().or_else(|| simple.texture.clone())
             && self.alpha_is_binary(&t)
         {
             simple.blend = Blend::Masked;
         }
         if !matches!(simple.blend, Blend::Opaque) {
-            runlog::kv("material_see_through", &format!("material={} blend={:?} chain={}", from.package.pkg.object_path(rf), simple.blend, simple.chain.join(">")));
+            runlog::kv(
+                "material_see_through",
+                &format!("material={} blend={:?} modulate={} chain={}", from.package.pkg.object_path(rf), simple.blend, simple.modulate, simple.chain.join(">")),
+            );
         }
         let result = if simple.blend == Blend::Invisible {
             None
@@ -622,7 +630,18 @@ impl Loader<'_> {
                 double_sided: two_sided,
                 ..default()
             };
-            Some((self.materials.add(mat), size))
+            let handle = self.materials.add(mat);
+            // OB_Modulate: twice the texture times the scene behind, so
+            // the texture's mid-grey background leaves the surface as it is
+            // (KF-ThrillsChills' blood smears were drawn as grey sheets).
+            if simple.modulate
+                && let Some(t) = &simple.texture
+                && let Some(image) = crate::render::particles::decode(t, true, true, self.images)
+            {
+                let m = self.modulate_materials.add(crate::render::particles::ModulateMaterial { texture: image });
+                self.modulate.insert(handle.id(), m);
+            }
+            Some((handle, size))
         };
         self.material_cache.insert(key, result.clone());
         result
@@ -688,6 +707,7 @@ fn load_map(
     compressed: Option<Res<CompressedImageFormatSupport>>,
     graphics: Option<Res<crate::engine::graphics::GraphicsSettings>>,
     mut baked_materials: ResMut<Assets<crate::render::baked::BakedMaterial>>,
+    mut modulate_materials: ResMut<Assets<crate::render::particles::ModulateMaterial>>,
     black_lightmap: Option<Res<crate::render::baked::BlackLightmap>>,
 ) {
     let started = Instant::now();
@@ -742,6 +762,8 @@ fn load_map(
         unlit_cache: HashMap::new(),
         baked_materials: &mut baked_materials,
         baked_cache: HashMap::new(),
+        modulate_materials: &mut modulate_materials,
+        modulate: HashMap::new(),
         textures_uploaded: 0,
         texture_bytes: 0,
         textures_failed: 0,
@@ -758,6 +780,7 @@ fn load_map(
     let mut sky_zone: Option<(u8, String)> = None;
     let (mut sky_lo, mut sky_hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut sky_polys = 0usize;
+    let mut bsp_modulate_polys = 0usize;
     if let Some(m) = contents.bsp_model {
         let level_handle = ObjectHandle {
             package: lp.clone(),
@@ -915,6 +938,10 @@ fn load_map(
                         bsp_skipped += 1;
                         continue;
                     };
+                    // Not drawn modulated yet: counted to see if any map needs it.
+                    if loader.modulate.contains_key(&mat.id()) {
+                        bsp_modulate_polys += 1;
+                    }
                     // Polygons facing into the sky zone belong to the sky layer.
                     let in_sky = sky_zone.as_ref().is_some_and(|(z, _)| node.zone[1] == *z);
                     if in_sky {
@@ -1412,6 +1439,28 @@ fn load_map(
                 invisible_parts += 1;
                 continue;
             };
+            // Modulated: drawn over the scene behind, so neither lit nor
+            // baked (assumed: KF's lighting does not reach a modulated
+            // shader's output).
+            if let Some(m) = loader.modulate.get(&material.id()).cloned() {
+                let mut e = commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(m), transform, MapGeometry, bevy::light::NotShadowCaster));
+                if in_sky {
+                    e.insert(RenderLayers::layer(SKY_LAYER));
+                }
+                runlog::kv(
+                    "mesh_modulate",
+                    &format!(
+                        "actor={} section={} at_unreal=({:.0}, {:.0}, {:.0})",
+                        lp.pkg.object_name(ObjectRef::Export(actor.export)),
+                        part.section,
+                        actor.location[0],
+                        actor.location[1],
+                        actor.location[2]
+                    ),
+                );
+                entities += 1;
+                continue;
+            }
             // Baked colours outside the sky: texture x colour, plus the
             // flashlight (render/baked.rs).
             if !in_sky && !actor.unlit && use_baked_material && let Some(lit) = &lit {
@@ -1562,7 +1611,8 @@ fn load_map(
     runlog::kv(
         "textures_loaded",
         &format!(
-            "uploaded={} compressed={} bc_supported={} failed={} megabytes={:.1} materials={} materials_without_texture={} anisotropy={}",
+            "uploaded={} compressed={} bc_supported={} failed={} megabytes={:.1} materials={} materials_without_texture={} anisotropy={} \
+             modulate_materials={} bsp_modulate_polys={bsp_modulate_polys}",
             loader.textures_uploaded,
             loader.textures_compressed,
             loader.bc_supported,
@@ -1570,7 +1620,8 @@ fn load_map(
             loader.texture_bytes as f64 / 1e6,
             loader.material_cache.len(),
             loader.materials_without_texture,
-            loader.anisotropy
+            loader.anisotropy,
+            loader.modulate.len()
         ),
     );
 

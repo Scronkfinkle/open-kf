@@ -37,6 +37,10 @@ pub struct SimpleMaterial {
     /// `resolve_skinned`. Off for level materials, where Opacity is often a
     /// plain mask (puddles, oil, water) that must not become the colour.
     pub opacity_from_combiner: bool,
+    /// A Shader with OutputBlending OB_Modulate: the scene behind is
+    /// multiplied by twice the texture (mid-grey = no change). `blend`
+    /// stays Translucent for the loaders that do not draw modulation.
+    pub modulate: bool,
 }
 
 const MAX_DEPTH: usize = 8;
@@ -168,6 +172,7 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             // OB_Normal with an Opacity: alpha blended by the Opacity's
             // alpha (was masked at 50%, which hid all of KF's window glass;
             // on/off alphas are still drawn masked by the map loader).
+            out.modulate = get_byte("OutputBlending") == Some(2);
             if let Some(b) = blend {
                 out.blend = b;
             } else if has_opacity {
@@ -206,6 +211,9 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             // mode the material still blends (KF-WestLondon's phone booth
             // glass, FBGlass: FB_Translucent, AlphaTest, AlphaRef 13, was
             // masked at 50% and vanished).
+            // The outer FinalBlend's blending replaces an inner Shader's
+            // OB_Modulate (KF's street lamps: FB_AlphaBlend around one).
+            out.modulate &= get_byte("FrameBufferBlending") == Some(1);
             out.blend = match get_byte("FrameBufferBlending") {
                 Some(7) => Blend::Invisible,
                 Some(0) | None if get_bool("AlphaTest") => Blend::Masked,

@@ -7071,3 +7071,36 @@ centre; KF launches where the zed touches it).
 side-step when no route exists (NAV-2 for normal zeds) not done; the
 Patriarch rule unit-free and not seen in a run. Not played by you.
 **Next:** fix the jump-pad launch, then retry NAV-6 and NAV-1.
+
+## 2026-10-08 Modulated map decals (Shader OB_Modulate) drawn as 2x modulate
+
+**Changed:** `crates/ue-assets/src/material.rs`: `SimpleMaterial.modulate`,
+set for a Shader with OutputBlending = OB_Modulate and cleared by an outer
+FinalBlend whose blending is not FB_Modulate. `src/world/map.rs`: such
+materials skip the on/off-alpha -> masked rule and get a 2x
+`ModulateMaterial` (the particles'/projectors' one); placed static meshes
+using them are drawn with it (not lit, not baked, no shadow). New log line
+`mesh_modulate` (actor, position); `textures_loaded` gains
+`modulate_materials` and `bsp_modulate_polys`. `src/render/particles.rs`:
+the modulate shader works on meshes without vertex colours.
+**Why:** KF-ThrillsChills' blood smear (kf_gore_trip_T_two.Blood_Smear_Long_SHDR,
+OB_Modulate, DXT1 with a mid-grey background) was drawn as translucent,
+then masked because its alpha is all on, so the whole grey/white rectangle
+showed around the blood.
+**Tested how:** user's view `--camera 2737,-7917,147,1.3817,-0.3349` on
+KF-ThrillsChills, screenshot; all maps loaded headless, counting
+`mesh_modulate` and the modulate materials; cargo test/clippy (workspace).
+**Result:** the smear now darkens the floor red, no rectangle. About 20
+maps use these shaders (blood smears, Foundry grunge, Asylum graffiti,
+Suburbia blood splatters and a church window, Wyre posters), 0 to 138
+meshes per map; no BSP surface uses one (bsp_modulate_polys=0 everywhere).
+The street lamp FinalBlend (FB_AlphaBlend around an OB_Modulate shader,
+WestLondon/FilthsCross) is not modulated.
+**Still broken / not tested:** only the ThrillsChills smear was looked at;
+graffiti, grunge and the Suburbia church window are not visually checked.
+Modulated meshes get no fog (assumed KF fades them toward "no change";
+not checked) and are drawn two-sided. FinalBlend FB_Modulate on its own is
+still plain translucent. Assumed: KF's lighting does not reach a modulated
+shader's output.
+**Next:** visual check of a graffiti wall (KF-Bedlam) and Suburbia's church
+window.
