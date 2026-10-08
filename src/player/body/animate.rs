@@ -3,6 +3,8 @@
 //! the body, the weapon attachment on the right hand, and owner no-see.
 
 use bevy::prelude::*;
+
+use crate::render::actor_light::{ActorLight, LitPart};
 use ue_assets::properties::Rotator;
 
 use super::load::{AnimNames, BodyModel, BodyModels};
@@ -88,10 +90,17 @@ pub(super) fn spawn_bodies(
         let Some(b) = models.characters.get(character) else { continue };
         let handles = b.model.new_instance(&mut meshes);
         let root = commands
-            .spawn((Transform::from_translation(s.location), Visibility::Hidden, BodyRoot))
+            .spawn((
+                Transform::from_translation(s.location),
+                Visibility::Hidden,
+                BodyRoot,
+                // Lit by the map (actor_light.rs): xPawn MaxLights 8, KFPawn
+                // AmbientGlow 0.
+                ActorLight::new(format!("body_{}", if s.local { "local".to_string() } else { format!("{e:?}") }), Vec3::ZERO, 8, 0),
+            ))
             .id();
         for (part, h) in b.model.parts.iter().zip(&handles) {
-            commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(root)));
+            commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(root), LitPart { owner: root, animated: true, own: None }));
         }
         commands.entity(e).insert(PawnBody {
             character,
@@ -350,7 +359,8 @@ pub(super) fn animate_bodies(
                     .parts
                     .iter()
                     .zip(&handles)
-                    .map(|(p, h)| commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(p.material.clone()), Transform::IDENTITY, ChildOf(root))).id())
+                    // bUseLightingFromBase (InventoryAttachment): the body's light.
+                    .map(|(p, h)| commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(p.material.clone()), Transform::IDENTITY, ChildOf(root), LitPart { owner: root, animated: true, own: None })).id())
                     .collect();
                 body.attachment_meshes = handles;
             }

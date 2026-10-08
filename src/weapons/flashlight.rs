@@ -178,8 +178,10 @@ fn place_lights(
     zeds: Query<&crate::zeds::zed::Zed>,
     mut spots: Query<(&mut SpotLight, &mut Transform, &mut Visibility), Without<PointLight>>,
     mut glows: Query<(&mut PointLight, &mut Transform, &mut Visibility), Without<SpotLight>>,
+    mut actor_lights: ResMut<crate::render::actor_light::DynamicLights>,
     mut log_timer: Local<f32>,
 ) {
+    actor_lights.0.clear();
     *log_timer += time.delta_secs();
     let log_now = *log_timer >= 1.0;
     if log_now {
@@ -256,6 +258,45 @@ fn place_lights(
         glow.intensity = lumens_for(glow_gamma.powf(2.2), standoff * SCALE, glow.range);
         glow_t.translation = glow_at;
         glow_vis.set_if_neq(if glow.intensity > 0.0 { Visibility::Visible } else { Visibility::Hidden });
+
+        // The same two lights for actor lighting (zeds, bodies and weapons
+        // are drawn with vertex light: render/actor_light.rs). The
+        // projector: the circle's core, fading to nothing at
+        // MaxTraceDistance (bGradient) inside the cone. **Guess**: on
+        // actors it counts like a light facing them (backfaces unlit).
+        {
+            use crate::render::actor_light::{Falloff, Kind, Source};
+            actor_lights.0.push(Source {
+                name: "flashlight_projector".into(),
+                class: "Effect_TacLightProjector".into(),
+                pos: origin,
+                colour: Vec3::splat(CIRCLE_CORE),
+                radius: PROJECTOR_MAX_TRACE * SCALE,
+                kind: Kind::Spot { dir, cos_outer: half.cos(), cos_inner: (half * INNER_ANGLE_FRACTION).cos() },
+                incidence: true,
+                falloff: Falloff::Linear,
+                zone: None,
+                dynamic: true,
+                brightness: 255.0,
+                line_check: false,
+            });
+            if v.glow_brightness > 0.0 {
+                actor_lights.0.push(Source {
+                    name: "flashlight_glow".into(),
+                    class: "Effect_TacLightGlow".into(),
+                    pos: glow_at,
+                    colour: Vec3::splat(v.glow_brightness / 255.0),
+                    radius: radius * SCALE,
+                    kind: Kind::Point,
+                    incidence: true,
+                    falloff: crate::render::actor_light::FALLOFF,
+                    zone: None,
+                    dynamic: true,
+                    brightness: v.glow_brightness,
+                    line_check: false,
+                });
+            }
+        }
 
         if log_now {
             runlog::kv(

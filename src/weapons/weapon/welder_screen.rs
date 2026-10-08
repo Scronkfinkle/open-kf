@@ -28,8 +28,8 @@
 //! glyphs are blended over the background by the font page's alpha, their
 //! colour = page colour x NameColor; DrawTile's colour multiplies the
 //! texture. The float printed with 2 decimals ("42.50 %") is UE2's float to
-//! string ("%.2f", the format string found in the game's Core.dll next to
-//! the vector one "%.2f,%.2f,%.2f").
+//! string ("%.2f", the format string found in the game's engine files next
+//! to the vector one "%.2f,%.2f,%.2f").
 
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};

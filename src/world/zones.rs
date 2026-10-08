@@ -24,6 +24,12 @@ pub struct ZoneFog {
     /// colour, or KFOverlayColor with bNewKFColorCorrection; None with
     /// bNoKFColorCorrection.
     pub overlay: Option<[u8; 3]>,
+    /// ZoneInfo AmbientBrightness, AmbientHue, AmbientSaturation: the
+    /// zone's ambient light on actors (render/actor_light.rs).
+    pub ambient: [u8; 3],
+    /// ZoneInfo.AmbientVector as saved in the map (the editor's
+    /// FGetHSV of the three above), if saved.
+    pub ambient_vector: Option<[f32; 3]>,
 }
 
 /// The level's BSP (for point -> zone) and each zone's fog. Inserted by the

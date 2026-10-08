@@ -77,6 +77,9 @@ pub struct PieceModel {
     pub name: String,
     parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
     draw_scale: f32,
+    /// A skeletal mesh (severed limbs): lit by the map per piece
+    /// (render/actor_light.rs), so each piece gets its own mesh copy.
+    skeletal: bool,
 }
 
 impl PieceModel {
@@ -332,6 +335,7 @@ pub fn load_piece(
             name: name.to_string(),
             parts: model.parts.iter().map(|p| (p.mesh.clone(), p.material.clone())).collect(),
             draw_scale,
+            skeletal: true,
         });
     }
     let (Value::Object(mesh_ref), mesh_pkg) = defaults.get(class, "StaticMesh").ok_or("no StaticMesh default")? else {
@@ -415,6 +419,7 @@ fn static_piece(
         name: name.to_string(),
         parts,
         draw_scale,
+        skeletal: false,
     })
 }
 
@@ -478,8 +483,23 @@ fn spawn_piece(
             },
         ))
         .id();
+    if model.skeletal {
+        // Lit by the map: Actor defaults MaxLights 4, AmbientGlow 0.
+        commands.entity(parent).insert(crate::render::actor_light::ActorLight::new(format!("piece_{id}"), Vec3::ZERO, 4, 0));
+    }
     for (mesh, material) in &model.parts {
-        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::IDENTITY, ChildOf(parent)));
+        if model.skeletal {
+            let own = fx.meshes.get(mesh).cloned().map(|m| fx.meshes.add(m)).unwrap_or_else(|| mesh.clone());
+            commands.spawn((
+                Mesh3d(own),
+                MeshMaterial3d(material.clone()),
+                Transform::IDENTITY,
+                ChildOf(parent),
+                crate::render::actor_light::LitPart { owner: parent, animated: true, own: None },
+            ));
+        } else {
+            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::IDENTITY, ChildOf(parent)));
+        }
     }
     runlog::kv(
         "piece_spawned",
@@ -576,7 +596,14 @@ pub fn new_stump(
     let stump = gore.stumps[kind as usize].as_ref()?;
     let handles = stump.model.new_instance(meshes);
     for (part, handle) in stump.model.parts.iter().zip(&handles) {
-        commands.spawn((Mesh3d(handle.clone()), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(parent)));
+        // Lit with the zed (its ActorLight).
+        commands.spawn((
+            Mesh3d(handle.clone()),
+            MeshMaterial3d(part.material.clone()),
+            Transform::IDENTITY,
+            ChildOf(parent),
+            crate::render::actor_light::LitPart { owner: parent, animated: true, own: None },
+        ));
     }
     Some(handles)
 }

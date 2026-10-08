@@ -87,7 +87,7 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 _ => level_info,
             };
             let Some(e) = export else {
-                return crate::world::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], overlay: None };
+                return crate::world::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], overlay: None, ambient: [0, 0, 255], ambient_vector: None };
             };
             let props = read_export_properties(pkg, e).ok();
             let value = |n: &str| props.as_ref().and_then(|p| defaults.actor_value(lp, e, p, n));
@@ -95,8 +95,19 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 Some(Value::Float(f)) => f,
                 _ => d,
             };
+            let byte = |n: &str, d: u8| match value(n) {
+                Some(Value::Byte(b)) => b,
+                _ => d,
+            };
             crate::world::zones::ZoneFog {
                 name: pkg.object_name(ObjectRef::Export(e)).to_string(),
+                // ZoneInfo defaults: AmbientSaturation 255, the others 0.
+                ambient: [byte("AmbientBrightness", 0), byte("AmbientHue", 0), byte("AmbientSaturation", 255)],
+                // Own saved value only (the class default is not computed).
+                ambient_vector: match props.as_ref().and_then(|p| p.get(pkg, "AmbientVector")) {
+                    Some(Value::Vector(v)) => Some(*v),
+                    _ => None,
+                },
                 fog: matches!(value("bDistanceFog"), Some(Value::Bool(true))),
                 start: float("DistanceFogStart", 3000.0),
                 end: float("DistanceFogEnd", 8000.0),
@@ -215,9 +226,24 @@ struct Loader<'a> {
     anisotropy: u16,
     /// Unlit copies of materials (sky zone, bUnlit actors, PF_Unlit faces).
     unlit_cache: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
+    /// Baked-mesh copies of materials (render/baked.rs).
+    baked_materials: &'a mut Assets<crate::render::baked::BakedMaterial>,
+    baked_cache: HashMap<AssetId<StandardMaterial>, Handle<crate::render::baked::BakedMaterial>>,
 }
 
 impl Loader<'_> {
+    /// The material for a mesh with baked colours: as before (texture x
+    /// colour x K) plus Bevy's dynamic lights (render/baked.rs).
+    fn baked(&mut self, h: &Handle<StandardMaterial>) -> Handle<crate::render::baked::BakedMaterial> {
+        if let Some(b) = self.baked_cache.get(&h.id()) {
+            return b.clone();
+        }
+        let m = self.materials.get(h).cloned().unwrap_or_default();
+        let b = self.baked_materials.add(crate::render::baked::baked_material(&m));
+        self.baked_cache.insert(h.id(), b.clone());
+        b
+    }
+
     /// The same material drawn without lighting.
     fn unlit(&mut self, h: &Handle<StandardMaterial>) -> Handle<StandardMaterial> {
         if let Some(u) = self.unlit_cache.get(&h.id()) {
@@ -572,6 +598,7 @@ fn load_map(
     game_options: Res<crate::game::waves::GameOptions>,
     compressed: Option<Res<CompressedImageFormatSupport>>,
     graphics: Option<Res<crate::engine::graphics::GraphicsSettings>>,
+    mut baked_materials: ResMut<Assets<crate::render::baked::BakedMaterial>>,
 ) {
     let started = Instant::now();
     let set = PackageSet::new(&request.install_root);
@@ -596,6 +623,8 @@ fn load_map(
         commands.insert_resource(crate::game::trader::load_shops(&class_defaults, &lp));
         commands.insert_resource(crate::game::buy_menu::load_catalogue(&set, &class_defaults, &lp));
     }
+    // Lights for actor lighting (render/actor_light.rs).
+    commands.insert_resource(crate::render::actor_light::MapLightList(contents.lights.clone()));
     // Weapons, ammo boxes and vests lying in the map (every mode).
     commands.insert_resource(crate::game::pickups::load(&set, &class_defaults, &lp, &contents.pickups));
     // The trader woman in each shop (WeaponLocker): map content, every mode.
@@ -619,6 +648,8 @@ fn load_map(
         binary_alpha_cache: HashMap::new(),
         material_cache: HashMap::new(),
         unlit_cache: HashMap::new(),
+        baked_materials: &mut baked_materials,
+        baked_cache: HashMap::new(),
         textures_uploaded: 0,
         texture_bytes: 0,
         textures_failed: 0,
@@ -822,6 +853,11 @@ fn load_map(
                     let surface = *bsp_surfaces.entry(format!("{rf:?}")).or_insert_with(|| ue_assets::material::surface_type(&set, &level_handle, rf));
                     collision.bsp.surface = [surface, 0];
                     collision.bsp.push_polygon(&pts);
+                    // Actor lighting's line checks: the same walls minus the
+                    // sky backdrop, so sunlight reaches outdoor actors.
+                    if flags & poly_flags::FAKE_BACKDROP == 0 {
+                        collision.light_bsp.push_polygon(&pts);
+                    }
                 }
                 runlog::kv(
                     "bsp_lightmaps",
@@ -878,6 +914,11 @@ fn load_map(
         /// The mesh vertex each Bevy vertex came from (for baked colours).
         source: std::rc::Rc<Vec<u16>>,
     }
+    // KF_BAKED_UNLIT=1 (for comparing): baked meshes drawn unlit as before
+    // FL2 (no flashlight on them).
+    let use_baked_material = std::env::var_os("KF_BAKED_UNLIT").is_none();
+    let mut calibration = std::env::var_os("KF_LIGHT_CALIBRATE").map(|_| crate::render::actor_light::CalibrationSamples::default());
+    let k_lin_cal = crate::render::lighting::brightness_linear();
     let mut mesh_cache: HashMap<String, Option<Vec<Part>>> = HashMap::new();
     let (mut actors_spawned, mut entities, mut actors_unresolved) = (0usize, 0usize, 0usize);
     let mut sky_actors = 0usize;
@@ -918,7 +959,10 @@ fn load_map(
                 return None;
             };
             let mut mesh = meshes.get(&part.mesh)?.clone();
+            // Lightmap UVs for the black lightmap (render/baked.rs).
+            let n = cols.len();
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, cols);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.5f32, 0.5]; n]);
             out.push(meshes.add(mesh));
         }
         meshes_baked += 1;
@@ -1044,11 +1088,25 @@ fn load_map(
                     invisible_parts += 1;
                     continue;
                 };
-                let (mesh, material) = match &lit {
-                    Some(lit) => (lit[pi].clone(), loader.unlit(&material)),
-                    None => (part.mesh.clone(), material),
-                };
-                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root)));
+                match &lit {
+                    // Baked colours plus the flashlight (render/baked.rs).
+                    Some(lit) if use_baked_material => {
+                        let swap = crate::render::baked::BakedSwap::new(loader.unlit(&material), loader.baked(&material), meshes.get(&lit[pi]));
+                        commands.spawn((
+                            Mesh3d(lit[pi].clone()),
+                            MeshMaterial3d(swap.unlit.clone()),
+                            swap,
+                            Transform::IDENTITY,
+                            ChildOf(root),
+                        ));
+                    }
+                    Some(lit) => {
+                        commands.spawn((Mesh3d(lit[pi].clone()), MeshMaterial3d(loader.unlit(&material)), Transform::IDENTITY, ChildOf(root)));
+                    }
+                    None => {
+                        commands.spawn((Mesh3d(part.mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(root)));
+                    }
+                }
                 entities += 1;
             }
             door_setup.doors.push(crate::world::door::DoorSpawn {
@@ -1144,11 +1202,30 @@ fn load_map(
                 }
             }
         }
+        // Static meshes that cast shadows (bShadowCast) block light for
+        // actor lighting's line checks (render/actor_light.rs): their
+        // collision triangles.
+        if !in_sky && !is_mover && actor.shadow_cast {
+            let first = collision.light_meshes.triangles.len() as u32;
+            collision.light_mesh_owners.push((first, lp.pkg.object_name(ObjectRef::Export(actor.export)).to_string()));
+            for part in parts.iter() {
+                if let Some(tris) = &part.collision {
+                    for t in tris.iter() {
+                        let [a, b, c] = t.map(|p| transform.transform_point(p));
+                        collision.light_meshes.push_triangle(a, b, c);
+                    }
+                }
+            }
+        }
         let map_handle = ObjectHandle {
             package: lp.clone(),
             export: actor.export,
         };
         let lit = if in_sky || actor.unlit { None } else { baked(actor, parts, &mut meshes) };
+        // KF_LIGHT_CALIBRATE: sample baked vertices (render/actor_light.rs).
+        if let (Some(samples), Some(lit)) = (calibration.as_mut(), lit.as_ref()) {
+            samples.add_actor(&transform, lit, &meshes, k_lin_cal);
+        }
         for (pi, part) in parts.iter().enumerate() {
             // Skins[section] on the actor replaces the mesh's material.
             let material = match actor.skins.get(part.section) {
@@ -1162,8 +1239,21 @@ fn load_map(
                 invisible_parts += 1;
                 continue;
             };
-            // bUnlit actors, everything in the sky zone, and meshes with
-            // baked colours (texture x colour): unlit.
+            // Baked colours outside the sky: texture x colour, plus the
+            // flashlight (render/baked.rs).
+            if !in_sky && !actor.unlit && use_baked_material && let Some(lit) = &lit {
+                let swap = crate::render::baked::BakedSwap::new(loader.unlit(&material), loader.baked(&material), meshes.get(&lit[pi]));
+                commands.spawn((
+                    Mesh3d(lit[pi].clone()),
+                    MeshMaterial3d(swap.unlit.clone()),
+                    swap,
+                    transform,
+                    MapGeometry,
+                ));
+                entities += 1;
+                continue;
+            }
+            // bUnlit actors and everything in the sky zone: unlit.
             let mut material = if in_sky || actor.unlit || lit.is_some() { loader.unlit(&material) } else { material };
             let part_mesh = lit.as_ref().map_or_else(|| part.mesh.clone(), |l| l[pi].clone());
             // See-through sky layers (dome, fog shells) all sit within a few
@@ -1197,6 +1287,9 @@ fn load_map(
     }
     for parts in mesh_cache.values().flatten() {
         mesh_parts += parts.len();
+    }
+    if let Some(samples) = calibration.take() {
+        commands.insert_resource(samples);
     }
     let unique_ok = mesh_cache.values().filter(|p| p.is_some()).count();
     runlog::kv(

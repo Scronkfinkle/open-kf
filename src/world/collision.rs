@@ -49,6 +49,14 @@ pub struct CollisionGeometry {
     pub bsp: TriSoup,
     pub meshes: TriSoup,
     pub terrain: TriSoup,
+    /// The BSP walls that block light for actor lighting (render/actor_light.rs):
+    /// as `bsp`, without fake-backdrop (sky) walls.
+    pub light_bsp: TriSoup,
+    /// Static mesh collision triangles, which also block light (actor
+    /// lighting).
+    pub light_meshes: TriSoup,
+    /// For logs: (first triangle in `light_meshes`, the actor's name).
+    pub light_mesh_owners: Vec<(u32, String)>,
     /// Blocking brush volumes (with a label for logs and what they block),
     /// as their actual polygons. Not convex hulls: some volumes are hollow
     /// shapes, e.g. the arch around the KF-WestLondon car tunnels, which a

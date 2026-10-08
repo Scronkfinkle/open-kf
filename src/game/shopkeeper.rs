@@ -230,16 +230,30 @@ pub fn spawn_shopkeepers(
         );
         let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)> = m.parts.iter().zip(&keeper.meshes).map(|(p, h)| (h.clone(), p.material.clone())).collect();
         let cull = keeper.cull_distance;
+        // Lit by the map (render/actor_light.rs): her own MaxLights and
+        // AmbientGlow (class defaults: Actor 4 and 0).
+        let byte = |n: &str, d: u8| match defaults.actor_value(map, i, &props, n) {
+            Some(Value::Byte(b)) => b,
+            _ => d,
+        };
+        let light = crate::render::actor_light::ActorLight::new(format!("trader_{name}"), Vec3::ZERO, byte("MaxLights", 4).max(1) as usize, byte("AmbientGlow", 0));
         let parent = commands
             .spawn((
                 Transform { translation: coords::pos(location.to_array()), rotation: coords::rotation(rotation), ..default() },
                 Visibility::Visible,
                 Name::new(name.clone()),
                 keeper,
+                light,
             ))
             .id();
         for (mesh, material) in parts {
-            let mut e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY, ChildOf(parent)));
+            let mut e = commands.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                Transform::IDENTITY,
+                ChildOf(parent),
+                crate::render::actor_light::LitPart { owner: parent, animated: true, own: None },
+            ));
             if cull > 0.0 {
                 e.insert(VisibilityRange::abrupt(0.0, cull * SCALE));
             }

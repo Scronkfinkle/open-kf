@@ -2365,7 +2365,7 @@ Welder's slot-3 part to an unlit material showing it. `door.rs`
 a wall or nothing counts as no target). Assumed (native canvas code):
 text width = glyph widths + Kerning, glyphs blended by the font page's
 alpha, DrawTile's colour multiplies. The 2 decimals are UE2's float to
-string ("%.2f", found in Core.dll). The welder's fuel is not on the
+string ("%.2f", found in the game's engine files). The welder's fuel is not on the
 screen in KF (it is the HUD's bar).
 
 Not in this milestone: sounds (no sound yet), keys for locked doors
@@ -3076,8 +3076,8 @@ result in the map file; we read and draw that.
 - K is a single brightness factor. **Not known**: UE2 may double light
   ("overbright", K = 2) or not (K = 1). Start with 2; you compare with
   the real game at the same spot.
-- Zeds, weapons and other moving things keep the sun and ambient until
-  L4.
+- Zeds, weapons and other moving things kept the sun and ambient until
+  L4 (now lit by the map's lights: "Actor lighting (L4)").
 
 **Steps:**
 
@@ -3112,11 +3112,163 @@ result in the map file; we read and draw that.
 - **L3, terrain lighting.** Find where KF keeps it; draw it.
 - **L4, moving things.** Zeds and weapons lit by the map's Light actors
   near them plus zone ambient, as UE2 lights actors; the made-up sun goes.
+  See "Actor lighting (L4)" below.
 - Not planned: KF's dynamic lights (muzzle flashes lighting walls),
   projected shadows of zeds, coronas.
 
 Test: screenshots at fixed views before and after each step, and you
 compare one view with the real game.
+
+## Actor lighting (L4, planned 2026-10-07)
+
+Why: zeds, the player's body, the first-person weapon and the trader
+are lit by our made-up sun plus a flat ambient light, the same
+everywhere, so a zed in a pitch-black corridor looks as bright as one
+under a lamp.
+
+**What KF does (Engine/Actor.uc, ZoneInfo.uc, class defaults; the
+lighting code itself is native, so the formulas below are labelled):**
+
+- Any actor with LightType other than LT_None is a light (placed Light
+  actors, Sunlight, Spotlight, TriggerLight, the flashlight's glow).
+  LightHue / LightSaturation give the colour (Unreal's saturation runs
+  backwards: 255 is white), LightBrightness the strength, LightRadius
+  the reach (25 x (LightRadius + 1) world units, as in UE1 and our
+  flashlight), LightEffect the shape (LE_Sunlight: a direction with no
+  reach limit; LE_Spotlight: a cone of LightCone; LE_NonIncidence /
+  LE_QuadraticNonIncidence: no dependence on the surface angle).
+- A mesh actor is lit per vertex by a few chosen lights: Actor.MaxLights
+  ("limit to hardware lights active on this primitive"): Actor 4,
+  KFMonster 5, Weapon 6, xPawn (the players) 8. bLightingVisibility
+  (default true): "calculate lighting visibility for this actor with line
+  checks", so a light behind a wall does not count.
+- Plus the zone's ambient light: ZoneInfo AmbientBrightness / Hue /
+  Saturation, and the actor's own AmbientGlow (KFMonster 0, KFPawn 0,
+  KFWeapon 0, KFWeaponPickup 40). bUnlit actors ignore all of it.
+- **Guesses** (native code): how the lights are picked (we take the
+  strongest at the actor), the falloff with distance and the overall
+  scale (both fitted against the map's own baked vertex colours, which
+  UE2 computed from the same lights, see A4), the spotlight cone, and
+  that the light sum is clamped at 1 before the x2 ("overbright")
+  texture blend, like the baked meshes (K, above).
+
+**How we do it:**
+
+- A1. Read every light actor at map load (`ue_assets::level`, effective
+  values with class defaults) and each zone's ambient. Log `map_lights`
+  (count, by class, by effect).
+- A2. `render/actor_light.rs`: a light-blocking mesh (the level's solid
+  BSP, minus fake-backdrop sky walls, plus shadow-casting static meshes)
+  for line checks; lights sorted into a grid. Per lit actor (component
+  `ActorLight` on the actor): about 10 times a second, every light that
+  reaches it, line-checked from its centre, strongest MaxLights kept (a
+  Sunlight is lit if a line toward the sun leaves the level); each
+  frame each light's share eases toward the new value (0.15 s) so lights
+  do not pop on and off.
+- A3. Lighting the mesh: our skinned meshes are already posed on the CPU
+  every frame. Per vertex: ambient + sum over the chosen lights of
+  colour x strength x max(0, normal . direction to the light), clamped at
+  1, made linear, x K: written as the mesh's vertex colours on an unlit
+  material, the same way the map's baked meshes are drawn (texture x
+  colour x K). The light's falloff is taken at the actor's centre (one
+  value per light per actor; UE2 hardware lights fall off per vertex: a
+  small difference for a lamp more than an actor's height away).
+  Applies to zeds (and their gore), players' bodies, the trader, the
+  first-person weapon and hands (lit where the player stands). The
+  flashlight (spot plus glow) is added as an extra light, so it still
+  lights zeds. The sun stays for terrain and the three maps without
+  saved lightmaps.
+- A4. Check: with `KF_LIGHT_CALIBRATE=1`, compare our formula at baked
+  static-mesh vertices with the colours UE2 stored there (log
+  `light_calibrate`: fitted scale and error per falloff candidate), and
+  pick the falloff.
+- Log `actor_light` per actor once a second: zone, ambient, the chosen
+  lights (name, class, distance, strength, blocked or not), and the
+  resulting brightness.
+
+Not done: light flicker / pulse types (LightType other than steady is
+treated as steady), the muzzle-flash weapon light, bDramaticLighting,
+ScaleGlow (its effect on lit actors in UE2 is not known), projected
+shadows.
+
+**As built (2026-10-07).** All of A1 to A4, plus placed and dropped
+pickups (their own AmbientGlow: weapon pickups 40). What the fit
+against the baked vertex colours showed (33 maps, 30000 vertices each,
+`KF_LIGHT_CALIBRATE=1`, log `light_calibrate`; a vertex is compared
+unless it is saturated):
+
+- **A Sunlight lights only its own zone.** Maps with several Sunlights
+  (KF-SirensBelch 11, KF-Bedlam 7, KF-Foundry 7) fit only that way
+  (KF-SirensBelch correlation 0.46 -> 0.87). Ordinary lights reach into
+  other zones (limiting them too made the fit slightly worse).
+- **Static meshes block light** (those with bShadowCast, by their
+  collision triangles): median correlation 0.71 with the BSP only, 0.85
+  with meshes. Terrain does not block (not tried).
+- **bDynamicLight lights are not in the baked colours** (spark emitters
+  with LightBrightness 5000, TriggerLights): left out of the fit; actors
+  still get them.
+- **LE_StaticSpot** (effect 8, 78 lights on KF-Waterworks) is treated as
+  a spotlight (guess); KF-Waterworks and KF-Wyre fit worst (correlation
+  0.59).
+- Falloff: Smooth (1 - smoothstep) median correlation 0.855, Linear
+  0.845, Quadratic 0.833; best scale for Smooth 1.2 (most maps 1.1 to
+  1.4). So a light gives colour x LightBrightness / 255 x 1.2 x falloff
+  x incidence. That this also holds for actors is assumed.
+
+Swapped materials on the first-person weapon (scope lens view, welder
+screen) and on zeds (cloak, the Commando's spotted glow, the
+Fleshpound's red device) are drawn as before (white vertex colours),
+since they are displays or glows. `KF_LIGHT_SURVEY=1` logs, once per
+map, the light a zed would get at every PathNode (`light_survey`:
+percentiles, darkest and brightest spot); `KF_LIGHT_BSP_ONLY=1` lets
+only the BSP block light (for comparing). Only parts on screen get new
+vertex colours each frame.
+
+**How KF lights actors (2026-10-08, after your play test: "a little too
+dark").** Taken from KF's engine (docs/reverse-engineering.md); where each
+rule lives is in `RE.md`, which stays local and is not in git.
+
+- *Light cache*: each actor keeps up to 16 lights. Priority: Sunlight
+  first, else LightBrightness x (1 - d^2 / (R + r)^2), with R the light's
+  reach and r the actor's bounding-sphere radius; spotlights 0 outside
+  their cone. Lights at 0 or below are dropped. In priority order the
+  lights that are or were visible are used, up to MaxLights (at most 8; 4
+  with bDramaticLighting). Was: strongest by light at the centre, checked
+  ones only.
+- *Line checks*: every 0.35 s per light, only for bStatic lights (the
+  flashlight's glow and TriggerLights light through walls), from the
+  actor's bounding-sphere centre to the light (Sunlight: 65536 units
+  toward the sun), against the level and the shadow-casting static
+  meshes (bShadowCast), stopping at the first hit, zero extent: as we
+  had. A light's share then fades linearly from the old result to the new
+  over 0.35 s (a new light fades in from 0). Was: every 0.1 s, eased.
+- *Light strength*: point lights colour x 2 x (1 - smoothstep(d / R)) per
+  vertex, sunlight colour x 1.75, times the surface angle. Light colour:
+  FGetHSV(hue, saturation, 255) x LightBrightness / 255 x the level's
+  brightness; FGetHSV has a brightness curve, so white at 255 is 0.82.
+  Static meshes' baked colours are colour x 0.5 x a sample intensity of
+  2 x smoothstep x angle for point lights, 2 x angle for Sunlight,
+  ((cos - edge) / (1 - edge))^2 for the spotlight cone. Lit meshes are
+  drawn at 2 x texture x light (skeletal meshes included). We now use:
+  actor light = colour x 2 x falloff x angle (sun x 1.75) per vertex, at
+  the vertex's own distance. The baked fit's 1.2 is 1.46 times KF's 0.82
+  (not explained); KF's value matches your screenshot (below).
+- *Ambient*: the zone's ambient colour, FGetHSV(AmbientHue,
+  AmbientSaturation, AmbientBrightness), saved in the map, plus
+  AmbientGlow / 255 (255: pulsing). KF-WestLondon's ambient brightness 2
+  is 0.050 by that curve (saved vector: 0.0502, 0.0430, 0.0263, exactly
+  ours), not 2 / 255 = 0.008: six times more. We use the saved vector. KF
+  takes the brightest zone the actor's box touches; we take the zone at
+  the centre.
+- ScaleGlow is not used for lit actors.
+
+Checked against your KF-WestLondon screenshot `precise.jpg` (pose
+`--camera " -2760,1772,-3768,-3.6652,-0.0652"`, 1280 x 720): the hands
+and gun average 30.8 brightness (of 255) in KF. Ours: before 1.5, with
+the native rules 5.5 (the sun is blocked by a barricade's top, 73 units
+above the eye), and 30.6 with the sun let through (44 with the fitted
+1.2 colour). So in KF the sun reached the gun there; our pose may be off
+by enough to put us in the barricade's shadow (**not known**).
 
 ## KF's HUD (milestone 12, planned 2026-10-05)
 
@@ -3409,18 +3561,16 @@ quiet to hear (final gain under 0.002) are not started. S2 to S3 used a
 linear fade to silence at the radius; KF's small zed radii (footsteps
 100) showed that cannot be right.
 
-**Volume cap (read from KF's ALAudio.dll, 2026-10-07).** Not a guess
-any more: `UALAudioSubsystem::PlaySound` clamps the PlaySound volume to
-0..1, multiplies it by the ini's SoundVolume (0.3), clamps again; the
-distance fade comes after. So every volume of 1 or more plays the same:
-guns (1.8), the trader's lines (ShoutVolume 2), the radio beep (10) and
-pickups (100) all end at gain 0.3. `mixer.rs` (`play_volume`) does
-this for every sound. Until 2026-10-07 the player's own sounds were not
-capped (only world sounds were), which made the trader's line play at
-0.6 and the radio beep at 1.0, two to three times louder than in KF.
-(Engine.dll's ClientHearSound passes only the flag "not 3D" for normal
-sounds, so the other two scales in that function, VoiceVolume and
-"none", are not used by game sounds.) Zed time: the voices' pitch is multiplied by the game speed (assumed
+**Volume cap (from KF's engine, 2026-10-07; details in local `RE.md`).**
+Not a guess any more: KF clamps a sound's volume to 0..1, multiplies it by
+the ini's SoundVolume (0.3), clamps again; the distance fade comes after.
+So every volume of 1 or more plays the same: guns (1.8), the trader's
+lines (ShoutVolume 2), the radio beep (10) and pickups (100) all end at
+gain 0.3. `mixer.rs` (`play_volume`) does this for every sound. Until
+2026-10-07 the player's own sounds were not capped (only world sounds
+were), which made the trader's line play at 0.6 and the radio beep at
+1.0, two to three times louder than in KF. The VoiceVolume setting is
+for voice chat only, not game sounds. Zed time: the voices' pitch is multiplied by the game speed (assumed
 from how KF sounds in zed time; to be checked).
 
 **Steps** (each one logged as `sound_play` / `sound_stop` / `music` lines,
@@ -4201,6 +4351,25 @@ rate, visible, hand and attachment bounds in actor space),
   glow 50 units back" rule (the glow always stands off). Brightness in
   already-lit places is lower than UE2's gamma-space add (we add in
   linear light): the light shows best in dark places, as in KF.
+- **FL2, baked props (done 2026-10-08, after your play test:
+  "flashlights don't work against tunnel walls and doors").** Not a
+  regression of actor lighting: placed meshes with baked colours (the
+  tunnel shells, doors, most props) were drawn unlit since L2, so no
+  Bevy light could reach them; the flashlight lit only the BSP. Now
+  they use `render/baked.rs`: Bevy's lit StandardMaterial with a small
+  extra fragment shader that adds the baked colour (texture x colour x
+  K, exactly as before) to Bevy's own lighting of the plain texture; a
+  black 1 x 1 `Lightmap` on each such mesh keeps the sun and ambient
+  light off it (as for the BSP), so only point and spot lights (the
+  flashlight) add. That material on every baked mesh cost about 5 ms
+  a frame (KF-WestLondon, headless), so each baked mesh keeps the old
+  unlit material and switches to the lit one (with the lightmap) only
+  while the flashlight's spot or glow can reach it (bounding spheres
+  touch; log `baked_swap`, about 240 to 390 meshes with the light on).
+  Glass panes and sky-zone meshes keep the old unlit material. Measured
+  with the light off: unchanged from before (mean difference 0.00,
+  KF-WestLondon street view). `KF_BAKED_UNLIT=1` turns FL2 off (for
+  comparing).
 
 Logs: `weapon_torch` (per torch weapon at load: offset, LightBone found,
 switch anim), `flashlight_toggle`, `flashlight_refused`, `flashlight_off`,

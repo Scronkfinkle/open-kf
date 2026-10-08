@@ -780,8 +780,7 @@ fn play_sounds(
             }
         }
         // Every sound's volume is capped at 1 before the master volume and
-        // the distance fade. KF's ALAudio.dll does this (read from its
-        // machine code, 2026-10-07: UALAudioSubsystem::PlaySound clamps
+        // the distance fade. KF's engine does this (2026-10-07; it clamps
         // the volume to 0..1, multiplies it by SoundVolume, clamps again),
         // so KF's volumes above 1 (guns 1.8, the trader's 2, the radio
         // beep 10, pickups 100) all play like 1. Until 2026-10-07 the

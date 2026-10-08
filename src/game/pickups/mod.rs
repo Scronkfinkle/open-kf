@@ -1399,7 +1399,8 @@ fn load_mesh(set: &PackageSet, path: &str, meshes: &mut Assets<Mesh>, images: &m
         let rf = sm.materials.get(si).copied().unwrap_or(ObjectRef::Null);
         let simple = ue_assets::material::resolve(set, &ObjectHandle { package: h.package.clone(), export: 0 }, rf);
         let image = simple.texture.as_ref().and_then(|t| crate::render::skinned::decode_image(t, images));
-        let material = materials.add(StandardMaterial { base_color_texture: image, perceptual_roughness: 0.6, reflectance: 0.2, cull_mode: None, double_sided: true, ..default() });
+        // Lit by the map through vertex colours (render/actor_light.rs).
+        let material = materials.add(StandardMaterial { base_color_texture: image, unlit: true, cull_mode: None, double_sided: true, ..default() });
         parts.push((meshes.add(mesh), material));
     }
     runlog::kv(
@@ -1472,11 +1473,24 @@ fn sync_visuals(
                 Name::new(format!("Pickup {} {}", s.id, s.class)),
                 Transform { translation: coords::pos(at.to_array()), rotation: coords::rotation(rot), scale },
                 Visibility::Inherited,
+                // Lit by the map (render/actor_light.rs), with the class's
+                // AmbientGlow (KFWeaponPickup 40) and MaxLights.
+                crate::render::actor_light::ActorLight::new(format!("pickup_{}", s.id), Vec3::ZERO, c.max_lights.max(1) as usize, c.ambient_glow),
             ))
             .id();
         let offset = coords::pos([-c.pre_pivot[0], -c.pre_pivot[1], -c.pre_pivot[2]]);
+        // Dropped items move and spin: their light is redone every frame.
+        let moving = s.id >= DYNAMIC_ID_BASE;
         for (mesh, material) in parts.iter().flatten() {
-            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::from_translation(offset), ChildOf(root)));
+            // Each pickup its own copy (its own vertex colours).
+            let own = meshes.get(mesh).cloned().map(|m| meshes.add(m)).unwrap_or_else(|| mesh.clone());
+            commands.spawn((
+                Mesh3d(own),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(offset),
+                ChildOf(root),
+                crate::render::actor_light::LitPart { owner: root, animated: moving, own: None },
+            ));
         }
         runlog::kv(
             "pickup_drawn",

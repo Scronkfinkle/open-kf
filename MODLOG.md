@@ -5744,12 +5744,10 @@ output peak / RMS per `sound_play` line from a recording.
 sounds. Cause: our mixer let listener sounds above volume 1 through, so
 with SoundVolume 0.3 the trader's line (ShoutVolume 2) played at gain
 0.6 and its radio beep (volume 10) at 1.0, against 0.46 for a 9mm shot
-and at most 0.3 for any zed. KF's ALAudio.dll (read-only disassembly of
-the install's file with objdump, nothing saved):
-`UALAudioSubsystem::PlaySound` does gain = clamp(clamp(Volume, 0, 1) x
-SoundVolume, 0, 1) before OpenAL's distance fade, for every sound
-(Engine.dll's ClientHearSound passes only flags 0 / 0x10 "not 3D", so
-the VoiceVolume branch (flag 0x100) is not used by game sounds). So in
+and at most 0.3 for any zed. KF's engine (read-only, nothing saved;
+details in local RE.md) clamps every sound's volume to 0..1, multiplies
+by SoundVolume and clamps again, before the distance fade; VoiceVolume is
+not used by game sounds. So in
 KF the trader's line, the beep and the guns all play at gain 0.3.
 **Tested how:** `KF_ROOT=... scripts/headless.sh --map KF-BioticsLab
 --mode debug --mute --fps 30 --input
@@ -6019,3 +6017,187 @@ then `volume_saved ... why=slider_released`. The launcher's sliders were
 tested the same way and already dragged (0.952 -> 0.070). cargo test and
 clippy clean.
 **Not tested:** by you; the 3D character view drag (same code path).
+
+## 2026-10-07 Actor lighting (L4): zeds, bodies, weapon and pickups lit by the map's lights
+
+**Changed:** new `src/render/actor_light.rs` (per-actor light picking,
+line checks, easing, vertex colours, logs `map_lights`, `actor_light`,
+`actor_light_cost`, `KF_LIGHT_CALIBRATE` fit, `KF_LIGHT_SURVEY`,
+`KF_LIGHT_BSP_ONLY`); `crates/ue-assets/src/level.rs` (`MapLight`: every
+actor with a LightType; `MeshActor::shadow_cast`); `src/world/map.rs`
+(light actors and zone ambient to the new module, light-blocking BSP
+without sky backdrop, shadow-casting mesh triangles, calibration samples);
+`src/world/zones.rs` (zone AmbientBrightness / Hue / Saturation);
+`src/world/collision.rs` (two light-blocking triangle sets);
+`src/render/skinned.rs` (skinned materials always unlit: the light comes
+as vertex colours); zeds (`zeds/zed/spawn.rs`), gore stumps and severed
+limbs (`zeds/gore.rs`), players' bodies and their weapons
+(`player/body/animate.rs`), the trader (`game/shopkeeper.rs`), the
+first-person weapon and hands (`weapons/weapon/load.rs`, now with
+normals), pickups (`game/pickups/mod.rs`, `classes.rs`: AmbientGlow,
+MaxLights); the flashlight also feeds actor lighting
+(`weapons/flashlight.rs`); `main.rs`, `render/mod.rs` (plugin);
+`docs/DESIGN.md` ("Actor lighting (L4)", plan and as built);
+`docs/test-views.md` (3 views).
+**Why:** zeds and the player stayed fully lit in dark places: they were
+lit by our one made-up sun plus a flat ambient light, the same
+everywhere. KF lights mesh actors with the map's Light actors near them
+(Actor.MaxLights of them, line-checked: bLightingVisibility) plus the
+zone's ambient light.
+**Tested how:** `KF_LIGHT_CALIBRATE=1` on all 33 maps: our formula at
+30000 baked static-mesh vertices per map against the colours UE2 stored
+there. `KF_LIGHT_SURVEY=1` on all 33 maps: the light a zed would get at
+every PathNode, plus a screenshot of a Clot at the start (looked at
+KF-WestLondon, Manor, Biohazard, Bedlam, Steamland). Before/after
+screenshots on KF-WestLondon (street, tunnel, behind view, flashlight).
+Frame times: 3 runs each of this commit's base and the change, 12 zeds,
+700 frames. cargo test (234 + 24 pass), clippy 0 warnings.
+**Result:** fit (falloff Smooth, scale 1.2, walls = BSP without sky +
+shadow-casting meshes, a Sunlight only in its own zone, dynamic lights
+left out): median correlation 0.855 over the maps (Linear 0.845,
+Quadratic 0.833; BSP walls only 0.72; all Sunlights everywhere:
+KF-SirensBelch 0.46 instead of 0.87). Worst: KF-Waterworks and KF-Wyre
+0.59. KF-WestLondon Clot in the street: Sunlight0 0.66 + lamps, top
+light 0.61; in the tunnel mouth: 5 lamps, top 0.11 (dark figure, lamp
+light from the side); first-person weapon in the tunnel: top 0.03
+(dark hands, before: full brightness). Survey: a zed's average surface
+light per map, median of PathNodes 0.02 to 0.27 (static meshes' mean
+baked colour on the same maps 0.01 to 0.10: zeds are about as dark as
+the scenery); every map has PathNodes where a zed is near black (no
+light reaches, ambient 0). Flashlight on a tunnel zed: +0.31 light.
+Cost (26 lit actors, KF-WestLondon): picking 0.11 to 0.19 ms a frame
+(about 1300 line checks a second), vertex colours 0.1 ms (only parts on
+screen; 0.43 ms before that pruning, 2.2 ms before a gamma table). Frame
+times headless: base 34.2 / 32.4 / 34.5 ms, change 31.9 / 35.2 / 51.6 ms;
+the 51.6 run was slow from its first second, before any zed spawned, so
+I think machine load, not this change (not proven).
+**Still broken / not tested:** not compared with the real game (the
+overall level, 1.2 x, is fitted on baked meshes; that KF lights actors
+the same way is a guess). Light flicker / pulse types are steady here;
+the muzzle-flash light, bDramaticLighting, ScaleGlow not done. Terrain
+does not block light. An actor whose centre is inside a mesh's
+collision (my test Clots placed into the bus) gets no light. KF-Clandestine,
+KF-Forgotten, KF-Hell: the BSP still uses the old sun (no saved
+lightmaps), so dark zeds stand in front of sun-lit walls there.
+Static gibs and projectiles keep the old sun. Player bodies in a
+network game not run. Not played by you.
+**Next:** your look at a zed walking from the KF-WestLondon street into
+the tunnel, and a comparison with the real game at the same spot.
+
+## 2026-10-08 Reverse-engineering tooling (Ghidra, headless)
+
+**Changed:** `flake.nix`: a separate dev shell `nix develop .#re` with
+Ghidra and binutils (kept out of the default shell: large). New
+`scripts/re.sh` (`list` / `analyze` / `decompile`) and
+`scripts/ghidra/DecompileFunctions.java` (decompiles functions by name to
+`work/re/out/`). `.gitignore` allows `scripts/ghidra/*.java`. New
+`docs/reverse-engineering.md` (rules + how), pointer in `CLAUDE.md`.
+**Why:** several mechanics (actor lighting, sound mixing) are in the native
+engine code; you approved reading it with decompiler tools.
+**Tested how:** `list` found a known sound function by name; `decompile`
+of it (40 s including the first analysis) shows the volume rule found
+earlier by hand. Ghidra's settings and caches went to `work/re/home`;
+`~/.ghidra`, `~/.config/ghidra`, `~/.cache/ghidra` do not exist after the
+run. Checked the install read-only: KillingFloor.exe and the engine DLLs have
+no DRM wrapper section (`.text .rdata .data .rsrc/.reloc` only).
+**Not tested:** analysing the largest engine file (time unknown).
+
+## 2026-10-08 Reverse engineering: `scripts/re.sh dump` (whole-DLL text dumps)
+
+**Changed:** `scripts/re.sh dump DLL` decompiles every function of a DLL to
+`work/re/out/<DLL>-all.c` (gitignored) so agents can grep the engine;
+`DecompileFunctions.java` takes `*` for "all". `docs/reverse-engineering.md`:
+"search the dumps first", which DLLs are dumped and which are skipped on
+purpose (other companies' libraries, steam_api.dll, ad client, editor).
+**Why:** you asked to decompile the rest rather than one function at a time.
+**Tested how:** the sound engine file: 435 functions, 6 s; the other
+engine files were still running at the time of this commit (about 30 s
+each so far).
+**Not tested:** the remaining dumps were not finished when committed.
+
+## 2026-10-08 Actor lighting from KF's native code (play test: "a little too dark")
+
+**Changed:** `src/render/actor_light.rs`: UE2's relevant-light cache
+(16 slots, priority LightBrightness x (1 - d^2 / (R + r)^2), sunlight
+first, MaxLights up to 8), line checks every 0.35 s only for bStatic
+lights with a linear 0.35 s fade, per-vertex light at each vertex's own
+distance, actors' light = native colour (FGetHSV x LightBrightness/255,
+0.82 for white) x 2 x falloff x angle (sunlight x 1.75), zone ambient =
+the map's saved AmbientVector (FGetHSV curve) + AmbientGlow/255,
+spotlight cone squared, no ScaleGlow; logs `actor_light` (cache, used
+lights with share, blocked lights with what blocks them),
+`actor_light_cost`; test switches `KF_ACTOR_MASK`, `KF_LIGHT_ACTOR_SCALE`,
+`KF_LIGHT_STOP`, `KF_LIGHT_BSP_ONLY`; calibration also logs a median
+ratio. `src/world/zones.rs`, `src/world/map.rs` (AmbientVector),
+`src/world/collision.rs`, `map.rs` (names of light-blocking meshes, for
+logs), `src/weapons/weapon/load.rs` (weapon radius, no ScaleGlow),
+`src/weapons/flashlight.rs` (fields). DESIGN.md "From KF's native code";
+test-views.md (matched view).
+**Why:** you found zeds and your hands too dark. First check: no bug in
+the line checks themselves (the coordinator's tunnel spot puts the camera
+inside the bus mesh, 13 units from its wall, which blocks two lamps). Then
+KF's engine code (details in local RE.md) replaced the guesses: zone ambient is six times what I had
+(FGetHSV curve), actor lights use 2 x the falloff curve, light picking
+and fades as above.
+**Tested how:** your real screenshot precise.jpg at the matched pose,
+1280 x 720, hands and gun masked (KF_ACTOR_MASK) and averaged; actor vs
+surrounding brightness on KF-WestLondon (tunnel, street), KF-Bedlam,
+KF-Manor, KF-Farm, KF-Biohazard (base build vs new); `KF_LIGHT_SURVEY`
+on all 34 maps; calibration on 4 maps; 5 unit tests in actor_light
+(cache fade, FGetHSV curve); cargo test 235 + 24, clippy 0 warnings.
+**Result:** precise.jpg hands and gun: KF 30.8 (of 255), before 1.5, now
+5.5; with the sun let through 30.6 (so in KF the sun reaches the gun
+there; at our pose a barricade's top blocks it 73 units above the eye;
+our pose may be off). Zone ambient on KF-WestLondon 0.050 (= the map's
+saved AmbientVector exactly), was 0.008. Survey (median of a zed's
+average light at every path node, old -> new): KF-WestLondon 0.057 ->
+0.109, KF-Bedlam 0.034 -> 0.046, KF-Manor 0.271 -> 0.355,
+KF-Hospitalhorrors 0.060 -> 0.149, KF-Suburbia 0.072 -> 0.048 (only
+darker map); near-black path nodes fell on 33 of 34 maps (e.g.
+Hospitalhorrors 171 -> 0, Waterworks 122 -> 27). Actor / surroundings
+ratio (new): WL tunnel weapon 1.22, WL street zed 2.04 (lit by sun and
+lamps), Manor zed 1.47, Bedlam zed 0.20 (zone ambient 0, its lamps sit
+behind BSP), Farm 0.39 (terrain there is still lit by our made-up sun,
+L3). Calibration unchanged (WL 0.818, Manor 0.855) and KF-Waterworks
+better (0.587 -> 0.649, squared spot cone). Cost: cache 0.1 ms, vertex
+light 0.48 ms a frame with 26 actors.
+**Still broken / not tested:** not played by you; only one real
+screenshot to compare against; the sun-visibility difference at that
+pose is not explained; the baked fit's colour scale (1.2) is 1.46 times
+the native one (not explained, actors now use the native one); terrain
+(Farm) and the 3 maps without lightmaps still use the made-up sun, so
+actors look dark next to them; ambient from the centre zone only.
+**Next:** your look in KF-WestLondon, KF-Bedlam and KF-Manor.
+
+## 2026-10-08 FL2: the flashlight lights baked props, walls and doors
+
+**Changed:** new `src/render/baked.rs` (BakedMaterial: StandardMaterial +
+a fragment shader that adds the baked colour to Bevy's own lighting of
+the texture; black 1 x 1 lightmap so the sun and ambient stay off;
+`BakedSwap` switches a baked mesh to it only while the flashlight can
+reach it); `src/world/map.rs` (baked meshes and doors get `BakedSwap`,
+UV_1, `KF_BAKED_UNLIT`); `main.rs`, `render/mod.rs`; DESIGN.md
+"Weapon flashlights" FL2; test-views.md (door view).
+**Why:** you found the flashlight does not light tunnel walls and doors.
+Not caused by actor lighting: placed meshes with baked colours have been
+drawn unlit since L2, so Bevy's lights never reached them (FL1 noted it
+as FL2). Checked on the pre-change build: the lit spot did not change
+(door 12.2 -> 12.4).
+**Tested how:** centre-of-screen brightness, light off vs on, base build
+vs new: KF-WestLondon tunnel mouth wall and the station doors
+(`--camera -8490,1260,-3800,1.5708,-0.1`); world with the light off
+compared pixel by pixel with the base build; frame times (KF-WestLondon,
+12 zeds, 700 frames).
+**Result:** wall 25.7 -> 46.1 with the light (base: 25.7 -> 25.7); door
+12.2 -> 21.3 (base 12.2 -> 12.4); light off: mean difference 0.00 from
+the base build. Frame time with the light off: 31.7 / 31.1 ms vs base
+32.3 / 32.0 (first version with the lit material on every mesh: +5 ms;
+hence the switching). With the light on: 33.9 and 31.7 ms in two runs,
+53 and 55 ms in two others, slow from the first second; I saw the same
+once on yesterday's build without these changes, so I think it is the
+machine, not proven.
+**Still broken / not tested:** the LightCircle ring pattern; glass panes
+and sky meshes are not lit by it; flashlight brightness on props is
+Bevy's light (as on the BSP), not KF's projector formula; not looked at
+by you.
+**Next:** your check in a dark tunnel and at a door.

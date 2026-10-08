@@ -101,6 +101,10 @@ pub struct PickupClass {
     pub respawn_time: f32,
     /// A KFWeaponPickup (Sleeping waits while a player sees it).
     pub weapon_pickup: bool,
+    /// AmbientGlow and MaxLights, for actor lighting
+    /// (render/actor_light.rs): KFWeaponPickup 40, Actor 0; Actor 4.
+    pub ambient_glow: u8,
+    pub max_lights: u8,
 }
 
 /// Finds a class by its "Package.Class" path.
@@ -123,6 +127,13 @@ fn float(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str, default: f3
     match defaults.get(class, prop) {
         Some((Value::Float(f), _)) => f,
         Some((Value::Int(i), _)) => i as f32,
+        _ => default,
+    }
+}
+
+fn byte(defaults: &ClassDefaults, class: &ObjectHandle, prop: &str, default: u8) -> u8 {
+    match defaults.get(class, prop) {
+        Some((Value::Byte(b), _)) => b,
         _ => default,
     }
 }
@@ -170,5 +181,7 @@ pub fn read_class(set: &PackageSet, defaults: &ClassDefaults, path: &str) -> Res
         cull_distance: float(defaults, &class, "CullDistance", 0.0),
         respawn_time: float(defaults, &class, "RespawnTime", 0.0),
         weapon_pickup: defaults.is_a(&class, "KFWeaponPickup"),
+        ambient_glow: byte(defaults, &class, "AmbientGlow", 0),
+        max_lights: byte(defaults, &class, "MaxLights", 4),
     })
 }

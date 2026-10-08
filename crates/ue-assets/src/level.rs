@@ -39,6 +39,8 @@ pub struct MeshActor {
     pub glass: Option<GlassInfo>,
     /// bUnlit: drawn without lighting.
     pub unlit: bool,
+    /// bShadowCast (StaticMeshActor default true): blocks light.
+    pub shadow_cast: bool,
     /// Actor.SurfaceType (footsteps on this actor use it when not 0).
     pub surface_type: u8,
     /// The StaticMeshInstance export holding the baked vertex colours
@@ -183,6 +185,32 @@ pub struct PlacedPickup {
     pub rotation: Rotator,
 }
 
+/// An actor that gives light (effective LightType other than LT_None):
+/// placed Light actors, Sunlight, Spotlight, TriggerLight and any other
+/// actor with a light set. Only with class defaults. Own value, else class
+/// default (Actor / Light defaults as fallbacks).
+#[derive(Debug, Clone)]
+pub struct MapLight {
+    pub name: String,
+    pub class: String,
+    pub location: [f32; 3],
+    pub rotation: Rotator,
+    /// ELightType (0 LT_None .. 10 LT_FadeOut).
+    pub light_type: u8,
+    /// ELightEffect (12 LE_Spotlight, 13 LE_NonIncidence, 20 LE_Sunlight,
+    /// 21 LE_QuadraticNonIncidence).
+    pub effect: u8,
+    pub hue: u8,
+    pub saturation: u8,
+    pub brightness: f32,
+    pub radius: f32,
+    pub cone: u8,
+    /// bDynamicLight, bStatic, bSpecialLit (only lights special-lit surfaces).
+    pub dynamic: bool,
+    pub is_static: bool,
+    pub special_lit: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct LevelContents {
     /// The `Model` export holding the level geometry.
@@ -205,6 +233,8 @@ pub struct LevelContents {
     pub projectors: Vec<ProjectorInfo>,
     /// Placed pickups and pickup spawners (only with class defaults).
     pub pickups: Vec<PlacedPickup>,
+    /// Actors that give light (only with class defaults).
+    pub lights: Vec<MapLight>,
 }
 
 fn vector(props: &PropertyList, pkg: &Package, name: &str, default: [f32; 3]) -> [f32; 3] {
@@ -414,6 +444,32 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                 cull_distance: v.float("CullDistance", 0.0),
             });
         }
+        if let Some((lp, d)) = defaults
+            && !matches!(props.get(pkg, "bDeleteMe"), Some(Value::Bool(true)))
+        {
+            let v = Effective { lp, d, export: i, props: &props };
+            let light_type = v.byte("LightType", 0);
+            if light_type != 0 {
+                out.lights.push(MapLight {
+                    name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                    class: class.to_string(),
+                    location: vector(&props, pkg, "Location", [0.0; 3]),
+                    rotation: v.rotator("Rotation"),
+                    light_type,
+                    effect: v.byte("LightEffect", 0),
+                    hue: v.byte("LightHue", 0),
+                    // Unset everywhere: UnrealScript's zero (Light's own
+                    // defaults, 255 / 64 / 64 / 128, come through the class).
+                    saturation: v.byte("LightSaturation", 0),
+                    brightness: v.float("LightBrightness", 0.0),
+                    radius: v.float("LightRadius", 0.0),
+                    cone: v.byte("LightCone", 0),
+                    dynamic: v.bool("bDynamicLight"),
+                    is_static: v.bool("bStatic"),
+                    special_lit: v.bool("bSpecialLit"),
+                });
+            }
+        }
         if class == "PathNode" {
             out.path_nodes.push(vector(&props, pkg, "Location", [0.0; 3]));
         }
@@ -566,6 +622,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             door,
             glass,
             unlit: matches!(effective("bUnlit"), Some(Value::Bool(true))),
+            shadow_cast: matches!(effective("bShadowCast"), Some(Value::Bool(true))),
             surface_type: match effective("SurfaceType") {
                 Some(Value::Byte(b)) => b,
                 _ => 0,

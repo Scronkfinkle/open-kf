@@ -124,7 +124,8 @@ pub struct Skins {
 
 impl SkinnedModel {
     /// Loads a skeletal mesh (and its animation set) and creates one Bevy
-    /// mesh + material per material index. `lit` adds normals and lighting.
+    /// mesh + material per material index. `lit` adds normals, for actor
+    /// lighting (render/actor_light.rs: give the drawn parts a `LitPart`).
     pub fn load(
         set: &PackageSet,
         mesh_h: &ObjectHandle,
@@ -233,7 +234,9 @@ impl SkinnedModel {
             let image = simple.texture.as_ref().and_then(|t| decode_image(t, images));
             let material = materials.add(StandardMaterial {
                 base_color_texture: image,
-                unlit: !lit,
+                // Lit models get their light as vertex colours from the
+                // map's lights (actor_light.rs): drawn unlit either way.
+                unlit: true,
                 perceptual_roughness: 0.9,
                 reflectance: 0.1,
                 alpha_mode: match simple.blend {

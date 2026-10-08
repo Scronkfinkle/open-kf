@@ -1147,7 +1147,8 @@ pub(super) fn load_weapon(
             package: skins_pkg,
             named,
         },
-        false,
+        // Normals for actor lighting (render/actor_light.rs).
+        true,
         meshes,
         images,
         materials,
@@ -1386,6 +1387,9 @@ pub(super) fn load_weapon(
 
 /// The weapon's model parts, hidden, under the weapon camera.
 pub(super) fn spawn_parts(commands: &mut Commands, def: &mut WeaponDef, cam: Entity) {
+    // Lit by the map where the player's eye is (render/actor_light.rs):
+    // Weapon MaxLights 6, KFWeapon AmbientGlow 0.
+    commands.entity(cam).insert_if_new(crate::render::actor_light::ActorLight::new("first_person_weapon", Vec3::ZERO, 6, 0).with_radius(30.0));
     for part in &def.model.parts {
         let e = commands
             .spawn((
@@ -1395,6 +1399,7 @@ pub(super) fn spawn_parts(commands: &mut Commands, def: &mut WeaponDef, cam: Ent
                 RenderLayers::layer(WEAPON_LAYER),
                 Visibility::Hidden,
                 ChildOf(cam),
+                crate::render::actor_light::LitPart { owner: cam, animated: true, own: Some(part.material.id()) },
             ))
             .id();
         def.entities.push(e);

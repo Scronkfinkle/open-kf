@@ -183,9 +183,23 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
         .parts
         .iter()
         .zip(handles)
-        .map(|(part, handle)| commands.spawn((Mesh3d(handle), MeshMaterial3d(part.material.clone()), Transform::IDENTITY, ChildOf(parent))).id())
+        .map(|(part, handle)| {
+            commands
+                .spawn((
+                    Mesh3d(handle),
+                    MeshMaterial3d(part.material.clone()),
+                    Transform::IDENTITY,
+                    ChildOf(parent),
+                    // Swapped materials (cloak, spotted glow, the
+                    // Fleshpound's red device) are drawn as before.
+                    crate::render::actor_light::LitPart { owner: parent, animated: true, own: Some(part.material.id()) },
+                ))
+                .id()
+        })
         .collect();
-    commands.entity(parent).insert(ZedParts(parts));
+    // Lit by the map (render/actor_light.rs): KFMonster MaxLights 5,
+    // AmbientGlow 0.
+    commands.entity(parent).insert((ZedParts(parts), crate::render::actor_light::ActorLight::new(format!("zed_{id}_{}", c.name.rsplit('.').next().unwrap_or("")), Vec3::ZERO, 5, 0)));
     let u = centre / SCALE;
     runlog::kv(
         "zed_spawned",
