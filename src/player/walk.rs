@@ -348,6 +348,12 @@ impl Mover<'_, '_, '_> {
     }
 }
 
+/// KFHumanPawn.ModifyVelocity's HealthMod: (Health / HealthMax) x
+/// HealthSpeedModifier (0.3) + 0.7.
+fn health_speed_mult(health: f32, health_max: f32) -> f32 {
+    (health.max(0.0) / health_max) * 0.3 + 0.7
+}
+
 /// Unreal's CalcVelocity: friction turns velocity toward the input
 /// direction; with no input it brakes; then accelerate and clamp. A
 /// walking pawn passes its acceleration and speed limit already times
@@ -438,12 +444,13 @@ fn walk(
         Some(id) => format!("zed {id}"),
         None => format!("player {}", players[i - zed_ids.len()].0),
     };
-    // KFHumanPawn.ModifyVelocity: GroundSpeed x the carried-weight factor,
-    // plus the held weapon's bonus (knife +40), x the perk's
-    // GetMovementSpeedModifier. The health factor is not done.
+    // KFHumanPawn.ModifyVelocity: GroundSpeed x the health factor x the
+    // carried-weight factor, plus the held weapon's bonus (knife +40), x
+    // the perk's GetMovementSpeedModifier.
+    let health_mult = health_speed_mult(health.health, crate::game::combat::PLAYER_HEALTH_MAX);
     let ground_speed = effects
         .as_ref()
-        .map_or(kf::GROUND_SPEED, |e| (kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus) * e.perk_speed_mult);
+        .map_or(kf::GROUND_SPEED * health_mult, |e| (kf::GROUND_SPEED * health_mult * e.weight_speed_mult + e.ground_speed_bonus) * e.perk_speed_mult);
     let dt = time.delta_secs().min(0.1);
     // Paused (the pause menu stops game time): nothing moves. The sub-steps
     // below divide by their length, which would be 0.
@@ -861,6 +868,13 @@ mod tests {
             v = calc_velocity(v, accel, kf::GROUND_FRICTION, kf::GROUND_SPEED * p, 1.0 / 120.0);
         }
         assert!((v.length() - 80.0).abs() < 0.5, "speed {}", v.length());
+    }
+
+    #[test]
+    fn low_health_slows() {
+        assert_eq!(health_speed_mult(100.0, 100.0), 1.0);
+        assert!((health_speed_mult(50.0, 100.0) - 0.85).abs() < 1e-6);
+        assert!((health_speed_mult(10.0, 100.0) - 0.73).abs() < 1e-6);
     }
 
     #[test]
