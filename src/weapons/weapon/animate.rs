@@ -72,9 +72,12 @@ pub(super) fn animate_weapon(
     // Advance the animation; finished one-shots lead to the next action.
     w.frame += dt * w.play_rate;
     let length = w.sequence.map_or(1.0, |s| w.defs[w.current].model.length(s));
+    // A one-shot ends on its last key (N - 1) and holds it there; a loop
+    // runs through all N frames (last key back to the first) and wraps.
+    let end = if w.looping { length } else { w.sequence.map_or(0.0, |s| w.defs[w.current].model.last_frame(s)) };
     // Sound notifies passed this frame (reloads, the shotgun's pump), also
     // across a loop's wrap.
-    let (from, to) = (w.notify_frame, w.frame.min(length));
+    let (from, to) = (w.notify_frame, w.frame.min(end));
     anim_sounds(&mut w, from, to);
     if w.looping && w.frame >= length {
         let wrapped = w.frame % length.max(1e-3);
@@ -83,13 +86,19 @@ pub(super) fn animate_weapon(
     } else {
         w.notify_frame = w.frame;
     }
-    if w.frame >= length {
+    if w.frame >= end {
+        if !w.looping && w.frame - dt * w.play_rate < end {
+            runlog::kv(
+                "weapon_anim_end",
+                &format!("weapon={} anim={} action={:?} held_frame={end:.1} frames={length:.0}", w.defs[w.current].class, w.anim, w.action),
+            );
+        }
         if w.looping {
             w.frame %= length.max(1e-3);
         } else {
             match w.action {
                 // Switching runs on timers (weapon_input); hold the last frame.
-                Action::PutDown { .. } | Action::Select | Action::Grenade { .. } => w.frame = length,
+                Action::PutDown { .. } | Action::Select | Action::Grenade { .. } => w.frame = end,
                 // Weapon.AnimEnd: after FireAnim comes FireEndAnim if the
                 // weapon has it; otherwise idle unless a mode is firing
                 // (then the last frame holds until the next shot).
@@ -118,7 +127,7 @@ pub(super) fn animate_weapon(
                     } else if !w.firing.iter().any(|&f| f) {
                         play_idle(&mut w);
                     } else {
-                        w.frame = length;
+                        w.frame = end;
                     }
                 }
             }

@@ -511,7 +511,7 @@ pub(super) fn think_and_move(
             runlog::kv("zed_hit_reaction", &format!("id={} reaction=KnockDown", z.id));
         }
         if matches!(z.state, ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging) {
-            if z.sequence.is_some_and(|s| z.frame < c.model.length(s) - 0.5) {
+            if z.sequence.is_some_and(|s| z.frame < c.model.last_frame(s)) {
                 t.translation = z.centre;
                 continue;
             }
@@ -939,7 +939,7 @@ pub(super) fn think_and_move(
                 runlog::kv("zed_grab_broken", &format!("id={} distance_unreal={dist:.0}", z.id));
             }
             let full_body_busy = z.attack.is_some_and(|a| !a.layered)
-                && z.sequence.is_some_and(|s| z.frame < c.model.length(s) - 0.5);
+                && z.sequence.is_some_and(|s| z.frame < c.model.last_frame(s));
             if z.attack.is_some_and(|a| !a.layered) && !full_body_busy {
                 z.attack = None;
             }

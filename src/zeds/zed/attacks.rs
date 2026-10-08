@@ -328,7 +328,7 @@ pub(super) fn door_bashing(
                 }
             }
         }
-        if z.frame >= len - 0.5 {
+        if z.frame >= c.model.last_frame(seq) {
             // While(bShotAnim) Sleep(0.25), then Sleep(0.1).
             b.in_anim = false;
             b.wait = (b.anim_time / 0.25).ceil() * 0.25 - b.anim_time + 0.1;

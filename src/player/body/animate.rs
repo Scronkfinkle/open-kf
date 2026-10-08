@@ -290,15 +290,16 @@ impl PawnBody {
     }
 }
 
-/// Advances a single-sequence play; true when a non-looping one ended.
+/// Advances a single-sequence play; true when a non-looping one ended
+/// (on its last key, N - 1, which it then holds).
 fn advance(b: &BodyModel, p: &mut Play, dt: f32) -> bool {
     let len = b.model.length(p.seq).max(1e-3);
     p.frame += dt * b.model.rate(p.seq) * p.rate;
     if p.looping {
         p.frame %= len;
         false
-    } else if p.frame >= len {
-        p.frame = len;
+    } else if p.frame >= b.model.last_frame(p.seq) {
+        p.frame = b.model.last_frame(p.seq);
         true
     } else {
         false
@@ -518,7 +519,7 @@ pub(super) fn animate_bodies(
                 }
             }
             body.was_on_ground = s.on_ground;
-            let finished = body.base.is_some_and(|p| !p.looping && p.frame >= b.model.length(p.seq));
+            let finished = body.base.is_some_and(|p| !p.looping && p.frame >= b.model.last_frame(p.seq));
             let busy = matches!(body.base_kind, BaseKind::Takeoff | BaseKind::Land | BaseKind::Hit) && body.base.is_some() && !finished;
             if new_hit && s.on_ground && speed < IDLE_SPEED {
                 // Over the whole body when standing (see DESIGN.md: while
@@ -614,14 +615,13 @@ pub(super) fn animate_bodies(
 
         // Channel 1.
         if let Some(mut u) = body.upper {
-            let len = b.model.length(u.seq).max(1e-3);
             let before = u.frame;
             let ended = advance(b, &mut u, dt);
             // A loop's end counts as AnimEnd once firing has stopped
             // (guess: not while FS_Looping, or sustained fire would fade).
             let wrapped = u.looping && u.frame < before && body.fire_state != FireState::Looping;
             if wrapped {
-                u.frame = len;
+                u.frame = b.model.last_frame(u.seq);
                 u.looping = false;
             }
             body.upper = Some(u);

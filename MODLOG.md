@@ -6201,3 +6201,22 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 ANIM-1: one-shot animations end and hold on their last key (branch fix/animation)
+
+**Changed:** `src/render/skinned.rs` (`last_frame` = N - 1, unit test);
+`src/zeds/zed/animate.rs` (zed one-shots and the upper-body layer stop on
+N - 1); `src/zeds/zed/think.rs`, `src/zeds/zed/attacks.rs` ("animation
+done" checks use N - 1 instead of N - 0.5); `src/weapons/weapon/animate.rs`
+(one-shots and the PutDown / Select / grenade holds stop on N - 1; new log
+`weapon_anim_end`); `src/player/body/animate.rs` (same for the body's
+channels). DESIGN.md "Animation playback rules".
+**Why:** an N-frame animation has keys at frames 0..N-1. KF ends a played-once
+animation on frame N - 1 and holds it. We ran to frame N, which is the end of
+the loop segment back to the first key, so a finished one-shot showed its
+first pose (the 9mm jumped back up near the end of PutDown).
+**Tested how:** unit test (frame N - 1 gives the last key, frame N gives key
+0); `cargo test` (all pass); headless weapon switch: see the ANIM-2 entry.
+**Result:** see the test numbers in the last entry of this series.
+**Still broken / not tested:** not looked at in game.
+**Next:** ANIM-8.

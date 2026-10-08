@@ -6245,3 +6245,45 @@ Details:
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms
   it against player height and movement speed).
 - ~~Whether every `.u` class includes its source text~~: yes, all 3757 do.
+
+## Animation playback rules (planned 2026-10-08: ANIM-1, 8, 7, 3, 2)
+
+KF's engine plays every skeletal animation with the same rules; these were
+read from the engine itself (details in the local RE.md) and we follow them
+for zeds and the first-person weapon. The player's third-person body only
+gets ANIM-1 in this pass. One commit per step, in this order:
+
+- **ANIM-1: a one-shot ends on its last key.** An animation of N frames has
+  keys at frames 0 .. N-1. Played once, KF stops it on frame N-1 and holds
+  that pose (that is when AnimEnd fires). We ran to frame N, which is the
+  end of the "last key back to the first" segment used by loops, so a
+  finished one-shot showed its *first* pose (e.g. the 9mm popped back up for
+  about 0.06 s at the end of PutDown). Loops still run through all N frames.
+  Zed "animation done" checks use the last frame too. Log:
+  `weapon_anim_end ... held_frame=`.
+- **ANIM-8: notifies at time 0 never fire.** KF fires a notify (a timed event
+  in the animation) only when the frame goes past it, from strictly before
+  to at-or-after; a sequence starts on frame 0 (or a hair after), so a
+  notify sitting exactly at 0 never fires. Ours counted from -1. Affects 7
+  notifies in the whole game (some player footsteps, a Crawler idle).
+- **ANIM-7: the zed flinch layer tweens in and fades out.** The upper-body
+  hit animation moves from the pose on screen to its first frame over
+  0.1 s, plays, holds its last key, and its weight then fades linearly from
+  1 to 0 over 0.12 s. A new flinch during the fade starts at full weight.
+- **ANIM-3: zed walk speed and direction.** While moving, the movement
+  animation plays at rate speed / (class default GroundSpeed x 1.1) (no
+  clamp; the class default, not the zed's randomised or raging speed), and
+  the direction picks one of four animations: forward if the movement
+  direction is within about 35 degrees of facing (dot > 0.82), backward if
+  within 35 degrees of behind, else left or right. A missing animation keeps
+  the current one playing, as KF does. Log `zed_anim ... rate= dir=`.
+- **ANIM-2: tweens.** Starting an animation with a tween time T moves every
+  bone linearly (in time) from the pose last shown to the new animation's
+  first frame over T seconds; only then does the animation clock start, and
+  no notifies fire during the tween. Times used: zed actions and movement
+  0.1 s, zed idle 0.25 s; weapon idle 0.2 s, reload 0.1 s, fire animations
+  the fire mode's TweenTime (0.1 by default), select / put down / fire loop
+  0. A looping animation asked for again while it plays only changes its
+  rate. Because the clock waits, zed claw hits and attack ends come 0.1 s
+  later than before (as in KF). Logs: `zed_anim_tween`, and the hit line's
+  `since_anim_start=`.

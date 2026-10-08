@@ -266,7 +266,8 @@ pub(super) fn animate_zeds(
             if z.looping {
                 z.frame %= len;
             } else {
-                z.frame = z.frame.min(len);
+                // A one-shot stops on its last key (N - 1) and holds it.
+                z.frame = z.frame.min(c.model.last_frame(s));
             }
             if z.health <= 0.0 && Some(s) == c.death {
                 z.frame = z.frame.min(c.death_hold_frame);
@@ -302,12 +303,13 @@ pub(super) fn animate_zeds(
                 );
             }
         }
-        // Upper-body layer, played once.
+        // Upper-body layer, played once; it ends on its last key.
         let overlay = z.overlay;
         if let Some((seq, f, root)) = z.overlay {
             let next = f + dt * c.model.rate(seq);
-            z.overlay = (next < c.model.length(seq)).then_some((seq, next, root));
-            let reached = next.min(c.model.length(seq));
+            let last = c.model.last_frame(seq);
+            z.overlay = (next < last).then_some((seq, next, root));
+            let reached = next.min(last);
             let prev = z.overlay_sounds_heard.filter(|(s, _)| *s == seq).map(|(_, f)| f);
             let passed = passed_notifies(&c.model, seq, prev, reached, false);
             heard.extend(passed.iter().filter_map(|n| n.sound.clone()));
