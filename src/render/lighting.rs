@@ -12,8 +12,9 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use ue_assets::bsp::LightmapTexture;
 use ue_assets::texture::{Mip, TextureFormat as UeFormat, decode_rgba};
 
-/// K: light 1.0 (255) times this is the texture's own colour. **Guess**:
-/// UE2 doubled ("overbright"); you compare with the game.
+/// K: light 1.0 (255) times this is the texture's own colour. KF's rule:
+/// BSP lightmaps are drawn with a doubling blend, texture x lightmap x 2
+/// (details in the local RE.md).
 pub const BRIGHTNESS: f32 = 2.0;
 
 /// K in linear light (see the module note).

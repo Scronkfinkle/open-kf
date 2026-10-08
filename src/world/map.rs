@@ -773,7 +773,7 @@ fn load_map(
                         ),
                     );
                 }
-                let (mut lightmapped_polys, mut no_lightmap_polys, mut missing_page_polys) = (0usize, 0usize, 0usize);
+                let (mut lightmapped_polys, mut no_lightmap_polys) = (0usize, 0usize);
                 let mut lightmapped_materials: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>> = HashMap::new();
                 // Per (material, flags, lightmap page): material, in sky, page, mesh.
                 type BspGroup = (Handle<StandardMaterial>, bool, Option<Handle<Image>>, MeshBuilder);
@@ -806,15 +806,9 @@ fn load_map(
                     // baked light we do not have; our one sun made it change
                     // colour with the view): drawn unlit.
                     let unlit = in_sky || surf.flags & poly_flags::UNLIT != 0;
-                    // The polygon's lightmap page and UVs, if it has one.
-                    // A page whose saved copy is out of date: keep the old
-                    // sun lighting.
-                    let page_missing = !unlit
-                        && bsp_lighting
-                            .as_ref()
-                            .and_then(|l| l.sections.get(usize::try_from(node.section).ok()?))
-                            .and_then(|sec| lightmap_pages.get(usize::try_from(sec.lightmap_texture).ok()?))
-                            .is_some_and(|p| p.is_none());
+                    // The polygon's lightmap page and UVs, if it has one
+                    // (out-of-date pages are built above, so every lit
+                    // polygon has one; there is no sun fallback).
                     let lit = (!unlit)
                         .then(|| {
                             let sec = bsp_lighting.as_ref()?.sections.get(usize::try_from(node.section).ok()?)?;
@@ -835,10 +829,6 @@ fn load_map(
                                 })
                                 .clone()
                         }
-                        None if page_missing => {
-                            missing_page_polys += 1;
-                            mat
-                        }
                         // No lightmap (sky, PF_Unlit, see-through surfaces
                         // UE2 does not lightmap): unlit.
                         None => {
@@ -847,7 +837,7 @@ fn load_map(
                         }
                     };
                     let page = lit.as_ref().map(|l| l.0).unwrap_or(-1);
-                    let key = format!("{:?}|{two_sided}|{in_sky}|{unlit}|{page}|{page_missing}", surf.material);
+                    let key = format!("{:?}|{two_sided}|{in_sky}|{unlit}|{page}", surf.material);
                     let builder = &mut groups
                         .entry(key)
                         .or_insert_with(|| (mat, in_sky, lit.as_ref().map(|l| l.1.clone()), MeshBuilder::default()))
@@ -912,7 +902,7 @@ fn load_map(
                 runlog::kv(
                     "bsp_lightmaps",
                     &format!(
-                        "pages={} pages_stale={} stale=[{}] pages_decoded={} surface_lightmaps={} polygons_lightmapped={lightmapped_polys} polygons_unlit={no_lightmap_polys} polygons_page_saved_empty={missing_page_polys} brightness={} lightmap_exposure={:.1}",
+                        "pages={} pages_stale={} stale=[{}] pages_decoded={} surface_lightmaps={} polygons_lightmapped={lightmapped_polys} polygons_unlit={no_lightmap_polys} brightness={} lightmap_exposure={:.1}",
                         lightmap_pages.len(),
                         bsp_lighting.as_ref().map_or(0, |l| l.textures.iter().filter(|t| !t.saved_is_current()).count()),
                         bsp_lighting.as_ref().map_or(String::new(), |l| l
