@@ -6315,3 +6315,32 @@ UseRotationFrom None and along the effect's X (world Y) with Actor.
 **Result:** test passes.
 **Still broken / not tested:** flash positions not checked in a game run.
 **Next:** P7 fading per draw style.
+
+## 2026-10-08 P7: particle fading and Opacity per draw style (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads FadeOutFactor and
+FadeInFactor, missing members from the class default 1,1,1,1);
+`src/render/particles.rs` (`particle_color`; test fade_per_draw_style).
+**Why:** KF fades by draw style, not by one alpha multiply: fade-out wins
+(f = (age - FadeOutStartTime) / (life - FadeOutStartTime)), else fade-in
+(f = (FadeInEndTime - age) / FadeInEndTime); AlphaBlend takes
+FadeOutFactor.W x f off the alpha, Modulated goes toward "no change"
+(alpha 1 - W x f), additive styles take FadeOutFactor.XYZ x f off the
+colour (so dark ColorScale colours vanish sooner). Opacity scales the
+alpha (AlphaBlend, Modulated, AlphaModulate) or the colour (additive).
+The ColorScale alpha now counts for AlphaBlend only (part of the same
+engine rule). KFNade* emitters with FadeOutFactor 0 no longer fade (they
+have FadeOut off anyway).
+**Tested how:** unit test (colours per style at mid-fade, Opacity,
+fade-in, factor 0); `kfpkg emitter KFMod.KFNadeExplosion` shows factors
+0,0,0,0 for SpriteEmitter0-2 and 1,1,1,1 for 86/87. Headless
+KF-WestLondon, same camera and shots as the baseline, screenshots at
+frames 62, 64, 102, 106, 140.
+**Result:** test passes. Screenshots: muzzle flash and blood puff look
+as before; the map smoke (KFSmoke, Brighten, Emitter12 about 475 units
+away) now shows as large hazy rectangles with straight edges. Cause, as
+far as I can tell: our additive particles get the fog colour added
+(Bevy fogs before blending), and P1 made them 4 x the area; KF fogs
+additive particles toward black. Fixed in the next step (P8).
+**Still broken / not tested:** see above until P8.
+**Next:** P8 blend modes (Brighten, Darken, AlphaModulate) with KF's fog.

@@ -1221,6 +1221,51 @@ fn update_effects(
     }
 }
 
+/// A sprite particle's vertex colour (RGBA, 0..1), as KF's engine computes
+/// it. Start: the ColorScale colour (white without), its alpha used only
+/// for AlphaBlend. Fading: fade-out wins when FadeOut is on and the
+/// particle is past FadeOutStartTime, f = (age - start) / (life - start),
+/// with FadeOutFactor; else fade-in while younger than FadeInEndTime,
+/// f = (end - age) / end, with FadeInFactor. AlphaBlend takes factor.W x f
+/// off the alpha; Modulated becomes "no change" with alpha 1 - W x f; the
+/// other styles take factor.XYZ x f off the colour (a subtraction, alpha
+/// untouched). Then Opacity scales the alpha (AlphaBlend, Modulated,
+/// AlphaModulate) or the colour (Translucent, Darken, Brighten); Regular
+/// ignores it. Modulated's colour is always white here: our modulate
+/// material treats white as KF's neutral grey.
+fn particle_color(d: &EmitterDef, scale: Option<Vec4>, age: f32, life: f32) -> Vec4 {
+    let mut c = scale.unwrap_or(Vec4::ONE);
+    if d.draw_style != 1 {
+        c.w = 1.0;
+    }
+    if d.draw_style == 2 {
+        c = Vec4::ONE;
+    }
+    let fade_out = d.fade_out && age > d.fade_out_start_time && life != d.fade_out_start_time;
+    let fade_in = d.fade_in && age < d.fade_in_end_time && d.fade_in_end_time != 0.0;
+    if fade_out || fade_in {
+        let (factor, f) = if fade_out {
+            (d.fade_out_factor, (age - d.fade_out_start_time) / (life - d.fade_out_start_time))
+        } else {
+            (d.fade_in_factor, (d.fade_in_end_time - age) / d.fade_in_end_time)
+        };
+        let factor = Vec4::from_array(factor);
+        match d.draw_style {
+            1 => c.w -= factor.w * f,
+            2 => c.w = 1.0 - factor.w * f,
+            _ => c -= (factor * f).truncate().extend(0.0),
+        }
+    }
+    if d.opacity < 1.0 {
+        match d.draw_style {
+            0 => {}
+            1 | 2 | 4 => c.w *= d.opacity,
+            _ => c = (c.truncate() * d.opacity).extend(c.w),
+        }
+    }
+    c.clamp(Vec4::ZERO, Vec4::ONE)
+}
+
 /// A sprite's four corners (Unreal units): KF puts them at centre +- right
 /// x Size.X +- up x Size.Y, so a sprite is 2 x Size wide and tall (Size is
 /// the half-width). Order: top-left, top-right, bottom-right, bottom-left.
@@ -1264,24 +1309,16 @@ fn build_sprites(
                 size[a] *= (speed * d.scale_size_by_velocity_multiplier[a]).clamp(1.0, d.scale_size_by_velocity_max.max(1.0));
             }
         }
-        // Fading, in seconds of the particle's life.
-        let mut alpha = d.opacity;
-        if d.fade_in && d.fade_in_end_time > 0.0 && p.age < d.fade_in_end_time {
-            alpha *= p.age / d.fade_in_end_time;
-        }
-        if d.fade_out && p.age > d.fade_out_start_time {
-            alpha *= 1.0 - (p.age - d.fade_out_start_time) / (p.life - d.fade_out_start_time).max(1e-3);
-        }
-        let mut rgb = Vec3::ONE;
-        if d.use_color_scale
-            && let Some(c) = curve(
+        let scale = if d.use_color_scale {
+            curve(
                 &d.color_scale.iter().map(|(t, c)| (*t, Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32) / 255.0)).collect::<Vec<_>>(),
                 t,
                 |a, b, f| a.lerp(b, f),
             )
-        {
-            rgb = c.truncate();
-        }
+        } else {
+            None
+        };
+        let color = particle_color(d, scale, p.age, p.life);
         let centre = world_pos(d, frame, p);
         let (right, up) = if d.use_direction_as == 2 && p.vel.length_squared() > 1e-6 {
             // PTDU_Right: the sprite's right (its width) along the velocity,
@@ -1318,7 +1355,7 @@ fn build_sprites(
         let (cu, cv) = ((index % su) as f32, (index / su) as f32);
         let (w, hgt) = (1.0 / su as f32, 1.0 / sv as f32);
         uvs.extend([[cu * w, cv * hgt], [(cu + 1.0) * w, cv * hgt], [(cu + 1.0) * w, (cv + 1.0) * hgt], [cu * w, (cv + 1.0) * hgt]]);
-        colors.extend([[rgb.x, rgb.y, rgb.z, alpha.clamp(0.0, 1.0)]; 4]);
+        colors.extend([color.to_array(); 4]);
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     write_mesh(&mut mesh, positions, Vec::new(), uvs, colors, indices);
@@ -1404,6 +1441,8 @@ mod tests {
             use_color_scale: false,
             color_scale: Vec::new(),
             opacity: 1.0,
+            fade_out_factor: [1.0; 4],
+            fade_in_factor: [1.0; 4],
             fade_in: false,
             fade_in_end_time: 0.0,
             fade_out: false,
@@ -1646,6 +1685,41 @@ mod tests {
         d.use_rotation_from = 1;
         let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
         assert!(close(p.pos, Vec3::new(100.0, 5.0, 1.0)), "{:?}", p.pos);
+    }
+
+    /// Fading by draw style, half way through a fade-out from 0.5 s on a
+    /// 1.5 s particle (f = 0.5), and Opacity 0.5.
+    #[test]
+    fn fade_per_draw_style() {
+        let mut d = def();
+        d.fade_out = true;
+        d.fade_out_start_time = 0.5;
+        let orange = Some(Vec4::new(1.0, 0.5, 0.2, 0.8));
+        let at = |d: &EmitterDef| particle_color(d, orange, 1.0, 1.5);
+        // AlphaBlend: alpha 0.8 - 0.5; colour kept.
+        d.draw_style = 1;
+        assert!(at(&d).abs_diff_eq(Vec4::new(1.0, 0.5, 0.2, 0.3), 1e-5));
+        // Translucent / Brighten: 0.5 off each colour channel, alpha 1.
+        d.draw_style = 3;
+        assert!(at(&d).abs_diff_eq(Vec4::new(0.5, 0.0, 0.0, 1.0), 1e-5));
+        // Modulated: half way to "no change".
+        d.draw_style = 2;
+        assert!(at(&d).abs_diff_eq(Vec4::new(1.0, 1.0, 1.0, 0.5), 1e-5));
+        // FadeOutFactor 0 (KFNade*): no fade.
+        d.draw_style = 3;
+        d.fade_out_factor = [0.0; 4];
+        assert!(at(&d).abs_diff_eq(Vec4::new(1.0, 0.5, 0.2, 1.0), 1e-5));
+        // Opacity: colour for additive, alpha for alpha blending.
+        d.fade_out = false;
+        d.opacity = 0.5;
+        assert!(at(&d).abs_diff_eq(Vec4::new(0.5, 0.25, 0.1, 1.0), 1e-5));
+        d.draw_style = 1;
+        assert!(at(&d).abs_diff_eq(Vec4::new(1.0, 0.5, 0.2, 0.4), 1e-5));
+        // Fade-in: f = (end - age) / end.
+        d.opacity = 1.0;
+        d.fade_in = true;
+        d.fade_in_end_time = 0.4;
+        assert!(particle_color(&d, None, 0.1, 1.5).abs_diff_eq(Vec4::new(1.0, 1.0, 1.0, 0.25), 1e-5));
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.

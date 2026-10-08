@@ -88,6 +88,9 @@ pub struct EmitterDef {
     /// (relative time, RGBA).
     pub color_scale: Vec<(f32, [u8; 4])>,
     pub opacity: f32,
+    /// How much a full fade takes off, as [X, Y, Z, W] (colour, then alpha).
+    pub fade_out_factor: [f32; 4],
+    pub fade_in_factor: [f32; 4],
     pub fade_in: bool,
     pub fade_in_end_time: f32,
     pub fade_out: bool,
@@ -206,6 +209,19 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         let class_axes = axes_of(defaults.get(&class, p));
         [0, 1, 2].map(|i| own_axes[i].or(class_axes[i]).unwrap_or(d))
     };
+    // A Plane (X, Y, Z, W): members the emitter leaves out keep the class
+    // default's (the engine's is 1, 1, 1, 1).
+    let plane = |p: &str| -> [f32; 4] {
+        let member = |v: Option<(Value, Rc<LoadedPackage>)>, n: &str| match v {
+            Some((Value::TaggedStruct { props, .. }, lp)) => struct_float(&lp, &props, n),
+            _ => None,
+        };
+        ["X", "Y", "Z", "W"].map(|n| {
+            member(own.get(pkg, p).map(|v| (v.clone(), h.package.clone())), n)
+                .or_else(|| member(defaults.get(&class, p), n))
+                .unwrap_or(1.0)
+        })
+    };
     let object = |p: &str| match get(p) {
         Some((Value::Object(r), lp)) if r != ObjectRef::Null => set.resolve(&lp, r),
         _ => None,
@@ -297,6 +313,8 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         use_color_scale: boolean("UseColorScale"),
         color_scale,
         opacity: float("Opacity", 1.0),
+        fade_out_factor: plane("FadeOutFactor"),
+        fade_in_factor: plane("FadeInFactor"),
         fade_in: boolean("FadeIn"),
         fade_in_end_time: float("FadeInEndTime", 0.0),
         fade_out: boolean("FadeOut"),
