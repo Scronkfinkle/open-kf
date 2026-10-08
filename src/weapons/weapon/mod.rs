@@ -33,6 +33,7 @@ mod sleeve;
 mod pickup;
 mod drop;
 pub mod aim;
+pub mod weapon_bar;
 pub use aim::AimSetting;
 pub(crate) use load::*;
 use input::*;
@@ -126,6 +127,7 @@ impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptedInput>()
             .init_resource::<AimSetting>()
+            .init_resource::<weapon_bar::WeaponBar>()
             .init_resource::<WeaponLoadout>()
             .init_resource::<crate::weapons::firing::Recoil>()
             .add_systems(

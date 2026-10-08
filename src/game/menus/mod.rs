@@ -324,7 +324,7 @@ fn menu_input(
     mut start_vet: Local<Option<crate::game::perks::Vet>>,
     (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
     mut audio: Option<ResMut<crate::audio::mixer::Audio>>,
-    mut aim: ResMut<crate::weapons::weapon::AimSetting>,
+    (mut aim, mut weapon_bar): (ResMut<crate::weapons::weapon::AimSetting>, ResMut<crate::weapons::weapon::weapon_bar::WeaponBar>),
     (mut buttons, mut left_held): (MessageReader<bevy::input::mouse::MouseButtonInput>, Local<bool>),
 ) {
     // Whether the left button is held, from the raw press / release
@@ -349,6 +349,9 @@ fn menu_input(
             Some(Page::Audio) => ids.push("audio.back".into()),
             // A popup page closes on Escape, cancelled (as Cancel).
             Some(Page::ModelSelect) => ids.push("select.cancel".into()),
+            // KFPlayerController.ShowMidGameMenu: while the weapon bar is
+            // shown, Escape only hides it.
+            None if !buy.open && weapon_bar.shown => weapon_bar.hide(virt.elapsed_secs(), "escape"),
             None if !buy.open => ids.push("pause.open".into()),
             _ => {}
         }

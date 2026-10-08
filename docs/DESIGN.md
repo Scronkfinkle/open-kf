@@ -6766,3 +6766,82 @@ class values, and fonts Vr20-26 (UT2LargeFont, UT2HeaderFont,
 UT2ServerListFont); `menus/mod.rs` loads the menu's textures and the 48
 trader pictures only with `--trader-menu kf`, and draws it. At 2560 x 1440
 the boxes land within a few pixels of the screenshot's.
+
+## The weapon selection bar (planned 2026-10-08: WB1-WB3)
+
+KF draws a row of boxes along the top of the screen when you roll the
+mouse wheel (reference screenshot, untracked:
+`references/weapon_top_hud.jpg`, 2560 x 1440). Each column is one
+inventory group (1 melee, 2 pistols, 3 primary, 4 specials, 5 equipment);
+each weapon is a box with its picture, the highlighted one in the lighter
+"selected" box with its red picture. Rolling moves the highlight; a click
+of Fire takes the highlighted weapon (and does not shoot).
+
+**What KF does (scripts, `KFMod.HUDKillingFloor` and
+`KFMod.KFPlayerController`):**
+
+| Piece | KF source |
+|---|---|
+| wheel opens the bar and moves the highlight | `KFPlayerController.NextWeapon / PrevWeapon` call the HUD's `NextWeapon / PrevWeapon` (never the pawn's). `User.ini`: `MouseWheelUp=NextWeapon`, `MouseWheelDown=PrevWeapon` |
+| opening | `HUDKillingFloor.ShowInventory`: shown, fade in, the highlight starts on the weapon in hand; the same roll then moves it one step |
+| moving | `HUDKillingFloor.NextWeapon / PrevWeapon`: weapons sorted into the 5 groups in inventory-list order (`InventoryGroup > 0`, so not the grenade); next/previous inside the group, then the first/last of the next non-empty group, wrapping |
+| Fire takes it | `KFPlayerController.Fire`: while the bar is shown, `HUD.SelectWeapon` and `bFire = 0` (no shot). `SelectWeapon`: hide (fade out), the weapon becomes `PendingWeapon`, the one in hand is put down (same rule as a slot key) |
+| Escape | `KFPlayerController.ShowMidGameMenu`: while shown, Escape only hides the bar (no pause menu) |
+| number keys | `SwitchWeapon` goes to the pawn, not the HUD: they switch at once and do not open, move or close the bar |
+| timeout | none: nothing in the scripts hides the bar except Fire and Escape. (Not a guess: the only callers of `HideInventory` are those two.) |
+| drawing | `HUDKillingFloor.DrawInventory`, last thing in `DrawHUD` |
+
+**Layout (HUDKillingFloor defaults):** `InventoryX = 0.22`, `InventoryY`
+not set (0), `InventoryBoxWidth = 0.1`, `InventoryBoxHeight = 0.075`,
+`BorderSize = 0.005`, all times the screen width except Y (times the
+height). Column `i` sits at x = (0.22 + 0.1 i) x width; its boxes stack
+downwards, each 0.1 x 0.075 widths. An empty group is one box a quarter
+as tall. Box textures `KillingFloorHUD.HUD.Hud_Rectangel_W_Stroke`
+(`InventoryBackgroundTexture`) and `Hud_Rectangel_selected`
+(`SelectedInventoryBackgroundTexture`), drawn with DrawTileStretched
+(corners kept, middle stretched; native, same guess as the menus'
+painter). Picture: the weapon's `HudImage` (`SelectedHudImage` when
+highlighted), texels (0,0)-(256,192), inside the box minus the border.
+Colour white; alpha fades over `InventoryFadeTime = 0.3` s in and out.
+At 2560 wide: boxes 256 x 192 from x = 563, matching the screenshot.
+
+**Our design.**
+- `src/weapons/weapon/weapon_bar.rs` (new): the `WeaponBar` resource
+  (shown, fade start, highlighted weapon class, and each frame the list
+  of (class, group) in inventory order for the HUD) and the pure
+  step function (port of the HUD's Next/PrevWeapon, unit tested).
+- `input.rs`: the wheel (and test actions `next` / `prev`, which already
+  exist) opens / steps the bar instead of switching; Fire while shown
+  selects (through the existing switch path, so reloads still refuse a
+  switch) and the click does not fire (we ignore the button until it is
+  let go: our reading of `bFire = 0`). Death hides the bar (ours: KF's
+  just stops drawing it without a pawn).
+- `menus/mod.rs`: Escape while the bar is shown hides it instead of
+  opening the pause menu.
+- `hud.rs`: load the layout numbers, the two box textures and every
+  weapon's two pictures at startup; draw the bar last.
+
+**Logs.** `weapon_bar shown=… highlighted=… groups=…` on every
+open/step/close (groups = item counts per group),
+`weapon_bar_select weapon=…`, `weapon_bar_layout` (window size and every
+box) once per window size and contents. Test actions: `next`, `prev`
+(the wheel), `fire`.
+
+### Steps
+
+- **WB1** state + input (wheel opens/steps, Fire selects, Escape hides).
+- **WB2** HUD drawing.
+- **WB3** logs, test, MODLOG.
+
+### As built (2026-10-08; headless runs, not played by you)
+
+WB1-WB3 built together. `src/weapons/weapon/weapon_bar.rs` (state, step
+rule, 3 unit tests); `input.rs`: the wheel steps the bar (it no longer
+switches directly), Fire while shown selects, the switch rules moved
+unchanged into `select_weapon` (shared by slot keys, quick heal,
+flashlight and the bar); `menus/mod.rs`: Escape hides a shown bar;
+`hud.rs`: layout, box textures, pictures (`HudImage`, or the
+`HudImageRef` name for the later weapons: 47 of 48 weapons; the Frag has
+none and is never in the bar), `draw_weapon_bar`, a 2560 x 1440 layout
+unit test; the HUD's quad pool went from 160 to 320. At 2560 x 1440 the
+boxes are 256 x 192 from x = 563, as in the reference screenshot.
