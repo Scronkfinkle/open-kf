@@ -637,21 +637,10 @@ impl Router {
         point_pos(self.target)
     }
 
-    /// The zed was launched from navigation point `i` (a jump pad): it was
-    /// there, so a launch that falls short counts against the pad's link.
-    /// A launch from the pad the zed was heading for counts as reaching it:
-    /// the next move (planned on landing) is the pad's onward link.
-    pub fn launched_from(&mut self, i: usize) {
-        self.from_point = Some(i);
-        if self.target == Some(Target::Point(i)) {
-            self.target = None;
-        }
-    }
-
     /// MonsterController.NotifyLanded: landing while moving away from the
     /// current target (horizontal `velocity` against the direction to it)
-    /// ends the move at once, so the next update re-plans from here.
-    /// Returns true if it did.
+    /// ends the move at once, so the next update re-plans from here; a
+    /// navigation point target becomes the anchor. Returns true if it did.
     pub fn landed(&mut self, nav: &NavNetwork, pos: Vec3, velocity: Vec3) -> bool {
         let target = match self.target {
             Some(Target::Point(i)) => nav.points[i].pos,
@@ -660,11 +649,10 @@ impl Router {
         };
         let away = velocity.with_y(0.0).dot((target - pos).with_y(0.0)) < 0.0;
         if away {
-            // KF also makes the target the pawn's anchor; ours keeps the
-            // last point really reached, which the failed-link count needs
-            // (a failed jump-pad launch that lands back by the pad must
-            // count against the pad's link, or the zed relaunches forever).
             self.move_timer = 0.0;
+            if let Some(Target::Point(i)) = self.target {
+                self.from_point = Some(i);
+            }
         }
         away
     }
@@ -789,12 +777,6 @@ impl Router {
         let close = |i: usize| (nav.points[i].pos - inp.pos).with_y(0.0).length() / SCALE <= HUNT_RADIUS + 8.0;
         let mut first = path[0];
         if path.len() > 1 && (close(first) || inp.walkable(spatial, inp.pos, nav.points[path[1]].pos, HUNT_RADIUS)) {
-            // Standing on the first point counts as having reached it, so a
-            // failed move from here counts against that link (e.g. a jump
-            // pad whose launch falls short and lands back beside it).
-            if close(first) {
-                self.from_point = Some(first);
-            }
             first = path[1];
         }
         Some(first)
