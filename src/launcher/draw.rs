@@ -191,14 +191,14 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         map_list(p, l, list, menu);
     }
 
-    // Column 3: Game, Sound, menus, Audio, then Controls (3 + 2 + 3 + 1
+    // Column 3: Game, Sound, menus, Audio, then Controls (3 + 2 + 3 + 3
     // rows). On a short window its rows get a little smaller so all fit
     // above the bottom row.
-    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(2, h, g) + g + section_height(SLIDERS.len(), h, g) + g + section_height(1, h, g);
+    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(2, h, g) + g + section_height(SLIDERS.len(), h, g) + g + section_height(CONTROL_ROWS, h, g);
     let (rh3, gap3) = if need(rh, gap) <= c.height() {
         (rh, gap)
     } else {
-        let s = ((c.height() - 180.0 - 3.0 * gap) / ((6 + SLIDERS.len()) as f32 * (rh + gap))).max(0.5);
+        let s = ((c.height() - 180.0 - 3.0 * gap) / ((5 + SLIDERS.len() + CONTROL_ROWS) as f32 * (rh + gap))).max(0.5);
         ((rh * s).floor(), (gap * s).floor())
     };
     let game_h = section_height(3, rh3, gap3);
@@ -232,7 +232,7 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
     spinner(p, "trader", ctl, if c_.trader == crate::game::buy_menu::MenuKind::Nu { "NuMenu (new)" } else { "KF classic" }, true, menu);
     let audio_h = section_height(SLIDERS.len(), rh3, gap3);
     let audio = audio_section(p, l, Rect::new(c.min.x, disp.max.y + gap3, c.max.x, disp.max.y + gap3 + audio_h), rh3, gap3, menu);
-    controls_section(p, l, Rect::new(c.min.x, audio.max.y + gap3, c.max.x, audio.max.y + gap3 + section_height(1, rh3, gap3)), rh3, gap3, menu);
+    controls_section(p, l, Rect::new(c.min.x, audio.max.y + gap3, c.max.x, audio.max.y + gap3 + section_height(CONTROL_ROWS, rh3, gap3)), rh3, gap3, menu);
 
 
     // The bottom rows.
@@ -330,16 +330,27 @@ fn graphics_section(p: &mut Painter, l: &Launcher, c: &super::choices::Choices, 
     row(p, "Texture filtering", "anisotropy", &if c.anisotropy <= 1 { "Trilinear".to_string() } else { format!("Anisotropic {}x", c.anisotropy) }, true);
 }
 
+/// The Controls box's rows: aim mode, mouse sensitivity, invert mouse.
+const CONTROL_ROWS: usize = 3;
+
 /// The Controls box at the bottom of `area`: aim down sights by toggle
-/// (KF's default) or hold, the same saved line the game's pause menu
-/// changes (DESIGN.md, "Aim down sights"). Returns the box.
+/// (KF's default) or hold, the mouse sensitivity (KF's 0.25 steps) and
+/// invert mouse, the same saved lines the game's pause menu changes
+/// (DESIGN.md, "Aim down sights", "Mouse sensitivity and invert mouse").
+/// Returns the box.
 fn controls_section(p: &mut Painter, l: &Launcher, area: Rect, rh: f32, gap: f32, font: &'static str) -> Rect {
-    let r = Rect::new(area.min.x, area.max.y - section_height(1, rh, gap), area.max.x, area.max.y);
+    let r = Rect::new(area.min.x, area.max.y - section_height(CONTROL_ROWS, rh, gap), area.max.x, area.max.y);
     p.section(r, "Controls", false, "Controls");
     let mut rows = Rows::new(Painter::section_client(r, [0.0; 4]), rh, gap, 0.42);
-    let (lab, ctl) = rows.next();
-    label(p, lab, "Aim down sights", fit(p, font, "Aim down sights", rows.label_w - 10.0));
-    spinner(p, "aim", ctl, if l.choices.aim_hold { "Hold" } else { "Toggle" }, true, font);
+    let mut row = |p: &mut Painter, name: &str, field: &str, value: &str| {
+        let (lab, ctl) = rows.next();
+        label(p, lab, name, fit(p, font, name, lab.width() - 10.0));
+        spinner(p, field, ctl, value, true, font);
+    };
+    row(p, "Aim down sights", "aim", if l.choices.aim_hold { "Hold" } else { "Toggle" });
+    // "Sensitivity": "Mouse sensitivity" only fits in a tiny font.
+    row(p, "Sensitivity", "mouse_sensitivity", &format!("{:.2}", l.choices.mouse_sensitivity));
+    row(p, "Invert mouse", "invert_mouse", if l.choices.invert_mouse { "On" } else { "Off" });
     r
 }
 

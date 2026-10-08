@@ -35,12 +35,14 @@ pub enum Page {
 }
 
 /// What the mouse is dragging (a drag that started on its box): a
-/// preview it turns, or a volume slider (index into `SLIDERS`).
+/// preview it turns, a volume slider (index into `SLIDERS`) or the mouse
+/// sensitivity slider.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Drag {
     Profile,
     ModelSelect,
     Volume(usize),
+    Sensitivity,
 }
 
 /// The pause menu's tabs (KFInvasionLoginMenu keeps Panels 1-3).
@@ -324,7 +326,7 @@ fn menu_input(
     mut start_vet: Local<Option<crate::game::perks::Vet>>,
     (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
     mut audio: Option<ResMut<crate::audio::mixer::Audio>>,
-    mut aim: ResMut<crate::weapons::weapon::AimSetting>,
+    (mut aim, mut mouse_set): (ResMut<crate::weapons::weapon::AimSetting>, ResMut<crate::engine::mouse::MouseSettings>),
     (mut buttons, mut left_held): (MessageReader<bevy::input::mouse::MouseButtonInput>, Local<bool>),
 ) {
     // Whether the left button is held, from the raw press / release
@@ -376,6 +378,19 @@ fn menu_input(
                     aim.set(hold, "menu_click");
                 }
             }
+            // Invert mouse Off / On: changes at once and is saved.
+            s if s.starts_with("mouse.invert:") => {
+                if let Ok(on) = crate::launcher::choices::parse_on_off(&s["mouse.invert:".len()..]) {
+                    state.audio_row = audio_page::INVERT_ROW;
+                    mouse_set.set_invert(on, "menu_click");
+                }
+            }
+            // The sensitivity slider: as the volume sliders (saved when
+            // let go).
+            audio_page::SENS_ID => {
+                state.drag = Some(Drag::Sensitivity);
+                state.audio_row = audio_page::SENS_ROW;
+            }
             s if s.starts_with("volume.slider:") => {
                 if let Some(i) = SLIDERS.iter().position(|(n, _)| audio_page::slider_id(n) == s) {
                     state.drag = Some(Drag::Volume(i));
@@ -392,6 +407,13 @@ fn menu_input(
             // every change; we write once per drag).
             if let (Drag::Volume(_), Some(a)) = (d, audio.as_deref()) {
                 a.save_volumes("slider_released");
+            }
+            if d == Drag::Sensitivity {
+                mouse_set.commit("slider_released");
+            }
+        } else if d == Drag::Sensitivity {
+            if let Some(pos) = win.physical_cursor_position() {
+                slide_sensitivity(&mut mouse_set, &hits.0, pos.x);
             }
         } else if let Drag::Volume(i) = d {
             if let (Some(a), Some(pos)) = (audio.as_deref_mut(), win.physical_cursor_position()) {
@@ -414,14 +436,24 @@ fn menu_input(
         keys_down.extend(actions.iter().filter_map(|a| a.strip_prefix("volume_key:")));
         for k in keys_down {
             let n = SLIDERS.len();
-            // The rows: the sliders, then the aim mode.
-            let rows = n + 1;
+            // The rows: the sliders, then the aim mode, the mouse
+            // sensitivity and invert mouse.
+            let rows = audio_page::ROWS;
             match k {
                 "up" => state.audio_row = (state.audio_row + rows - 1) % rows,
                 "down" => state.audio_row = (state.audio_row + 1) % rows,
                 // Left = Toggle, Right = Hold (the buttons' order).
                 "left" | "right" if state.audio_row == audio_page::AIM_ROW => {
                     aim.set(k == "right", "menu_key");
+                }
+                // KF's box steps 0.25.
+                "left" | "right" if state.audio_row == audio_page::SENS_ROW => {
+                    let v = crate::launcher::choices::step_sensitivity(mouse_set.sensitivity, if k == "left" { -1 } else { 1 });
+                    mouse_set.set_sensitivity(v, "menu_key");
+                }
+                // Left = Off, Right = On (the buttons' order).
+                "left" | "right" if state.audio_row == audio_page::INVERT_ROW => {
+                    mouse_set.set_invert(k == "right", "menu_key");
                 }
                 "left" | "right" => {
                     if let Some(a) = audio.as_deref_mut() {
@@ -438,6 +470,51 @@ fn menu_input(
         }
     }
     for a in &actions {
+        // `mouse_sensitivity:X`: sets the sensitivity (any page; for tests).
+        if let Some(v) = a.strip_prefix("mouse_sensitivity:") {
+            match crate::launcher::choices::parse_sensitivity(v) {
+                Ok(v) => {
+                    mouse_set.set_sensitivity(v, "scripted");
+                }
+                Err(e) => runlog::kv("menu_action", &format!("action={a} refused=\"{e}\"")),
+            }
+        }
+        // `invert_mouse:on|off`: sets invert mouse (any page; for tests).
+        if let Some(v) = a.strip_prefix("invert_mouse:") {
+            match crate::launcher::choices::parse_on_off(v) {
+                Ok(on) => {
+                    mouse_set.set_invert(on, "scripted");
+                }
+                Err(_) => runlog::kv("menu_action", &format!("action={a} refused=not_on_or_off")),
+            }
+        }
+        // `invert_click:on|off`: clicks that button (as drawn last frame).
+        if let Some(v) = a.strip_prefix("invert_click:") {
+            let on = crate::launcher::choices::parse_on_off(v);
+            match on.ok().filter(|on| hits.0.iter().any(|(id, _)| *id == audio_page::invert_id(*on))) {
+                Some(on) => {
+                    runlog::kv("audio_page", &format!("event=scripted_click button={}", audio_page::invert_id(on)));
+                    state.audio_row = audio_page::INVERT_ROW;
+                    mouse_set.set_invert(on, "menu_click");
+                }
+                None => runlog::kv("menu_action", &format!("action={a} refused=no_such_button_on_screen")),
+            }
+        }
+        // `sensitivity_click:FRACTION`: a click at that fraction of the
+        // sensitivity slider's box (as drawn last frame), then let go.
+        if let Some(f) = a.strip_prefix("sensitivity_click:") {
+            let rect = hits.0.iter().find(|(id, _)| id == audio_page::SENS_ID).map(|(_, r)| *r);
+            match (rect, f.trim().parse::<f32>()) {
+                (Some(r), Ok(f)) => {
+                    let x = r.min.x + f * r.width();
+                    runlog::kv("audio_page", &format!("event=scripted_click slider=mouse_sensitivity x={x:.0} box=({:.0},{:.0})-({:.0},{:.0})", r.min.x, r.min.y, r.max.x, r.max.y));
+                    state.audio_row = audio_page::SENS_ROW;
+                    slide_sensitivity(&mut mouse_set, &hits.0, x);
+                    mouse_set.commit("slider_released");
+                }
+                _ => runlog::kv("menu_action", &format!("action={a} refused=no_such_slider_on_screen")),
+            }
+        }
         // `aim_mode:toggle|hold`: sets the aim mode (any page; for tests).
         if let Some(m) = a.strip_prefix("aim_mode:") {
             match crate::launcher::choices::parse_aim(m) {
@@ -496,8 +573,13 @@ fn menu_input(
         ids.push(format!("select.scroll:{}", if scroll.delta.y > 0.0 { -1 } else { 1 }));
     }
     let was_open = !state.stack.is_empty();
+    let sens_drag = state.drag == Some(Drag::Sensitivity);
     for id in ids {
         apply(&id, &mut state, &vet, &data, had, &mut perk_requests, &mut new_pawn, &mut change_char, &mut exit, &mut cursor, &mut net);
+    }
+    // Escape during a sensitivity drag closes the window: keep and save it.
+    if sens_drag && state.drag != Some(Drag::Sensitivity) {
+        mouse_set.commit("menu_closed");
     }
     // Network game: the server started the match and this player is ready.
     if net_start.read().count() > 0 && state.lobby_open() {
@@ -720,6 +802,13 @@ fn slide_to(audio: &mut crate::audio::mixer::Audio, hits: &[(String, Rect)], i: 
     set_slider(audio, name, gui::slider_fraction(*r, x) * max, source);
 }
 
+/// The sensitivity slider follows the mouse's x (physical pixels) over
+/// its box as drawn last frame, on KF's 0.25 steps (saved when let go).
+fn slide_sensitivity(mouse: &mut crate::engine::mouse::MouseSettings, hits: &[(String, Rect)], x: f32) {
+    let Some((_, r)) = hits.iter().find(|(id, _)| id == audio_page::SENS_ID) else { return };
+    mouse.drag_sensitivity(crate::launcher::choices::sensitivity_at_fraction(gui::slider_fraction(*r, x)));
+}
+
 /// Turns a preview by a mouse movement of `dx` pixels
 /// (KFTab_Profile.OnSpinnyDudeCapturedMouseMove: Yaw -= 256 x DeltaX).
 fn turn(state: &mut MenuState, d: Drag, dx: f32) {
@@ -727,7 +816,7 @@ fn turn(state: &mut MenuState, d: Drag, dx: f32) {
     let yaw = match d {
         Drag::Profile => &mut state.profile_yaw,
         Drag::ModelSelect => &mut state.select_yaw,
-        Drag::Volume(_) => return,
+        Drag::Volume(_) | Drag::Sensitivity => return,
     };
     *yaw = (*yaw + delta).rem_euclid(65536);
 }
@@ -873,7 +962,7 @@ fn draw_menus(
     net: Res<crate::net::lobby::NetLobby>,
     (mut nu, mut classic): (crate::game::numenu::NuDraw, crate::game::classic_menu::ClassicDraw),
     audio: Option<Res<crate::audio::mixer::Audio>>,
-    aim: Res<crate::weapons::weapon::AimSetting>,
+    (aim, mouse_set): (Res<crate::weapons::weapon::AimSetting>, Res<crate::engine::mouse::MouseSettings>),
 ) {
     if !gui.loaded {
         return;
@@ -932,7 +1021,8 @@ fn draw_menus(
                 Some(Drag::Volume(i)) => Some(i),
                 _ => None,
             };
-            audio_page::draw(&mut p, view.as_ref(), state.audio_row, drag, aim.hold);
+            let controls = audio_page::ControlsView { aim_hold: aim.hold, sensitivity: mouse_set.sensitivity, invert: mouse_set.invert, sens_drag: state.drag == Some(Drag::Sensitivity) };
+            audio_page::draw(&mut p, view.as_ref(), state.audio_row, drag, &controls);
         }
         // The trader's NuMenu (game/numenu.rs) uses the same painter.
         None if nu.showing() => crate::game::numenu::draw(&mut p, &mut nu),

@@ -4,8 +4,10 @@
 //! "Sound System" box (AudioBK1) and its two volume sliders
 //! (AudioEffectsVolumeSlider, AudioMusicVolume), plus our master volume,
 //! and a "Controls" box with the aim mode (Toggle / Hold; KF sets that
-//! by binding the key to ToggleAiming or Aiming). See DESIGN.md, "Volume
-//! control" and "Aim down sights".
+//! by binding the key to ToggleAiming or Aiming), the mouse sensitivity
+//! and invert mouse (KF's Input tab: KFGui.KFInputSettings). See
+//! DESIGN.md, "Volume control", "Aim down sights" and "Mouse sensitivity
+//! and invert mouse".
 
 use bevy::prelude::*;
 
@@ -27,6 +29,27 @@ pub(crate) fn aim_id(hold: bool) -> String {
 
 /// The keyboard row of the aim mode (after the sliders).
 pub(crate) const AIM_ROW: usize = SLIDERS.len();
+/// The keyboard rows of the mouse sensitivity and invert mouse.
+pub(crate) const SENS_ROW: usize = AIM_ROW + 1;
+pub(crate) const INVERT_ROW: usize = AIM_ROW + 2;
+/// All the rows Up / Down go through.
+pub(crate) const ROWS: usize = AIM_ROW + 3;
+/// The click id of the mouse sensitivity slider.
+pub(crate) const SENS_ID: &str = "mouse.sensitivity";
+
+/// The click id of an invert mouse button (`mouse.invert:off` / `:on`).
+pub(crate) fn invert_id(on: bool) -> String {
+    format!("mouse.invert:{}", crate::launcher::choices::on_off_word(on))
+}
+
+/// What the Controls box shows: the aim mode, the mouse settings and
+/// whether the sensitivity slider is being dragged.
+pub(crate) struct ControlsView {
+    pub aim_hold: bool,
+    pub sensitivity: f32,
+    pub invert: bool,
+    pub sens_drag: bool,
+}
 
 /// The click id of a slider (`volume.slider:master` ...).
 pub(crate) fn slider_id(name: &str) -> String {
@@ -44,9 +67,9 @@ fn caption(p: &Painter, name: &str, ours: &str) -> String {
     if c.is_empty() { ours.to_string() } else { c }
 }
 
-/// `row`: the slider (or `AIM_ROW`) picked with the Up / Down keys;
-/// `drag`: the slider the mouse holds; `aim_hold`: the aim mode.
-pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: Option<usize>, aim_hold: bool) {
+/// `row`: the slider (or a Controls row) picked with the Up / Down keys;
+/// `drag`: the volume slider the mouse holds; `ctl`: the Controls box.
+pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: Option<usize>, ctl_view: &ControlsView) {
     let gui = p.gui;
     let white = [255, 255, 255, 255];
     let (sw, sh) = (p.screen.width(), p.screen.height());
@@ -61,7 +84,8 @@ pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: 
     // `Painter::section_client`), a note line and the Back button.
     let rows = SLIDERS.len() as f32;
     let section_h = 45.0 + rows * rh + (rows - 1.0) * gap;
-    let controls_h = 45.0 + rh;
+    // Controls: aim mode, mouse sensitivity, invert mouse.
+    let controls_h = 45.0 + 3.0 * rh + 2.0 * gap;
     let h = th + gap + section_h + gap + p.line_height(small) + gap + controls_h + gap + rh + gap;
     let w = (0.5 * sw).max(420.0).min(sw);
     let win = Rect::new((sw - w) / 2.0, (sh - h) / 2.0, (sw + w) / 2.0, (sh + h) / 2.0);
@@ -95,8 +119,26 @@ pub(crate) fn draw(p: &mut Painter, view: Option<&AudioView>, row: usize, drag: 
     for (i, (hold, cap)) in [(false, "Toggle"), (true, "Hold")].into_iter().enumerate() {
         let x = crow.min.x + cw + i as f32 * (bw + bgap);
         // The chosen one lit (as the launcher's Solo / Host / Join).
-        let state = if hold == aim_hold { State::Focused } else { State::Blurry };
+        let state = if hold == ctl_view.aim_hold { State::Focused } else { State::Blurry };
         p.button(&aim_id(hold), Rect::new(x, crow.min.y, x + bw, crow.max.y), cap, state);
+    }
+    // Mouse Sensitivity (Game): KF's box (0.25 to 25, steps of 0.25) as a
+    // slider with the number at the right, as the volume rows.
+    let srow = Rect::new(crow.min.x, crow.max.y + gap, crow.max.x, crow.max.y + gap + rh);
+    let lit = row == SENS_ROW || ctl_view.sens_drag;
+    p.text_in(menu, "Mouse Sensitivity", Rect::new(srow.min.x, srow.min.y, srow.min.x + cw, srow.max.y), Align::Left, true, if lit { white } else { [200, 200, 200, 255] }, "Audio.Sensitivity.Caption");
+    let vw = srow.width() * 0.14;
+    let sl = Rect::new(srow.min.x + cw, srow.min.y + rh * 0.15, srow.max.x - vw - 8.0, srow.max.y - rh * 0.15);
+    p.slider(SENS_ID, sl, crate::launcher::choices::sensitivity_fraction(ctl_view.sensitivity), lit);
+    p.text_in(menu, &format!("{:.2}", ctl_view.sensitivity), Rect::new(srow.max.x - vw, srow.min.y, srow.max.x, srow.max.y), Align::Right, true, white, "Audio.Sensitivity.Value");
+    // Invert Mouse: KF's checkbox, as Off / On buttons (the aim row's look).
+    let irow = Rect::new(crow.min.x, srow.max.y + gap, crow.max.x, srow.max.y + gap + rh);
+    let lit = row == INVERT_ROW;
+    p.text_in(menu, "Invert Mouse", Rect::new(irow.min.x, irow.min.y, irow.min.x + cw, irow.max.y), Align::Left, true, if lit { white } else { [200, 200, 200, 255] }, "Audio.Invert.Caption");
+    for (i, (on, cap)) in [(false, "Off"), (true, "On")].into_iter().enumerate() {
+        let x = irow.min.x + cw + i as f32 * (bw + bgap);
+        let state = if on == ctl_view.invert { State::Focused } else { State::Blurry };
+        p.button(&invert_id(on), Rect::new(x, irow.min.y, x + bw, irow.max.y), cap, state);
     }
     let bw = p.text_size(menu, "Back").x + 0.04 * sw * 0.25 + rh;
     let by = win.max.y - gap - rh;

@@ -51,13 +51,25 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 26] = [
+pub const FIELDS: [&str; 28] = [
     "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "display", "fov", "brightness", "msaa", "anisotropy", "sound", "trader", "extra",
-    "volume", "effects_volume", "music_volume", "aim",
+    "volume", "effects_volume", "music_volume", "aim", "mouse_sensitivity", "invert_mouse",
 ];
 
 /// The aim line of the saved file (the game rewrites only it).
 pub const AIM_FIELD: &str = "aim";
+
+/// The mouse lines of the saved file (the game rewrites only these).
+pub const MOUSE_FIELDS: [&str; 2] = ["mouse_sensitivity", "invert_mouse"];
+
+/// KF's mouse sensitivity (Engine.PlayerInput MouseSensitivity = 3) and
+/// its options box (UT2K4Tab_IForceSettings InputMouseSensitivity:
+/// MinValue 0.25, MaxValue 25, Step 0.25). See DESIGN.md, "Mouse
+/// sensitivity and invert mouse".
+pub const SENSITIVITY_DEFAULT: f32 = 3.0;
+pub const SENSITIVITY_MIN: f32 = 0.25;
+pub const SENSITIVITY_MAX: f32 = 25.0;
+pub const SENSITIVITY_STEP: f32 = 0.25;
 
 /// The volume lines of the saved file (the game rewrites only these).
 pub const VOLUME_FIELDS: [&str; 3] = ["volume", "effects_volume", "music_volume"];
@@ -173,6 +185,11 @@ pub struct Choices {
     /// Aim down sights while the button is held (else a press toggles,
     /// KF's default). The game's pause menu changes it too.
     pub aim_hold: bool,
+    /// KF's MouseSensitivity (0.25 to 25; 3 is KF's default). The game's
+    /// pause menu changes it too.
+    pub mouse_sensitivity: f32,
+    /// KF's bInvertMouse: moving the mouse forward looks down.
+    pub invert_mouse: bool,
 }
 
 impl Default for Choices {
@@ -202,6 +219,8 @@ impl Default for Choices {
             extra: String::new(),
             volumes: Volumes::default(),
             aim_hold: false,
+            mouse_sensitivity: SENSITIVITY_DEFAULT,
+            invert_mouse: false,
         }
     }
 }
@@ -227,6 +246,47 @@ pub fn parse_aim(v: &str) -> Result<bool, String> {
         "toggle" => Ok(false),
         _ => Err(format!("not toggle/hold: {v}")),
     }
+}
+
+/// A sensitivity as kept and saved: inside KF's range, to 0.01.
+pub fn clamp_sensitivity(v: f32) -> f32 {
+    if v.is_finite() { (v.clamp(SENSITIVITY_MIN, SENSITIVITY_MAX) * 100.0).round() / 100.0 } else { SENSITIVITY_DEFAULT }
+}
+
+/// A typed sensitivity (the saved file, `--sensitivity`, test actions):
+/// a number from 0.25 to 25 (KF's options box), kept to 0.01.
+pub fn parse_sensitivity(v: &str) -> Result<f32, String> {
+    let x = v.trim().parse::<f32>().ok().filter(|x| x.is_finite()).ok_or(format!("not a number: {v}"))?;
+    if !(SENSITIVITY_MIN..=SENSITIVITY_MAX).contains(&x) {
+        return Err(format!("mouse sensitivity must be {SENSITIVITY_MIN} to {SENSITIVITY_MAX}: {v}"));
+    }
+    Ok(clamp_sensitivity(x))
+}
+
+/// One step of KF's box (0.25) up or down, stopping at the ends.
+pub fn step_sensitivity(v: f32, d: i32) -> f32 {
+    clamp_sensitivity(v + d as f32 * SENSITIVITY_STEP)
+}
+
+/// Where a sensitivity sits on the pause menu's slider (0 to 1).
+pub fn sensitivity_fraction(v: f32) -> f32 {
+    ((v - SENSITIVITY_MIN) / (SENSITIVITY_MAX - SENSITIVITY_MIN)).clamp(0.0, 1.0)
+}
+
+/// The sensitivity at a fraction of the slider, on KF's 0.25 steps.
+pub fn sensitivity_at_fraction(f: f32) -> f32 {
+    let v = SENSITIVITY_MIN + f.clamp(0.0, 1.0) * (SENSITIVITY_MAX - SENSITIVITY_MIN);
+    clamp_sensitivity((v / SENSITIVITY_STEP).round() * SENSITIVITY_STEP)
+}
+
+/// "on" / "off" (the saved file's switches).
+pub fn on_off_word(b: bool) -> &'static str {
+    on_off(b)
+}
+
+/// "on" / "off" (also yes / no, true / false, 1 / 0).
+pub fn parse_on_off(v: &str) -> Result<bool, String> {
+    parse_bool(v.trim())
 }
 
 fn on_off(b: bool) -> &'static str {
@@ -271,6 +331,8 @@ impl Choices {
             "effects_volume" => kf_volume_text(self.volumes.effects),
             "music_volume" => kf_volume_text(self.volumes.music),
             "aim" => aim_word(self.aim_hold).into(),
+            "mouse_sensitivity" => format!("{:.2}", self.mouse_sensitivity),
+            "invert_mouse" => on_off(self.invert_mouse).into(),
             _ => String::new(),
         }
     }
@@ -341,6 +403,8 @@ impl Choices {
                 }
             }
             "aim" => self.aim_hold = parse_aim(v)?,
+            "mouse_sensitivity" => self.mouse_sensitivity = parse_sensitivity(v)?,
+            "invert_mouse" => self.invert_mouse = parse_on_off(v)?,
             _ => return Err(format!("unknown choice: {field}")),
         }
         Ok(())
@@ -399,6 +463,8 @@ impl Choices {
             "sound" => self.sound = !self.sound,
             "trader" => self.trader = if self.trader == MenuKind::Nu { MenuKind::Kf } else { MenuKind::Nu },
             "aim" => self.aim_hold = !self.aim_hold,
+            "mouse_sensitivity" => self.mouse_sensitivity = step_sensitivity(self.mouse_sensitivity, d),
+            "invert_mouse" => self.invert_mouse = !self.invert_mouse,
             _ => {}
         }
     }
@@ -501,7 +567,7 @@ impl Choices {
 
     /// The saved file's text: one `key=value` line per choice.
     pub fn to_text(&self) -> String {
-        let mut s = String::from("# Open KF launcher choices (written when PLAY is pressed; the game rewrites the volume and aim lines)\n");
+        let mut s = String::from("# Open KF launcher choices (written when PLAY is pressed; the game rewrites the volume, aim and mouse lines)\n");
         for f in FIELDS {
             s.push_str(&format!("{f}={}\n", self.get(f)));
         }
@@ -538,6 +604,13 @@ pub fn with_volume_lines(text: &str, v: &Volumes) -> String {
 /// The saved file's text with only the `aim=` line replaced (or added).
 pub fn with_aim_line(text: &str, hold: bool) -> String {
     with_lines(text, &[(AIM_FIELD, aim_word(hold).to_string())])
+}
+
+/// The saved file's text with only the mouse lines replaced (or added).
+pub fn with_mouse_lines(text: &str, sensitivity: f32, invert: bool) -> String {
+    let c = Choices { mouse_sensitivity: clamp_sensitivity(sensitivity), invert_mouse: invert, ..Default::default() };
+    let lines: Vec<(&str, String)> = MOUSE_FIELDS.iter().map(|f| (*f, c.get(f))).collect();
+    with_lines(text, &lines)
 }
 
 /// The saved file's text with only the `key=` lines of `lines` replaced
@@ -834,6 +907,55 @@ mod tests {
         let mut c = Choices::default();
         c.step("aim", 1, &[]);
         assert_eq!(c.get("aim"), "hold");
+    }
+
+    #[test]
+    fn mouse_lines_parse_step_and_replace_only_themselves() {
+        // Defaults: KF's MouseSensitivity 3, bInvertMouse False.
+        let c = Choices::default();
+        assert_eq!((c.mouse_sensitivity, c.invert_mouse), (3.0, false));
+        assert_eq!((c.get("mouse_sensitivity").as_str(), c.get("invert_mouse").as_str()), ("3.00", "off"));
+        let (c, bad) = Choices::from_text("mouse_sensitivity=1.626\ninvert_mouse=ON\n");
+        assert!(bad.is_empty(), "{bad:?}");
+        assert_eq!((c.mouse_sensitivity, c.invert_mouse), (1.63, true));
+        // Outside KF's box (0.25 to 25) or not a number: refused, default kept.
+        for t in ["mouse_sensitivity=0.1", "mouse_sensitivity=30", "mouse_sensitivity=fast", "mouse_sensitivity=NaN", "invert_mouse=maybe"] {
+            let (c, bad) = Choices::from_text(t);
+            assert_eq!(bad.len(), 1, "{t}");
+            assert_eq!((c.mouse_sensitivity, c.invert_mouse), (3.0, false), "{t}");
+        }
+        // Steps of 0.25, stopping at the ends.
+        let mut c = Choices::default();
+        c.step("mouse_sensitivity", 1, &[]);
+        assert_eq!(c.mouse_sensitivity, 3.25);
+        c.step("mouse_sensitivity", -2, &[]);
+        assert_eq!(c.mouse_sensitivity, 2.75);
+        for _ in 0..200 {
+            c.step("mouse_sensitivity", -1, &[]);
+        }
+        assert_eq!(c.mouse_sensitivity, SENSITIVITY_MIN);
+        for _ in 0..200 {
+            c.step("mouse_sensitivity", 1, &[]);
+        }
+        assert_eq!(c.mouse_sensitivity, SENSITIVITY_MAX);
+        c.step("invert_mouse", 1, &[]);
+        assert!(c.invert_mouse);
+        // The pause menu's slider: the ends, and drags land on 0.25 steps.
+        assert_eq!((sensitivity_at_fraction(0.0), sensitivity_at_fraction(1.0)), (SENSITIVITY_MIN, SENSITIVITY_MAX));
+        assert_eq!(sensitivity_at_fraction(sensitivity_fraction(3.0)), 3.0);
+        assert_eq!(sensitivity_at_fraction(0.1), 2.75);
+        assert_eq!(sensitivity_fraction(30.0), 1.0);
+        // The game's save rewrites only the mouse lines.
+        let old = "# head\nvolume=0.500\nmouse_sensitivity=3.00\naim=hold\n";
+        assert_eq!(with_mouse_lines(old, 1.5, true), "# head\nvolume=0.500\nmouse_sensitivity=1.50\naim=hold\ninvert_mouse=on\n");
+        let all = with_aim_line(&with_volume_lines(&with_mouse_lines("", 7.25, true), &Volumes::default()), true);
+        let (c, bad) = Choices::from_text(&all);
+        assert!(bad.is_empty() && c.aim_hold && c.invert_mouse && c.mouse_sensitivity == 7.25, "{all}");
+        // The launcher's whole file keeps them too.
+        let mut c = Choices::default();
+        c.set("mouse_sensitivity", "12.5").unwrap();
+        c.set("invert_mouse", "yes").unwrap();
+        assert_eq!(Choices::from_text(&c.to_text()).0, c);
     }
 
     #[test]

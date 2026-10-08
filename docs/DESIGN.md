@@ -6766,3 +6766,96 @@ class values, and fonts Vr20-26 (UT2LargeFont, UT2HeaderFont,
 UT2ServerListFont); `menus/mod.rs` loads the menu's textures and the 48
 trader pictures only with `--trader-menu kf`, and draws it. At 2560 x 1440
 the boxes land within a few pixels of the screenshot's.
+
+## Mouse sensitivity and invert mouse (planned 2026-10-08: MS1-MS3)
+
+**Goal.** A mouse sensitivity setting and an "invert mouse" (up/down)
+setting, as KF's Input settings tab has: a command-line option, a
+launcher field and a row in the pause menu's Settings window, saved in
+the same settings file as the volumes and the aim mode.
+
+**What KF does (read 2026-10-08).**
+
+- *Settings and defaults* (Engine.PlayerInput, `kfpkg defaults`, and
+  the install's User.ini): `MouseSensitivity = 3`, `bInvertMouse =
+  False`, `MouseSmoothingMode = 1` (on), `MouseSmoothingStrength = 0.3`,
+  `MouseAccelThreshold = 0` (off), `MouseSamplingTime = 1/120 s`.
+- *The options menu* (KFGui.KFInputSettings, built on GUI2K4's
+  UT2K4Tab_IForceSettings; numbers from GUI2K4.u's components):
+  "Mouse Sensitivity (Game)" is a number box from **0.25 to 25 in steps
+  of 0.25**; "Invert Mouse" is a checkbox ("the Y axis of your mouse
+  will be inverted"). Also there: "Mouse Smoothing" (checkbox),
+  "Mouse Smoothing Strength" (0 to 1, step 0.05), "Mouse Accel.
+  Threshold" (0 to 100, step 5), "Reduce Mouse Lag", "Mouse
+  Sensitivity (Menus)".
+- *Counts to turning* (scripts: PlayerInput / KFPlayerInput.PlayerInput,
+  PlayerController.UpdateRotation; engine code for the first two
+  factors, details in the local RE.md): each raw mouse count adds
+  `Speed (2.0, User.ini: "Axis aMouseX Speed=2.0") x 0.01` to the axis;
+  once per frame the engine multiplies every input axis by
+  `20 / frame time`; the script multiplies by `MouseSensitivity x
+  FOVScale`; the view turns by `32 x frame time x axis` Unreal rotation
+  units (65536 = one full turn). The frame time cancels, so one count
+  turns **12.8 x sensitivity x FOVScale units** = 0.0703 degrees x
+  sensitivity x FOVScale. Up/down is the same with the mouse's y count
+  flipped (mouse forward looks up); invert flips it back.
+- *FOVScale* (KFPlayerInput): the current field of view / 90 (iron
+  sights lower the FOV, so the mouse slows with the zoom); while a 3D
+  scope is drawn (KF's default scope detail, aiming a scoped weapon)
+  it is 24 / 90 instead.
+- *Smoothing mode 1* spreads one mouse report over the frames until the
+  next one when the game runs faster than the mouse reports; the total
+  turn stays about the same. Not in this step (follow-up).
+
+**What Open KF does now.** A fixed 0.002 radians per count, no FOV
+scaling, no invert. At FOV 90 that equals KF sensitivity 1.63.
+
+**Default chosen: KF's 3** (the formula above is read from KF, not
+guessed), so looking around turns 1.84 times faster than before at the
+default FOV, and slower while aiming down sights (KF's FOV scaling).
+The old speed is sensitivity 1.63 (1.5 or 1.75 on the 0.25 steps).
+
+**Saved.** Two more lines in `settings/launcher.txt`:
+`mouse_sensitivity=3.00` and `invert_mouse=off`. The game reads them at
+start and rewrites only these lines when they change in the menu; the
+launcher saves them on PLAY.
+
+**Command line.** `--sensitivity X` (0.25 to 25) and `--invert-mouse` /
+`--no-invert-mouse` override the file for that run (not saved unless
+changed in the menu).
+
+**In game.** The Settings window's Controls box gets two rows under
+"Aim down sights": "Mouse Sensitivity" (a slider over 0.25..25 with the
+number; Left / Right step 0.25 as KF's box) and "Invert Mouse" (*Off* /
+*On* buttons). Test actions: `mouse_sensitivity:X`, `invert_mouse:on|off`,
+`sensitivity_click:FRACTION`, `invert_click:on|off`, and
+`mouse_move:DX;DY` (feeds raw counts through the look code, as a mouse
+would, for checking the conversion from the log).
+
+**Launcher.** The Controls box gets two spinner rows: "Mouse
+sensitivity" (labelled "Sensitivity"; `<` 3.00 `>`, steps of 0.25) and "Invert mouse" (Off/On).
+
+**Logs.** `mouse_settings sensitivity=3.00 invert=false source=...` at
+start (with `read=file|default|command_line` and the turn per count at
+FOV 90) and on every change; `mouse_saved file=...`; `mouse_look` for
+each `mouse_move` test action (counts, FOV, FOVScale, degrees turned).
+
+**Steps.** MS1: the setting (choices fields, saved lines, command-line
+options, game resource, conversion with FOV / scope scaling, invert,
+logs, unit tests). MS2: the pause menu rows. MS3: the launcher rows.
+
+**Follow-ups (KF has them, not built).** Mouse smoothing (on in KF by
+default) and its strength, mouse acceleration threshold (off in KF by
+default), menu mouse sensitivity (KF 1.25), "Reduce Mouse Lag" (a
+renderer setting).
+
+**As built (2026-10-08; headless runs, not played with a real mouse).**
+MS1-MS3 as planned. Files: `src/engine/mouse.rs` (new: the counts-to-turn
+rule, `MouseSettings` read at start and saved on change, 3 unit tests),
+`src/engine/camera.rs` (`look` uses it, `mouse_move` test action),
+`src/launcher/choices.rs` (the two fields and lines, `with_mouse_lines`,
+slider helpers, 1 test), `src/launcher/mod.rs` (`read_mouse`,
+`save_mouse`), `src/launcher/draw.rs` (Controls box: 3 rows),
+`src/game/menus/audio_page.rs` and `mod.rs` (the two rows, clicks, drag,
+keys, test actions), `src/main.rs` (options, 1 test). A slider drag
+saves once when let go (or when Escape closes the window mid-drag).

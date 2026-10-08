@@ -7250,3 +7250,52 @@ README updated.
 favourites, DLC rows, scroll arrows not built). A saved launcher setting
 `trader=nu` still picks NuMenu.
 **Next:** your play test.
+
+## 2026-10-08 Mouse sensitivity and invert mouse (KF's rule)
+
+**Changed:** New `src/engine/mouse.rs`: KF's mouse look rule and the
+`MouseSettings` resource. `src/engine/camera.rs`: `look` now turns
+12.8 x sensitivity x FOVScale Unreal rotation units per raw mouse count
+(was a fixed 0.002 radians), up/down flipped by invert mouse; FOVScale is
+the view's FOV / 90 (iron sights slow it) or 24 / 90 through a 3D scope;
+new test action `mouse_move:DX;DY`. Saved lines `mouse_sensitivity=` and
+`invert_mouse=` (`src/launcher/choices.rs`, `src/launcher/mod.rs`);
+options `--sensitivity X`, `--invert-mouse`, `--no-invert-mouse`
+(`src/main.rs`, for one run, not saved); pause menu Settings window:
+"Mouse Sensitivity" slider and "Invert Mouse" Off/On rows, Left/Right
+step 0.25, test actions `mouse_sensitivity:X`, `invert_mouse:on|off`,
+`sensitivity_click:F`, `invert_click:on|off` (`src/game/menus/`);
+launcher Controls box: "Sensitivity" and "Invert mouse" spinners
+(`src/launcher/draw.rs`). Plan and KF findings in DESIGN.md, "Mouse
+sensitivity and invert mouse"; engine pointers in the local RE.md.
+**Why:** you asked for mouse sensitivity options.
+**KF's rule (read, not guessed):** defaults from Engine.PlayerInput
+(MouseSensitivity 3, bInvertMouse False); menu range from GUI2K4's
+UT2K4Tab_IForceSettings (0.25 to 25, step 0.25; "Invert Mouse" checkbox);
+FOV scaling from KFPlayerInput / KFPlayerController.GetMouseModifier;
+the 12.8 from the User.ini binding (Speed 2.0), the engine's axis and
+per-frame scaling (0.01 and 20 / frame time, read from the engine code)
+and UpdateRotation's 32 x frame time.
+**Default:** KF's 3. That turns 0.211 degrees per count at FOV 90, 1.84
+times the old speed. The old feel is sensitivity 1.63 (pick 1.5 or 1.75).
+**Tested how:** release build, clippy (0 warnings), headless runs on
+KF-WestLondon with `--settings work/mouse-test/settings.txt`, launcher
+dry run, screenshots of both boxes. `cargo test` was refused to me by the
+permission system: not run (5 new tests written).
+**Result:** `mouse_settings sensitivity=3.00 invert=false source=start
+read=default ... degrees_per_count_fov90=0.21094`; `mouse_move:100;0` at
+3.00: `yaw_change_deg=21.0938`; at 1.50: `10.5469`; with iron sights
+(Single, FOV 75): `fov_scale=0.8333 yaw_change_deg=8.7891`;
+`mouse_move:0;-50` looks up `10.5469`, inverted `-5.2734`. Menu: key
+right 1.50 -> 1.75, slider click at the middle -> 12.50, Off button ->
+invert off, each `mouse_saved`; `mouse_sensitivity:99` refused. Next run
+`read=file sensitivity=12.50`; `--sensitivity 2 --invert-mouse` gives
+`read=command_line` and leaves the file at 12.50. Launcher: spinners
+3.00 -> 2.75 and invert on, saved on PLAY, shown on the next start.
+**Still broken / not tested:** the feel with a real mouse (the virtual
+display has no mouse; Bevy is assumed to report raw counts like KF's
+DirectInput). The 3D scope's 24 / 90 is unit-tested only. Not built:
+KF's mouse smoothing (on by default in KF), smoothing strength, mouse
+acceleration (off by default in KF), menu mouse sensitivity, "Reduce
+Mouse Lag". Unit tests not run by me.
+**Next:** your play test: does 3 feel like KF? Run `cargo test`.

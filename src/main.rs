@@ -106,6 +106,12 @@ struct Args {
     /// `--settings FILE`: the settings file the volumes and the aim mode
     /// are read from and saved to (default: the launcher's, `settings/launcher.txt`).
     settings: Option<String>,
+    /// `--sensitivity X`: KF's mouse sensitivity (0.25 to 25) for this run
+    /// (else the settings file's, else KF's 3; engine/mouse.rs).
+    sensitivity: Option<f32>,
+    /// `--invert-mouse` / `--no-invert-mouse` for this run (else the
+    /// settings file's, else off).
+    invert_mouse: Option<bool>,
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -225,6 +231,12 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--log" => args.log = Some(it.next().ok_or("--log needs a file name")?),
             "--settings" => args.settings = Some(it.next().ok_or("--settings needs a file name")?),
             "--mute" => args.mute = true,
+            "--sensitivity" => {
+                let n = it.next().ok_or("--sensitivity needs a number from 0.25 to 25")?;
+                args.sensitivity = Some(launcher::choices::parse_sensitivity(&n).map_err(|e| format!("bad --sensitivity value: {e}"))?);
+            }
+            "--invert-mouse" => args.invert_mouse = Some(true),
+            "--no-invert-mouse" => args.invert_mouse = Some(false),
             "--trader-menu" => {
                 let n = it.next().ok_or("--trader-menu needs nu or kf")?;
                 args.trader_menu = buy_menu::MenuKind::parse(&n).ok_or(format!("bad --trader-menu value: {n} (nu or kf)"))?;
@@ -288,7 +300,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE] [--settings FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--log FILE] [--settings FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -393,6 +405,7 @@ fn main() -> AppExit {
         .add_plugins(graphics::GraphicsPlugin)
         .insert_resource(audio::mixer::AudioSettings { muted: args.mute, settings: args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into() })
         .insert_resource(weapons::weapon::AimSetting::load(args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into()))
+        .insert_resource(engine::mouse::MouseSettings::load(args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into(), args.sensitivity, args.invert_mouse))
         .insert_resource(args)
         .insert_resource(request)
         .insert_resource(ClearColor(Color::BLACK)) // KF: black unless the zone clears to its fog colour (world/zones.rs)
@@ -582,5 +595,28 @@ fn quit_after_frame_limit(
     if args.frames.is_some_and(|limit| frames.0 >= limit) {
         runlog::kv("frame_limit_reached", &format!("frame={}", frames.0));
         exit.write(AppExit::Success);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(v: &[&str]) -> Result<Args, String> {
+        parse_args(v.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn mouse_options() {
+        let a = parse(&[]).unwrap();
+        assert_eq!((a.sensitivity, a.invert_mouse), (None, None));
+        let a = parse(&["--sensitivity", "1.5", "--invert-mouse"]).unwrap();
+        assert_eq!((a.sensitivity, a.invert_mouse), (Some(1.5), Some(true)));
+        assert_eq!(parse(&["--no-invert-mouse"]).unwrap().invert_mouse, Some(false));
+        // KF's box: 0.25 to 25.
+        assert!(parse(&["--sensitivity", "0.1"]).is_err());
+        assert!(parse(&["--sensitivity", "26"]).is_err());
+        assert!(parse(&["--sensitivity", "fast"]).is_err());
+        assert!(parse(&["--sensitivity"]).is_err());
     }
 }
