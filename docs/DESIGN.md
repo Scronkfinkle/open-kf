@@ -1225,9 +1225,11 @@ box (a grid over the collision geometry), clipped to the box, facing the
 projector, textured by projecting onto the box's Y/Z plane, drawn with the
 particles' 2x modulate material, faded in, removed at the end of their
 life. Approximations, labelled: an orthographic box (FOV ignored; FOV is
-0-6 degrees), the size from texture size x |DrawScale| (a negative scale
+0-6 degrees; since 2026-10-08 the FOV is used as for map decals, M6), the size from texture size x |DrawScale| (a negative scale
 read as mirrored), only collision geometry (non-blocking decorative meshes
-get no decals), the end of life is a 1 s fade (assumed).
+get no decals), the end of life is a 1 s fade (assumed). Since
+2026-10-08 the strength also falls with the surface angle and back faces
+get nothing, as for map decals (M6, "Surface angle").
 Steps: D1 decal library and projection, with hit splats on walls (1);
 D2 drips and floor splats (2, 3); D3 ragdoll streaks (4).
 
@@ -3097,10 +3099,12 @@ errors. You asked for these before the rest of the game loop.
     texture).
   - Size: the texture's pixel size x DrawScale x DrawScale3D (Y, Z); depth
     MaxTraceDistance (default 1000).
-  - FOV (degrees). 0 or 1 (most of them): a box. Larger (light patterns
-    20-90): a frustum. **Guess** (the engine's projector code is native and
-    not in the SDK): the texture is its normal size at Location and the
-    volume widens by FOV/2 each side with distance.
+  - FOV (degrees). 0: a box. Otherwise a frustum: the texture is its
+    normal size at Location and each side moves out by tan(FOV/2) per unit
+    of depth (confirmed 2026-10-08 from the engine's native projector code,
+    details in the local RE.md; exact for square textures). The spawned
+    decals use the same rule with their class FOV (ProjectedDecal 1,
+    ROBloodSplatter 6).
   - FrameBufferBlendingOp: Modulate (default; blood) -> our 2x modulate
     decal material; Add (light patterns) -> additive; AlphaBlend ->
     alpha blend. PB_None (67 KFBloodSplatters on a few maps, on the same
@@ -3115,8 +3119,22 @@ errors. You asked for these before the rest of the game loop.
   - bProjectBSP / bProjectStaticMesh / bProjectTerrain: which surfaces.
     Our surfaces are collision triangles, so static meshes with simplified
     collision show the decal on their collision shape (may float or clip).
-  - bProjectOnBackfaces: not checked (collision winding is unreliable);
-    both sides take the decal, edge-on surfaces do not.
+  - Surface angle (2026-10-08, from the engine's native projector code;
+    details in the local RE.md): KF draws each surface at strength
+    max(0, -ProjDir . SurfaceNormal): full strength on a surface the
+    projector faces straight on, about 0.71 at 45 degrees, nothing
+    edge-on, and nothing on back faces (the ceiling under a floor decal,
+    the far side of a thin wall). bProjectOnBackfaces turns this off (full
+    strength on every side). The strength multiplies the gradient and the
+    fades. Ours, per triangle: BSP and terrain triangles have a known
+    winding (BSP: 2053 of 2055 polygons on KF-WestLondon wound one way;
+    terrain is wound to face up), so their back faces are dropped.
+    Static-mesh collision winding is not reliable (mirrored actors keep
+    reversed triangles), so those triangles take the decal on whichever
+    side faces the projector, at |dot|. Modulate decals carry the strength
+    in vertex alpha, Add ones in rgb. Log: `decal_spawned` and
+    `map_decal` lines give `angle_min` / `angle_max` /
+    `backfaces_dropped`; `map_decals` the total dropped.
   - CullDistance: drawn only within it (Bevy VisibilityRange).
   Log: `map_decals` (built, empty, per blend) and one `map_decal` line
   per projector that lands on nothing or has no texture. Code:

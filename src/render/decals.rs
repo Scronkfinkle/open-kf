@@ -81,8 +81,8 @@ impl DecalSurfaces {
     }
 
     /// Triangles whose cells overlap the box `lo..hi` (Bevy space), from
-    /// the sources in `mask`.
-    fn near(&self, lo: Vec3, hi: Vec3, mask: u8) -> Vec<[Vec3; 3]> {
+    /// the sources in `mask`, each with its source bit.
+    fn near(&self, lo: Vec3, hi: Vec3, mask: u8) -> Vec<([Vec3; 3], u8)> {
         let (a, b) = (cell(lo), cell(hi));
         let mut ids: Vec<u32> = Vec::new();
         for x in a.x..=b.x {
@@ -96,7 +96,7 @@ impl DecalSurfaces {
         }
         ids.sort_unstable();
         ids.dedup();
-        ids.into_iter().filter(|&i| self.kinds[i as usize] & mask != 0).map(|i| self.triangles[i as usize]).collect()
+        ids.into_iter().filter(|&i| self.kinds[i as usize] & mask != 0).map(|i| (self.triangles[i as usize], self.kinds[i as usize])).collect()
     }
 }
 
@@ -183,6 +183,10 @@ struct DecalClass {
     push_back: f32,
     depth: f32,
     random_orient: bool,
+    /// The projector's FOV as a widening per unit of depth (`fov_spread`).
+    spread: f32,
+    /// bProjectOnBackfaces.
+    backfaces: bool,
     fade_in: f32,
     life: f32,
 }
@@ -197,7 +201,9 @@ struct Decal {
     life: f32,
     fade_in: f32,
     mesh: Handle<Mesh>,
-    vertices: usize,
+    /// Per vertex, the surface-angle strength (`angle_factor`); the fades
+    /// multiply it.
+    angle: Vec<f32>,
 }
 
 /// The map's placed Projectors, from the map loader.
@@ -282,6 +288,8 @@ fn load_decals(
             push_back: float("PushBack", 0.0),
             depth: float("MaxTraceDistance", 1000.0),
             random_orient: matches!(defaults.get(&class, "RandomOrient"), Some((Value::Bool(true), _))),
+            spread: fov_spread(float("FOV", 0.0)),
+            backfaces: matches!(defaults.get(&class, "bProjectOnBackfaces"), Some((Value::Bool(true), _))),
             fade_in: float("FadeInTime", 0.0),
             life,
             textures,
@@ -289,12 +297,14 @@ fn load_decals(
         runlog::kv(
             "decal_class_loaded",
             &format!(
-                "class={path} textures={} draw_scale={} push_back={} depth={} random_orient={} fade_in={} life={}",
+                "class={path} textures={} draw_scale={} push_back={} depth={} random_orient={} spread={:.4} backfaces={} fade_in={} life={}",
                 c.textures.len(),
                 c.draw_scale,
                 c.push_back,
                 c.depth,
                 c.random_orient,
+                c.spread,
+                c.backfaces,
                 c.fade_in,
                 c.life
             ),
@@ -370,7 +380,7 @@ fn spawn_map_decals(mut commands: Commands, mut pending: ResMut<PendingMapDecals
     if pending.0.is_empty() {
         return;
     }
-    let (mut built, mut empty) = (0, 0);
+    let (mut built, mut empty, mut backfaces_dropped) = (0, 0, 0);
     let mut per_blend = [0usize; 4];
     for d in std::mem::take(&mut pending.0) {
         let i = &d.info;
@@ -392,22 +402,31 @@ fn spawn_map_decals(mut commands: Commands, mut pending: ResMut<PendingMapDecals
                 z: axes.col(2),
                 half,
                 depth: i.max_trace_distance as f32,
-                // FOV in degrees: the guess in DESIGN.md M6.
-                spread: (i.fov.max(0) as f32 * 0.5).to_radians().tan(),
+                spread: fov_spread(i.fov as f32),
                 mirror: if scale < 0.0 { -1.0 } else { 1.0 },
                 surfaces: surfaces_mask,
+                backfaces: i.project_on_backfaces,
             },
             base,
         );
+        backfaces_dropped += p.backfaces_dropped;
         if p.indices.is_empty() {
             empty += 1;
-            runlog::kv("map_decal", &format!("name={} class={} empty=true at_unreal=({:.0}, {:.0}, {:.0})", i.name, i.class, origin.x, origin.y, origin.z));
+            runlog::kv(
+                "map_decal",
+                &format!("name={} class={} empty=true at_unreal=({:.0}, {:.0}, {:.0}) {}", i.name, i.class, origin.x, origin.y, origin.z, p.angle_log()),
+            );
             continue;
         }
         built += 1;
         per_blend[i.frame_buffer_blending.min(3) as usize] += 1;
-        // bGradient: fades out with depth (assumed linear).
-        let fade: Vec<f32> = p.depth.iter().map(|t| if i.gradient { 1.0 - t } else { 1.0 }).collect();
+        runlog::kv(
+            "map_decal",
+            &format!("name={} class={} at_unreal=({:.0}, {:.0}, {:.0}) surfaces={} {}", i.name, i.class, origin.x, origin.y, origin.z, p.surfaces, p.angle_log()),
+        );
+        // bGradient: fades out with depth (linear over MaxTraceDistance),
+        // times the surface-angle strength.
+        let fade: Vec<f32> = p.depth.iter().zip(&p.angle).map(|(t, a)| a * if i.gradient { 1.0 - t } else { 1.0 }).collect();
         let colors: Vec<[f32; 4]> = match &d.material {
             MapDecalMaterial::Standard(_, true) => fade.iter().map(|f| [*f, *f, *f, 1.0]).collect(),
             _ => fade.iter().map(|f| [1.0, 1.0, 1.0, *f]).collect(),
@@ -432,7 +451,10 @@ fn spawn_map_decals(mut commands: Commands, mut pending: ResMut<PendingMapDecals
     }
     runlog::kv(
         "map_decals",
-        &format!("built={built} empty={empty} modulate={} none={} alpha_blend={} add={}", per_blend[1], per_blend[0], per_blend[2], per_blend[3]),
+        &format!(
+            "built={built} empty={empty} modulate={} none={} alpha_blend={} add={} backfaces_dropped={backfaces_dropped}",
+            per_blend[1], per_blend[0], per_blend[2], per_blend[3]
+        ),
     );
 }
 
@@ -454,6 +476,14 @@ fn frand(rng: &mut u32) -> f32 {
 
 fn to_ue(v: Vec3) -> Vec3 {
     Vec3::new(-v.z, v.x, v.y) / SCALE
+}
+
+/// A projector's FOV (degrees) as how far each side of its volume moves
+/// out per unit of depth: tan(FOV / 2). KF puts the frustum's apex behind
+/// Location so that the texture is its normal size at Location (details in
+/// the local RE.md). 0 (or less): a box.
+fn fov_spread(fov: f32) -> f32 {
+    (fov.max(0.0) * 0.5).to_radians().tan()
 }
 
 /// Clips a convex polygon to the half-space `n . p <= d`.
@@ -487,17 +517,84 @@ struct Projection {
     /// -1 mirrors the texture (a negative DrawScale).
     mirror: f32,
     surfaces: u8,
+    /// bProjectOnBackfaces: full strength on every side, no angle fall-off.
+    backfaces: bool,
+}
+
+/// Which way a source's triangles face, as the sign that turns the cross
+/// product of their corners (in Unreal space) into their front normal; None
+/// when the winding is not reliable. BSP polygons are stored in Unreal's
+/// order (2053 of 2055 on KF-WestLondon, see `bsp_loaded`
+/// flipped_to_match_normal); terrain triangles are wound to face up in
+/// Bevy space, which Unreal space mirrors. Static-mesh collision keeps
+/// mirrored actors' triangles reversed, so it has no reliable side.
+fn front_sign(kind: u8) -> Option<f32> {
+    match kind {
+        SURF_BSP => Some(1.0),
+        SURF_TERRAIN => Some(-1.0),
+        _ => None,
+    }
+}
+
+/// KF's projector strength on a surface: max(0, -ProjDir . SurfaceNormal),
+/// so 1 facing the projector, 0 edge-on and on back faces. `n` is the
+/// triangle's unit cross product in the projector's frame (X = projection
+/// direction). With `backfaces` (bProjectOnBackfaces) it is always 1.
+/// Without a reliable winding (`sign` None) the side facing the projector
+/// is used: |n.x|.
+fn angle_factor(n: Vec3, sign: Option<f32>, backfaces: bool) -> f32 {
+    if backfaces {
+        return 1.0;
+    }
+    match sign {
+        Some(s) => (-s * n.x).max(0.0),
+        None => n.x.abs(),
+    }
 }
 
 /// Projected geometry: positions relative to `base` (Bevy space), UVs,
-/// depth along the projection as 0..1, triangle indices.
+/// depth along the projection as 0..1, the surface-angle strength
+/// (`angle_factor`), triangle indices.
 #[derive(Default)]
 struct Projected {
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     depth: Vec<f32>,
+    angle: Vec<f32>,
     indices: Vec<u32>,
     surfaces: usize,
+    /// Triangles inside the volume left out as back faces or edge-on.
+    backfaces_dropped: usize,
+}
+
+impl Projected {
+    /// "angle_min=.. angle_max=.. backfaces_dropped=.." for the logs.
+    fn angle_log(&self) -> String {
+        if self.angle.is_empty() {
+            return format!("angle_min=- angle_max=- backfaces_dropped={}", self.backfaces_dropped);
+        }
+        let (lo, hi) = self.angle.iter().fold((f32::MAX, f32::MIN), |(lo, hi), a| (lo.min(*a), hi.max(*a)));
+        format!("angle_min={lo:.3} angle_max={hi:.3} backfaces_dropped={}", self.backfaces_dropped)
+    }
+}
+
+/// A polygon in the projector's frame clipped to its volume (fewer than 3
+/// points: nothing inside).
+fn clip_to_volume(mut poly: Vec<Vec3>, p: &Projection) -> Vec<Vec3> {
+    for (pn, d) in [
+        (Vec3::NEG_X, 0.0),
+        (Vec3::X, p.depth),
+        (Vec3::new(-p.spread, 1.0, 0.0), p.half.x),
+        (Vec3::new(-p.spread, -1.0, 0.0), p.half.x),
+        (Vec3::new(-p.spread, 0.0, 1.0), p.half.y),
+        (Vec3::new(-p.spread, 0.0, -1.0), p.half.y),
+    ] {
+        poly = clip(&poly, pn, d);
+        if poly.len() < 3 {
+            break;
+        }
+    }
+    poly
 }
 
 /// The level triangles inside the projector's volume, clipped to it and
@@ -511,7 +608,7 @@ fn project(surfaces: &DecalSurfaces, p: &Projection, base: Vec3) -> Projected {
         .collect();
     let (lo, hi) = corners.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), c| (lo.min(*c), hi.max(*c)));
     let mut out = Projected::default();
-    for tri in surfaces.near(lo, hi, p.surfaces) {
+    for (tri, kind) in surfaces.near(lo, hi, p.surfaces) {
         // Into the projector's frame (Unreal units).
         let local: Vec<Vec3> = tri
             .iter()
@@ -520,27 +617,16 @@ fn project(surfaces: &DecalSurfaces, p: &Projection, base: Vec3) -> Projected {
                 Vec3::new(r.dot(p.x), r.dot(p.y), r.dot(p.z))
             })
             .collect();
-        // Skip surfaces seen edge-on (both sides accepted: collision
-        // winding is not reliable).
+        // KF's strength by the surface angle; back faces and edge-on
+        // surfaces get nothing, so they are left out.
         let n = (local[1] - local[0]).cross(local[2] - local[0]).normalize_or_zero();
-        if n.x.abs() < 0.1 {
+        let angle = if n == Vec3::ZERO { 0.0 } else { angle_factor(n, front_sign(kind), p.backfaces) };
+        let poly = clip_to_volume(local, p);
+        if poly.len() < 3 {
             continue;
         }
-        let mut poly = local;
-        for (pn, d) in [
-            (Vec3::NEG_X, 0.0),
-            (Vec3::X, p.depth),
-            (Vec3::new(-p.spread, 1.0, 0.0), p.half.x),
-            (Vec3::new(-p.spread, -1.0, 0.0), p.half.x),
-            (Vec3::new(-p.spread, 0.0, 1.0), p.half.y),
-            (Vec3::new(-p.spread, 0.0, -1.0), p.half.y),
-        ] {
-            poly = clip(&poly, pn, d);
-            if poly.len() < 3 {
-                break;
-            }
-        }
-        if poly.len() < 3 {
+        if angle <= 0.0 {
+            out.backfaces_dropped += 1;
             continue;
         }
         out.surfaces += 1;
@@ -551,6 +637,7 @@ fn project(surfaces: &DecalSurfaces, p: &Projection, base: Vec3) -> Projected {
             let h = p.half + Vec2::splat(c.x * p.spread);
             out.uvs.push([0.5 + c.y / (2.0 * h.x) * p.mirror, 0.5 - c.z / (2.0 * h.y)]);
             out.depth.push((c.x / p.depth.max(1.0)).clamp(0.0, 1.0));
+            out.angle.push(angle);
         }
         for k in 1..poly.len() as u32 - 1 {
             out.indices.extend([first, first + k, first + k + 1]);
@@ -638,17 +725,19 @@ fn spawn_decals(
                 z,
                 half,
                 depth: class.depth,
-                spread: 0.0,
+                spread: class.spread,
                 mirror: scale.signum(),
                 surfaces: SURF_ALL,
+                backfaces: class.backfaces,
             },
             Vec3::ZERO,
         );
-        let Projected { positions, uvs, indices, surfaces: tris_used, .. } = projected;
+        let angle_log = projected.angle_log();
+        let Projected { positions, uvs, indices, angle, surfaces: tris_used, .. } = projected;
         runlog::kv(
             "decal_spawned",
             &format!(
-                "decal={id} kind={:?} class={} at_unreal=({:.0}, {:.0}, {:.0}) dir=({:.2}, {:.2}, {:.2}) size=({:.0}, {:.0}) scale={scale:.2} surfaces={tris_used} vertices={}",
+                "decal={id} kind={:?} class={} at_unreal=({:.0}, {:.0}, {:.0}) dir=({:.2}, {:.2}, {:.2}) size=({:.0}, {:.0}) scale={scale:.2} surfaces={tris_used} vertices={} {angle_log}",
                 req.kind,
                 class.name,
                 at.x,
@@ -666,12 +755,13 @@ fn spawn_decals(
             continue;
         }
         let n = positions.len();
+        let start = if class.fade_in > 0.0 { 0.0 } else { 1.0 };
         let mesh = meshes.add(
             Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
                 .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n])
                 .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32, 1.0, 1.0, if class.fade_in > 0.0 { 0.0 } else { 1.0 }]; n])
+                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, angle.iter().map(|a| [1.0f32, 1.0, 1.0, a * start]).collect::<Vec<_>>())
                 .with_inserted_indices(Indices::U32(indices)),
         );
         commands.spawn((
@@ -685,7 +775,7 @@ fn spawn_decals(
                 life: class.life,
                 fade_in: class.fade_in,
                 mesh,
-                vertices: n,
+                angle,
             },
         ));
     }
@@ -751,8 +841,13 @@ fn ragdoll_streaks(
         if now <= entry.0 + 0.25 {
             continue;
         }
-        // Trace(pos - impactNorm * 16, pos + impactNorm * 16).
-        let n = normal.normalize_or_zero();
+        // Trace(pos - impactNorm * 16, pos + impactNorm * 16), from the
+        // part's side. impactNorm points out of the surface, toward the
+        // part; avian's normal points from the pair's first collider to its
+        // second, so it is turned round when the part is first (otherwise
+        // the trace starts behind the surface and the streak projects onto
+        // its back face, which gets nothing).
+        let n = if pair.collider1 == part { -normal } else { normal }.normalize_or_zero();
         let from = point + n * 16.0 * SCALE;
         let Ok(d) = Dir3::new(-n) else {
             continue;
@@ -795,7 +890,7 @@ fn fade_decals(mut commands: Commands, time: Res<Time>, mut decals: Query<(Entit
             alpha *= ((d.life - d.age) / FADE_OUT).clamp(0.0, 1.0);
         }
         if let Some(mut mesh) = meshes.get_mut(&d.mesh) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32, 1.0, 1.0, alpha]; d.vertices]);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, d.angle.iter().map(|a| [1.0f32, 1.0, 1.0, a * alpha]).collect::<Vec<_>>());
         }
     }
 }
@@ -829,6 +924,7 @@ mod tests {
                 spread,
                 mirror: 1.0,
                 surfaces: mask,
+                backfaces: false,
             },
             Vec3::ZERO,
         );
@@ -842,6 +938,84 @@ mod tests {
         assert!((width(&s, 0.0, SURF_ALL) - 100.0).abs() < 0.5);
         // 45 degrees each side, 100 deep: 50 + 100 each side.
         assert!((width(&s, 1.0, SURF_ALL) - 300.0).abs() < 0.5);
+    }
+
+    /// Projects onto `s` from `origin` along `x` (Unreal units): a 100 x 100
+    /// box 400 deep.
+    fn shoot(s: &DecalSurfaces, origin: Vec3, x: Vec3, backfaces: bool) -> Projected {
+        let x = x.normalize();
+        let z = x.cross(Vec3::Y).normalize();
+        let y = z.cross(x);
+        project(
+            s,
+            &Projection { origin, x, y, z, half: Vec2::splat(50.0), depth: 400.0, spread: 0.0, mirror: 1.0, surfaces: SURF_ALL, backfaces },
+            Vec3::ZERO,
+        )
+    }
+
+    const ABOVE: Vec3 = Vec3::new(0.0, 0.0, 100.0);
+    const BELOW: Vec3 = Vec3::new(0.0, 0.0, -100.0);
+
+    #[test]
+    fn fov_spread_values() {
+        assert_eq!(fov_spread(0.0), 0.0);
+        assert_eq!(fov_spread(-5.0), 0.0);
+        assert!((fov_spread(90.0) - 1.0).abs() < 1e-6);
+        // ROBloodSplatter: FOV 6, so a 60-deep box is ~3.1 wider each side.
+        assert!((fov_spread(6.0) * 60.0 - 3.145).abs() < 0.01);
+    }
+
+    #[test]
+    fn angle_factor_rules() {
+        // Facing the projector (front normal against the direction): 1.
+        assert!((angle_factor(Vec3::NEG_X, Some(1.0), false) - 1.0).abs() < 1e-6);
+        // Back face: 0; with bProjectOnBackfaces: 1.
+        assert_eq!(angle_factor(Vec3::X, Some(1.0), false), 0.0);
+        assert_eq!(angle_factor(Vec3::X, Some(1.0), true), 1.0);
+        // The sign flips which side is the front.
+        assert!((angle_factor(Vec3::X, Some(-1.0), false) - 1.0).abs() < 1e-6);
+        // No reliable winding: whichever side faces the projector.
+        let n = Vec3::new(0.6, 0.8, 0.0);
+        assert!((angle_factor(n, None, false) - 0.6).abs() < 1e-6);
+        assert!((angle_factor(-n, None, false) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn floor_at_45_degrees_gets_cos() {
+        let s = floor();
+        let p = shoot(&s, ABOVE, Vec3::NEG_Z, false);
+        assert!(!p.angle.is_empty());
+        assert!(p.angle.iter().all(|a| (a - 1.0).abs() < 1e-4), "{:?}", p.angle);
+        // 45 degrees: cos 45 = 0.707.
+        let p = shoot(&s, ABOVE, Vec3::new(1.0, 0.0, -1.0), false);
+        assert!(!p.angle.is_empty());
+        assert!(p.angle.iter().all(|a| (a - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3), "{:?}", p.angle);
+    }
+
+    #[test]
+    fn floor_from_below_is_a_back_face() {
+        let s = floor();
+        let p = shoot(&s, BELOW, Vec3::Z, false);
+        assert!(p.indices.is_empty());
+        assert_eq!(p.backfaces_dropped, 2);
+        // bProjectOnBackfaces: it lands at full strength.
+        let p = shoot(&s, BELOW, Vec3::Z, true);
+        assert!(!p.indices.is_empty());
+        assert!(p.angle.iter().all(|a| *a == 1.0));
+    }
+
+    #[test]
+    fn static_meshes_take_either_side() {
+        // The same floor as static-mesh collision: no reliable winding.
+        let c = |x: f32, y: f32| coords::pos([x, y, 0.0]);
+        let soup = TriSoup {
+            vertices: vec![c(-1000.0, -1000.0), c(1000.0, -1000.0), c(1000.0, 1000.0), c(-1000.0, 1000.0)],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            ..Default::default()
+        };
+        let s = DecalSurfaces::new(&[&TriSoup::default(), &soup, &TriSoup::default()]);
+        assert!(!shoot(&s, ABOVE, Vec3::NEG_Z, false).indices.is_empty());
+        assert!(!shoot(&s, BELOW, Vec3::Z, false).indices.is_empty());
     }
 
     #[test]
