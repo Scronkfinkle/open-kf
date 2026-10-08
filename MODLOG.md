@@ -6201,3 +6201,21 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Doors: spare frame time carries into the next key (branch fix/movers)
+
+**Changed:** `src/world/door.rs` `Door::physics` (PHYS_MovingBrush): when a
+door or trader door reaches a key part way through a frame, the unused part
+of the frame is now spent moving toward the next key (if KeyFrameReached
+chains on), as KF's engine does; before, the rest of the frame was dropped.
+The glide-curve comment no longer says "not verified". DESIGN.md Doors
+"Glide" bullet.
+**Why:** audit finding MOV-5 (movers audit 2026-10-08). The glide curve
+3a^2 - 2a^3 was confirmed in the same audit.
+**Tested how:** unit test `leftover_time_carries_into_the_next_key`
+(3 keys, MoveTime 1, two 0.6 s frames); all door tests.
+**Result:** 15 of 15 door tests pass; after 1.2 s the mover is 0.2 of the
+way from key 1 to key 2 (x = 120).
+**Still broken / not tested:** not checked in a game run on its own
+(multi-key movers are trader doors only; the effect is at most one frame).
+**Next:** MOV-2 (doors push pawns).

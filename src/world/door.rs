@@ -346,8 +346,8 @@ fn ue(p: Vec3) -> [f32; 3] {
     [-p.z / SCALE, p.x / SCALE, p.y / SCALE]
 }
 
-/// MV_GlideByTime's curve, smooth at both ends. Native code: taken from
-/// the Unreal 1 public source as I remember it, not verified against KF.
+/// MV_GlideByTime's curve, smooth at both ends: 3a^2 - 2a^3 (checked
+/// against KF's engine code; other glide types move linearly).
 fn glide(a: f32) -> f32 {
     3.0 * a * a - 2.0 * a * a * a
 }
@@ -427,22 +427,36 @@ impl Door {
         }
     }
 
-    /// PHYS_MovingBrush for one frame.
+    /// PHYS_MovingBrush for one frame. When a key is reached part way
+    /// through the frame, the time left over is not lost: if
+    /// KeyFrameReached chains on to the next key, the mover keeps moving
+    /// toward it with the rest of the frame (KF's engine loop; our cap of
+    /// 24 passes is a safety net, KF has none).
     fn physics(&mut self, dt: f32) {
-        if !self.interpolating {
-            return;
-        }
-        let alpha = (self.phys_alpha + dt * self.phys_rate).min(1.0);
-        let a = if self.info.glide_type == 1 { glide(alpha) } else { alpha };
-        let (to_pos, to_rot) = key_pose(&self.info, self.key_num as usize);
-        for i in 0..3 {
-            self.pos[i] = self.old_pos[i] + (to_pos[i] - self.old_pos[i]) * a;
-            self.rot[i] = self.old_rot[i] + (to_rot[i] - self.old_rot[i]) * a;
-        }
-        self.phys_alpha = alpha;
-        if alpha >= 1.0 {
-            self.interpolating = false;
-            self.key_frame_reached();
+        let mut dt = dt;
+        let mut passes = 0;
+        while self.interpolating && dt > 0.0 && passes < 24 {
+            passes += 1;
+            let next = self.phys_alpha + dt * self.phys_rate;
+            let alpha = if next <= 1.0 {
+                dt = 0.0;
+                next
+            } else {
+                // The share of this frame's time not needed to reach the key.
+                dt *= (next - 1.0) / (next - self.phys_alpha);
+                1.0
+            };
+            let a = if self.info.glide_type == 1 { glide(alpha) } else { alpha };
+            let (to_pos, to_rot) = key_pose(&self.info, self.key_num as usize);
+            for i in 0..3 {
+                self.pos[i] = self.old_pos[i] + (to_pos[i] - self.old_pos[i]) * a;
+                self.rot[i] = self.old_rot[i] + (to_rot[i] - self.old_rot[i]) * a;
+            }
+            self.phys_alpha = alpha;
+            if alpha >= 1.0 {
+                self.interpolating = false;
+                self.key_frame_reached();
+            }
         }
     }
 
@@ -1614,6 +1628,28 @@ mod tests {
         run(&mut d, 1.1);
         assert_eq!(d.rot[1], 0.0);
         assert!(d.closed);
+    }
+
+    #[test]
+    fn leftover_time_carries_into_the_next_key() {
+        // A KFTraderDoor-like mover with three keys, linear, MoveTime 1:
+        // two frames of 0.6 s reach key 1 after 1.0 s and spend the last
+        // 0.2 s on the way to key 2.
+        let mut d = test_door(3);
+        d.info.glide_type = 0;
+        d.info.key_pos[1] = [100.0, 0.0, 0.0];
+        d.info.key_pos[2] = [200.0, 0.0, 0.0];
+        d.info.key_rot[1].yaw = 0;
+        d.info.key_rot[2].yaw = 0;
+        d.trigger("test");
+        for _ in 0..2 {
+            d.step(0.6);
+            d.physics(0.6);
+            d.step(0.0);
+        }
+        assert_eq!((d.prev_key_num, d.key_num), (1, 2));
+        assert!((d.phys_alpha - 0.2).abs() < 1e-4, "alpha {}", d.phys_alpha);
+        assert!((d.pos[0] - 120.0).abs() < 0.01, "x {}", d.pos[0]);
     }
 
     #[test]

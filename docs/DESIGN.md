@@ -2178,8 +2178,11 @@ not part of this milestone and keep being drawn but not blocking.
   moves from where it is now to key `k` in `time` seconds. Opening past key
   1 chains key by key (`KeyFrameReached`) up to `NumKeys - 1` (default 2).
 - *Glide.* `MoverGlideType` defaults to MV_GlideByTime (smooth start and
-  stop). The curve is native code; I recall it as 3a^2 - 2a^3 from the
-  Unreal 1 public source. **Not verified against KF.**
+  stop): 3a^2 - 2a^3 of the time share a; other glide types move
+  linearly. The curve is native code; checked against KF's engine
+  (2026-10-08). When a key is reached part way through a frame, the rest
+  of the frame's time carries on toward the next key if KeyFrameReached
+  chains on (engine loop, also checked); before 2026-10-08 we dropped it.
 - *Defaults (KFDoorMover).* InitialState TriggerToggle, MoveTime 1 (maps
   often set 0.5-2), MoverEncroachType 3 = ignore: a door swings through
   pawns, it never pushes or stops. Blocks players, zeds, bullets and
