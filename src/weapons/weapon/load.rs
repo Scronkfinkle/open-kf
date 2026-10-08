@@ -905,7 +905,7 @@ pub(super) fn load_weapons(
         frame: 0.0,
         play_rate: 30.0,
         looping: false,
-        notify_frame: -1.0,
+        notify_frame: 0.0,
         fire_cooldown: [0.0; 2],
         fire_count: 0,
         firing: [false; 2],

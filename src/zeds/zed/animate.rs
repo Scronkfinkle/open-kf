@@ -2,23 +2,32 @@
 
 use super::*;
 
-/// The notifies of `seq` passed on the way from frame `prev` to
-/// `frame`: a sequence just started counts from before frame 0; a lower
-/// frame than before means it wrapped (looping) or restarted.
+/// The frame spans `(from, to]` passed on the way from frame `prev` to
+/// `frame` of an animation `len` frames long: a sequence just started
+/// counts from frame 0; a lower frame than before means it wrapped
+/// (looping) or restarted. KF fires a notify only when the frame moves
+/// from strictly before it to at or after it, and a sequence starts on
+/// frame 0 (or just after), so a notify at time 0 never fires.
+pub(super) fn notify_spans(prev: Option<f32>, frame: f32, len: f32, looping: bool) -> [(f32, f32); 2] {
+    match prev {
+        None => [(0.0, frame), (0.0, 0.0)],
+        Some(p) if frame >= p => [(p, frame), (0.0, 0.0)],
+        Some(p) if looping => [(p, len), (0.0, frame)],
+        Some(_) => [(0.0, frame), (0.0, 0.0)],
+    }
+}
+
+/// True if a notify at `time` (0..1 of the sequence) lies in one of the spans.
+pub(super) fn notify_in_spans(time: f32, len: f32, spans: &[(f32, f32)]) -> bool {
+    spans.iter().any(|&(a, b)| time * len > a && time * len <= b)
+}
+
+/// The notifies of `seq` passed on the way from frame `prev` to `frame`
+/// (see `notify_spans`).
 pub(super) fn passed_notifies(model: &SkinnedModel, seq: usize, prev: Option<f32>, frame: f32, looping: bool) -> Vec<ue_assets::skeletal::Notify> {
     let len = model.length(seq);
-    let spans: &[(f32, f32)] = &match prev {
-        None => [(-1.0, frame), (0.0, 0.0)],
-        Some(p) if frame >= p => [(p, frame), (0.0, 0.0)],
-        Some(p) if looping => [(p, len), (-1.0, frame)],
-        Some(_) => [(-1.0, frame), (0.0, 0.0)],
-    };
-    model
-        .notifies(seq)
-        .iter()
-        .filter(|n| spans.iter().any(|&(a, b)| n.time * len > a && n.time * len <= b))
-        .cloned()
-        .collect()
+    let spans = notify_spans(prev, frame, len, looping);
+    model.notifies(seq).iter().filter(|n| notify_in_spans(n.time, len, &spans)).cloned().collect()
 }
 
 pub(super) fn start_anim(z: &mut Zed, seq: Option<usize>, looping: bool) {
@@ -352,5 +361,36 @@ pub(super) fn animate_zeds(
             let world_axis = t.rotation * coords::dir(axis.to_array());
             (world, world_axis)
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Steps a looping 30-frame animation at 30 fps over two cycles and
+    /// returns how often a notify at `time` fired.
+    fn fires_over_two_loops(time: f32) -> usize {
+        let len = 30.0;
+        let (mut prev, mut frame, mut count) = (None, 0.0f32, 0);
+        for _ in 0..120 {
+            frame = (frame + 0.5) % len;
+            if notify_in_spans(time, len, &notify_spans(prev, frame, len, true)) {
+                count += 1;
+            }
+            prev = Some(frame);
+        }
+        count
+    }
+
+    #[test]
+    fn notify_at_time_zero_never_fires() {
+        assert_eq!(fires_over_two_loops(0.0), 0);
+        // Just after 0 it fires once per cycle; also at 0.5.
+        assert_eq!(fires_over_two_loops(0.001), 2);
+        assert_eq!(fires_over_two_loops(0.5), 2);
+        // A sequence that just started from frame 0 (no previous frame).
+        assert!(!notify_in_spans(0.0, 30.0, &notify_spans(None, 1.0, 30.0, false)));
+        assert!(notify_in_spans(0.01, 30.0, &notify_spans(None, 1.0, 30.0, false)));
     }
 }

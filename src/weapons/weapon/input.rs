@@ -53,7 +53,8 @@ pub(super) fn play(w: &mut Weapons, name: &str, rate: f32, looping: bool) {
     w.sequence = def.model.sequence(name);
     w.anim = name.to_ascii_lowercase();
     w.frame = 0.0;
-    w.notify_frame = -1.0;
+    // Notifies count from frame 0, exclusive: one at time 0 never fires (KF).
+    w.notify_frame = 0.0;
     w.looping = looping;
     w.play_rate = w.sequence.map_or(30.0, |s| def.model.rate(s)) * rate;
     if w.sequence.is_none() {

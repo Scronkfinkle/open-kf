@@ -81,7 +81,8 @@ pub(super) fn animate_weapon(
     anim_sounds(&mut w, from, to);
     if w.looping && w.frame >= length {
         let wrapped = w.frame % length.max(1e-3);
-        anim_sounds(&mut w, -1.0, wrapped);
+        // From frame 0, exclusive: a notify at time 0 never fires (KF).
+        anim_sounds(&mut w, 0.0, wrapped);
         w.notify_frame = wrapped;
     } else {
         w.notify_frame = w.frame;

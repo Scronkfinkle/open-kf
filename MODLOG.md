@@ -6220,3 +6220,22 @@ first pose (the 9mm jumped back up near the end of PutDown).
 **Result:** see the test numbers in the last entry of this series.
 **Still broken / not tested:** not looked at in game.
 **Next:** ANIM-8.
+
+## 2026-10-08 ANIM-8: animation notifies at time 0 never fire (branch fix/animation)
+
+**Changed:** `src/zeds/zed/animate.rs` (`notify_spans` / `notify_in_spans`
+split out of `passed_notifies`, spans start at frame 0 exclusive instead of
+-1; unit test); `src/weapons/weapon/animate.rs`, `input.rs`, `load.rs` (the
+weapon's sound notifies count from 0, exclusive, at start and after a loop
+wraps).
+**Why:** KF fires a notify (timed event in an animation) only when the frame
+moves from strictly before it to at or after it, and an animation starts on
+frame 0 or just after; so a notify at exactly 0 never fires. Ours fired them,
+for loops every cycle. 7 notifies in the game sit at 0 (player jog-back
+footsteps with some weapons, the L85 reload, the Crawler's leap idle).
+**Tested how:** unit test: a notify at 0 fires 0 times over two loops of a
+30-frame animation, one at 0.001 and one at 0.5 fire twice; `cargo test`
+(237 + 24 pass).
+**Result:** as above.
+**Still broken / not tested:** not checked in game (the affected notifies are rare).
+**Next:** ANIM-7.
