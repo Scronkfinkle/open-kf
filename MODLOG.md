@@ -6245,3 +6245,27 @@ sides. Not looked at by you. A floor splat 40 units above the floor
 (decal 6 in the run) reached nothing; unrelated to this change, not
 looked into.
 **Next:** DEC-2 (spawned decals use their FOV).
+
+## 2026-10-08 Spawned decals use their FOV (branch fix/decals)
+
+**Changed:** `render/decals.rs`: the decal classes' FOV is read and their
+projection volume widens by tan(FOV/2) per unit of depth, the same rule
+the placed map Projectors already used (now one function, `fov_spread`).
+`decal_class_loaded` logs `spread`. One unit test. DESIGN.md (blood
+decals, M6: the FOV rule is now confirmed from the engine's native code,
+no longer a guess).
+**Why:** audit finding DEC-2: spawned decals were drawn as boxes; KF
+draws every projector with an FOV as a frustum whose texture is its
+normal size at the projector's location.
+**Tested how:** `cargo test --workspace`; clippy; headless KF-WestLondon
+decapitation view with a Clot and 6 shots, log read.
+**Result:** tests 240 + 24 pass; clippy only the old `boss.rs` warning.
+Spread 0.0087 (FOV 1) for bullet holes, burn and scorch marks, vomit;
+0.0524 (FOV 6) for the four blood classes. A blood splat's volume is
+about 3 units wider each side at its 60-unit depth; a bullet hole's half
+a unit. Map decals unchanged (71 built, 1 empty, 885 back faces
+dropped). Streaks and bullet holes landed as before.
+**Still broken / not tested:** the visual change is a few units and was
+not looked at. For non-square textures KF's frustum is set from the
+half-diagonal (audit DEC-3), not copied: low value, needs a closer read.
+**Next:** your look at blood decals.

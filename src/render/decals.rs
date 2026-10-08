@@ -183,6 +183,8 @@ struct DecalClass {
     push_back: f32,
     depth: f32,
     random_orient: bool,
+    /// The projector's FOV as a widening per unit of depth (`fov_spread`).
+    spread: f32,
     /// bProjectOnBackfaces.
     backfaces: bool,
     fade_in: f32,
@@ -286,6 +288,7 @@ fn load_decals(
             push_back: float("PushBack", 0.0),
             depth: float("MaxTraceDistance", 1000.0),
             random_orient: matches!(defaults.get(&class, "RandomOrient"), Some((Value::Bool(true), _))),
+            spread: fov_spread(float("FOV", 0.0)),
             backfaces: matches!(defaults.get(&class, "bProjectOnBackfaces"), Some((Value::Bool(true), _))),
             fade_in: float("FadeInTime", 0.0),
             life,
@@ -294,12 +297,13 @@ fn load_decals(
         runlog::kv(
             "decal_class_loaded",
             &format!(
-                "class={path} textures={} draw_scale={} push_back={} depth={} random_orient={} backfaces={} fade_in={} life={}",
+                "class={path} textures={} draw_scale={} push_back={} depth={} random_orient={} spread={:.4} backfaces={} fade_in={} life={}",
                 c.textures.len(),
                 c.draw_scale,
                 c.push_back,
                 c.depth,
                 c.random_orient,
+                c.spread,
                 c.backfaces,
                 c.fade_in,
                 c.life
@@ -398,8 +402,7 @@ fn spawn_map_decals(mut commands: Commands, mut pending: ResMut<PendingMapDecals
                 z: axes.col(2),
                 half,
                 depth: i.max_trace_distance as f32,
-                // FOV in degrees: the guess in DESIGN.md M6.
-                spread: (i.fov.max(0) as f32 * 0.5).to_radians().tan(),
+                spread: fov_spread(i.fov as f32),
                 mirror: if scale < 0.0 { -1.0 } else { 1.0 },
                 surfaces: surfaces_mask,
                 backfaces: i.project_on_backfaces,
@@ -473,6 +476,14 @@ fn frand(rng: &mut u32) -> f32 {
 
 fn to_ue(v: Vec3) -> Vec3 {
     Vec3::new(-v.z, v.x, v.y) / SCALE
+}
+
+/// A projector's FOV (degrees) as how far each side of its volume moves
+/// out per unit of depth: tan(FOV / 2). KF puts the frustum's apex behind
+/// Location so that the texture is its normal size at Location (details in
+/// the local RE.md). 0 (or less): a box.
+fn fov_spread(fov: f32) -> f32 {
+    (fov.max(0.0) * 0.5).to_radians().tan()
 }
 
 /// Clips a convex polygon to the half-space `n . p <= d`.
@@ -714,7 +725,7 @@ fn spawn_decals(
                 z,
                 half,
                 depth: class.depth,
-                spread: 0.0,
+                spread: class.spread,
                 mirror: scale.signum(),
                 surfaces: SURF_ALL,
                 backfaces: class.backfaces,
@@ -944,6 +955,15 @@ mod tests {
 
     const ABOVE: Vec3 = Vec3::new(0.0, 0.0, 100.0);
     const BELOW: Vec3 = Vec3::new(0.0, 0.0, -100.0);
+
+    #[test]
+    fn fov_spread_values() {
+        assert_eq!(fov_spread(0.0), 0.0);
+        assert_eq!(fov_spread(-5.0), 0.0);
+        assert!((fov_spread(90.0) - 1.0).abs() < 1e-6);
+        // ROBloodSplatter: FOV 6, so a 60-deep box is ~3.1 wider each side.
+        assert!((fov_spread(6.0) * 60.0 - 3.145).abs() < 0.01);
+    }
 
     #[test]
     fn angle_factor_rules() {
