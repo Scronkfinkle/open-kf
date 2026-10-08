@@ -265,7 +265,12 @@ const BLEND_WGSL: &str = r#"
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+#ifdef VERTEX_COLORS
     var c = textureSample(particle_texture, particle_sampler, in.uv) * in.color;
+#else
+    // Map meshes (additive materials) have no vertex colours.
+    var c = textureSample(particle_texture, particle_sampler, in.uv);
+#endif
 #ifdef DISTANCE_FOG
     // Fog toward black: a black particle changes nothing in these blends.
     var fog = view_bindings::fog;

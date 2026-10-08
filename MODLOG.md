@@ -7104,3 +7104,38 @@ still plain translucent. Assumed: KF's lighting does not reach a modulated
 shader's output.
 **Next:** visual check of a graffiti wall (KF-Bedlam) and Suburbia's church
 window.
+
+## 2026-10-08 Additive map meshes drawn additively (light cones no longer black)
+
+**Changed:** `src/world/map.rs`: the per-material override from the
+modulate step is now `SpecialMaterial` (Modulate / Additive). Additive
+materials (Shader OB_Translucent / OB_Brighten, FinalBlend FB_Translucent /
+FB_Brighten) on placed static meshes are drawn with the particles'
+`BlendMaterial` style 3 (texture + scene, fogged toward black), not lit, not
+baked, no shadow. Log line `mesh_modulate` became `mesh_special` (kind,
+actor, unlit, in_sky, position); `textures_loaded` gains
+`additive_materials` and `bsp_additive_polys`. `load_map` takes the two
+material stores as one tuple (Bevy's 16-parameter limit).
+`src/render/particles.rs`: the blend shader works without vertex colours.
+**Why:** your note: the trader-room lamps on KF-ThrillsChills showed big
+black cones (Asylum_T.Lighting.Light_Cone_SHDR / Cone_Red_SHDR,
+OB_Translucent). The map drew additive materials alpha-blended since the
+glass fix (2026-10-05, "additive map materials are still drawn as alpha
+blend").
+**Tested how:** same view before/after (`--fly --camera
+270,-13050,150,-1.2,0.35`, inside the trader room): before, the screen was
+solid dark (the camera inside a cone); after, the room shows with faint
+beams under the ceiling lamps. You checked it in game ("Fixed"). All maps
+loaded headless with the additive meshes counted (19 of 34 done at
+commit time).
+**Result:** ThrillsChills 13 additive meshes (4 materials). Other maps
+so far: 0 to 185 additive meshes (light cones, LightBeamsShader, FBGlass
+windows, FogFB, ContainerFB, rain, the Fleshpound bloom shader, sky
+aurora / LondonSkyFB in the sky zone); no BSP surface uses one.
+**Still broken / not tested:** the cones' colour is missing (KF multiplies
+Light_Cone by a ConstantColor in a Combiner; we take only the texture), so
+they are pale white. FBGlass windows now brighten what is behind them
+instead of dulling it (FB_Translucent is additive in UE2, so assumed
+right; not compared with the game). Additive meshes are drawn unlit
+(assumed). Spawn-view screenshots of the other maps not looked at.
+**Next:** the Combiner colour (CO_Multiply by a ConstantColor).
