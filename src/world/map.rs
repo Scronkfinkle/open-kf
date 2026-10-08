@@ -758,7 +758,8 @@ fn load_map(
                     // colour with the view): drawn unlit.
                     let unlit = in_sky || surf.flags & poly_flags::UNLIT != 0;
                     // The polygon's lightmap page and UVs, if it has one.
-                    // A page the map saved empty: keep the old sun lighting.
+                    // A page whose saved copy is out of date: keep the old
+                    // sun lighting.
                     let page_missing = !unlit
                         && bsp_lighting
                             .as_ref()
@@ -862,8 +863,17 @@ fn load_map(
                 runlog::kv(
                     "bsp_lightmaps",
                     &format!(
-                        "pages={} pages_decoded={} surface_lightmaps={} polygons_lightmapped={lightmapped_polys} polygons_unlit={no_lightmap_polys} polygons_page_saved_empty={missing_page_polys} brightness={} lightmap_exposure={:.1}",
+                        "pages={} pages_stale={} stale=[{}] pages_decoded={} surface_lightmaps={} polygons_lightmapped={lightmapped_polys} polygons_unlit={no_lightmap_polys} polygons_page_saved_empty={missing_page_polys} brightness={} lightmap_exposure={:.1}",
                         lightmap_pages.len(),
+                        bsp_lighting.as_ref().map_or(0, |l| l.textures.iter().filter(|t| !t.saved_is_current()).count()),
+                        bsp_lighting.as_ref().map_or(String::new(), |l| l
+                            .textures
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, t)| !t.saved_is_current())
+                            .map(|(i, t)| format!("{i}:{}/{}", t.saved_revision, t.revision))
+                            .collect::<Vec<_>>()
+                            .join(" ")),
                         lightmap_pages.iter().filter(|p| p.is_some()).count(),
                         bsp_lighting.as_ref().map_or(0, |l| l.lightmaps),
                         crate::render::lighting::BRIGHTNESS,

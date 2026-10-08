@@ -3089,6 +3089,47 @@ result in the map file; we read and draw that.
   engine rebuilds them at load from the LightMaps entries: lights and
   per-texel shadow bits); there the BSP keeps the old sun for now
   (L1b, later: rebuild them the same way).
+- **L1b, stale pages rebuilt at load (planned 2026-10-08, branch
+  fix/stale-lightmaps; read from KF's native code, details in the local
+  RE.md).** A page is really built from its surface lightmaps; the
+  saved DXT page is a compressed copy made in the editor. Each page
+  stores two revision numbers: its own and the one the saved copy was
+  made from. KF uses the saved copy only when the two are equal;
+  otherwise it builds the page at load. KF-Clandestine (1244 vs 0),
+  KF-Forgotten (630 vs 0) and KF-Hell (65 vs 0) have every page out of
+  date; KF-WestLondon and KF-Farm none. Steps:
+  1. Read both revisions; "saved copy usable" = revisions equal
+     (replaces "page is empty"). Log `pages_stale=N`.
+  2. Build stale pages the way KF does, per surface lightmap (size
+     SizeX x SizeY at OffsetX, OffsetY on a 512 x 512 page):
+     - every texel starts at the zone's ambient: FGetHSV(AmbientHue,
+       AmbientSaturation, AmbientBrightness) x 0.5, as a byte colour
+       (x 255, rounded down, clamped). The zone is the lightmap's own
+       (LevelInfo when it has no ZoneInfo).
+     - for each light in its list (skipped if the actor is gone or
+       deleted): the light's shadow bits (1 bit per texel inside the
+       light's box MinX..MaxX, MinY..MaxY, rows of `stride` bytes) are
+       softened with a 3 x 3 filter (weights 24 40 24 / 40 64 40 /
+       24 40 24, total 320, each row's share rounded down to a byte
+       separately; edges repeat the border bit), giving 0..254. A light
+       with a one-row box or no bits is fully visible (255).
+     - per texel (centre = Base + (x + 0.5) X + (y + 0.5) Y), the
+       light's intensity byte: point lights round(shadow x A(d^2/R^2) x
+       |h| / R), with R = 25 x (LightRadius + 1), h the light's height
+       over the surface plane, A from a 4096-entry table (1 - 3s^2 +
+       2s^3) / s, s = sqrt((i + 1) / 4096), indexed by d^2 / R^2 x 4093;
+       0 at or beyond R. Sunlight: shadow x max(0, -dir . N) (two-sided
+       surfaces: |dir . N|), rounded down. Spotlights: the point value x
+       ((cos - e) / (1 - e))^2 inside the cone, e = 1 - LightCone / 256.
+     - the light's colour is FGetHSV(LightHue, LightSaturation, 255) x
+       LightBrightness / 255 x LevelInfo.Brightness (x 0 for LT_None and
+       LT_BackdropLight); each channel adds min(255, 2 x intensity x
+       colour) to the texel, saturating at 255 (LE_Negative subtracts).
+     Validation: build KF-WestLondon's (current) pages with the same code
+     and compare to the saved DXT pages texel by texel (`kfpkg
+     lightmaps <map>`; DXT error only expected).
+  3. Draw the built pages like saved ones; the three maps' walls lose the
+     made-up sun fallback.
 - **L2, mesh vertex lighting (implemented).** Each lit actor gets its own
   copy of its mesh parts with the colours (parts remember which mesh
   vertex each of their vertices came from), drawn unlit. Actors without

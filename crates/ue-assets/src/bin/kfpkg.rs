@@ -1786,7 +1786,11 @@ fn lighting(install: &Install, map: &str, probe: Option<&str>) -> Result<bool, S
                         );
                     }
                 }
-                println!("lightmap pages saved empty: {}", l.textures.iter().filter(|t| t.mips.is_empty()).count());
+                println!(
+                    "lightmap pages out of date (saved revision / revision): {} [{}]",
+                    l.textures.iter().filter(|t| !t.saved_is_current()).count(),
+                    l.textures.iter().map(|t| format!("{}/{}", t.saved_revision, t.revision)).collect::<Vec<_>>().join(" ")
+                );
                 for (i, t) in l.textures.iter().enumerate() {
                     if t.mips.is_empty() {
                         continue;
