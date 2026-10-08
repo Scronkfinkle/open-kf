@@ -6266,3 +6266,22 @@ Blood puffs removed after 0.63 s as before (0.64 / 0.65).
 LifeSpan now live until their owner removes them (as in KF); not seen in
 this run. Shell casings fall through the floor (also before this change).
 **Next:** P4 GetVelocityDirectionFrom.
+
+## 2026-10-08 P4: GetVelocityDirectionFrom (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads
+StartVelocityRadialRange); `src/render/particles.rs`
+(`velocity_direction`, called after turning; test
+velocity_direction_modes).
+**Why:** read but unused before. KF, after turning the start velocity,
+multiplies it axis by axis with the direction from the particle to the
+effect (StartPositionAndOwner: negated; OwnerAndStartPosition: as is), or
+adds StartVelocityRadialRange along it (AddRadial). Used by ROBloodPuff
+(all sizes), BrainSplash, KFGibJet, KFDoorExplode* and the charge-ups.
+**Tested how:** unit test with ROBloodPuff's numbers on an effect turned a
+quarter turn: velocity (0, 100, 0), i.e. out of the wound along the
+effect's X; the other two modes checked too.
+**Result:** test passes.
+**Still broken / not tested:** blood puff look in a game run not compared
+with KF.
+**Next:** P5 InitialDelayRange.

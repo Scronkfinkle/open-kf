@@ -1019,6 +1019,24 @@ fn start_rotation(d: &EmitterDef, axes: Mat3) -> Mat3 {
     }
 }
 
+/// GetVelocityDirectionFrom, applied after turning: `dir` is the unit
+/// direction from the new particle to the effect (for Relative, from the
+/// effect to the particle, as KF uses the local position). KF multiplies
+/// axis by axis: StartPositionAndOwner gives -(vel x dir), OwnerAndStartPosition
+/// vel x dir; AddRadial adds StartVelocityRadialRange along dir.
+fn velocity_direction(d: &EmitterDef, origin: Vec3, pos: Vec3, vel: Vec3, rng: &mut u32) -> Vec3 {
+    if d.get_velocity_direction_from == 0 {
+        return vel;
+    }
+    let dir = if d.coordinate_system == 1 { pos } else { origin - pos }.normalize_or_zero();
+    match d.get_velocity_direction_from {
+        1 => -(vel * dir),
+        2 => vel * dir,
+        3 => vel + dir * in_range(rng, d.start_velocity_radial_range),
+        _ => vel,
+    }
+}
+
 /// `base`: world position of another emitter's particle to start from
 /// (AddLocationFromOtherEmitter). `start`: StartVelocityRange and
 /// LifetimeRange as a script last set them.
@@ -1048,6 +1066,7 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, star
     let vel = rot * start.0.unwrap_or_else(|| in_ranges(rng, &d.start_velocity_range));
     let offset = rot * offset;
     let pos = if d.coordinate_system == 0 { frame.0 + offset } else { offset };
+    let vel = velocity_direction(d, frame.0, pos, vel, rng);
     let mut velocity_loss = in_ranges(rng, &d.velocity_loss_range);
     if d.rotate_velocity_loss_range {
         velocity_loss = rot * velocity_loss;
@@ -1350,6 +1369,7 @@ mod tests {
             coordinate_system: 0,
             start_velocity_range: [(0.0, 0.0); 3],
             get_velocity_direction_from: 0,
+            start_velocity_radial_range: (0.0, 0.0),
             velocity_loss_range: [(0.0, 0.0); 3],
             max_abs_velocity: [0.0; 3],
             acceleration: [0.0; 3],
@@ -1561,6 +1581,29 @@ mod tests {
         s.pending = 1;
         run(&d, &mut s, 0.05);
         assert_eq!((s.slots.len(), s.spawned, s.next), (2, 3, 1));
+    }
+
+    /// GetVelocityDirectionFrom with ROBloodPuff's numbers (start 20 along
+    /// X, velocity -100 along X, UseRotationFrom Actor) on an effect turned
+    /// a quarter turn: OwnerAndStartPosition makes the blood fly away from
+    /// the effect, along its turned X (world Y).
+    #[test]
+    fn velocity_direction_modes() {
+        let mut d = def();
+        d.use_rotation_from = 1;
+        d.start_location_range = [(20.0, 20.0), (0.0, 0.0), (0.0, 0.0)];
+        d.start_velocity_range = [(-100.0, -100.0), (0.0, 0.0), (0.0, 0.0)];
+        d.get_velocity_direction_from = 2;
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(0.0, 100.0, 0.0)), "{:?}", p.vel);
+        d.get_velocity_direction_from = 1;
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(0.0, -100.0, 0.0)), "{:?}", p.vel);
+        d.get_velocity_direction_from = 3;
+        d.start_velocity_range = [(0.0, 0.0); 3];
+        d.start_velocity_radial_range = (50.0, 50.0);
+        let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
+        assert!(close(p.vel, Vec3::new(0.0, -50.0, 0.0)), "{:?}", p.vel);
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.

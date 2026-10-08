@@ -58,6 +58,8 @@ pub struct EmitterDef {
     /// EParticleVelocityDirection: 0 none, 1 start position and owner, 2
     /// owner and start position, 3 add radial.
     pub get_velocity_direction_from: u8,
+    /// Speed added along the particle-to-effect direction (AddRadial).
+    pub start_velocity_radial_range: Range,
     pub velocity_loss_range: [Range; 3],
     pub max_abs_velocity: [f32; 3],
     pub acceleration: [f32; 3],
@@ -270,6 +272,7 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         coordinate_system: byte("CoordinateSystem"),
         start_velocity_range: range_vector("StartVelocityRange", (0.0, 0.0)),
         get_velocity_direction_from: byte("GetVelocityDirectionFrom"),
+        start_velocity_radial_range: range("StartVelocityRadialRange", (0.0, 0.0)),
         velocity_loss_range: range_vector("VelocityLossRange", (0.0, 0.0)),
         max_abs_velocity: vector("MaxAbsVelocity", [0.0; 3]),
         acceleration: vector("Acceleration", [0.0; 3]),
