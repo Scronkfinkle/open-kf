@@ -555,6 +555,15 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
             zap: is_zed_orb.then(|| pfloat("ZapAmount", 1.5)),
             arm_dist: pfloat("ArmDistSquared", 0.0).sqrt(),
             straight_time: (!is_law).then(|| pfloat("StraightFlightTime", 0.25)),
+            // ROBallisticProjectile.bTrueBallistics (LAWProj sets it false).
+            ballistics: (!is_law && !matches!(pget("bTrueBallistics"), Some((Value::Bool(false), _)))).then(|| {
+                crate::weapons::projectile::Ballistics {
+                    bc_inverse: 1.0 / pfloat("BallisticCoefficient", 0.3).max(1e-3),
+                    speed_fudge: pfloat("SpeedFudgeScale", 1.0),
+                    min_fudge: pfloat("MinFudgeScale", 0.025),
+                    accel_time: pfloat("InitialAccelerationTime", 0.1).max(1e-3),
+                }
+            }),
             life_span: pfloat("LifeSpan", 10.0),
             // ZombieFleshPound.TakeDamage: the frag and pipe bomb double,
             // the other explosive types (all of these) count fully.

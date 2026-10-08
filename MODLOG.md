@@ -6247,3 +6247,32 @@ joint gaps under 4 units.
 still uses the last hit's direction (KF has no momentum then and would
 use the random spin).
 **Next:** CP-3 (M79 flight).
+
+## 2026-10-08 M79 / M32 / M203 grenades fly by KF's ballistics (CP-3, branch fix/combat)
+
+**Changed:** `src/weapons/projectile.rs`: `Ballistics` (from the class
+defaults: BallisticCoefficient, SpeedFudgeScale, MinFudgeScale,
+InitialAccelerationTime) on `ExplosiveStats`; `ballistic_step` (start-up
+fudge, G1 drag table, gravity 591.45) while the propellant lasts;
+`fall_step` (full gravity, speed cap 2500, steps of at most 0.05 s)
+after it and for duds. New log `explosive_propellant_out`.
+`src/weapons/weapon/load.rs` reads the values (LAWProj and its children
+have bTrueBallistics false: unchanged). DESIGN.md "Combat physics
+fixes".
+**Why:** ours flew straight at 8000 for 0.25 s, then fell with no speed
+cap, so grenades went more than twice as far as in KF. The engine's
+ballistics, drag table and speed cap are now read from KF (details in
+the local RE.md).
+**Tested how:** unit test (M79 fired level at 60 fps); all tests;
+clippy; two headless M79 shots on KF-WestLondon (`--give
+M79GrenadeLauncher --input 60:3,200:fire`, camera
+`-4090,1100,-3650,1.5708,0.05` and pitch 0.3).
+**Result:** unit test: 344 units at 0.1 s (old 800), 1535 at 0.25 s,
+speed 2500 on the first falling step, 300 units below the muzzle after
+3513 units (old 8400). Headless level shot: propellant out at 0.258 s
+after 1313 units at speed 7910, then it hit a wall. Pitch 0.3 shot:
+propellant out at 0.255 s (speed 7888), exploded on the ground 4231
+units further at 1.95 s.
+**Still broken / not tested:** not compared with the real game side by
+side; not played by you. Darts (HealingProjectile) still fly straight.
+**Next:** CP-5 (explosion knockback on zeds).

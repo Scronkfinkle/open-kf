@@ -948,6 +948,7 @@ mod tests {
             zap: None,
             arm_dist: 0.0,
             straight_time: None,
+            ballistics: None,
             life_span: 10.0,
             fleshpound_mult: None,
             effect: "",

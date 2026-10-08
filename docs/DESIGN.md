@@ -6270,6 +6270,24 @@ cylinder centre, not the pelvis. A typical Clot kill now starts at about
 1.5 rad/s. With no hit to go by, KF uses a random direction x 18000
 rotation units/s (1.73 rad/s) and no push; ours did not spin at all.
 
+**CP-3 M79, M32 and M203 grenade flight.** These grenades use Red
+Orchestra's "true ballistics" while their propellant lasts (0.25 s); the
+LAW, Husk Gun and ZED guns switch it off and fly straight. Each frame:
+- A start-up "fudge" scales speed and movement from 2.5% up to 100% over
+  the first 0.1 s (so the grenade cannot pass through something right in
+  front of the muzzle). It covers about 350 units in that time, not 800.
+- Drag: the engine works in feet (18.4 units = 1 foot). It takes
+  (speed in ft/s)^2 x G1(Mach) / 0.3 x dt x 0.00384 off the speed, where
+  G1 is the standard drag table (0.2155 at the M79's Mach 0.39). It
+  subtracts that number straight from the speed in units, without
+  converting it back; we copy that. About 520 units/s^2 at 8000.
+- Gravity 591.45 units/s^2 (32.144 ft/s^2), times the fudge.
+When the propellant runs out the grenade falls like any non-bouncing
+object: full gravity, and its speed is capped at the zone's terminal
+velocity, 2500, on the first falling step (from about 7900). It
+therefore drops much sooner than before: 300 units below the muzzle after
+about 3500 units of flight instead of 8400.
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms
