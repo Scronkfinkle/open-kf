@@ -8,9 +8,10 @@ mod draw;
 
 use std::sync::{Arc, Mutex};
 
+use bevy::clipboard::Clipboard;
 use bevy::diagnostic::FrameCount;
 use bevy::input::ButtonState;
-use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::keyboard::{Key, KeyboardFocusLost, KeyboardInput};
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -205,6 +206,113 @@ impl Field {
             Field::Extra => &mut c.extra,
         }
     }
+
+    /// The most characters the field takes (typed or pasted). Name: KF's
+    /// name box (ROTab_GameSettings MaxWidth=16); the rest our choice.
+    fn max_len(self) -> usize {
+        match self {
+            Field::Port => 5,
+            Field::Address => 100,
+            Field::Name => 16,
+            Field::Extra => 1000,
+        }
+    }
+
+    /// Can the field hold this character? Name: KF's settings page removes
+    /// quotes. Address: IPv4, host names, `host:port`.
+    fn allows(self, c: char) -> bool {
+        match self {
+            Field::Port => c.is_ascii_digit(),
+            Field::Address => c.is_ascii_alphanumeric() || ".:-_[]".contains(c),
+            Field::Name => !c.is_control() && c != '"',
+            Field::Extra => !c.is_control(),
+        }
+    }
+
+    /// Typed characters: added at the end while allowed and room is left.
+    fn type_text(self, text: &mut String, typed: &str) {
+        for c in typed.chars().filter(|&c| self.allows(c)) {
+            if text.chars().count() < self.max_len() {
+                text.push(c);
+            }
+        }
+    }
+}
+
+/// What a paste did to a field.
+#[derive(Debug, PartialEq)]
+pub struct Pasted {
+    /// The field's new text.
+    pub text: String,
+    /// The field's text was replaced (port, address) or added to.
+    pub replaced: bool,
+    /// Characters kept, dropped as not allowed, cut by the length limit.
+    pub kept: usize,
+    pub dropped: usize,
+    pub cut: usize,
+}
+
+/// The field's text after pasting `clip` into it (DESIGN.md, "Pasting
+/// into the launcher's text fields"): one line (extra: all lines joined),
+/// trimmed, only allowed characters, up to the length limit. Port and
+/// address are replaced, name and extra get the paste at the end.
+pub fn paste_text(f: Field, current: &str, clip: &str) -> Pasted {
+    let line = match f {
+        Field::Extra => clip.split_whitespace().collect::<Vec<_>>().join(" "),
+        _ => clip.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string(),
+    };
+    // `host:port` pasted into the host's port: the port.
+    let line = match (f, line.rsplit_once(':')) {
+        (Field::Port, Some((_, p))) => p.trim().to_string(),
+        _ => line,
+    };
+    let replaced = matches!(f, Field::Port | Field::Address);
+    let mut text = if replaced { String::new() } else { current.to_string() };
+    // Extra arguments: a space between the old ones and the pasted ones.
+    if f == Field::Extra && !line.is_empty() && !text.is_empty() && !text.ends_with(' ') && text.chars().count() < f.max_len() {
+        text.push(' ');
+    }
+    let (mut kept, mut dropped, mut cut) = (0, 0, 0);
+    for c in line.chars() {
+        if !f.allows(c) {
+            dropped += 1;
+        } else if text.chars().count() >= f.max_len() {
+            cut += 1;
+        } else {
+            text.push(c);
+            kept += 1;
+        }
+    }
+    Pasted { text, replaced, kept, dropped, cut }
+}
+
+/// Pastes the clipboard into a field (and selects it). `via`: what asked
+/// (for the log).
+fn paste(l: &mut Launcher, clipboard: &mut Clipboard, f: Field, via: &str) {
+    l.focus = Some(f);
+    let clip = match clipboard.fetch_text().poll_result() {
+        Some(Ok(t)) => t,
+        Some(Err(e)) => {
+            runlog::kv("launcher_paste_failed", &format!("field={} via={via} reason=\"{e}\"", f.key()));
+            l.status = format!("Cannot read the clipboard ({e}).");
+            return;
+        }
+        None => {
+            runlog::kv("launcher_paste_failed", &format!("field={} via={via} reason=no_answer", f.key()));
+            return;
+        }
+    };
+    let text = f.text(&mut l.choices);
+    let p = paste_text(f, text, &clip);
+    runlog::kv(
+        "launcher_paste",
+        &format!("field={} via={via} mode={} clipboard_chars={} kept={} dropped={} cut={} value=\"{}\"", f.key(), if p.replaced { "replace" } else { "append" }, clip.chars().count(), p.kept, p.dropped, p.cut, p.text),
+    );
+    if p.kept == 0 {
+        l.status = "Nothing usable to paste in the clipboard.".into();
+        return;
+    }
+    *text = p.text;
 }
 
 /// Everything the launcher shows and changes.
@@ -423,6 +531,28 @@ fn setup(mut commands: Commands, mut gui: ResMut<Gui>, root: Res<InstallRoot>, l
     runlog::kv("launcher_ready", &format!("fonts={} textures={} seconds={:.2}", gui.fonts.len(), gui.textures.len(), started.elapsed().as_secs_f64()));
 }
 
+/// The Ctrl and Shift keys held (left and right), from the key events.
+#[derive(Default)]
+struct Modifiers([bool; 4]);
+
+impl Modifiers {
+    const KEYS: [KeyCode; 4] = [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::ShiftLeft, KeyCode::ShiftRight];
+
+    fn update(&mut self, k: &KeyboardInput) {
+        if let Some(i) = Self::KEYS.iter().position(|c| *c == k.key_code) {
+            self.0[i] = k.state == ButtonState::Pressed;
+        }
+    }
+
+    fn ctrl(&self) -> bool {
+        self.0[0] || self.0[1]
+    }
+
+    fn shift(&self) -> bool {
+        self.0[2] || self.0[3]
+    }
+}
+
 /// Keyboard, mouse and test actions.
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn input(
@@ -436,11 +566,43 @@ fn input(
     hits: Res<Hits>,
     started: Res<Started>,
     mut exit: MessageWriter<AppExit>,
+    mut focus_lost: MessageReader<KeyboardFocusLost>,
+    mut mods: Local<Modifiers>,
+    mut clipboard: ResMut<Clipboard>,
 ) {
     let mut ids: Vec<String> = Vec::new();
+    // (field, how), done after the clicks.
+    let mut pastes: Vec<(Field, &str)> = Vec::new();
     let l = &mut *launcher;
+    // Keys held elsewhere are not ours (Bevy releases them too).
+    if focus_lost.read().count() > 0 {
+        *mods = Modifiers::default();
+    }
     // Typing into the focused field.
-    for k in keys.read().filter(|k| k.state == ButtonState::Pressed) {
+    for k in keys.read() {
+        // Ctrl and Shift followed in event order: a quick Ctrl+V can press
+        // and release both within one frame (seen with xdotool), which
+        // ButtonInput<KeyCode> (the state at the frame's end) misses.
+        mods.update(k);
+        if k.state != ButtonState::Pressed {
+            continue;
+        }
+        let (ctrl, shift) = (mods.ctrl(), mods.shift());
+        // Paste: Ctrl+V, Shift+Insert, a keyboard's Paste key.
+        let via = match &k.logical_key {
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => Some("ctrl+v"),
+            _ if ctrl && k.key_code == KeyCode::KeyV => Some("ctrl+v"),
+            Key::Insert if shift => Some("shift+insert"),
+            Key::Paste => Some("paste_key"),
+            _ => None,
+        };
+        if let Some(via) = via {
+            match l.focus {
+                Some(f) => pastes.push((f, via)),
+                None => runlog::kv("launcher_paste_failed", &format!("via={via} reason=no_focused_field")),
+            }
+            continue;
+        }
         match (&k.logical_key, l.focus) {
             (Key::Escape, Some(_)) | (Key::Enter, Some(_)) => ids.push("unfocus".into()),
             (Key::Escape, None) => ids.push("quit".into()),
@@ -451,7 +613,7 @@ fn input(
             }
             (_, Some(f)) => {
                 if let Some(t) = &k.text {
-                    f.text(&mut l.choices).extend(t.chars().filter(|c| !c.is_control()));
+                    f.type_text(f.text(&mut l.choices), t);
                 }
             }
             _ => {}
@@ -459,8 +621,18 @@ fn input(
     }
     for (_, a) in opts.input.iter().filter(|(f, _)| *f == frames.0) {
         runlog::kv("launcher_action", &format!("frame={} action=\"{a}\"", frames.0));
-        if let Some(id) = a.strip_prefix("click:") {
+        if let Some(f) = a.strip_prefix("click:paste:").and_then(Field::parse) {
+            pastes.push((f, "button"));
+        } else if let Some(id) = a.strip_prefix("click:") {
             ids.push(id.to_string());
+        } else if let Some(t) = a.strip_prefix("clipboard:") {
+            let r = clipboard.set_text(t.to_string());
+            runlog::kv("launcher_clipboard_set", &format!("chars={} ok={}", t.chars().count(), r.is_ok()));
+        } else if a == "paste" {
+            match l.focus {
+                Some(f) => pastes.push((f, "test")),
+                None => runlog::kv("launcher_paste_failed", "via=test reason=no_focused_field"),
+            }
         } else if let Some((field, v)) = a.strip_prefix("set:").and_then(|s| s.split_once('=')) {
             match l.choices.set(field, v) {
                 Ok(()) => l.reveal_map |= field == "map",
@@ -468,7 +640,7 @@ fn input(
             }
         } else if let Some(t) = a.strip_prefix("type:") {
             match l.focus {
-                Some(f) => f.text(&mut l.choices).push_str(t),
+                Some(f) => f.type_text(f.text(&mut l.choices), t),
                 None => runlog::kv("launcher_action_refused", &format!("action=\"{a}\" reason=no_focused_field")),
             }
         } else if let Some(k) = a.strip_prefix("key:") {
@@ -512,8 +684,18 @@ fn input(
                 l.focus = None;
                 l.volume_drag = Some(i);
             }
-            None => ids.push(id),
+            None => match id.strip_prefix("paste:").and_then(Field::parse) {
+                Some(f) => pastes.push((f, "button")),
+                None => ids.push(id),
+            },
         }
+    }
+    // A right-click on a text field selects it and pastes.
+    if mouse.just_pressed(MouseButton::Right)
+        && let Some(pos) = win.physical_cursor_position()
+        && let Some(f) = hits.0.iter().rev().find(|(_, r)| r.contains(pos)).and_then(|(id, _)| id.strip_prefix("focus:")).and_then(Field::parse)
+    {
+        pastes.push((f, "right_click"));
     }
     if let Some(i) = l.volume_drag {
         if !mouse.pressed(MouseButton::Left) {
@@ -531,6 +713,9 @@ fn input(
     }
     for id in ids {
         apply(&id, l, &opts, &started, &mut exit);
+    }
+    for (f, via) in pastes {
+        paste(l, &mut clipboard, f, via);
     }
 }
 
@@ -812,6 +997,39 @@ mod tests {
         assert_eq!(monitor_sizes(modes.into_iter(), (2560, 1440)), vec![(2560, 1440), (1920, 1080), (1280, 1024), (1280, 720), (800, 600)]);
         // Only the desktop (e.g. a virtual display that lists no modes).
         assert_eq!(monitor_sizes(std::iter::empty(), (1920, 1080)), vec![(1920, 1080)]);
+    }
+
+    #[test]
+    fn pasted_text_is_cleaned_per_field() {
+        // An address with spaces and a newline replaces the old one.
+        let p = paste_text(Field::Address, "10.0.0.1", "  1.2.3.4:7707\r\n");
+        assert_eq!(p, Pasted { text: "1.2.3.4:7707".into(), replaced: true, kept: 12, dropped: 0, cut: 0 });
+        assert!(crate::net::NetMode::join(&p.text).is_ok());
+        // The first non-empty line only; other characters dropped.
+        let p = paste_text(Field::Address, "", "\n\nhost name.example!\nsecond");
+        assert_eq!((p.text.as_str(), p.dropped), ("hostname.example", 2));
+        // host:port into the port field: the port.
+        assert_eq!(paste_text(Field::Port, "7707", "1.2.3.4:7800").text, "7800");
+        assert_eq!(paste_text(Field::Port, "7707", " 9000x ").text, "9000");
+        let p = paste_text(Field::Port, "", "1234567");
+        assert_eq!((p.text.as_str(), p.cut), ("12345", 2));
+        // Names: added at the end, no quotes, 16 characters.
+        let p = paste_text(Field::Name, "Big ", "\"Al\" the Great Destroyer");
+        assert_eq!(p, Pasted { text: "Big Al the Great".into(), replaced: false, kept: 12, dropped: 2, cut: 10 });
+        // Extra: the lines joined.
+        assert_eq!(paste_text(Field::Extra, "--god", " --give\nall\t").text, "--god --give all");
+        // Nothing usable.
+        assert_eq!(paste_text(Field::Address, "a", " \n ").kept, 0);
+    }
+
+    #[test]
+    fn typing_follows_the_same_rules() {
+        let mut s = String::new();
+        Field::Port.type_text(&mut s, "77a07999");
+        assert_eq!(s, "77079");
+        let mut s = "x".repeat(15);
+        Field::Name.type_text(&mut s, "\"yz");
+        assert_eq!(s, format!("{}y", "x".repeat(15)));
     }
 
     #[test]

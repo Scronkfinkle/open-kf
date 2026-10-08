@@ -5937,3 +5937,66 @@ volume=0.500 fov=95`; a headless game run with that file logged
 `aim_mode mode=hold ... read=file` and `audio_volume master=0.500`.
 **Not tested:** real mouse; the in-game Settings window after the merge
 (the branch's own screenshots only).
+
+## 2026-10-07 Launcher: paste from the clipboard into the text fields (LP1)
+
+**Changed:** `Cargo.toml`: Bevy's `system_clipboard` feature (Bevy's own
+clipboard module then uses the desktop clipboard through arboard; no new
+crate, `Cargo.lock` unchanged). `src/launcher/mod.rs`: Ctrl+V,
+Shift+Insert and a keyboard Paste key paste into the field being typed
+in; a right-click on a text field selects it and pastes; `paste_text`
+cleans the pasted text (first line, trimmed, allowed characters, length
+limits; port and address replaced, name and extra appended); typing
+follows the same character and length rules; Ctrl/Shift are followed in
+key-event order; test actions `clipboard:TEXT` and `paste`; log lines
+`launcher_paste` / `launcher_paste_failed` / `launcher_clipboard_set`.
+`src/launcher/draw.rs`: a "Paste" button after the Join address (the
+field now starts right after its label, so it keeps its width); help
+line mentions Ctrl+V and right-click. `docs/DESIGN.md`: "Pasting into the
+launcher's text fields".
+**Why:** Typing a join address by hand is annoying.
+**Tested how:** Unit tests `pasted_text_is_cleaned_per_field`,
+`typing_follows_the_same_rules`. `scripts/headless.sh --launcher
+--dry-run --mute` with `clipboard:` / `paste` / `click:paste:address`
+actions, screenshots looked at. A second run on a hand-started Xvfb with
+the clipboard set by `xclip` (another program) and real key presses and
+clicks from `xdotool` (`work/paste-x11-test.sh`, untracked).
+`cargo test --release --workspace`; `rtk proxy cargo clippy --release
+--workspace`.
+**Result:** xclip "  192.168.1.50:7707\n" + Ctrl+V into the address:
+`launcher_paste field=address via=ctrl+v mode=replace clipboard_chars=20
+kept=17 dropped=0 cut=0 value="192.168.1.50:7707"`. Shift+Insert, the
+right-click on Name (`via=right_click mode=append value="Big Al"`) and the
+Paste button (`via=button`) all logged pastes. Name paste `"Al" the Great
+Destroyer` after `Big`: quotes dropped (2), cut at 16 (9). Empty
+clipboard: field kept, status "Nothing usable to paste in the
+clipboard." First try failed: xdotool's quick Ctrl+V pressed and released
+Ctrl within one frame, so Bevy's held-keys state missed it and a "v" was
+typed; fixed by following Ctrl/Shift in event order. Tests 221 + 24
+pass; clippy 0 warnings.
+Native Wayland: a headless sway (no XWayland, `work/paste-wayland-test.sh`)
+with the clipboard set by `wl-copy`: the `paste` action read
+"10.0.0.7:7707" into the address. `nix build .#windows` succeeded
+(arboard and clipboard-win compiled for Windows).
+**Still broken / not tested:** Wayland: only sway, and only the `paste`
+test action (no real key press there); your own desktop not tested
+(arboard needs the data-control protocol, which GNOME may lack; I am not
+sure; it then falls back to X11 through XWayland). Windows: built, not
+run. Flatpak: not built; `Cargo.lock` is unchanged so its
+`cargo build --locked` should work.
+In-game menus have no text fields, so nothing to do there. No text
+cursor or selection in the fields (paste replaces the address/port).
+**Next:** Your check on your Wayland desktop and on Windows.
+
+## 2026-10-07 Merge: launcher paste onto Graphics + volume + aim
+
+**Changed:** merged `launcher-paste`. Kept both sets of launcher unit tests;
+the DESIGN.md "Pasting into the launcher's text fields" subsection placed
+with the launcher section, before "Graphics settings in the launcher".
+**Tested how:** cargo test (230 + 24 pass), clippy 0 warnings; dry-run
+launcher in Join mode, `clipboard:  192.168.1.50:7707 ` then
+`click:paste:address` logged `launcher_paste ... kept=17
+value="192.168.1.50:7707"` and the command line `--join
+192.168.1.50:7707`; screenshot at 1280x800 looked at.
+**Not tested:** Ctrl+V with a real keyboard after the merge (the branch
+tested it with xdotool on X11).

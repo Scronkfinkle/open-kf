@@ -5276,6 +5276,58 @@ planned, with these details:
   (fields as in the saved file), `type:TEXT`, `key:tab|enter|escape|backspace`,
   `dump`. Values cannot contain commas (`--input` splits on them).
 
+### Pasting into the launcher's text fields (planned 2026-10-07: LP1)
+
+**Goal.** Paste a join address (or a name, port, extra arguments) from
+the system clipboard instead of typing it. The clipboard is the shared
+copy/paste store of the desktop.
+
+**Clipboard access.** Bevy 0.19 ships its own clipboard module
+(`bevy::clipboard`, the `Clipboard` resource, added by `DefaultPlugins`).
+It uses the arboard library for X11, Wayland and Windows, but only when
+Bevy's `system_clipboard` feature is on; without it the clipboard is a
+private buffer inside the program. So the change is one Bevy feature in
+`Cargo.toml`, no new library of our own: arboard and its X11 / Wayland /
+Windows parts were already in `Cargo.lock` (Bevy lists them as
+optional), so the lock file does not change and the Flatpak's
+`cargo build --locked` still works. Bevy's `wayland` feature (on by
+default) turns on arboard's Wayland clipboard support
+(`wayland-data-control`); when the desktop does not offer that, arboard
+falls back to X11 (XWayland).
+
+**How to paste.**
+- Ctrl+V or Shift+Insert (or a keyboard's Paste key) pastes into the
+  field being typed in.
+- A right-click on a text field selects it and pastes.
+- A small "Paste" button next to the Join address.
+
+**Cleaning the pasted text.** Done in one tested function
+(`launcher::paste_text`):
+- Single-line fields (port, address, name) take the first non-empty
+  line, trimmed; extra arguments join the lines with spaces.
+- Allowed characters: port digits only; address letters, digits and
+  `. : - _ [ ]` (IPv4, host names, `host:port`); name anything printable
+  but `"` (KF's settings page removes quotes); extra anything printable.
+  Other characters are dropped and counted.
+- Length limits: port 5, address 100 (our choice), name 16 (KF's
+  name box, `ROTab_GameSettings` `MaxWidth=16`), extra 1000 (our choice).
+  Typed characters follow the same rules.
+- Port and address are replaced by the paste (the launcher has no text
+  cursor or selection, so appending an address to an old one would only
+  make a broken one); name and extra get the paste added at the end.
+- `1.2.3.4:7707` pasted into the address is kept whole (the game's
+  `--join` already takes `ADDR:PORT`). Pasted into the host's port field,
+  the part after the last `:` is used.
+
+**Log.** `launcher_paste field=F via=ctrl+v|shift+insert|right_click|button|test
+mode=replace|append kept=N dropped=N cut=N value="..."`, or
+`launcher_paste_failed` with the reason (no field selected, empty or
+unreadable clipboard).
+
+**Test actions.** `clipboard:TEXT` puts TEXT on the clipboard (through
+the same Bevy resource); `paste` pastes like Ctrl+V; `click:paste:address`
+is the button.
+
 ## Graphics settings in the launcher (planned 2026-10-07: GX1-GX3)
 
 **Goal.** The launcher gets a *Graphics* section: display mode, resolution,

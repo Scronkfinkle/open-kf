@@ -13,7 +13,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bevy = "0.19.1"
+# system_clipboard: Ctrl+V in the launcher uses the desktop clipboard
+# (Bevy's arboard; X11, Wayland, Windows). Off, Bevy keeps a private one.
+bevy = { version = "0.19.1", features = ["system_clipboard"] }
 # Collision queries (shape casts against level geometry). Default features off:
 # no debug rendering, picking or scenes needed.
 avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32", "parry-f32", "parallel", "xpbd_joints"] }
