@@ -969,6 +969,7 @@ pub(super) fn load_weapons(
         weight_speed_mult: weight_speed_mult(weight, &vet.vet),
         fire_velocity_scale: None,
         perk_speed_mult,
+        aiming: false,
     });
     runlog::kv("weapons_ready", &format!("seconds={:.2}", started.elapsed().as_secs_f64()));
     drop(defaults);

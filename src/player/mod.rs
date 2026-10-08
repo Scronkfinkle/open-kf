@@ -4,6 +4,7 @@
 
 pub mod body;
 pub mod walk;
+pub mod eye;
 pub mod pawn_collision;
 pub mod pain;
 pub mod armour;

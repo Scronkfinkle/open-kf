@@ -22,7 +22,6 @@ pub(crate) mod kf {
     pub const ACCEL_RATE: f32 = 1000.0; // KFHumanPawn
     pub const JUMP_Z: f32 = 325.0; // KFHumanPawn
     pub const AIR_CONTROL: f32 = 0.15; // KFHumanPawn
-    pub const GRAVITY: f32 = 950.0; // PhysicsVolume
     pub const GROUND_FRICTION: f32 = 8.0; // PhysicsVolume
     pub const RADIUS: f32 = 20.0; // KFPawn CollisionRadius
     pub const HALF_HEIGHT: f32 = 50.0; // KFHumanPawn CollisionHeight
@@ -30,6 +29,8 @@ pub(crate) mod kf {
     pub const MAX_STEP: f32 = 35.0; // engine constant (not verified in data)
     pub const MIN_FLOOR_NORMAL_Y: f32 = 0.7; // engine constant (not verified in data)
     pub const SKIN: f32 = 0.5; // gap kept from surfaces, to avoid starting casts in contact
+    pub const WALKING_PCT: f32 = 0.4; // xPawn (KF's species and classes keep it)
+    pub const MAX_FALL_SPEED: f32 = 600.0; // KFHumanPawn
 }
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,13 +48,15 @@ pub struct WalkSettings {
 }
 
 /// Walking bob shared with the weapon (KFPawn.CheckBob's WalkBob), Bevy space,
-/// metres. The camera is offset by it; weapons add BobDamping times it.
+/// metres. The camera is offset by twice it; weapons by BobDamping times it.
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct ViewBob {
     /// Sideways part (along the view's right axis).
     pub side: Vec3,
     /// Vertical part.
     pub up: f32,
+    /// Pawn.LandBob (the landing dip, eye.rs): the weapon moves up by it.
+    pub land: f32,
 }
 
 #[derive(Component, Default, Debug)]
@@ -69,6 +72,17 @@ pub struct Walker {
     /// KFPawn.CheckBob state.
     pub bob_time: f32,
     pub applied_bob: f32,
+    /// Pawn.bIsWalking: the Walking key (Ctrl) is held or iron sights are
+    /// up (KFPlayerController.HandleWalking). Speed and acceleration x
+    /// WalkingPct; no walking off ledges.
+    pub walking: bool,
+    /// Pawn.EyeHeight and the landing dip (eye.rs).
+    pub eye: crate::player::eye::Eye,
+    /// The physics volume the centre is in (for the log), and the jump's
+    /// start and highest centre height (Bevy y), for the `jump_apex` line.
+    pub phys_volume: String,
+    pub air_start_y: f32,
+    pub air_max_y: f32,
 }
 
 /// Momentum on the player from damage (Unreal units: mass x velocity),
@@ -124,6 +138,7 @@ impl Plugin for WalkPlugin {
             .add_message::<PlayerAddVelocity>()
             .init_resource::<WalkSettings>()
             .init_resource::<ViewBob>()
+            .init_resource::<crate::world::physvol::PhysicsVolumes>()
             .insert_resource(MoveMode::Fly)
             .add_systems(PostStartup, apply_start_mode.after(crate::engine::camera::spawn_camera))
             .add_systems(
@@ -339,8 +354,24 @@ impl Mover<'_, '_, '_> {
     }
 }
 
+/// KFPawn.TakeFallingDamage: landing at vertical speed `vz` (Unreal
+/// units/s, negative down) faster than `max_fall_speed` hurts
+/// 100 x (-vz - max) / max (damage type Fell). Ours: no water volumes
+/// (KF takes 100 off the speed when touching water).
+fn falling_damage(vz: f32, max_fall_speed: f32) -> Option<f32> {
+    (vz < -max_fall_speed).then(|| -100.0 * (vz + max_fall_speed) / max_fall_speed)
+}
+
+/// KFHumanPawn.ModifyVelocity's HealthMod: (Health / HealthMax) x
+/// HealthSpeedModifier (0.3) + 0.7.
+fn health_speed_mult(health: f32, health_max: f32) -> f32 {
+    (health.max(0.0) / health_max) * 0.3 + 0.7
+}
+
 /// Unreal's CalcVelocity: friction turns velocity toward the input
-/// direction; with no input it brakes; then accelerate and clamp.
+/// direction; with no input it brakes; then accelerate and clamp. A
+/// walking pawn passes its acceleration and speed limit already times
+/// WalkingPct.
 fn calc_velocity(v: Vec3, accel: Vec3, friction: f32, max_speed: f32, dt: f32) -> Vec3 {
     let mut v = v;
     if accel.length_squared() < 1e-8 {
@@ -367,6 +398,7 @@ type WalkMap<'w, 's> = (
     MessageWriter<'w, crate::world::glass::GlassBump>,
     Option<Res<'w, crate::world::nav::NavNetwork>>,
     Local<'s, Option<usize>>,
+    Res<'w, crate::world::physvol::PhysicsVolumes>,
 );
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -389,9 +421,9 @@ fn walk(
     mut bob: ResMut<ViewBob>,
     (zeds, remote_pawns, lobby): Blockers,
     mut pinned: Option<ResMut<crate::game::combat::PlayerPinned>>,
-    mut pushes: MessageReader<PlayerPush>,
+    (mut pushes, mut fall_damage): (MessageReader<PlayerPush>, MessageWriter<crate::game::combat::PlayerDamaged>),
     mut kicks: MessageReader<PlayerAddVelocity>,
-    (mut last_log, mut scripted_walk, mut pushed): (Local<f32>, Local<bool>, Local<f32>),
+    (mut last_log, mut scripted_walk, mut pushed, mut walk_key_script, mut ledge_stopped): (Local<f32>, Local<bool>, Local<f32>, Local<bool>, Local<bool>),
     mut glass: WalkMap,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
@@ -427,12 +459,13 @@ fn walk(
         Some(id) => format!("zed {id}"),
         None => format!("player {}", players[i - zed_ids.len()].0),
     };
-    // KFHumanPawn.ModifyVelocity: GroundSpeed x the carried-weight factor,
-    // plus the held weapon's bonus (knife +40), x the perk's
-    // GetMovementSpeedModifier. The health factor is not done.
+    // KFHumanPawn.ModifyVelocity: GroundSpeed x the health factor x the
+    // carried-weight factor, plus the held weapon's bonus (knife +40), x
+    // the perk's GetMovementSpeedModifier.
+    let health_mult = health_speed_mult(health.health, crate::game::combat::PLAYER_HEALTH_MAX);
     let ground_speed = effects
         .as_ref()
-        .map_or(kf::GROUND_SPEED, |e| (kf::GROUND_SPEED * e.weight_speed_mult + e.ground_speed_bonus) * e.perk_speed_mult);
+        .map_or(kf::GROUND_SPEED * health_mult, |e| (kf::GROUND_SPEED * health_mult * e.weight_speed_mult + e.ground_speed_bonus) * e.perk_speed_mult);
     let dt = time.delta_secs().min(0.1);
     // Paused (the pause menu stops game time): nothing moves. The sub-steps
     // below divide by their length, which would be 0.
@@ -469,6 +502,7 @@ fn walk(
                 }
                 _ => {}
             }
+            w.eye = crate::player::eye::Eye::default();
             let c = w.center / SCALE;
             runlog::kv(
                 "walk_start",
@@ -485,6 +519,11 @@ fn walk(
                 "walk_on" | "walk_off" => {
                     *scripted_walk = a == "walk_on";
                     runlog::kv("scripted_walk", &format!("forward={}", *scripted_walk));
+                }
+                // Hold / release the Walking key (Ctrl).
+                "walk_key_down" | "walk_key_up" => {
+                    *walk_key_script = a == "walk_key_down";
+                    runlog::kv("scripted_walk_key", &format!("held={}", *walk_key_script));
                 }
                 _ => {}
             }
@@ -503,6 +542,19 @@ fn walk(
             wish -= right;
         }
         let mut wish = wish.normalize_or_zero();
+        // KFPlayerController.HandleWalking: aiming down the sights walks;
+        // otherwise the Walking key (KF's default: Ctrl) does.
+        let aiming = effects.as_ref().is_some_and(|e| e.aiming);
+        let key = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) || *walk_key_script;
+        let walking = aiming || key;
+        if walking != w.walking {
+            w.walking = walking;
+            runlog::kv(
+                "walk_state",
+                &format!("walking={walking} aiming={aiming} key={key} speed_cap_unreal={:.1}", if walking { ground_speed * kf::WALKING_PCT } else { ground_speed }),
+            );
+        }
+        let pct = if walking { kf::WALKING_PCT } else { 1.0 };
         // Test action "jump".
         let mut jump = keys.just_pressed(KeyCode::Space) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "jump");
         // Held by a Clot's grab (KFPawn.DisableMovement / ModifyVelocity):
@@ -579,6 +631,8 @@ fn walk(
             w.velocity += Vec3::new(v.y, v.z, -v.x) * SCALE;
             runlog::kv("player_push", &format!("velocity_add_unreal=({:.0}, {:.0}, {:.0})", v.x, v.y, v.z));
         }
+        // Pawn.OldZ: the centre's height before this frame's physics.
+        let mut old_z = w.center.y;
         for _ in 0..steps {
             w.time += h;
             // Network games: overlapping another player (each game sees the
@@ -592,6 +646,21 @@ fn walk(
                 w.center = pos;
             }
             let accel = wish * kf::ACCEL_RATE * SCALE;
+            let sub_start = w.center;
+            // The physics volume at the centre: gravity and ZoneVelocity
+            // (Unreal axes -> Bevy).
+            let vol = glass.4.at(Vec3::new(-w.center.z, w.center.x, w.center.y) / SCALE);
+            let to_bevy = |v: Vec3| Vec3::new(v.y, v.z, -v.x) * SCALE;
+            let (gravity, zone_velocity) = (to_bevy(vol.gravity), to_bevy(vol.zone_velocity));
+            if w.phys_volume != vol.name {
+                runlog::kv(
+                    "physics_volume",
+                    &format!("t={:.2} name={} gravity_z={} zone_velocity_z={} priority={}", w.time, vol.name, vol.gravity.z, vol.zone_velocity.z, vol.priority),
+                );
+                w.phys_volume = vol.name.clone();
+            }
+            let max_fall_speed = if vol.gravity.z > crate::world::physvol::DEFAULT_GRAVITY_Z { 2.0 * kf::MAX_FALL_SPEED } else { kf::MAX_FALL_SPEED };
+            let was_on_ground = w.on_ground;
             if w.on_ground && jump {
                 w.velocity.y = kf::JUMP_Z * SCALE;
                 w.on_ground = false;
@@ -601,9 +670,9 @@ fn walk(
             if w.on_ground {
                 let hv = calc_velocity(
                     w.velocity.with_y(0.0),
-                    accel,
+                    accel * pct,
                     kf::GROUND_FRICTION,
-                    ground_speed * SCALE,
+                    ground_speed * pct * SCALE,
                     h,
                 );
                 w.velocity = hv;
@@ -643,11 +712,28 @@ fn walk(
                         // horizontal sweep "touch" the floor at distance 0.
                         w.center.y -= floor.distance - kf::SKIN * SCALE;
                         w.floor_normal = floor.normal;
+                        *ledge_stopped = false;
+                    }
+                    // A walking player does not walk off a ledge: the
+                    // move is undone and the speed set to 0 (KF's walking
+                    // physics; players cannot walk off while walking).
+                    _ if walking => {
+                        if !*ledge_stopped {
+                            let c = sub_start / SCALE;
+                            runlog::kv("ledge_stop", &format!("center_unreal=({:.1}, {:.1}, {:.1}) aiming={aiming}", -c.z, c.x, c.y));
+                        }
+                        *ledge_stopped = true;
+                        w.center = sub_start;
+                        w.velocity = Vec3::ZERO;
                     }
                     _ => w.on_ground = false,
                 }
             } else {
-                w.velocity.y -= kf::GRAVITY * SCALE * h;
+                if was_on_ground || w.air_start_y == 0.0 {
+                    w.air_start_y = w.center.y;
+                    w.air_max_y = w.center.y;
+                }
+                w.velocity += gravity * h;
                 let air = calc_velocity(
                     w.velocity.with_y(0.0),
                     accel * kf::AIR_CONTROL,
@@ -657,16 +743,52 @@ fn walk(
                 );
                 w.velocity.x = air.x;
                 w.velocity.z = air.z;
-                let (step, by_pawn) = clip_move(&me(w.center), w.velocity * h, &blocking_cylinders);
+                // The move adds the volume's ZoneVelocity; the velocity
+                // does not keep it.
+                let (step, by_pawn) = clip_move(&me(w.center), (w.velocity + zone_velocity) * h, &blocking_cylinders);
                 if let Some(i) = by_pawn {
                     last_block = Some((blocker_name(i), Vec3::ZERO));
-                    w.velocity.x = step.x / h;
-                    w.velocity.z = step.z / h;
+                    w.velocity.x = step.x / h - zone_velocity.x;
+                    w.velocity.z = step.z / h - zone_velocity.z;
                 }
                 let (pos, hit) = mover.slide(w.center, step);
                 w.center = pos;
+                w.air_max_y = w.air_max_y.max(w.center.y);
                 if let Some(n) = hit.map(|h| h.normal) {
                     if n.y >= kf::MIN_FLOOR_NORMAL_Y && w.velocity.y <= 0.0 {
+                        // Pawn.Landed: a landing faster than 200 down dips
+                        // the view; OldZ restarts at the landing point.
+                        let vz = w.velocity.y / SCALE;
+                        let dip = w.eye.landed(vz);
+                        old_z = w.center.y + kf::SKIN * SCALE;
+                        runlog::kv("land_dip", &format!("t={:.3} landing_speed_unreal={:.0} dip={dip}", w.time, -vz));
+                        // KFPawn.TakeFallingDamage (from Pawn.Landed).
+                        runlog::kv(
+                            "jump_apex",
+                            &format!(
+                                "t={:.3} apex_above_start_unreal={:.1} drop_below_apex_unreal={:.1} gravity_z={} volume={}",
+                                w.time,
+                                (w.air_max_y - w.air_start_y) / SCALE,
+                                (w.air_max_y - w.center.y) / SCALE,
+                                gravity.y / SCALE,
+                                w.phys_volume
+                            ),
+                        );
+                        w.air_start_y = 0.0;
+                        if let Some(amount) = falling_damage(vz, max_fall_speed) {
+                            runlog::kv("fall_damage", &format!("landing_speed_unreal={:.0} max_fall_speed={max_fall_speed} damage={amount:.1}", -vz));
+                            fall_damage.write(crate::game::combat::PlayerDamaged {
+                                amount,
+                                zed_id: crate::game::combat::LEVEL_DAMAGE,
+                                kind: crate::game::combat::HurtKind::Plain,
+                                // DamageType Fell: bArmorStops false.
+                                armor_stops: false,
+                                dam_type: crate::game::combat::DamType::Other,
+                                source: None,
+                                dam: None,
+                                to_peer: None,
+                            });
+                        }
                         w.center.y += kf::SKIN * SCALE;
                         w.on_ground = true;
                         w.floor_normal = n;
@@ -696,6 +818,11 @@ fn walk(
             if speed2d > 10.0 {
                 up += 0.75 * BOB * speed2d * (16.0 * w.bob_time).sin();
             }
+            // The landing dip's LandBob pushes AppliedBob (next frame).
+            if w.eye.land_bob > 0.01 {
+                w.applied_bob += (16.0 * dt).min(1.0) * w.eye.land_bob;
+                w.eye.land_bob *= 1.0 - 8.0 * dt;
+            }
             bob.side = right * (BOB * speed2d * (8.0 * w.bob_time).sin()) * SCALE;
             bob.up = up * SCALE;
         } else {
@@ -704,8 +831,28 @@ fn walk(
             bob.side *= k;
             bob.up *= k;
         }
-        // Pawn.EyePosition = EyeHeight + WalkBob.
-        t.translation = w.center + Vec3::Y * (kf::EYE_HEIGHT * SCALE + bob.up) + bob.side;
+        // Pawn.UpdateEyeHeight: the eye keeps its world height when the
+        // body steps and catches up; capped 14 below a ceiling (a line
+        // check from the top of the cylinder up 49).
+        let top = w.center + Vec3::Y * kf::HALF_HEIGHT * SCALE;
+        let ceiling = spatial
+            .cast_ray(top, Dir3::Y, (crate::player::eye::CEILING_CHECK - kf::HALF_HEIGHT) * SCALE, true, &crate::world::collision::player_filter())
+            .map(|hit| kf::HALF_HEIGHT + hit.distance / SCALE);
+        let dz = (w.center.y - old_z) / SCALE;
+        let eye_was = w.eye.height;
+        let on_ground = w.on_ground;
+        w.eye.update(dt, dz, on_ground, crate::player::eye::max_eye_height(ceiling));
+        if dz.abs() > 1.0 || (w.eye.height - eye_was).abs() > 0.5 {
+            runlog::kv(
+                "eye_height",
+                &format!("t={:.3} eye_height_unreal={:.1} dz_unreal={dz:.1} on_ground={} ceiling_unreal={:?}", w.time, w.eye.height, w.on_ground, ceiling.map(|c| c.round())),
+            );
+        }
+        bob.land = w.eye.land_bob * SCALE;
+        // PlayerController.CalcFirstPersonView: Location + EyePosition()
+        // + WalkBob, and EyePosition = EyeHeight + WalkBob, so the camera
+        // gets the walking bob twice (no KF class changes this).
+        t.translation = w.center + Vec3::Y * (w.eye.height * SCALE + 2.0 * bob.up) + 2.0 * bob.side;
 
         // Twice a second: position, speed and ground state.
         if w.time - *last_log >= 0.1 {
@@ -714,7 +861,7 @@ fn walk(
             runlog::kv(
                 "walk",
                 &format!(
-                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} floor_normal_y={:.2} input={} held={held} bob_side_unreal={:.2} bob_up_unreal={:.2}",
+                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} eye_height_unreal={:.1} floor_normal_y={:.2} input={} held={held} walking={} bob_side_unreal={:.2} bob_up_unreal={:.2}",
                     w.time,
                     -c.z,
                     c.x,
@@ -722,8 +869,10 @@ fn walk(
                     w.velocity.with_y(0.0).length() / SCALE,
                     w.velocity.y / SCALE,
                     w.on_ground,
+                    w.eye.height,
                     w.floor_normal.y,
                     wish != Vec3::ZERO,
+                    w.walking,
                     bob.side.length() / SCALE * (bob.side.dot(right)).signum(),
                     bob.up / SCALE
                 ),
@@ -771,6 +920,32 @@ mod tests {
             v = calc_velocity(v, accel, kf::GROUND_FRICTION, kf::GROUND_SPEED, 1.0 / 120.0);
         }
         assert!((v.length() - kf::GROUND_SPEED).abs() < 1.0, "speed {}", v.length());
+    }
+
+    #[test]
+    fn walking_converges_to_40_percent() {
+        let mut v = Vec3::ZERO;
+        let p = kf::WALKING_PCT;
+        let accel = Vec3::X * kf::ACCEL_RATE * p;
+        for _ in 0..240 {
+            v = calc_velocity(v, accel, kf::GROUND_FRICTION, kf::GROUND_SPEED * p, 1.0 / 120.0);
+        }
+        assert!((v.length() - 80.0).abs() < 0.5, "speed {}", v.length());
+    }
+
+    #[test]
+    fn low_health_slows() {
+        assert_eq!(health_speed_mult(100.0, 100.0), 1.0);
+        assert!((health_speed_mult(50.0, 100.0) - 0.85).abs() < 1e-6);
+        assert!((health_speed_mult(10.0, 100.0) - 0.73).abs() < 1e-6);
+    }
+
+    #[test]
+    fn falling_damage_over_600() {
+        assert_eq!(falling_damage(-325.0, 600.0), None);
+        assert_eq!(falling_damage(-600.0, 600.0), None);
+        assert!((falling_damage(-870.0, 600.0).unwrap() - 45.0).abs() < 1e-3);
+        assert!((falling_damage(-1200.0, 600.0).unwrap() - 100.0).abs() < 1e-3);
     }
 
     #[test]
