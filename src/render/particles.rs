@@ -358,6 +358,8 @@ pub struct ParticleEffect {
     /// the weapon spawns once and triggers per shot); removed by its owner.
     persistent: bool,
     pub frame: (Vec3, Mat3),
+    /// `frame`'s location on the previous update (KF's OldLocation).
+    prev_origin: Option<Vec3>,
     id: u32,
     age: f32,
     emitters: Vec<EmitterState>,
@@ -944,6 +946,7 @@ pub fn spawn_effect_with(
     commands.entity(parent).insert(ParticleEffect {
         persistent,
         frame: (location, axes),
+        prev_origin: None,
         id,
         age: 0.0,
         emitters: states,
@@ -1000,10 +1003,41 @@ fn spawn_count(d: &EmitterDef, s: &mut EmitterState, rate: f32, dt: f32) -> u32 
     if rate <= 0.0 {
         return 0;
     }
+    // (carry is the KF "PPSFraction"; `spawn_times` uses it before it changes.)
     s.carry += rate * dt;
     let n = s.carry.floor();
     s.carry -= n;
     (n as u32).min(d.max_particles.max(0) as u32)
+}
+
+/// How long ago, within this update, each of `n` particles spawned at
+/// `rate` was born (KF: the leftover fraction / rate + dt - (i + 1) / rate,
+/// oldest first). Never negative.
+fn spawn_times(n: u32, rate: f32, carry: f32, dt: f32) -> Vec<f32> {
+    (0..n).map(|i| (carry / rate + dt - (i + 1) as f32 / rate).max(0.0)).collect()
+}
+
+/// Ages a just-spawned particle by `t` seconds (born `t` ago within this
+/// update): KF adds Acceleration x t to its velocity, then velocity x t to
+/// its position. (KF adds the acceleration before turning the velocity;
+/// here it is added in world axes, which only differs for turned emitters
+/// over a fraction of a frame.)
+fn pre_age(d: &EmitterDef, p: &mut Particle, t: f32) {
+    if t <= 0.0 {
+        return;
+    }
+    p.age = t;
+    p.vel += Vec3::from_array(d.acceleration) * t;
+    p.pos += p.vel * t;
+}
+
+/// Spreads the i-th of `n` particles spawned this update along the path the
+/// effect moved (Independent emitters only, when it moved over 1 unit):
+/// the first lands nearest the old location, the last at the new one.
+fn spread(d: &EmitterDef, p: &mut Particle, path: Vec3, i: u32, n: u32) {
+    if d.coordinate_system == 0 && n > 0 && path.length() > 1.0 {
+        p.pos -= path * (1.0 - (i + 1) as f32 / n as f32);
+    }
 }
 
 /// Puts a new particle in the next slot of the ring.
@@ -1020,7 +1054,9 @@ fn put(d: &EmitterDef, s: &mut EmitterState, p: Particle) {
 
 /// Moves one sub-emitter's particles on by `dt` and spawns new ones (KF's
 /// rules, see `spawn_rate`). `other`: world positions of the live particles
-/// of the emitter named by AddLocationFromOtherEmitter. `cast`: a level ray
+/// of the emitter named by AddLocationFromOtherEmitter. `prev_origin`: the
+/// effect's location on the last update (new particles are spread along
+/// the way it moved). `cast`: a level ray
 /// test from one Unreal point to another, giving the hit fraction and the
 /// Unreal normal. Returns true when the emitter is finished: no spawn rate,
 /// no respawning, and no live particle (KF's "all particles dead").
@@ -1029,6 +1065,7 @@ fn update_emitter(
     d: &EmitterDef,
     s: &mut EmitterState,
     frame: &(Vec3, Mat3),
+    prev_origin: Vec3,
     dt: f32,
     killed: bool,
     other: Option<&[Vec3]>,
@@ -1053,6 +1090,9 @@ fn update_emitter(
     let relative = d.coordinate_system == 1;
     let accel = Vec3::from_array(d.acceleration);
     let max_abs = Vec3::from_array(d.max_abs_velocity);
+    let path = frame.0 - prev_origin;
+    let dying = s.slots.iter().filter(|p| p.alive && p.age + dt >= p.life).count() as u32;
+    let mut respawned = 0;
     for i in 0..s.slots.len() {
         let p = &mut s.slots[i];
         if !p.alive {
@@ -1061,7 +1101,9 @@ fn update_emitter(
         p.age += dt;
         if p.age >= p.life {
             if respawn {
-                let fresh = spawn_particle(d, frame, pick_other(other, rng), (s.start_velocity, s.lifetime), rng);
+                let mut fresh = spawn_particle(d, frame, pick_other(other, rng), (s.start_velocity, s.lifetime), rng);
+                spread(d, &mut fresh, path, respawned, dying);
+                respawned += 1;
                 s.slots[i] = fresh;
                 s.spawned += 1;
             } else {
@@ -1093,20 +1135,26 @@ fn update_emitter(
         }
         p.spin += p.spin_rate * dt;
     }
-    // Spawn at the rate, into the ring.
+    // Spawn at the rate, into the ring, each born at its own moment within
+    // the update and placed along the effect's path.
+    let carry = s.carry;
     let n = spawn_count(d, s, rate, dt);
-    for _ in 0..n {
+    for (i, t) in spawn_times(n, rate, carry, dt).into_iter().enumerate() {
         let base = match other {
             Some([]) => continue,
             o => pick_other(o, rng),
         };
-        let p = spawn_particle(d, frame, base, (s.start_velocity, s.lifetime), rng);
+        let mut p = spawn_particle(d, frame, base, (s.start_velocity, s.lifetime), rng);
+        spread(d, &mut p, path, i as u32, n);
+        pre_age(d, &mut p, t);
         put(d, s, p);
     }
-    // SpawnParticle / Trigger requests: into the ring too.
-    let asked = std::mem::take(&mut s.pending);
-    for _ in 0..asked.min(d.max_particles.max(0) as u32) {
-        let p = spawn_particle(d, frame, None, (s.start_velocity, s.lifetime), rng);
+    // SpawnParticle / Trigger requests: into the ring too, spread the same
+    // way (not aged).
+    let asked = std::mem::take(&mut s.pending).min(d.max_particles.max(0) as u32);
+    for i in 0..asked {
+        let mut p = spawn_particle(d, frame, None, (s.start_velocity, s.lifetime), rng);
+        spread(d, &mut p, path, i, asked);
         put(d, s, p);
     }
     rate == 0.0 && !respawn && !s.slots.iter().any(|p| p.alive)
@@ -1247,6 +1295,8 @@ fn update_effects(
         fx.log_timer += dt;
         let effect = fx.effect.clone();
         let frame = fx.frame;
+        let prev_origin = fx.prev_origin.unwrap_or(frame.0);
+        fx.prev_origin = Some(frame.0);
         // World positions of every emitter's live particles, for
         // AddLocationFromOtherEmitter.
         let snapshot: Vec<Vec<Vec3>> = effect
@@ -1269,7 +1319,7 @@ fn update_effects(
                 let hit = spatial.cast_ray(a, dir, (b - a).length(), true, &crate::world::collision::world_filter())?;
                 Some((hit.distance / (b - a).length(), to_ue_dir(hit.normal).normalize_or_zero()))
             };
-            let finished = update_emitter(d, s, &frame, dt, fx.killed, other, &mut fx.rng, &mut cast);
+            let finished = update_emitter(d, s, &frame, prev_origin, dt, fx.killed, other, &mut fx.rng, &mut cast);
             if !finished {
                 all_done = false;
             }
@@ -1690,7 +1740,7 @@ mod tests {
         let mut rng = 12345;
         let mut finished = false;
         for _ in 0..(seconds * 20.0).round() as usize {
-            finished = update_emitter(d, s, &frame, 0.05, false, None, &mut rng, &mut |_, _| None);
+            finished = update_emitter(d, s, &frame, Vec3::ZERO, 0.05, false, None, &mut rng, &mut |_, _| None);
         }
         (finished, s.slots.iter().filter(|p| p.alive).count())
     }
@@ -1888,6 +1938,32 @@ mod tests {
         let d0 = (draw_anchor(&frame, forward, 0) - cam).length();
         let d1 = (draw_anchor(&frame, forward, 1) - cam).length();
         assert!(d1 < d0);
+    }
+
+    /// An effect moving 100 units in one 0.05 s update at 100 particles a
+    /// second: the 5 new particles are spread 20 units apart along the way,
+    /// the first nearest the old location; born 0.04, 0.03 ... 0 s ago.
+    #[test]
+    fn spawns_spread_along_the_path() {
+        let mut d = def();
+        d.max_particles = 10;
+        d.initial_particles_per_second = 100.0;
+        let mut s = state();
+        let frame = (Vec3::new(100.0, 0.0, 0.0), Mat3::IDENTITY);
+        update_emitter(&d, &mut s, &frame, Vec3::ZERO, 0.05, false, None, &mut 1, &mut |_, _| None);
+        let xs: Vec<f32> = s.slots.iter().map(|p| p.pos.x).collect();
+        assert_eq!(xs.len(), 5);
+        for (x, want) in xs.iter().zip([20.0, 40.0, 60.0, 80.0, 100.0]) {
+            assert!((x - want).abs() < 1e-3, "{xs:?}");
+        }
+        let ages: Vec<f32> = s.slots.iter().map(|p| p.age).collect();
+        for (a, want) in ages.iter().zip([0.04, 0.03, 0.02, 0.01, 0.0]) {
+            assert!((a - want).abs() < 1e-4, "{ages:?}");
+        }
+        // Not moved (or under 1 unit): all at the effect.
+        let mut s = state();
+        update_emitter(&d, &mut s, &frame, frame.0, 0.05, false, None, &mut 1, &mut |_, _| None);
+        assert!(s.slots.iter().all(|p| (p.pos.x - 100.0).abs() < 1e-3));
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.

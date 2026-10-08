@@ -6391,3 +6391,28 @@ as in P7 (5 screenshots, no errors besides the known slab_allocator line).
 mattered (e.g. KFNadeExplosion) in a game run. Whole effects are now
 sorted by their location, as KF sorts actors (assumed).
 **Next:** spread one frame's spawns along a moving effect's path.
+
+## 2026-10-08 P10: one update's new particles spread over time and along the path (branch fix/particles)
+
+**Changed:** `src/render/particles.rs` (`spawn_times`, `pre_age`,
+`spread`; `ParticleEffect.prev_origin`; `update_emitter` takes the
+effect's previous location; test spawns_spread_along_the_path).
+**Why:** KF gives each particle spawned in one update its own birth time
+within the update (leftover fraction / rate + dt - (i + 1) / rate) and
+ages it by that much (velocity += Acceleration x t, position += velocity
+x t), and, for Independent emitters of an effect that moved over 1 unit,
+moves the i-th of n new particles back along the path by
+(1 - (i + 1) / n). Respawned and SpawnParticle particles get the same
+spread. We started a frame's particles all at the same spot and age, so
+trails (rockets, fireballs, ZED bolts, tracers) clumped per frame.
+**Tested how:** unit test (an effect moving 100 units in 0.05 s at 100/s:
+particles at 20, 40, 60, 80, 100, ages 0.04 ... 0); headless
+KF-WestLondon, 300 frames, 2 shots.
+**Result:** test passes; muzzle flash, shell ejector and blood puffs
+spawn and are removed as before (puffs 0.61 / 0.62 s).
+**Still broken / not tested:** a moving trail (fireball, LAW rocket) not
+looked at in a game run. Respawned particles are not pre-aged (KF uses a
+time I could not read reliably). KF adds the acceleration before turning
+the velocity; we add it in world axes (differs only for turned emitters,
+over part of a frame).
+**Next:** your look at fire, muzzle flashes and trails against KF.
