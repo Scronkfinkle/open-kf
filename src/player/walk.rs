@@ -74,6 +74,8 @@ pub struct Walker {
     /// up (KFPlayerController.HandleWalking). Speed and acceleration x
     /// WalkingPct; no walking off ledges.
     pub walking: bool,
+    /// Pawn.EyeHeight and the landing dip (eye.rs).
+    pub eye: crate::player::eye::Eye,
 }
 
 /// Momentum on the player from damage (Unreal units: mass x velocity),
@@ -476,6 +478,7 @@ fn walk(
                 }
                 _ => {}
             }
+            w.eye = crate::player::eye::Eye::default();
             let c = w.center / SCALE;
             runlog::kv(
                 "walk_start",
@@ -604,6 +607,8 @@ fn walk(
             w.velocity += Vec3::new(v.y, v.z, -v.x) * SCALE;
             runlog::kv("player_push", &format!("velocity_add_unreal=({:.0}, {:.0}, {:.0})", v.x, v.y, v.z));
         }
+        // Pawn.OldZ: the centre's height before this frame's physics.
+        let old_z = w.center.y;
         for _ in 0..steps {
             w.time += h;
             // Network games: overlapping another player (each game sees the
@@ -743,8 +748,25 @@ fn walk(
             bob.side *= k;
             bob.up *= k;
         }
+        // Pawn.UpdateEyeHeight: the eye keeps its world height when the
+        // body steps and catches up; capped 14 below a ceiling (a line
+        // check from the top of the cylinder up 49).
+        let top = w.center + Vec3::Y * kf::HALF_HEIGHT * SCALE;
+        let ceiling = spatial
+            .cast_ray(top, Dir3::Y, (crate::player::eye::CEILING_CHECK - kf::HALF_HEIGHT) * SCALE, true, &crate::world::collision::player_filter())
+            .map(|hit| kf::HALF_HEIGHT + hit.distance / SCALE);
+        let dz = (w.center.y - old_z) / SCALE;
+        let eye_was = w.eye.height;
+        let on_ground = w.on_ground;
+        w.eye.update(dt, dz, on_ground, crate::player::eye::max_eye_height(ceiling));
+        if dz.abs() > 1.0 || (w.eye.height - eye_was).abs() > 0.5 {
+            runlog::kv(
+                "eye_height",
+                &format!("t={:.3} eye_height_unreal={:.1} dz_unreal={dz:.1} on_ground={} ceiling_unreal={:?}", w.time, w.eye.height, w.on_ground, ceiling.map(|c| c.round())),
+            );
+        }
         // Pawn.EyePosition = EyeHeight + WalkBob.
-        t.translation = w.center + Vec3::Y * (kf::EYE_HEIGHT * SCALE + bob.up) + bob.side;
+        t.translation = w.center + Vec3::Y * (w.eye.height * SCALE + bob.up) + bob.side;
 
         // Twice a second: position, speed and ground state.
         if w.time - *last_log >= 0.1 {
@@ -753,7 +775,7 @@ fn walk(
             runlog::kv(
                 "walk",
                 &format!(
-                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} floor_normal_y={:.2} input={} held={held} walking={} bob_side_unreal={:.2} bob_up_unreal={:.2}",
+                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} eye_height_unreal={:.1} floor_normal_y={:.2} input={} held={held} walking={} bob_side_unreal={:.2} bob_up_unreal={:.2}",
                     w.time,
                     -c.z,
                     c.x,
@@ -761,6 +783,7 @@ fn walk(
                     w.velocity.with_y(0.0).length() / SCALE,
                     w.velocity.y / SCALE,
                     w.on_ground,
+                    w.eye.height,
                     w.floor_normal.y,
                     wish != Vec3::ZERO,
                     w.walking,
