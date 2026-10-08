@@ -116,6 +116,10 @@ pub struct DoorInfo {
     pub surface_type: u8,
     pub is_leader: bool,
     pub return_group: String,
+    /// MoverEncroachType: what the mover does when a pawn stays in its way
+    /// after being pushed: 0 stop, 1 return, 2 crush, 3 ignore
+    /// (KFDoorMover and KFTraderDoor default 3, Mover 1).
+    pub encroach_type: u8,
     /// bBlockZeroExtentTraces: bullets stop on it.
     pub blocks_traces: bool,
     /// A KFTraderDoor (moved only by the shop it belongs to), not a
@@ -591,6 +595,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                     surface_type: v.byte("SurfaceType", 0),
                     is_leader: v.bool("bIsLeader"),
                     return_group: v.name("ReturnGroup"),
+                    encroach_type: v.byte("MoverEncroachType", 1),
                     blocks_traces: v.bool("bBlockZeroExtentTraces"),
                     sounds: ["OpeningSound", "OpenedSound", "ClosingSound", "ClosedSound", "MoveAmbientSound"].map(|n| v.sound(n)),
                     sound_volume: v.byte("SoundVolume", 228),

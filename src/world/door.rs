@@ -346,8 +346,12 @@ fn ue(p: Vec3) -> [f32; 3] {
     [-p.z / SCALE, p.x / SCALE, p.y / SCALE]
 }
 
-/// MV_GlideByTime's curve, smooth at both ends. Native code: taken from
-/// the Unreal 1 public source as I remember it, not verified against KF.
+/// The encroachment check `physics_with` calls: the door and its new
+/// position and rotation; true = a pawn is still in the way.
+type Encroach<'a> = dyn FnMut(&Door, [f32; 3], [f32; 3]) -> bool + 'a;
+
+/// MV_GlideByTime's curve, smooth at both ends: 3a^2 - 2a^3 (checked
+/// against KF's engine code; other glide types move linearly).
 fn glide(a: f32) -> f32 {
     3.0 * a * a - 2.0 * a * a * a
 }
@@ -427,22 +431,83 @@ impl Door {
         }
     }
 
-    /// PHYS_MovingBrush for one frame.
+    /// PHYS_MovingBrush for one frame. When a key is reached part way
+    /// through the frame, the time left over is not lost: if
+    /// KeyFrameReached chains on to the next key, the mover keeps moving
+    /// toward it with the rest of the frame (KF's engine loop; our cap of
+    /// 24 passes is a safety net, KF has none).
+    #[cfg(test)]
     fn physics(&mut self, dt: f32) {
-        if !self.interpolating {
-            return;
+        self.physics_with(dt, &mut |_, _, _| false);
+    }
+
+    /// `physics` with pawns: before each step the mover pushes the pawns
+    /// it would overlap (`encroach`, given the door and its new pose; true =
+    /// a pawn is still in the way after its push). Then Mover.EncroachingOn
+    /// for a pawn with a controller: ME_IgnoreWhenEncroach (and
+    /// ME_CrushWhenEncroach, which kills the pawn; no KF map uses it, so
+    /// only logged) moves on; the others (stop and return: the same for
+    /// KFDoorMover) call MakeGroupReturn and the mover does not move this
+    /// step.
+    fn physics_with(&mut self, dt: f32, encroach: &mut Encroach) {
+        let mut dt = dt;
+        let mut passes = 0;
+        while self.interpolating && dt > 0.0 && passes < 24 {
+            passes += 1;
+            let next = self.phys_alpha + dt * self.phys_rate;
+            let alpha = if next <= 1.0 {
+                dt = 0.0;
+                next
+            } else {
+                // The share of this frame's time not needed to reach the key.
+                dt *= (next - 1.0) / (next - self.phys_alpha);
+                1.0
+            };
+            let a = if self.info.glide_type == 1 { glide(alpha) } else { alpha };
+            let (to_pos, to_rot) = key_pose(&self.info, self.key_num as usize);
+            let mut new_pos = [0.0; 3];
+            let mut new_rot = [0.0; 3];
+            for i in 0..3 {
+                new_pos[i] = self.old_pos[i] + (to_pos[i] - self.old_pos[i]) * a;
+                new_rot[i] = self.old_rot[i] + (to_rot[i] - self.old_rot[i]) * a;
+            }
+            if encroach(self, new_pos, new_rot) {
+                match self.info.encroach_type {
+                    ME_IGNORE => {}
+                    ME_CRUSH => runlog::kv("door_encroach", &format!("door={} result=crush_not_simulated", self.info.name)),
+                    _ => {
+                        runlog::kv("door_encroach", &format!("door={} result=return key={} prev_key={}", self.info.name, self.key_num, self.prev_key_num));
+                        self.make_group_return();
+                        // The move failed: the door stays where it is and
+                        // PhysAlpha is not advanced.
+                        continue;
+                    }
+                }
+            }
+            self.pos = new_pos;
+            self.rot = new_rot;
+            self.phys_alpha = alpha;
+            if alpha >= 1.0 {
+                self.interpolating = false;
+                self.key_frame_reached();
+            }
         }
-        let alpha = (self.phys_alpha + dt * self.phys_rate).min(1.0);
-        let a = if self.info.glide_type == 1 { glide(alpha) } else { alpha };
-        let (to_pos, to_rot) = key_pose(&self.info, self.key_num as usize);
-        for i in 0..3 {
-            self.pos[i] = self.old_pos[i] + (to_pos[i] - self.old_pos[i]) * a;
-            self.rot[i] = self.old_rot[i] + (to_rot[i] - self.old_rot[i]) * a;
-        }
-        self.phys_alpha = alpha;
-        if alpha >= 1.0 {
-            self.interpolating = false;
-            self.key_frame_reached();
+    }
+
+    /// Mover.MakeGroupReturn (KFDoorMover's MakeGroupStop is the same):
+    /// stop, then the state code goes to 'Open' if the door was closing
+    /// (KeyNum < PrevKeyNum), else to 'Close'. 'Open' is DoOpen, so a
+    /// directional door closing from key 2 swings to key 1 (copied). A
+    /// door whose ReturnGroup has other members and no leader is made its
+    /// own leader by EncroachingOn, so only the door itself returns
+    /// (bIsLeader groups, KF-IceCave only, are not followed: none of them
+    /// returns when encroached).
+    fn make_group_return(&mut self) {
+        self.interpolating = false;
+        if self.key_num < self.prev_key_num {
+            self.goto_open(None, "encroach");
+        } else {
+            self.goto_close(false, "encroach");
         }
     }
 
@@ -914,15 +979,157 @@ fn use_and_touch(
     }
 }
 
-fn move_doors(time: Res<Time>, mut doors: ResMut<Doors>, mut transforms: Query<&mut Transform>) {
+/// Mover.MoverEncroachType values used here.
+const ME_CRUSH: u8 = 2;
+const ME_IGNORE: u8 = 3;
+
+/// How far a moving mover pushes a pawn it overlaps at its new pose (the
+/// engine's encroachment rule): the mover's own move, plus, when it turns,
+/// 1.5 x how far the point at the pawn's centre is carried by the mover's
+/// move from the old pose to the new one. Bevy space.
+fn encroach_push(old: (Vec3, Quat), new: (Vec3, Quat), turned: bool, p: Vec3) -> Vec3 {
+    let mut push = new.0 - old.0;
+    if turned {
+        let carried = new.0 + new.1 * (old.1.inverse() * (p - old.0));
+        push += 1.5 * (carried - p);
+    }
+    push
+}
+
+/// A pawn a moving door can push.
+struct PushPawn {
+    /// "player" or "zedN", for the log.
+    name: String,
+    /// Cylinder centre, Bevy space.
+    centre: Vec3,
+    /// Unreal units.
+    radius: f32,
+    half_height: f32,
+    player: bool,
+    zed: Option<usize>,
+}
+
+/// The engine's encroachment check for door `d` moving to (`new_pos`,
+/// `new_rot`), Unreal units: every pawn the door overlaps at its new pose
+/// is moved by `encroach_push` (sliding along what blocks it, the door
+/// still at its old pose); if the pawn still overlaps the door at the new
+/// pose, true (EncroachingOn decides in `physics_with`). A pawn that got
+/// clear after a push of more than 2 units is moved back by half the push,
+/// stopping at the door, so it ends next to the door rather than 1.5x
+/// away. A return door stops at the first pawn still in the way, as KF.
+fn encroach_pawns(spatial: &SpatialQuery, shape: &Collider, d: &Door, new_pos: [f32; 3], new_rot: [f32; 3], pawns: &mut [PushPawn]) -> bool {
+    use avian3d::collision::collider::contact_query::{intersection_test, time_of_impact};
+    let old = (coords::pos(d.pos), rotation_of(d.rot));
+    let new = (coords::pos(new_pos), rotation_of(new_rot));
+    // Unreal rotators are whole numbers: compare as such.
+    let turned = (0..3).any(|i| d.rot[i].round() != new_rot[i].round());
+    let bounds = shape.aabb(new.0, new.1);
+    let mut in_way = false;
+    for p in pawns.iter_mut() {
+        let (r, h) = (p.radius * SCALE, p.half_height * SCALE);
+        let reach = Vec3::new(r, h, r);
+        if (p.centre + reach).cmplt(bounds.min).any() || (p.centre - reach).cmpgt(bounds.max).any() {
+            continue;
+        }
+        let cylinder = Collider::cylinder(r, 2.0 * h);
+        let overlaps = |at: Vec3| intersection_test(shape, new.0, new.1, &cylinder, at, Quat::IDENTITY).unwrap_or(false);
+        if !overlaps(p.centre) {
+            continue;
+        }
+        let filter = if p.player { crate::world::collision::player_filter() } else { crate::world::collision::zed_filter() };
+        let mover = crate::player::walk::Mover::new(spatial, p.radius, p.half_height, filter);
+        let push = encroach_push(old, new, turned, p.centre);
+        // A normal colliding move.
+        let (mut moved, hit) = mover.slide(p.centre, push);
+        let still = overlaps(moved);
+        let mut back = 0.0;
+        if !still && push.length_squared() > 4.0 * SCALE * SCALE {
+            let pull = -0.5 * push;
+            let len = pull.length();
+            // A straight move with the door at its new location (still its
+            // old rotation), so the pawn stops against the door there, not
+            // where the level's collision has it this frame.
+            let dir = pull / len;
+            let to_door = time_of_impact(&cylinder, moved, Quat::IDENTITY, dir, shape, new.0, old.1, Vec3::ZERO, len)
+                .ok()
+                .flatten()
+                .map_or(len, |t| (t.time_of_impact - crate::player::walk::kf::SKIN * SCALE).max(0.0));
+            back = mover.cast(moved, dir, len).map_or(len, |hit| hit.distance).min(to_door);
+            moved += pull / len * back;
+        }
+        let ue_push = ue(push);
+        runlog::kv(
+            "door_push",
+            &format!(
+                "door={} pawn={} push=({:.1}, {:.1}, {:.1}) moved={:.1} slide_hit={} pulled_back={:.1} cleared={} yaw={:.0}->{:.0}",
+                d.info.name,
+                p.name,
+                ue_push[0],
+                ue_push[1],
+                ue_push[2],
+                (moved - p.centre).length() / SCALE,
+                hit.is_some(),
+                back / SCALE,
+                !still,
+                d.rot[1],
+                new_rot[1]
+            ),
+        );
+        p.centre = moved;
+        if still {
+            in_way = true;
+            if d.info.encroach_type != ME_IGNORE && d.info.encroach_type != ME_CRUSH {
+                break;
+            }
+        }
+    }
+    in_way
+}
+
+#[allow(clippy::too_many_arguments)]
+fn move_doors(
+    time: Res<Time>,
+    mut doors: ResMut<Doors>,
+    mut transforms: Query<&mut Transform>,
+    spatial: SpatialQuery,
+    shapes: Query<&Collider>,
+    mode: Res<crate::player::walk::MoveMode>,
+    mut player: Query<&mut crate::player::walk::Walker>,
+    mut zeds: Query<&mut crate::zeds::zed::Zed>,
+    net: Res<DoorNet>,
+) {
     let dt = time.delta_secs();
     let doors = &mut *doors;
+    if !doors.doors.iter().chain(doors.trader.iter()).any(|d| d.phase != Phase::Idle || d.interpolating) {
+        return;
+    }
+    // The pawns doors can push: this game's player (KFPawn 20 x 50) and
+    // the living zeds (a client's zeds are the host's puppets).
+    let mut pawns: Vec<PushPawn> = Vec::new();
+    if *mode == crate::player::walk::MoveMode::Walk
+        && let Some(w) = player.iter().next()
+    {
+        pawns.push(PushPawn { name: "player".into(), centre: w.center, radius: 20.0, half_height: 50.0, player: true, zed: None });
+    }
+    if net.role != DoorRole::Client {
+        for z in zeds.iter() {
+            if let Some(c) = z.blocking_cylinder() {
+                pawns.push(PushPawn { name: format!("zed{}", z.id), centre: c.centre, radius: z.radius, half_height: z.half_height, player: false, zed: Some(z.id) });
+            }
+        }
+    }
+    let before: Vec<Vec3> = pawns.iter().map(|p| p.centre).collect();
     for d in doors.doors.iter_mut().chain(doors.trader.iter_mut()) {
         if d.phase == Phase::Idle && !d.interpolating {
             continue;
         }
         d.step(dt);
-        d.physics(dt);
+        // Only a door that collides pushes (hidden, broken doors do not).
+        let shape = d.collider.filter(|_| !d.hidden).and_then(|c| shapes.get(c).ok());
+        match shape {
+            Some(shape) => d.physics_with(dt, &mut |d, p, r| encroach_pawns(&spatial, shape, d, p, r, &mut pawns)),
+            None => d.physics_with(dt, &mut |_, _, _| false),
+        }
         d.step(0.0);
         let translation = coords::pos(d.pos);
         let rotation = rotation_of(d.rot);
@@ -935,6 +1142,19 @@ fn move_doors(time: Res<Time>, mut doors: ResMut<Doors>, mut transforms: Query<&
         {
             t.translation = translation;
             t.rotation = rotation;
+        }
+    }
+    // Pawns the doors pushed.
+    for (p, was) in pawns.iter().zip(before) {
+        if p.centre == was {
+            continue;
+        }
+        if p.player {
+            if let Some(mut w) = player.iter_mut().next() {
+                w.center = p.centre;
+            }
+        } else if let Some(mut z) = zeds.iter_mut().find(|z| p.zed == Some(z.id)) {
+            z.centre = p.centre;
         }
     }
 }
@@ -1581,6 +1801,7 @@ mod tests {
             surface_type: 0,
             is_leader: false,
             return_group: String::new(),
+            encroach_type: 3,
             blocks_traces: true,
             sounds: Default::default(),
             sound_volume: 228,
@@ -1614,6 +1835,79 @@ mod tests {
         run(&mut d, 1.1);
         assert_eq!(d.rot[1], 0.0);
         assert!(d.closed);
+    }
+
+    #[test]
+    fn leftover_time_carries_into_the_next_key() {
+        // A KFTraderDoor-like mover with three keys, linear, MoveTime 1:
+        // two frames of 0.6 s reach key 1 after 1.0 s and spend the last
+        // 0.2 s on the way to key 2.
+        let mut d = test_door(3);
+        d.info.glide_type = 0;
+        d.info.key_pos[1] = [100.0, 0.0, 0.0];
+        d.info.key_pos[2] = [200.0, 0.0, 0.0];
+        d.info.key_rot[1].yaw = 0;
+        d.info.key_rot[2].yaw = 0;
+        d.trigger("test");
+        for _ in 0..2 {
+            d.step(0.6);
+            d.physics(0.6);
+            d.step(0.0);
+        }
+        assert_eq!((d.prev_key_num, d.key_num), (1, 2));
+        assert!((d.phys_alpha - 0.2).abs() < 1e-4, "alpha {}", d.phys_alpha);
+        assert!((d.pos[0] - 120.0).abs() < 0.01, "x {}", d.pos[0]);
+    }
+
+    #[test]
+    fn push_of_a_door_turning_a_quarter_turn() {
+        // Hinge at the origin, yaw 0 -> 16384; a pawn 40 units out along X
+        // is carried to (0, 40): push = 1.5 x ((0, 40) - (40, 0)).
+        let hinge = coords::pos([0.0; 3]);
+        let old = (hinge, rotation_of([0.0, 0.0, 0.0]));
+        let new = (hinge, rotation_of([0.0, 16384.0, 0.0]));
+        let push = ue(encroach_push(old, new, true, coords::pos([40.0, 0.0, 0.0])));
+        assert!((push[0] + 60.0).abs() < 0.01 && (push[1] - 60.0).abs() < 0.01 && push[2].abs() < 0.01, "{push:?}");
+        // A sliding door: just its own move.
+        let push = ue(encroach_push((hinge, Quat::IDENTITY), (coords::pos([0.0, 5.0, 0.0]), Quat::IDENTITY), false, coords::pos([40.0, 0.0, 0.0])));
+        assert!((push[1] - 5.0).abs() < 0.01 && push[0].abs() < 0.01, "{push:?}");
+    }
+
+    #[test]
+    fn return_door_blocked_while_closing_reopens() {
+        let mut d = test_door(2);
+        d.info.encroach_type = 1;
+        d.trigger("test");
+        run(&mut d, 1.1);
+        d.trigger("test");
+        // Closing; a pawn in the way at 40% of the swing.
+        let mut blocked = |_: &Door, _: [f32; 3], r: [f32; 3]| r[1] < 12000.0;
+        let mut frames = 0;
+        while d.phase == Phase::Closing && frames < 200 {
+            d.step(0.01);
+            d.physics_with(0.01, &mut blocked);
+            d.step(0.0);
+            frames += 1;
+        }
+        // MakeGroupReturn: KeyNum 0 < PrevKeyNum 1, so 'Open' again; the
+        // door did not move into the pawn.
+        assert!(matches!(d.phase, Phase::Opening { .. }), "{:?}", d.phase);
+        assert!(d.rot[1] >= 12000.0, "yaw {}", d.rot[1]);
+        assert!(!d.closed);
+        run(&mut d, 1.1);
+        assert_eq!(d.rot[1], 16384.0);
+    }
+
+    #[test]
+    fn ignore_door_moves_on_through_a_pawn() {
+        let mut d = test_door(2);
+        d.trigger("test");
+        for _ in 0..110 {
+            d.step(0.01);
+            d.physics_with(0.01, &mut |_, _, _| true);
+            d.step(0.0);
+        }
+        assert_eq!(d.rot[1], 16384.0);
     }
 
     #[test]
