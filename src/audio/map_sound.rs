@@ -63,7 +63,7 @@ fn load_map_sounds(mut commands: Commands, request: Res<crate::world::map::MapRe
     let mut sounds: Vec<String> = Vec::new();
     let mut player_events: Vec<String> = Vec::new();
     let mut triggers: Vec<PropertyList> = Vec::new();
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         let class = pkg.export_class_name(i);
         // Movers carry their own sounds (S5b); pawns are not placed in maps.
         if class.contains("Mover") || class == "KFTraderDoor" {

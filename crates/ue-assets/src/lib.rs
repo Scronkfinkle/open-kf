@@ -2,6 +2,7 @@
 //!
 //! This crate has no graphics dependency so it can be tested without a window.
 
+pub mod actor_list;
 pub mod bsp;
 pub mod class_defaults;
 pub mod emitter;

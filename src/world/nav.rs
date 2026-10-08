@@ -93,9 +93,10 @@ impl NavNetwork {
         runlog::kv(
             "nav_loaded",
             &format!(
-                "points={} reachspecs={} usable_links={used} groups={} largest={:?}",
+                "points={} reachspecs={} deleted_reachspecs={} usable_links={used} groups={} largest={:?}",
                 points.len(),
                 g.edges.len(),
+                g.deleted_specs,
                 sizes.len(),
                 &sizes[..sizes.len().min(3)]
             ),
@@ -115,7 +116,7 @@ impl NavNetwork {
         use ue_assets::properties::{Value, read_export_properties};
         let index = |name: &str| self.points.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         let mut pads = Vec::new();
-        for i in 0..pkg.exports.len() {
+        for i in pkg.level_actor_exports() {
             if !pkg.export_class_name(i).to_ascii_lowercase().ends_with("jumppad") {
                 continue;
             }

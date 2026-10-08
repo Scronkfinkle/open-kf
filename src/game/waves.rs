@@ -220,7 +220,7 @@ pub fn load_game_data(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
     };
     // The map: KFLevelRules and the ZombieVolumes.
     let pkg = &map.pkg;
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         if pkg.export_class_name(i) != "KFLevelRules" {
             continue;
         }

@@ -117,6 +117,8 @@ pub struct Package {
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,
     data: Vec<u8>,
+    /// The level's actor list, read on first use (maps only).
+    actor_list: std::sync::OnceLock<Result<crate::actor_list::LevelActorList, String>>,
 }
 
 impl fmt::Debug for Package {
@@ -240,6 +242,7 @@ impl Package {
             imports,
             exports,
             data,
+            actor_list: std::sync::OnceLock::new(),
         };
         package.check_refs()?;
         Ok(package)
@@ -315,6 +318,38 @@ impl Package {
         }
         parts.reverse();
         parts.join(".")
+    }
+
+    /// The level's actor list (`Err` for packages without a readable
+    /// `Level`, i.e. anything but a map). Read once, then cached.
+    pub fn level_actor_list(&self) -> Result<&crate::actor_list::LevelActorList, &str> {
+        self.actor_list
+            .get_or_init(|| crate::actor_list::read_level_actor_list(self))
+            .as_ref()
+            .map_err(String::as_str)
+    }
+
+    /// True if the export is an actor of the running level, i.e. it is in
+    /// the level's actor list. Actors deleted in the editor are still saved
+    /// when something references them, but KF never spawns them. Packages
+    /// without an actor list (not maps) answer true for every export.
+    pub fn is_level_actor(&self, export: usize) -> bool {
+        match self.level_actor_list() {
+            Ok(list) => list.set.contains(&export),
+            Err(_) => true,
+        }
+    }
+
+    /// The exports that are level actors, in the level's list order (the
+    /// order KF visits actors in); every export, in export order, for
+    /// packages without an actor list. Use this, not `0..exports.len()`, to
+    /// look for a map's actors.
+    pub fn level_actor_exports(&self) -> impl Iterator<Item = usize> + '_ {
+        let (listed, all) = match self.level_actor_list() {
+            Ok(list) => (&list.actors[..], 0..0),
+            Err(_) => (&[][..], 0..self.exports.len()),
+        };
+        listed.iter().copied().chain(all)
     }
 
     /// The class name of an export, e.g. `Texture`. Classes themselves report `Class`.

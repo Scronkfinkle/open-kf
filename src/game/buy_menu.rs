@@ -143,7 +143,7 @@ pub fn load_catalogue(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
     }
     // The map's own KFLevelRules, if it sets the lists.
     let pkg = &map.pkg;
-    let map_rules = (0..pkg.exports.len()).find(|&i| pkg.export_class_name(i) == "KFLevelRules").and_then(|i| read_export_properties(pkg, i).ok());
+    let map_rules = pkg.level_actor_exports().find(|&i| pkg.export_class_name(i) == "KFLevelRules").and_then(|i| read_export_properties(pkg, i).ok());
     let rules_class = class("KFMod.KFLevelRules");
     let mut source = Vec::new();
     for (label, prop) in LISTS {

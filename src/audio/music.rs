@@ -96,7 +96,7 @@ fn load_song_handler(request: Res<crate::world::map::MapRequest>, mut music: Res
         return;
     };
     let pkg = &lp.pkg;
-    let Some(i) = (0..pkg.exports.len()).find(|&i| pkg.export_class_name(i) == "KFMusicTrigger") else {
+    let Some(i) = pkg.level_actor_exports().find(|&i| pkg.export_class_name(i) == "KFMusicTrigger") else {
         runlog::kv("music_handler", "found=false");
         return;
     };

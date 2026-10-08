@@ -1,8 +1,8 @@
 //! What a map contains: the level's BSP model, placed static meshes, player starts.
 //!
-//! Actors are found by scanning the map's exports rather than reading the
-//! level's actor list. A saved map only contains objects that are in use, so
-//! the result is the same, and it avoids another binary layout.
+//! Actors come from the level's actor list (`actor_list`), as in KF: actors
+//! deleted in the editor are still saved in the package when something
+//! references them, but they are not in the list and never play a part.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -343,14 +343,9 @@ pub fn read_level_with(lp: &Rc<LoadedPackage>, defaults: &ClassDefaults) -> Leve
 fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDefaults)>) -> LevelContents {
     let mut out = LevelContents::default();
     let mut brush_models = HashSet::new();
-    let mut models = Vec::new();
 
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         let class = pkg.export_class_name(i);
-        if class == "Model" {
-            models.push(i);
-            continue;
-        }
         if !crate::properties::has_tagged_properties(class) {
             continue;
         }
@@ -444,9 +439,7 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
                 cull_distance: v.float("CullDistance", 0.0),
             });
         }
-        if let Some((lp, d)) = defaults
-            && !matches!(props.get(pkg, "bDeleteMe"), Some(Value::Bool(true)))
-        {
+        if let Some((lp, d)) = defaults {
             let v = Effective { lp, d, export: i, props: &props };
             let light_type = v.byte("LightType", 0);
             if light_type != 0 {
@@ -474,23 +467,21 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
             out.path_nodes.push(vector(&props, pkg, "Location", [0.0; 3]));
         }
         // Pickups and their spawners are the game's (game/pickups), not
-        // scenery; actors deleted in the editor (bDeleteMe) are left out.
+        // scenery.
         if let Some((lp, d)) = defaults
             && let Some(c) = d.class_of(lp, i)
             && (d.is_a(&c, "Pickup") || d.is_a(&c, "KFRandomSpawn"))
         {
-            if !matches!(props.get(pkg, "bDeleteMe"), Some(Value::Bool(true))) {
-                out.pickups.push(PlacedPickup {
-                    export: i,
-                    name: pkg.object_name(ObjectRef::Export(i)).to_string(),
-                    class: c.path(),
-                    location: vector(&props, pkg, "Location", [0.0; 3]),
-                    rotation: match props.get(pkg, "Rotation") {
-                        Some(Value::Rotator(r)) => *r,
-                        _ => Rotator::default(),
-                    },
-                });
-            }
+            out.pickups.push(PlacedPickup {
+                export: i,
+                name: pkg.object_name(ObjectRef::Export(i)).to_string(),
+                class: c.path(),
+                location: vector(&props, pkg, "Location", [0.0; 3]),
+                rotation: match props.get(pkg, "Rotation") {
+                    Some(Value::Rotator(r)) => *r,
+                    _ => Rotator::default(),
+                },
+            });
             *out.skipped.entry(format!("{class}:pickup")).or_default() += 1;
             continue;
         }
@@ -634,8 +625,15 @@ fn read_level_impl(pkg: &Package, defaults: Option<(&Rc<LoadedPackage>, &ClassDe
         });
     }
 
-    let candidates: Vec<usize> = models.into_iter().filter(|m| !brush_models.contains(m)).collect();
+    // The level names its BSP model; without an actor list, fall back to the
+    // largest Model that is not a brush actor's shape.
+    let candidates: Vec<usize> = (0..pkg.exports.len())
+        .filter(|&m| pkg.export_class_name(m) == "Model" && !brush_models.contains(&m))
+        .collect();
     out.bsp_candidates = candidates.len();
-    out.bsp_model = candidates.into_iter().max_by_key(|&m| pkg.exports[m].serial_size);
+    out.bsp_model = match pkg.level_actor_list() {
+        Ok(list) if list.model.is_some() => list.model,
+        _ => candidates.into_iter().max_by_key(|&m| pkg.exports[m].serial_size),
+    };
     out
 }

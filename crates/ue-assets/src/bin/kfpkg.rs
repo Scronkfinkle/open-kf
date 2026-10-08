@@ -23,6 +23,7 @@
 //! kfpkg anims                      read every animation set (checks only)
 //! kfpkg meshtags <file> <mesh>     a skeletal mesh's bones and attach tags
 //! kfpkg emitter <Package.Class>    a particle effect's sub-emitters, values resolved
+//! kfpkg actors <map>|all           the level's actor list vs the package's objects: what is dropped
 //! kfpkg nav <map>                  a map's navigation network: nodes, ReachSpec flags, groups
 //! kfpkg sounds                     read and decode every sound and sound group (checks only)
 //! kfpkg sounds <file>              one package's sounds: format, length, peak and RMS level; groups
@@ -75,6 +76,7 @@ const USAGE: &str = "usage:
   kfpkg karma
   kfpkg meshtags <file> <mesh>
   kfpkg emitter <Package.Class>
+  kfpkg actors <map>|all
   kfpkg nav <map>
   kfpkg sounds [FILE]";
 
@@ -116,6 +118,7 @@ fn main() -> ExitCode {
         ["sounds", file] => list_sounds(&install, file),
         ["emitter", class] => emitter(&install, class),
         ["nav", map] => nav(&install, map),
+        ["actors", map] => actors(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
         ["mesh", file, name] => mesh_materials(&install, file, name),
         ["lighting", map] => lighting(&install, map, None),
@@ -1539,6 +1542,133 @@ fn scan_karma(install: &Install) -> Result<bool, String> {
 
 /// Prints a map's navigation network: nodes by class, edges by flags,
 /// connected groups. `map` is a name like KF-WestLondon, or `all`.
+/// The level's actor list against the package's objects, per map: list
+/// size, objects left out that look like actors (have a property list with a
+/// Location or bDeleteMe), their classes, whether "left out" equals
+/// "bDeleteMe", the BSP model named by the level against the old "largest
+/// unowned Model" guess, and ReachSpecs touching left-out actors.
+/// Writes logs/kfpkg-actors.log too. Returns false on any mismatch.
+fn actors(install: &Install, map: &str) -> Result<bool, String> {
+    use ue_assets::properties::Value;
+    let maps: Vec<PathBuf> = if map == "all" {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(install.root.join("Maps"))
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rom")))
+            .collect();
+        v.sort();
+        v
+    } else {
+        vec![install.root.join("Maps").join(format!("{map}.rom"))]
+    };
+    let mut log = create_log("logs/kfpkg-actors.log")?;
+    let mut all_ok = true;
+    for path in maps {
+        let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let pkg = Package::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let list = match pkg.level_actor_list() {
+            Ok(l) => l,
+            Err(e) => {
+                let line = format!("map={name} error=\"{e}\"");
+                println!("{line}");
+                writeln!(log, "{line}").ok();
+                all_ok = false;
+                continue;
+            }
+        };
+        // Objects outside the list that look like actors, by class.
+        let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
+        let mut dropped_names: Vec<String> = Vec::new();
+        let (mut dropped_not_deleted, mut listed_deleted) = (0usize, 0usize);
+        for i in 0..pkg.exports.len() {
+            let class = pkg.export_class_name(i);
+            if !has_tagged_properties(class) || class == "Level" {
+                continue;
+            }
+            let Ok(props) = read_export_properties(&pkg, i) else { continue };
+            let deleted = matches!(props.get(&pkg, "bDeleteMe"), Some(Value::Bool(true)));
+            let listed = list.set.contains(&i);
+            if listed && deleted {
+                listed_deleted += 1;
+            }
+            if listed || !(deleted || props.get(&pkg, "Location").is_some()) {
+                continue;
+            }
+            if !deleted {
+                dropped_not_deleted += 1;
+            }
+            *dropped.entry(class.to_string()).or_default() += 1;
+            dropped_names.push(format!("{}{}", pkg.object_name(ObjectRef::Export(i)), if deleted { "" } else { "(live?)" }));
+        }
+        let ordered = list.actors.windows(2).all(|w| w[0] < w[1]);
+        let level_info = list.actors.first().map(|&a| pkg.export_class_name(a)).unwrap_or("-");
+        // Old BSP rule: largest Model not used as a live actor's Brush.
+        let mut brush_models = std::collections::HashSet::new();
+        for &a in &list.actors {
+            if let Ok(props) = read_export_properties(&pkg, a)
+                && let Some(Value::Object(ObjectRef::Export(m))) = props.get(&pkg, "Brush")
+            {
+                brush_models.insert(*m);
+            }
+        }
+        let guess = (0..pkg.exports.len())
+            .filter(|&i| pkg.export_class_name(i) == "Model" && !brush_models.contains(&i))
+            .max_by_key(|&m| pkg.exports[m].serial_size);
+        // ReachSpecs in live actors' PathLists.
+        let mut live_specs = std::collections::HashSet::new();
+        for &a in &list.actors {
+            if let Ok(props) = read_export_properties(&pkg, a)
+                && let Some(Value::Array { count, raw }) = props.get(&pkg, "PathList")
+            {
+                let mut r = ue_assets::reader::Reader::new(raw);
+                for _ in 0..*count {
+                    if let Ok(ObjectRef::Export(e)) = r.compact_index().map(ObjectRef::from_raw) {
+                        live_specs.insert(e);
+                    }
+                }
+            }
+        }
+        // ReachSpecs whose Start or End is not a level actor, and how many
+        // of those a live node's PathList still holds.
+        let (mut specs_dead, mut specs_dead_in_live) = (0usize, 0usize);
+        for i in 0..pkg.exports.len() {
+            if pkg.export_class_name(i) != "ReachSpec" {
+                continue;
+            }
+            let Ok(props) = read_export_properties(&pkg, i) else { continue };
+            let dead = ["Start", "End"]
+                .iter()
+                .any(|n| matches!(props.get(&pkg, n), Some(Value::Object(ObjectRef::Export(e))) if !list.set.contains(e)));
+            specs_dead += dead as usize;
+            specs_dead_in_live += (dead && live_specs.contains(&i)) as usize;
+        }
+        // BSP zones whose ZoneInfo is not a level actor.
+        let zones_dropped = list
+            .model
+            .and_then(|m| ue_assets::bsp::read_model(&pkg, m).ok())
+            .map(|model| model.zone_actors.iter().filter(|z| matches!(z, ObjectRef::Export(e) if !list.set.contains(e))).count());
+        let classes: Vec<String> = dropped.iter().map(|(c, n)| format!("{c}:{n}")).collect();
+        let ok = dropped_not_deleted == 0 && listed_deleted == 0 && list.imports == 0 && list.model.is_some() && list.model == guess && zones_dropped == Some(0);
+        all_ok &= ok;
+        let line = format!(
+            "map={name} exports={} list_slots={} list_actors={} empty={} imports={} first={level_info} export_order={ordered} dropped={} dropped_live={dropped_not_deleted} listed_deleted={listed_deleted} model={:?} model_guess={guess:?} specs_to_dropped={specs_dead} of_them_in_live_pathlists={specs_dead_in_live} specs_in_pathlists={} bsp_zones_to_dropped={zones_dropped:?} classes=[{}] names=[{}] ok={ok}",
+            pkg.exports.len(),
+            list.slots,
+            list.actors.len(),
+            list.empty,
+            list.imports,
+            dropped_names.len(),
+            list.model,
+            live_specs.len(),
+            classes.join(","),
+            dropped_names.join(","),
+        );
+        println!("{line}");
+        writeln!(log, "{line}").ok();
+    }
+    Ok(all_ok)
+}
+
 fn nav(install: &Install, map: &str) -> Result<bool, String> {
     use ue_assets::nav::*;
     let maps: Vec<PathBuf> = if map == "all" {
@@ -1587,11 +1717,12 @@ fn nav(install: &Install, map: &str) -> Result<bool, String> {
             .count();
         let (sizes, _) = g.groups();
         println!(
-            "{} nodes={} edges={} broken={} usable_by_zeds={usable} groups={} largest={:?} classes={classes:?} flags={flags:?}",
+            "{} nodes={} edges={} broken={} deleted={} usable_by_zeds={usable} groups={} largest={:?} classes={classes:?} flags={flags:?}",
             path.file_stem().map_or(String::new(), |s| s.to_string_lossy().to_string()),
             g.nodes.len(),
             g.edges.len(),
             g.broken_specs,
+            g.deleted_specs,
             sizes.len(),
             &sizes[..sizes.len().min(5)]
         );

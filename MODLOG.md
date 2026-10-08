@@ -6201,3 +6201,46 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Maps: only the level's own actors are loaded (branch fix/level-actors)
+
+**Changed:** new `crates/ue-assets/src/actor_list.rs` (reads the Level
+object's actor list and its BSP model reference); `package.rs`
+(`level_actor_exports()`, `is_level_actor()`, read once per package);
+`level.rs` (walks the actor list; BSP model taken from the level, old
+"largest unowned Model" rule kept as fallback; the separate bDeleteMe
+skips for lights and pickups removed, the list covers them); `nav.rs`
+(ReachSpecs touching a left-out actor are skipped, counted as
+`deleted_reachspecs`); every map reader switched to the list: terrain,
+shops/teleporters, shopkeepers, zombie and pain volumes, map sounds,
+music trigger, level rules, emitters, jump pads, LevelInfo lookups;
+`map.rs` logs `level_actors`; `kfpkg actors <map>|all` check; DESIGN.md
+"Level loading".
+**Why:** a map file still holds actors deleted in the editor when
+something references them. KF never plays them: it builds the level from
+the Level's actor list. We loaded them as live (e.g. KF-Transit had 5
+shops instead of 3, KF-Foundry drew 2 deleted meshes).
+**Tested how:** `kfpkg actors all` on all 40 maps in Maps/ (34 KF maps
+plus menu/intro/objective maps); unit tests (decoder + a real KF-Transit
+check); workspace tests; clippy; headless runs on KF-Transit (waves),
+KF-Foundry and KF-WestLondon.
+**Result:** on every map the objects left out are exactly the ones with
+bDeleteMe set (none listed is deleted, none left out is live), the
+level's BSP model equals the old guess, and no BSP zone uses a left-out
+ZoneInfo. Left out: KF-Transit ShopVolume1/2, a ZoneInfo, a
+DefaultPhysicsVolume; KF-Foundry 35 Lights, 2 StaticMeshActors; KF-Manor
+5 PathNodes, 3 JumpSpots, 3 PhysicsVolumes (6 ReachSpecs); KF-Departed 2
+PathNodes (1 ReachSpec); KF-Aperture 1 WebPickup, 1 ZoneInfo; KF-FrightYard
+1 KF_StoryWaveDesigner; most maps one spare DefaultPhysicsVolume.
+Headless (300 frames each): KF-Transit waves `level_actors actors=7515
+dropped=3 [ShopVolume:2 ZoneInfo:1]`, `shops_loaded shops=3`
+(ShopVolume4, 0, 3; was 5); KF-Foundry `static_meshes_loaded
+actors=5851` (was 5853), `dropped=37 [Light:35 StaticMeshActor:2]`;
+KF-WestLondon unchanged (1676 meshes, nav 315 points). `kfpkg nav`:
+KF-Manor 353 -> 350 nodes, KF-Departed 446 -> 445. Workspace tests 263
+passed, 0 failed; clippy: no new warnings (one old one in boss.rs).
+**Still broken / not tested:** not played by you; actors are now visited
+in KF's list order instead of file order, which can change the order of
+things like shop lists (no ordering effect seen in the logs, not checked
+in play).
+**Next:** nothing for this fix.

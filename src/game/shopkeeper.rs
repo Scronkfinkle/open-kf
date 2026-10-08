@@ -100,7 +100,7 @@ pub fn spawn_shopkeepers(
     // (mesh path, skin refs) of each loaded model.
     let mut keys: Vec<(String, Vec<ObjectRef>)> = Vec::new();
     let mut spawned = 0;
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         if !defaults.class_of(map, i).is_some_and(|c| defaults.is_a(&c, "WeaponLocker")) {
             continue;
         }

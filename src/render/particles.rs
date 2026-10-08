@@ -483,7 +483,7 @@ fn load_library(
     let path = request.install_root.join("Maps").join(format!("{}.rom", request.map));
     if let Ok(map) = set.load_path(&path) {
         let (mut ok, mut failed) = (0usize, Vec::new());
-        for i in 0..map.pkg.exports.len() {
+        for i in map.pkg.level_actor_exports() {
             let Some(class) = defaults.class_of(&map, i) else { continue };
             if !defaults.is_a(&class, "Emitter") {
                 continue;
