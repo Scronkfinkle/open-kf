@@ -464,6 +464,9 @@ pub struct Router {
     progress_from: Option<Vec3>,
     progress_timer: f32,
     no_direct: f32,
+    /// The goal given at the last update (the player, or the Patriarch's
+    /// hiding spot).
+    goal: Vec3,
 }
 
 /// Progress check: a zed that covers less than this share of its speed in
@@ -542,6 +545,7 @@ impl Router {
     /// Updates the target if the current move has ended (reached, timed out,
     /// or none yet) and returns the point to walk toward.
     pub fn update(&mut self, nav: &NavNetwork, spatial: &SpatialQuery, inp: &RouteInput, dt: f32, frand: &mut dyn FnMut() -> f32) -> Vec3 {
+        self.goal = inp.player;
         self.move_timer -= dt;
         self.check_timer -= dt;
         self.no_direct -= dt;
@@ -628,6 +632,26 @@ impl Router {
         }
         self.pick(nav, spatial, inp, frand, if reached { "reached" } else if timed_out { "move_ended" } else { "start" });
         point_pos(self.target)
+    }
+
+    /// MonsterController.NotifyLanded: landing while moving away from the
+    /// current target (horizontal `velocity` against the direction to it)
+    /// ends the move at once, so the next update re-plans from here; a
+    /// navigation point target becomes the anchor. Returns true if it did.
+    pub fn landed(&mut self, nav: &NavNetwork, pos: Vec3, velocity: Vec3) -> bool {
+        let target = match self.target {
+            Some(Target::Point(i)) => nav.points[i].pos,
+            Some(Target::Player) => self.goal,
+            None => return false,
+        };
+        let away = velocity.with_y(0.0).dot((target - pos).with_y(0.0)) < 0.0;
+        if away {
+            self.move_timer = 0.0;
+            if let Some(Target::Point(i)) = self.target {
+                self.from_point = Some(i);
+            }
+        }
+        away
     }
 
     fn set(&mut self, t: Target, inp: &RouteInput, nav: &NavNetwork, reason: &str) {

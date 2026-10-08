@@ -1528,6 +1528,10 @@ pub(super) fn think_and_move(
                 z.motion.fall_hit = normal;
             }
             if normal.is_some_and(|n| n.y > 0.7) || in_ditch {
+                let landing_velocity = z.air_velocity;
+                let centre = z.centre;
+                let away = z.router.landed(&nav, centre, landing_velocity);
+                runlog::kv("zed_landed", &format!("id={} away={away} speed_unreal={:.0}", z.id, landing_velocity.length() / SCALE));
                 let impact = -z.vertical_speed / SCALE;
                 if z.health > 0.0 && impact > 0.0 {
                     z.sound_events.push(ZedSound::Land((0.3 * impact / c.jump_z).min(1.0)));
