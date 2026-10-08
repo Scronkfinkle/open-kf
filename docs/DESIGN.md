@@ -6288,6 +6288,24 @@ velocity, 2500, on the first falling step (from about 7900). It
 therefore drops much sooner than before: 300 units below the muzzle after
 about 3500 units of flight instead of 8400.
 
+**CP-5 Explosions push surviving zeds.** From the scripts: a zed that
+survives a hit loses the hit's push (momentum) unless the damage type is
+exactly the frag's, the pipe bomb's or the M79 / M32 / M203's (also the
+Dwarf axe, SP grenade, Seal Squeal and Seeker Six, which we do not
+have; the LAW, Husk Gun and fire nade are not on the list). The blast's
+push is damage scale x MomentumTransfer (frag and pipe 100000, M79
+75000) along the line from the blast to the zed's centre. On the ground
+the upward part is raised to at least 0.4 x the push's size; then it
+is divided by the zed's Mass (Clot, Crawler, Stalker, Siren 100;
+Gorefast 350; Bloat, Husk 400; Scrake 500; Fleshpound 600; Patriarch
+1000). Pushes of 50 units/s or less do nothing. Otherwise the zed starts
+falling; if it already rises faster than 380 the upward part is halved;
+and the push adds to its velocity. We apply it through the zeds' existing
+falling movement, only to zeds that are walking, idle, attacking,
+falling or landing. Zeds that are knocked down, raging, door-bashing or
+in a Patriarch move are not pushed (a simplification). Log:
+`zed_knockback`.
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms

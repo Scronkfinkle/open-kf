@@ -257,6 +257,56 @@ impl Zed {
         Some(reaction)
     }
 
+    /// An explosion's push on a zed that survived it (KFMonster.TakeDamage
+    /// keeps the momentum only for the frag, pipe bomb and M79 family
+    /// damage types; Pawn.TakeDamage; KFMonster / Pawn.AddVelocity).
+    /// `momentum` is Unreal units in Unreal axes. On the ground (walking)
+    /// with bExtraMomentumZ its upward part is raised to at least 0.4 x its
+    /// size; it is divided by the class Mass; pushes of 50 units/s or less
+    /// are ignored; a walking zed starts falling; if it already rises
+    /// faster than 380 the upward part is halved; it adds to the velocity.
+    /// Returns the velocity added (Unreal units/s) and the new velocity,
+    /// or None if nothing happened. See DESIGN.md "Combat physics fixes",
+    /// CP-5.
+    pub fn knockback(&mut self, momentum: Vec3, extra_z: bool) -> Option<(Vec3, Vec3)> {
+        // A network puppet is moved by its host.
+        if self.health <= 0.0 || self.net.puppet {
+            return None;
+        }
+        // States whose movement is the falling code's (others are scripted
+        // moves: knocked down, raging, the Patriarch's moves, door bashing;
+        // not pushed here, a simplification).
+        if !matches!(self.state, ZedState::Chase | ZedState::Idle | ZedState::Melee | ZedState::Falling | ZedState::Landing) {
+            return None;
+        }
+        let walking = self.state != ZedState::Falling;
+        let mut m = momentum;
+        if walking && extra_z {
+            m.z = m.z.max(0.4 * m.length());
+        }
+        m /= self.mass.max(1.0);
+        if m.length() <= 50.0 {
+            return None;
+        }
+        let mut vel = if walking {
+            ue_dir(self.velocity) / SCALE
+        } else {
+            ue_dir(self.air_velocity + Vec3::Y * self.vertical_speed) / SCALE
+        };
+        if vel.z > 380.0 && m.z > 0.0 {
+            m.z *= 0.5;
+        }
+        vel += m;
+        let bevy = coords::dir(vel.to_array()) * SCALE;
+        self.air_velocity = bevy.with_y(0.0);
+        self.vertical_speed = bevy.y;
+        if walking {
+            self.state = ZedState::Falling;
+            self.attack = None;
+        }
+        Some((m, vel))
+    }
+
     /// A Patriarch for the hit rules (health 4000, head 25 x 1.3 x ...;
     /// only the fields the hit code reads), for tests.
     #[cfg(test)]
@@ -317,6 +367,7 @@ impl Zed {
             since_hit: f32::MAX,
             router: Default::default(),
             air_velocity: Vec3::ZERO,
+            mass: 100.0,
             jump_cooldown: 0.0,
             door_bash: None,
             door_checked: None,

@@ -1135,6 +1135,9 @@ fn move_explosives(
                 hurts_self: p.stats.hurts_self,
                 zap: p.stats.zap,
                 frag: false,
+                // KFMonster.TakeDamage keeps the push for DamTypeM79Grenade,
+                // M32 and M203 (the M79 family), not the LAW family's.
+                knockback: p.stats.straight_time.is_some().then_some(p.stats.momentum),
                 weapon: p.weapon,
                 id: p.id,
                 dam: p.stats.dam,
@@ -1536,6 +1539,9 @@ struct Blast {
     /// MyDamageType is DamTypeFrag (the Nade): the only player blast
     /// KFDoorMover.TakeDamage accepts.
     frag: bool,
+    /// MomentumTransfer, if a zed that survives keeps the push (the frag,
+    /// pipe bomb and M79 family damage types; all have bExtraMomentumZ).
+    knockback: Option<f32>,
     weapon: &'static str,
     id: u32,
     /// The damage type and the instigator's perk.
@@ -1629,6 +1635,20 @@ fn blast(
         if before > 0.0 && z.health <= 0.0 {
             zeds_killed += 1;
         }
+        // A survivor is pushed: damageScale x MomentumTransfer along the
+        // line from the blast to its centre.
+        if let Some(transfer) = b.knockback
+            && z.health > 0.0
+            && let Some((added, vel)) = z.knockback(scale * transfer * dirs, true)
+        {
+            runlog::kv(
+                "zed_knockback",
+                &format!(
+                    "id={} weapon={} blast={} scale={scale:.2} added_unreal=({:.0}, {:.0}, {:.0}) velocity_unreal=({:.0}, {:.0}, {:.0})",
+                    z.id, b.weapon, b.id, added.x, added.y, added.z, vel.x, vel.y, vel.z
+                ),
+            );
+        }
     }
     // The player: KFPawn.GetExposureTo (head and root, half each);
     // KFGameType.ReduceDamage reduces self damage; KFHumanPawn.TakeDamage
@@ -1674,6 +1694,8 @@ pub struct ThrownStats {
     /// DampenFactorParallel; at rest under 20.
     pub dampen_normal: f32,
     pub dampen_parallel: f32,
+    /// MomentumTransfer (the blast's push on surviving zeds).
+    pub momentum: f32,
     pub fleshpound_mult: f32,
     pub effect: &'static str,
     pub decal: crate::render::decals::DecalKind,
@@ -2032,6 +2054,9 @@ fn move_thrown(
                 // DamTypePipeBomb; FlameNade's DamTypeFlameNade (doors take
                 // only DamTypeFrag).
                 frag: matches!(p.stats.kind, ThrownKind::Frag { .. }) && p.stats.fire.is_none(),
+                // DamTypeFrag and DamTypePipeBomb keep the push;
+                // DamTypeFlameNade does not.
+                knockback: p.stats.fire.is_none().then_some(p.stats.momentum),
                 weapon: p.weapon,
                 id: p.id,
                 dam: p.stats.dam,

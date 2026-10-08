@@ -6276,3 +6276,28 @@ units further at 1.95 s.
 **Still broken / not tested:** not compared with the real game side by
 side; not played by you. Darts (HealingProjectile) still fly straight.
 **Next:** CP-5 (explosion knockback on zeds).
+
+## 2026-10-08 Explosions push surviving zeds (CP-5, branch fix/combat)
+
+**Changed:** `src/zeds/zed/methods.rs` (`Zed::knockback`), `mod.rs`
+(the class and zed `mass`, test), `load.rs` (Mass), `spawn.rs`;
+`src/weapons/projectile.rs` (`Blast.knockback`, applied in `blast` to
+zeds that survive; `ThrownStats.momentum`), `src/weapons/weapon/load.rs`
+(MomentumTransfer for frag / pipe). DESIGN.md "Combat physics fixes".
+**Why:** in KF a Scrake or Fleshpound that survives a frag, pipe bomb or
+M79 blast is shoved and lifted; ours never moved. Rules from
+KFMonster.TakeDamage, Pawn.TakeDamage and AddVelocity (scripts).
+**Tested how:** unit test (Scrake: 100000 push -> 200 sideways, 80 up;
+halving above 380; under 50 ignored; knocked-down zed untouched); all
+tests; clippy; headless M79 into a Scrake (`--map KF-WestLondon
+--camera -4090,1100,-3650,-1.5708,-0.05 --god --spawn scrake --zed-at
+-4090,1900,-3820 --give M79GrenadeLauncher --input 60:3,150:fire
+--frames 400`).
+**Result:** `zed_knockback id=0 ... scale=0.98 added_unreal=(45, 108,
+59) velocity_unreal=(45, 23, 59)`: 0.98 x 75000 / 500 = 147, pointing
+down (the blast was above its centre), upward part raised to 59; it fell
+for 0.115 s and walked on (0.124 s predicted from 59 up).
+**Still broken / not tested:** zeds that are knocked down, raging or in
+a scripted move are not pushed; multiplayer clients do not apply it
+(the host does); not played by you.
+**Next:** shotgun pellets hitting a zed's two cylinders.

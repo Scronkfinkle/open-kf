@@ -626,6 +626,7 @@ pub(super) fn load_fire_mode(set: &PackageSet, defaults: &ClassDefaults, fm_clas
             radius: pfloat("DamageRadius", 0.0),
             dampen_normal: pfloat("DampenFactor", 0.25),
             dampen_parallel: pfloat("DampenFactorParallel", 0.4),
+            momentum: pfloat("MomentumTransfer", 100000.0),
             fleshpound_mult: 2.0,
             // Nade.Explode: KFNadeExplosion; PipeBombProjectile: KFNadeLExplosion.
             effect: if is_pipe { "KFMod.KFNadeLExplosion" } else { "KFMod.KFNadeExplosion" },
