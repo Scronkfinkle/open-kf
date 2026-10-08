@@ -1338,6 +1338,7 @@ mod tests {
             buy_clip_size: 0,
             never_throw: weapon == "KFMod.Single",
             stats: ShopStats::default(),
+            info: Default::default(),
         }
     }
 

@@ -70,6 +70,22 @@ pub const COMPONENTS: &[&str] = &[
     "KFTab_MidGamePerks.SettingsButton", "KFTab_MidGamePerks.SpectateButton", "KFTab_MidGamePerks.LeaveMatchButton",
     "KFTab_MidGamePerks.QuitGameButton", "KFTab_MidGamePerks.BrowserButton", "KFModelSelect.vil_CharList",
     "KFAudioSettingsTab.AudioBK1", "KFAudioSettingsTab.AudioMusicVolume", "KFAudioSettingsTab.AudioEffectsVolumeSlider",
+    // The classic trader menu (game/classic_menu.rs): GUIBuyMenu,
+    // KFTab_BuyMenu, GUIBuyWeaponInfoPanel, KFQuickPerkSelect, KFBuyMenuFilter.
+    "GUIBuyMenu.HBGLeft", "GUIBuyMenu.HBGCenter", "GUIBuyMenu.HBGRight", "GUIBuyMenu.HBGLL", "GUIBuyMenu.Perk", "GUIBuyMenu.Time",
+    "GUIBuyMenu.Wave", "GUIBuyMenu.QS", "GUIBuyMenu.filter", "GUIBuyMenu.PerkTabB", "GUIBuyMenu.StoreTabB", "GUIBuyMenu.PageTabs",
+    "GUIBuyMenu.Weight", "GUIBuyMenu.WeightIco", "GUIBuyMenu.WeightIcoBG", "GUIBuyMenu.WeightB",
+    "KFTab_BuyMenu.Inv", "KFTab_BuyMenu.SaleB", "KFTab_BuyMenu.MagB", "KFTab_BuyMenu.MagL", "KFTab_BuyMenu.FillB", "KFTab_BuyMenu.FillL",
+    "KFTab_BuyMenu.InventoryBox", "KFTab_BuyMenu.MoneyBack", "KFTab_BuyMenu.Cash", "KFTab_BuyMenu.Money", "KFTab_BuyMenu.Item",
+    "KFTab_BuyMenu.SelectedItemL", "KFTab_BuyMenu.ItemInf", "KFTab_BuyMenu.SaleValue", "KFTab_BuyMenu.SaleValueBG", "KFTab_BuyMenu.Sale",
+    "KFTab_BuyMenu.PurchaseB", "KFTab_BuyMenu.SaleBox", "KFTab_BuyMenu.Info", "KFTab_BuyMenu.IScrollText", "KFTab_BuyMenu.AmmoExit",
+    "KFTab_BuyMenu.AutoFill", "KFTab_BuyMenu.Exit",
+    "GUIBuyWeaponInfoPanel.IName", "GUIBuyWeaponInfoPanel.INameBG", "GUIBuyWeaponInfoPanel.IImage", "GUIBuyWeaponInfoPanel.PowerCap",
+    "GUIBuyWeaponInfoPanel.RangeCap", "GUIBuyWeaponInfoPanel.SpeedCap", "GUIBuyWeaponInfoPanel.PowerBar", "GUIBuyWeaponInfoPanel.RangeBar",
+    "GUIBuyWeaponInfoPanel.SpeedBar", "GUIBuyWeaponInfoPanel.LWeight", "GUIBuyWeaponInfoPanel.LWeightBG",
+    "KFQuickPerkSelect.PB0", "KFQuickPerkSelect.PB1", "KFQuickPerkSelect.PB2", "KFQuickPerkSelect.PB3", "KFQuickPerkSelect.PB4",
+    "KFQuickPerkSelect.PB5", "KFQuickPerkSelect.PSI0", "KFQuickPerkSelect.PSI1", "KFQuickPerkSelect.PSI2", "KFQuickPerkSelect.PSI3",
+    "KFQuickPerkSelect.PSI4", "KFQuickPerkSelect.PSI5", "KFBuyMenuFilter.PSI0",
 ];
 
 /// Component paths read from GUI2K4.u (KFModelSelect's inherited parts).
@@ -87,6 +103,18 @@ pub const CLASS_VALUES: &[(&str, &[&str])] = &[
     ("XInterface.GUIButton", &["WinHeight"]),
     ("XInterface.GUIVertImageListBox", &["HorzBorder", "VertBorder"]),
     ("XInterface.GUIVertScrollBar", &["WinWidth"]),
+    // The classic trader menu's lists, bars and icons (classic_menu.rs).
+    (
+        "KFGui.KFBuyMenuInvList",
+        &[
+            "ItemBGWidthScale", "AmmoBGWidthScale", "ClipButtonWidthScale", "AmmoBGHeightScale", "ButtonBGHeightScale", "EquipmentBGWidthScale",
+            "EquipmentBGHeightScale", "ItemBGYOffset", "AmmoSpacing", "ItemNameSpacing", "ButtonSpacing", "EquipmentBGXOffset", "EquipmentBGYOffset",
+        ],
+    ),
+    ("KFGui.KFWeightBar", &["BoxSizeX", "BoxSizeY", "Spacer"]),
+    ("KFGui.KFQuickPerkSelect", &["BoxSizeX", "BoxSizeY"]),
+    ("KFGui.KFBuyMenuFilter", &["BoxSizeX", "BoxSizeY"]),
+    ("KFGui.GUIWeaponBar", &["Low", "High"]),
 ];
 
 /// The textures the pages use (styles, list items, the wave circle).
@@ -119,7 +147,7 @@ pub const TEXTURES: &[&str] = &[
 /// ROHud MenuFontArrayNames).
 pub const FONTS: &[&str] = &[
     "ROFonts.ROBtsrmVr7", "ROFonts.ROBtsrmVr8", "ROFonts.ROBtsrmVr9", "ROFonts.ROBtsrmVr10", "ROFonts.ROBtsrmVr12", "ROFonts.ROBtsrmVr14",
-    "ROFonts.ROBtsrmVr16", "ROFonts.ROBtsrmVr18",
+    "ROFonts.ROBtsrmVr16", "ROFonts.ROBtsrmVr18", "ROFonts.ROBtsrmVr20", "ROFonts.ROBtsrmVr22", "ROFonts.ROBtsrmVr24", "ROFonts.ROBtsrmVr26",
 ];
 
 /// GUI2K4.int: fntUT2k4Small (KeyName UT2SmallFont) and fntUT2k4Menu
@@ -127,6 +155,11 @@ pub const FONTS: &[&str] = &[
 const UT2_SMALL: [&str; 5] = ["ROFonts.ROBtsrmVr7", "ROFonts.ROBtsrmVr8", "ROFonts.ROBtsrmVr10", "ROFonts.ROBtsrmVr12", "ROFonts.ROBtsrmVr14"];
 const UT2_MENU: [&str; 5] = ["ROFonts.ROBtsrmVr8", "ROFonts.ROBtsrmVr10", "ROFonts.ROBtsrmVr12", "ROFonts.ROBtsrmVr14", "ROFonts.ROBtsrmVr16"];
 const UT2_DEFAULT: &str = "ROFonts.ROBtsrmVr10";
+/// fntUT2k4Large (UT2LargeFont), fntUT2k4Header (UT2HeaderFont);
+/// fntUT2k4ServerList (UT2ServerListFont) has one size.
+const UT2_LARGE: [&str; 5] = ["ROFonts.ROBtsrmVr14", "ROFonts.ROBtsrmVr16", "ROFonts.ROBtsrmVr18", "ROFonts.ROBtsrmVr20", "ROFonts.ROBtsrmVr22"];
+const UT2_HEADER: [&str; 5] = ["ROFonts.ROBtsrmVr18", "ROFonts.ROBtsrmVr20", "ROFonts.ROBtsrmVr22", "ROFonts.ROBtsrmVr24", "ROFonts.ROBtsrmVr26"];
+const UT2_SERVER_LIST: &str = "ROFonts.ROBtsrmVr8";
 
 /// GUIFont.GetFont(XRes) is native: assumed one size step per resolution
 /// class (under 640, 800, 1024, 1280, then the largest). A guess, checked
@@ -167,6 +200,9 @@ pub fn named_font(name: &str, width: f32) -> &'static str {
     match name.to_ascii_lowercase().as_str() {
         "ut2smallfont" => UT2_SMALL[i],
         "ut2defaultfont" => UT2_DEFAULT,
+        "ut2largefont" => UT2_LARGE[i],
+        "ut2headerfont" => UT2_HEADER[i],
+        "ut2serverlistfont" => UT2_SERVER_LIST,
         _ => UT2_MENU[i],
     }
 }
