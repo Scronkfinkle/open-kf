@@ -6201,3 +6201,27 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Bouncing grenades fall at half gravity, as in KF (CP-1, branch fix/combat)
+
+**Changed:** `src/weapons/projectile.rs`: thrown frags, fire and medic
+nades, pipe bombs, and nails after their first bounce now gain only half
+of gravity (475 units/s^2) per second of fall, velocity first, then the
+move. Everything else that falls keeps 950. New log line `thrown_bounce`
+(where, when, speed coming in). DESIGN.md "Combat physics fixes".
+**Why:** KF's engine moves a falling object by adding half of gravity x
+the step to its velocity. For objects that do not bounce it then corrects
+the velocity to full gravity and caps it at 2500; for bouncing objects
+(bBounce) it skips that, so they fall at half gravity and are never
+capped. Ours used full gravity: frags flew about half as far as KF's.
+Details in the local RE.md.
+**Tested how:** unit test (frag at 850 units/s, 45 degrees, flat floor);
+all tests; clippy; one headless frag throw on KF-WestLondon
+(`--camera -4090,1300,-3650,-1.5708,0.35 --input 60:nade --frames 400`).
+**Result:** unit test: first-arc range 1521 units and apex 380 (it was
+761 and 190 at 950). Headless: the frag hit the tunnel wall 1.31 s after
+the throw at 864 units/s; half gravity predicts 865 (full gravity would
+be about 1250). It came to rest after 5 bounces and exploded at 3.29 s.
+**Still broken / not tested:** not played by you; no side-by-side check
+against the real game.
+**Next:** CP-2 (ragdoll start spin).

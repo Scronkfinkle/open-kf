@@ -6240,6 +6240,25 @@ Details:
 - The window's title is now "Settings" (it holds more than Audio).
 - At 1280 x 800 the launcher's map list shows 5 rows (it scrolls).
 
+## Combat physics fixes (planned 2026-10-08: CP-1 onward; details in the local RE.md)
+
+An audit compared our projectile and ragdoll movement with KF's engine
+code. Each step below is one commit.
+
+**CP-1 Bouncing things fall at half gravity.** KF's engine moves a
+falling object in small steps (at most 0.05 s). Each step it adds half
+of gravity x the step time to the velocity and moves by the velocity.
+For an object that does not bounce it then recomputes the velocity from
+how far it actually moved and extrapolates to the end of the step, which
+gives full gravity (950 units/s^2), and caps the speed at the zone's
+terminal velocity (2500). For an object that bounces (bBounce: the frag,
+fire and medic nades, the pipe bomb, nails after their first bounce)
+that second part is skipped: the velocity only ever gains half of
+gravity, so they fall at 475 units/s^2 and are never capped. A frag
+thrown at 45 degrees therefore flies twice as far on its first arc as a
+full-gravity throw would. We now use 475 for those (thrown objects and
+bounced nails); 950 stays for everything else that falls.
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms

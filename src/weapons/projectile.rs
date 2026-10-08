@@ -14,8 +14,23 @@ use crate::engine::coords::{self, SCALE};
 use crate::engine::runlog;
 use crate::zeds::zed::Zed;
 
-/// PhysicsVolume gravity (Unreal units/s^2), for nails after a bounce.
+/// PhysicsVolume gravity (Unreal units/s^2).
 const GRAVITY: f32 = 950.0;
+
+/// What a bouncing object (bBounce: frag, fire / medic nade, pipe bomb, a
+/// nail after its first bounce) really falls at in KF: the engine's
+/// falling step adds only half of gravity x dt to such an object's
+/// velocity (the full-gravity correction it applies to everything else is
+/// skipped for bouncers), and never caps its speed. See DESIGN.md, "Combat
+/// physics fixes", CP-1.
+const BOUNCE_GRAVITY: f32 = 0.5 * GRAVITY;
+
+/// One falling step of a bouncing object, as KF does it: velocity first,
+/// then the move with the new velocity. Returns the step to move by.
+fn bouncer_fall_step(vel: &mut Vec3, dt: f32) -> Vec3 {
+    vel.z -= BOUNCE_GRAVITY * dt;
+    *vel * dt
+}
 
 /// A projectile class's values (from its defaults).
 #[derive(Clone, Copy, Debug, Default)]
@@ -679,10 +694,9 @@ fn move_projectiles(
             commands.entity(entity).despawn();
             continue;
         }
-        if p.falling {
-            p.vel.z -= GRAVITY * dt;
-        }
-        let step = p.vel * dt;
+        // Only nails fall (after their first bounce): NailGunProjectile is
+        // bBounce, so half gravity (CP-1).
+        let step = if p.falling { bouncer_fall_step(&mut p.vel, dt) } else { p.vel * dt };
         let len = step.length();
         if len <= 0.0 {
             continue;
@@ -1738,8 +1752,8 @@ fn move_thrown(
         }
         // Fly: PHYS_Falling, bouncing off the level; a zed stops it dead.
         if !p.resting {
-            p.vel.z -= GRAVITY * dt;
-            let step = p.vel * dt;
+            // Nade and PipeBombProjectile are bBounce: half gravity (CP-1).
+            let step = bouncer_fall_step(&mut p.vel, dt);
             let len = step.length();
             if len > 0.0 {
                 let dir_ue = step / len;
@@ -1758,6 +1772,13 @@ fn move_thrown(
                         let n = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
                         let n = to_ue(n).normalize_or_zero();
                         p.pos += dir_ue * (h.distance / SCALE) + n;
+                        runlog::kv(
+                            "thrown_bounce",
+                            &format!(
+                                "id={} weapon={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} speed_in={:.0}",
+                                p.id, p.weapon, p.pos.x, p.pos.y, p.pos.z, p.age, p.vel.length()
+                            ),
+                        );
                         let v_norm = p.vel.dot(n) * n;
                         p.vel = -v_norm * p.stats.dampen_normal + (p.vel - v_norm) * p.stats.dampen_parallel;
                         // HitWall: ImpactSound (SLOT_Misc, TransientSoundVolume)
@@ -2123,6 +2144,35 @@ mod tests {
         assert_eq!(scream_result(ScreamTarget::Pipe, 5.0, 700.0, 14.0, true), (ScreamResult::Ignored, 14));
         // A (modded) scream of 25 or more would destroy it.
         assert_eq!(scream_result(ScreamTarget::Pipe, 8.0, 700.0, 30.0, true), (ScreamResult::Disintegrated, 30));
+    }
+
+    /// Flies a bouncer from z = 0 until it is back below 0; returns the
+    /// distance and the apex height.
+    fn bouncer_first_arc(speed: f32, angle_deg: f32, dt: f32) -> (f32, f32) {
+        let a = angle_deg.to_radians();
+        let mut vel = Vec3::new(speed * a.cos(), 0.0, speed * a.sin());
+        let mut pos = Vec3::ZERO;
+        let mut apex: f32 = 0.0;
+        loop {
+            pos += bouncer_fall_step(&mut vel, dt);
+            apex = apex.max(pos.z);
+            if pos.z < 0.0 {
+                return (pos.x, apex);
+            }
+        }
+    }
+
+    #[test]
+    fn frag_throw_falls_at_half_gravity() {
+        // A quick frag throw (mHoldSpeedMin 850) at 45 degrees over flat
+        // ground: range v^2 / g with g = 475 is 1521 units (it was 761 at
+        // 950); apex v^2 sin^2 / 2g = 380 (was 190).
+        let (range, apex) = bouncer_first_arc(850.0, 45.0, 1.0 / 60.0);
+        assert!((range - 850.0 * 850.0 / 475.0).abs() < 25.0, "range {range}");
+        assert!((apex - 850.0 * 850.0 * 0.5 / 950.0).abs() < 8.0, "apex {apex}");
+        // Frame rate barely matters (KF steps at most 0.05 s).
+        let (range20, _) = bouncer_first_arc(850.0, 45.0, 0.05);
+        assert!((range20 - range).abs() < 40.0, "range at 20 fps {range20}");
     }
 
     fn stats(r: f32, max: f32) -> ProjectileStats {
