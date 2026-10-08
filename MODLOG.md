@@ -6285,3 +6285,19 @@ effect's X; the other two modes checked too.
 **Still broken / not tested:** blood puff look in a game run not compared
 with KF.
 **Next:** P5 InitialDelayRange.
+
+## 2026-10-08 P5: InitialDelayRange (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads InitialDelayRange);
+`src/render/particles.rs` (`EmitterState.delay`, rolled when the effect
+starts; `update_emitter` waits it out; test initial_delay).
+**Why:** KF rolls a delay in InitialDelayRange per sub-emitter and does not
+update or spawn it until the delay has run out (the effect is not
+finished meanwhile). Used by the door explosions, the Husk / ZED gun
+charge-ups and the Kar / flare revolver third-person flashes; we started
+them all at once.
+**Tested how:** unit test: no particles during a 0.52 s delay, 5 in the
+update after.
+**Result:** test passes.
+**Still broken / not tested:** not looked at in a game run.
+**Next:** P6 StartLocationOffset.

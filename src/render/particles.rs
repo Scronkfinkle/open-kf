@@ -373,6 +373,8 @@ struct EmitterState {
     carry: f32,
     /// Spawn rate used on the last update (particles per second), for the log.
     rate: f32,
+    /// Seconds left before the emitter starts (InitialDelayRange).
+    delay: f32,
     /// One mesh per drawn section.
     meshes: Vec<Handle<Mesh>>,
 }
@@ -786,6 +788,7 @@ pub fn spawn_effect_with(
         None => library.0.iter().find(|(k, _)| k.eq_ignore_ascii_case(class))?.1.clone(),
     };
     let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut rng = (seed ^ id.wrapping_mul(2_654_435_761)) | 1;
     let mut states = Vec::new();
     let parent = commands.spawn((Transform::IDENTITY, Visibility::Visible)).id();
     for e in &effect.emitters {
@@ -808,6 +811,7 @@ pub fn spawn_effect_with(
             slots: Vec::new(),
             next: 0,
             rate: 0.0,
+            delay: in_range(&mut rng, e.def.initial_delay_range),
             spawned: 0,
             carry: 0.0,
             meshes: handles,
@@ -834,7 +838,7 @@ pub fn spawn_effect_with(
         id,
         age: 0.0,
         emitters: states,
-        rng: (seed ^ id.wrapping_mul(2_654_435_761)) | 1,
+        rng,
         log_timer: 0.0,
         life_span: life_span.unwrap_or(effect.life_span),
         effect,
@@ -922,6 +926,15 @@ fn update_emitter(
     rng: &mut u32,
     cast: &mut dyn FnMut(Vec3, Vec3) -> Option<(f32, Vec3)>,
 ) -> bool {
+    // InitialDelayRange: nothing happens until the delay has run out (the
+    // update that ends it runs in full); a waiting emitter is not finished.
+    if s.delay > 0.0 {
+        s.delay -= dt;
+        if s.delay > 0.0 {
+            return false;
+        }
+        s.delay = 0.0;
+    }
     let rate = spawn_rate(d, s, killed);
     s.rate = rate;
     // Kill() also stops respawning.
@@ -1360,6 +1373,7 @@ mod tests {
             initial_particles_per_second: 0.0,
             particles_per_second: 0.0,
             lifetime: (4.0, 4.0),
+            initial_delay_range: (0.0, 0.0),
             seconds_before_inactive: 1.0,
             reset_after_change: false,
             start_location_range: [(0.0, 0.0); 3],
@@ -1485,6 +1499,7 @@ mod tests {
             spawned: 0,
             carry: 0.0,
             rate: 0.0,
+            delay: 0.0,
             meshes: Vec::new(),
         }
     }
@@ -1604,6 +1619,17 @@ mod tests {
         d.start_velocity_radial_range = (50.0, 50.0);
         let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
         assert!(close(p.vel, Vec3::new(0.0, -50.0, 0.0)), "{:?}", p.vel);
+    }
+
+    /// InitialDelayRange: no particles before the delay, then spawning.
+    #[test]
+    fn initial_delay() {
+        let mut d = def();
+        d.initial_particles_per_second = 100.0;
+        let mut s = state();
+        s.delay = 0.52;
+        assert_eq!(run(&d, &mut s, 0.5), (false, 0));
+        assert_eq!(run(&d, &mut s, 0.05).1, 5);
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.

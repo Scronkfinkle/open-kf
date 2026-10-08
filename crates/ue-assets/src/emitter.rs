@@ -41,6 +41,8 @@ pub struct EmitterDef {
     pub initial_particles_per_second: f32,
     pub particles_per_second: f32,
     pub lifetime: Range,
+    /// Seconds the emitter waits before it starts (random in the range).
+    pub initial_delay_range: Range,
     pub seconds_before_inactive: f32,
     pub reset_after_change: bool,
     // Start location.
@@ -263,6 +265,7 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         initial_particles_per_second: float("InitialParticlesPerSecond", 0.0),
         particles_per_second: float("ParticlesPerSecond", 0.0),
         lifetime: range("LifetimeRange", (4.0, 4.0)),
+        initial_delay_range: range("InitialDelayRange", (0.0, 0.0)),
         seconds_before_inactive: float("SecondsBeforeInactive", 1.0),
         reset_after_change: boolean("ResetAfterChange"),
         start_location_range: range_vector("StartLocationRange", (0.0, 0.0)),
