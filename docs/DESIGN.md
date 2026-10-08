@@ -281,6 +281,39 @@ uncovered.
 
 Not covered: sky zones that scroll or are scaled, and fog.
 
+### Sky fog, sky rotation, clear colour, fog blending (fix sky-fog, 2026-10-08)
+
+Rules read from KF's native renderer (details in the local RE.md), done one
+step at a time:
+
+1. **Sky fog.** The sky view uses the fog of **its own zone** (the
+   SkyZoneInfo's bDistanceFog, DistanceFogStart / End / Color), measured
+   from the sky camera, never the player's zone fog and never blended. 24 of
+   34 maps' sky zones have fog (KF-WestLondon: -700..2500, colour
+   (86, 74, 54)). Plan: give the sky camera (and the scope's sky camera) a
+   `DistanceFog` from the sky zone at spawn. Log `sky_fog`.
+2. **Sky rotation.** The sky view is turned by the SkyZoneInfo's Rotation: a
+   sky point in direction d from the SkyZoneInfo is seen in direction
+   Rotation^-1 d. So the sky camera's rotation = Rotation x the main
+   camera's rotation. KF-WestLondon and KF-Waterworks have Yaw about
+   -180 deg, KF-Manor / Icebreaker / Biohazard Yaw 65 deg and Pitch -8 deg.
+   The sign is checked against your real KF-WestLondon screenshot. Log
+   `sky_rotation`.
+3. **Clear colour.** KF clears the screen to black for a view in zone 0, and
+   to the zone's fog colour when the camera's zone has bClearToFogColor and
+   fog; otherwise it does not clear (we use black). Plan: the clear colour
+   (`ClearColor`) follows the camera zone; the old grey-blue goes. Log
+   `clear_colour` on change.
+4. **Fog blending and volume fog.** The main view's fog fades over the new
+   zone's DistanceFogBlendTime (ZoneInfo default 1 s) when the camera
+   changes zone, following KF's per-player state (last fog start / end /
+   colour, a timer in game time). Entering zone 0, a first zone change from
+   zone 0, or a finished fade snaps. A zone without fog fades to start = end
+   = the far plane (65536) with the last colour, and fog goes off when the
+   fade ends. A PhysicsVolume with bDistanceFog that holds the camera
+   overrides all of this with its own fog, without fading. Log `fog_blend`
+   while fading.
+
 ## Known file-format quirks
 
 **Structs are nested tagged lists.** Only Vector, Rotator and Color are fixed

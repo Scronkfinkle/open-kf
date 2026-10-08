@@ -73,6 +73,10 @@ pub const SKY_LAYER: usize = 1;
 #[derive(Resource, Default)]
 pub struct SkyInfo {
     pub camera_position: Option<Vec3>,
+    /// The sky zone's own fog (its SkyZoneInfo), if it has fog. KF draws
+    /// the sky view with this fog, measured from the sky camera, never the
+    /// player's zone fog (details in the local RE.md).
+    pub fog: Option<crate::world::zones::ZoneFog>,
 }
 
 /// Each zone's fog: its ZoneInfo (zone 0 and zones without one: the
@@ -710,6 +714,25 @@ fn load_map(
                     .filter(|&i| lp.pkg.export_class_name(i) == "KFSPLevelInfo")
                     .filter_map(|i| read_export_properties(&lp.pkg, i).ok())
                     .all(|p| !matches!(p.get(&lp.pkg, "bUseVisionOverlay"), Some(Value::Bool(false))));
+                // The sky view's fog: the sky zone's own (KF: no blending,
+                // no volume fog, distances from the sky camera).
+                sky.fog = sky_zone.as_ref().and_then(|(z, _)| zone_fog.get(*z as usize)).filter(|f| f.fog).cloned();
+                if let Some((z, _)) = &sky_zone {
+                    let f = zone_fog.get(*z as usize);
+                    runlog::kv(
+                        "sky_fog",
+                        &format!(
+                            "zone={z} name={} fog={} start={} end={} colour={},{},{}",
+                            f.map_or("?", |f| f.name.as_str()),
+                            f.is_some_and(|f| f.fog),
+                            f.map_or(0.0, |f| f.start),
+                            f.map_or(0.0, |f| f.end),
+                            f.map_or(0, |f| f.color[0]),
+                            f.map_or(0, |f| f.color[1]),
+                            f.map_or(0, |f| f.color[2]),
+                        ),
+                    );
+                }
                 commands.insert_resource(crate::world::zones::Zones { bsp: model.clone(), zones: zone_fog, vision_overlay });
                 // Baked lighting (lighting.rs): the render sections carry
                 // each polygon's lightmap UVs and page.

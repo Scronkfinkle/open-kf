@@ -63,6 +63,16 @@ impl PlayerZone {
     }
 }
 
+/// Bevy's linear distance fog for start / end in Unreal units and an sRGB
+/// colour.
+pub fn distance_fog(start: f32, end: f32, color: [u8; 4]) -> DistanceFog {
+    DistanceFog {
+        color: Color::srgb_u8(color[0], color[1], color[2]),
+        falloff: FogFalloff::Linear { start: start * SCALE, end: end * SCALE },
+        ..default()
+    }
+}
+
 pub struct ZonesPlugin;
 
 impl Plugin for ZonesPlugin {
@@ -102,15 +112,7 @@ fn track_player_zone(
     );
     match z.filter(|z| z.fog) {
         Some(z) => {
-            let c = z.color;
-            commands.entity(cam).insert(DistanceFog {
-                color: Color::srgb_u8(c[0], c[1], c[2]),
-                falloff: FogFalloff::Linear {
-                    start: z.start * SCALE,
-                    end: z.end * SCALE,
-                },
-                ..default()
-            });
+            commands.entity(cam).insert(distance_fog(z.start, z.end, z.color));
         }
         None => {
             commands.entity(cam).remove::<DistanceFog>();

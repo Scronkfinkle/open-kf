@@ -216,7 +216,7 @@ pub fn spawn_camera(
         FlyCamera { yaw, pitch, speed: 8.0 },
     ));
     if let Some(sky_pos) = sky.camera_position {
-        commands.spawn((
+        let mut cam = commands.spawn((
             Camera3d::default(),
             Camera { order: -1, ..default() },
             kf_projection(settings.fov),
@@ -225,6 +225,10 @@ pub fn spawn_camera(
             RenderLayers::layer(SKY_LAYER),
             SkyCamera,
         ));
+        // KF fogs the sky view with the sky zone's own fog.
+        if let Some(f) = &sky.fog {
+            cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
+        }
     }
     runlog::kv(
         "camera_spawned",
