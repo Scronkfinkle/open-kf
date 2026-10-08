@@ -951,6 +951,7 @@ pub(super) fn load_weapons(
         hand_frames: Vec::new(),
         dual_left: [false; 2],
         sounds: Vec::new(),
+        hud_messages: Vec::new(),
         last_click: -10.0,
         sound_rng: 0x1b87_3593,
         torch: TorchState::default(),
@@ -1347,6 +1348,7 @@ pub(super) fn load_weapon(
         } else {
             TOGGLE_ON_ALT_FIRE.iter().any(|c| class_name.eq_ignore_ascii_case(c)).then_some(AltToggle::FireMode)
         },
+        toggle_sound: sound_prop(defaults, &class, "ToggleSound"),
         wide_spread: false,
         gone: false,
         sell_value: None,

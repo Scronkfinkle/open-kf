@@ -7250,3 +7250,38 @@ README updated.
 favourites, DLC rows, scroll arrows not built). A saved launcher setting
 `trader=nu` still picks NuMenu.
 **Next:** your play test.
+
+## 2026-10-08 Fire mode switch: HUD message and click
+
+**Changed:** switching fire mode with alt fire (AK47, M4, Bullpup, SCAR,
+MKb42, FNFAL, MAC10, AA12; the KSG's wide/tight spread too) now shows
+KF's message and plays a click. `src/game/hud.rs`: two new message
+classes, BullpupSwitchMessage ("Set to Semi-Automatic." / "Set to Fully
+Automatic.") and KSGSwitchMessage ("Set to Wide-Spread." / "Set to
+Tight-Spread."), red (220, 0, 0), font size -2, 3 s, 83% down the
+screen, fading (from the classes' defaults, KFMod.int and
+CriticalEventPlus / LocalMessage). `src/weapons/weapon/input.rs`: the
+toggle sends the message and the sound, and logs `fire_mode_switch`.
+`src/weapons/weapon/load.rs`, `mod.rs`, `sounds.rs`: the weapon's
+ToggleSound is read; HUD messages from the weapon code are passed on.
+**Why:** you saw no message and heard nothing when switching.
+**What KF does:** KFWeapon.DoToggle flips the mode, shows the message
+above, and plays the weapon's ToggleSound at volume 2. No stock weapon
+sets ToggleSound, so KF itself plays **no sound** here; the line that
+would play the click (`stg44_firemodeswitch01` from Inf_Weapons_Foley) is
+commented out in KF's script. No animation is played.
+**Not KF:** because of that, we play that stg44 click whenever a weapon has
+no ToggleSound (`TOGGLE_CLICK_FALLBACK` in input.rs, logged as
+`sound_source=fallback`). Delete it to be exact to KF.
+**Tested how:** headless KF-WestLondon, `--give AK47AssaultRifle
+--input 600:3,800:altfire,1000:altfire`, screenshot.
+**Result:** `fire_mode_switch weapon=AK47 mode=single
+sound=Inf_Weapons_Foley.stg44.stg44_firemodeswitch01 sound_source=fallback
+message="Set to Semi-Automatic."`, `hud_message class=BullpupSwitch
+switch=0`, `sound_play ... slot=None volume=2.00 length=0.06`; the second
+switch logged `mode=auto ... "Set to Fully Automatic."`. The screenshot
+shows the red text under the crosshair. Clippy: 0 warnings.
+**Still broken / not tested:** unit tests not run (refused for the agent);
+the KSG message not run; not heard (muted). The old "[SEMI]/[AUTO]" tag
+in our ammo text is not KF and was left as it was.
+**Next:** your listen in game; decide whether to keep the non-KF click.

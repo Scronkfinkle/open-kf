@@ -199,6 +199,12 @@ pub enum MessageClass {
     /// UnrealGame.PickupMessagePlus: the pickup's PickupMessage
     /// (PlayerController.HandlePickup), in `text`.
     Pickup,
+    /// KFMod.BullpupSwitchMessage (KFWeapon.DoToggle): 0 semi auto,
+    /// 1 full auto.
+    BullpupSwitch,
+    /// KFMod.KSGSwitchMessage (KSGShotgun.DoToggle): 0 wide spread,
+    /// 1 tight spread.
+    KsgSwitch,
 }
 
 /// PlayerController.ReceiveLocalizedMessage / BroadcastLocalizedMessage.
@@ -299,6 +305,20 @@ fn message_style(m: &LocalMessage) -> Option<MessageStyle> {
             waiting_font: false,
             complex: false,
         }),
+        // BullpupSwitchMessage / KSGSwitchMessage: SwitchMessage[Switch]
+        // (KFMod.int), DrawColor (220, 0, 0), FontSize -2; the rest
+        // CriticalEventPlus's / LocalMessage's (Lifetime 3, PosY 0.83,
+        // bIsUnique, bFadeMessage).
+        MessageClass::BullpupSwitch | MessageClass::KsgSwitch => {
+            let text = match (m.class, m.switch) {
+                (MessageClass::BullpupSwitch, 0) => "Set to Semi-Automatic.",
+                (MessageClass::BullpupSwitch, 1) => "Set to Fully Automatic.",
+                (MessageClass::KsgSwitch, 0) => "Set to Wide-Spread.",
+                (MessageClass::KsgSwitch, 1) => "Set to Tight-Spread.",
+                _ => return None,
+            };
+            Some(MessageStyle { text: text.into(), lifetime: 3.0, pos_y: 0.83, font_size: -2, color: [220, 0, 0], waiting_font: false, complex: false })
+        }
         MessageClass::Critical => Some(MessageStyle {
             text: m.text.clone()?,
             lifetime: 5.0,
@@ -309,6 +329,11 @@ fn message_style(m: &LocalMessage) -> Option<MessageStyle> {
             complex: false,
         }),
     }
+}
+
+/// The text a message shows (for logs elsewhere).
+pub fn message_text(m: &LocalMessage) -> Option<String> {
+    message_style(m).map(|s| s.text)
 }
 
 /// A Font with its pages loaded (indices into `Hud::textures`).

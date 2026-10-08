@@ -296,6 +296,9 @@ struct WeaponDef {
     alt_ammo: Option<(u32, u32)>,
     /// What alt fire toggles (the class's AltFire calls DoToggle), if anything.
     toggles_on_alt: Option<AltToggle>,
+    /// KFWeapon.ToggleSound, played by DoToggle (PlayOwnedSound at 2.0,
+    /// SLOT_None, not attenuated). None for every stock KF weapon.
+    toggle_sound: Option<String>,
     /// KSGShotgun.bWideSpread (KSGFire: Spread x 2.05).
     wide_spread: bool,
     /// Thrown away (the last pipe bomb placed: PipeBombFire.Timer destroys
@@ -880,6 +883,9 @@ struct Weapons {
     dual_left: [bool; 2],
     /// Sounds started this frame, sent to the mixer by `send_weapon_sounds`.
     sounds: Vec<crate::audio::mixer::PlaySound>,
+    /// HUD messages (ReceiveLocalizedMessage) from this frame, sent by
+    /// `send_weapon_sounds` too.
+    hud_messages: Vec<crate::game::hud::LocalMessage>,
     /// FlameBurstFire's LastClickTime (game seconds).
     last_click: f32,
     /// Random pitch of fire sounds: its own stream, so the spread and

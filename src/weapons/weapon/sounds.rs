@@ -74,11 +74,13 @@ pub(super) fn sound_rand(w: &mut Weapons) -> f32 {
     (w.sound_rng >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// Hands this frame's weapon sounds to the mixer, and has each weapon's
-/// sounds loaded the first time it is carried.
+/// Hands this frame's weapon sounds to the mixer (and its HUD messages to
+/// the HUD), and has each weapon's sounds loaded the first time it is
+/// carried.
 pub(super) fn send_weapon_sounds(
     w: Option<ResMut<Weapons>>,
     mut out: MessageWriter<PlaySound>,
+    mut hud_out: MessageWriter<crate::game::hud::LocalMessage>,
     mut preload: MessageWriter<crate::audio::mixer::PreloadSounds>,
     mut done: Local<std::collections::HashSet<String>>,
 ) {
@@ -86,6 +88,7 @@ pub(super) fn send_weapon_sounds(
         return;
     };
     out.write_batch(w.sounds.drain(..));
+    hud_out.write_batch(w.hud_messages.drain(..));
     for def in &w.defs {
         if done.insert(def.class.clone()) {
             let mut sounds: Vec<String> =
@@ -94,6 +97,9 @@ pub(super) fn send_weapon_sounds(
                 let s = &m.sounds;
                 sounds.extend([&s.fire, &s.stereo, &s.no_ammo, &s.ambient, &s.end_stereo, &s.fire_start, &s.charge_up, &s.placed].into_iter().flatten().cloned());
                 sounds.extend(s.melee_hits.iter().cloned());
+            }
+            if def.toggles_on_alt.is_some() {
+                sounds.push(super::input::toggle_click(def).0);
             }
             sounds.extend(def.model.all_notify_sounds());
             sounds.sort();

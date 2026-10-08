@@ -801,19 +801,35 @@ pub(super) fn weapon_input(
             if pressed[mode] {
                 let mag_ok = w.defs[cur].ammo.is_none_or(|a| a.mag >= 1);
                 if ready_state && w.action != Action::Reload && mag_ok && w.fire_cooldown[0] <= 0.0 && !w.firing[0] {
-                    match toggle {
+                    // DoToggle: flip the mode, ReceiveLocalizedMessage
+                    // (BullpupSwitchMessage / KSGSwitchMessage, switch 0
+                    // = semi auto / wide spread, 1 = full auto / tight).
+                    let (class, on, mode) = match toggle {
                         AltToggle::FireMode => {
                             let m = &mut w.defs[cur].modes[0];
                             m.wait_for_release = !m.wait_for_release;
                             let semi = m.wait_for_release;
                             runlog::kv("fire_mode_toggle", &format!("weapon={} semi_auto={semi}", w.defs[cur].item_name));
+                            (crate::game::hud::MessageClass::BullpupSwitch, semi, if semi { "single" } else { "auto" })
                         }
                         AltToggle::WideSpread => {
                             w.defs[cur].wide_spread = !w.defs[cur].wide_spread;
                             let wide = w.defs[cur].wide_spread;
                             runlog::kv("fire_mode_toggle", &format!("weapon={} wide_spread={wide}", w.defs[cur].item_name));
+                            (crate::game::hud::MessageClass::KsgSwitch, wide, if wide { "wide" } else { "tight" })
                         }
-                    }
+                    };
+                    let msg = crate::game::hud::LocalMessage::new(class, if on { 0 } else { 1 });
+                    let text = crate::game::hud::message_text(&msg).unwrap_or_default();
+                    w.hud_messages.push(msg);
+                    // PlayOwnedSound(ToggleSound, SLOT_None, 2.0, .., false):
+                    // not attenuated. See `toggle_click` for the fallback.
+                    let (sound, source) = toggle_click(&w.defs[cur]);
+                    w.sounds.push(PlaySound::new(sound.clone(), Emitter::Listener).volume(2.0));
+                    runlog::kv(
+                        "fire_mode_switch",
+                        &format!("weapon={} mode={mode} sound={sound} sound_source={source} message=\"{text}\"", w.defs[cur].item_name),
+                    );
                 } else {
                     runlog::kv("fire_mode_toggle_refused", &format!("weapon={} action={:?}", w.defs[cur].item_name, w.action));
                 }
@@ -1591,3 +1607,18 @@ pub(super) fn weapon_input(
         None => None,
     };
 }
+
+/// Not KF: stock KF plays no sound here (KFWeapon.DoToggle plays
+/// ToggleSound, which no stock weapon sets; its commented-out line names
+/// Inf_Weapons_Foley's stg44_firemodeswitch01). We play that click when a
+/// weapon has no ToggleSound, so the switch is heard. Returns the sound
+/// and where it came from ("ToggleSound" or "fallback").
+pub(super) fn toggle_click(def: &WeaponDef) -> (String, &'static str) {
+    match &def.toggle_sound {
+        Some(s) => (s.clone(), "ToggleSound"),
+        None => (TOGGLE_CLICK_FALLBACK.to_string(), "fallback"),
+    }
+}
+
+/// See `toggle_click`.
+pub(super) const TOGGLE_CLICK_FALLBACK: &str = "Inf_Weapons_Foley.stg44.stg44_firemodeswitch01";
