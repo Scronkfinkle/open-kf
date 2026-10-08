@@ -1190,6 +1190,56 @@ head jet's chunks fly up world Z); Relative ones move and turn with the
 effect, whose frame is the bone tag's (AttachEmitterEffect sets a zero
 relative rotation).
 
+**Particle rules read from KF's engine (built 2026-10-08, branch
+fix/particles).** An audit compared our particle code with KF's compiled
+particle code (details in the local RE.md). One change per step, in this
+order, each its own commit:
+- P1. Sprite size: KF puts a sprite's corners at Size from the centre, so a
+  sprite is 2 x Size across (we drew 1 x Size). Mesh particles unchanged.
+- P2. Turning with the effect: the start position and start velocity are
+  turned only by UseRotationFrom (None: world axes; Actor: the effect's
+  rotation; Offset: RotationOffset; Normal: the rotation of RotationNormal).
+  Then Independent emitters add the effect's location; Relative ones keep
+  the position local and are drawn with the effect's location and rotation
+  (so a Relative + Actor emitter is turned twice, as in KF).
+- P3. Spawn rates: while fewer slots than MaxParticles have ever been
+  used, the rate is MaxParticles / average lifetime with
+  AutomaticInitialSpawning, else InitialParticlesPerSecond; after that,
+  ParticlesPerSecond. Particles go into a ring of MaxParticles slots (a
+  new one replaces the oldest slot); a dead particle is respawned in its
+  slot only with RespawnDeadParticles. An emitter is finished only when it
+  has no spawn rate, does not respawn, and every slot is dead.
+- P4. GetVelocityDirectionFrom: after turning, the start velocity is
+  multiplied axis by axis with the direction from the particle to the
+  effect (StartPositionAndOwner, negated) or the other way round
+  (OwnerAndStartPosition), or gets StartVelocityRadialRange along it
+  (AddRadial).
+- P5. InitialDelayRange: an emitter waits a random time in this range
+  before its first update; the effect is not finished while it waits.
+- P6. StartLocationOffset is added to the start position before the
+  shapes, and turned with it.
+- P7. Fading per draw style: the fade fraction is (time - FadeOutStartTime)
+  / (life - FadeOutStartTime) when fading out (this wins), else (FadeInEndTime
+  - time) / FadeInEndTime when fading in; AlphaBlend subtracts FadeOutFactor.W
+  (FadeInFactor.W) times it from the alpha, Modulated uses alpha 1 - W x it,
+  the other styles subtract the factor's X/Y/Z times it from the colour.
+  Opacity then scales the alpha (AlphaBlend, Modulated, AlphaModulate) or
+  the colour (Translucent, Darken, Brighten).
+- P8. Blends: Translucent adds, Brighten is a screen (texture + scene x
+  (1 - texture)), Darken is scene x (1 - texture), AlphaModulate is
+  premultiplied alpha; all four fogged toward black (no change), as KF
+  does. Drawn with their own material (`BlendMaterial`).
+- P9. Draw order: an effect's sub-emitters are drawn in list order (each
+  mesh's bounds centred on the effect, nudged toward the camera by its
+  list position, since Bevy sorts see-through meshes by that centre).
+- P10. The particles spawned in one update each get their own birth time
+  within it (and are aged by it), and for a moving Independent effect are
+  spread along the path it moved, so trails do not clump per frame.
+- Not done (lower priority in the audit): ColorScale / SizeScale curve
+  edges, VelocityScale, collision details, ColorMultiplierRange, warmup,
+  subdivision details, ZTest, round-robin AddLocationFromOtherEmitter,
+  polar start shape; Modulated particles are not fogged.
+
 ## Gore step D: blood decals (implemented 2026-10-04)
 
 **What KF does.** Blood on walls and floors is UE2 Projectors (a texture
@@ -1353,6 +1403,9 @@ attacks; no flipping over.
 Particle change made for the vomit jet: world-space emitters now turn their
 start velocity with the effect (before, velocities stayed in world axes);
 PTDU_Up sprites (stretched along their velocity) are drawn.
+(Corrected 2026-10-08, P2: only emitters with UseRotationFrom Actor turn
+with the effect, as in KF; the vomit spray is one of them, the head jet's
+chunks (None) fly up world Z again.)
 Known gaps: the glob's own look (plain lit material), VomGroundSplash (an
 xEmitter, old particle system), leading a moving target, vomit hurting
 other zeds.

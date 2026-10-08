@@ -12,7 +12,7 @@ use std::rc::Rc;
 use crate::class_defaults::ClassDefaults;
 use crate::package::ObjectRef;
 use crate::package_set::{LoadedPackage, ObjectHandle, PackageSet};
-use crate::properties::{PropertyList, Value, read_export_properties_ext};
+use crate::properties::{PropertyList, Rotator, Value, read_export_properties_ext};
 use crate::reader::Reader;
 
 /// A (min, max) range.
@@ -41,9 +41,13 @@ pub struct EmitterDef {
     pub initial_particles_per_second: f32,
     pub particles_per_second: f32,
     pub lifetime: Range,
+    /// Seconds the emitter waits before it starts (random in the range).
+    pub initial_delay_range: Range,
     pub seconds_before_inactive: f32,
     pub reset_after_change: bool,
     // Start location.
+    /// Added to every start position before the shapes (and turned with them).
+    pub start_location_offset: [f32; 3],
     pub start_location_range: [Range; 3],
     /// EParticleStartLocationShape: 0 box, 1 sphere, 2 polar, 3 all.
     pub start_location_shape: u8,
@@ -58,6 +62,8 @@ pub struct EmitterDef {
     /// EParticleVelocityDirection: 0 none, 1 start position and owner, 2
     /// owner and start position, 3 add radial.
     pub get_velocity_direction_from: u8,
+    /// Speed added along the particle-to-effect direction (AddRadial).
+    pub start_velocity_radial_range: Range,
     pub velocity_loss_range: [Range; 3],
     pub max_abs_velocity: [f32; 3],
     pub acceleration: [f32; 3],
@@ -82,6 +88,9 @@ pub struct EmitterDef {
     /// (relative time, RGBA).
     pub color_scale: Vec<(f32, [u8; 4])>,
     pub opacity: f32,
+    /// How much a full fade takes off, as [X, Y, Z, W] (colour, then alpha).
+    pub fade_out_factor: [f32; 4],
+    pub fade_in_factor: [f32; 4],
     pub fade_in: bool,
     pub fade_in_end_time: f32,
     pub fade_out: bool,
@@ -93,6 +102,14 @@ pub struct EmitterDef {
     pub damp_rotation: bool,
     /// EParticleRotationSource: 0 none, 1 actor, 2 offset, 3 normal.
     pub use_rotation_from: u8,
+    /// Used by UseRotationFrom Offset (and with Actor).
+    pub rotation_offset: Rotator,
+    /// Used by UseRotationFrom Normal: the rotation of this vector.
+    pub rotation_normal: [f32; 3],
+    /// EParticleEffectAxis: 0 negative X, 1 positive Z.
+    pub effect_axis: u8,
+    /// Turn VelocityLossRange with the start rotation too.
+    pub rotate_velocity_loss_range: bool,
     // Drawing.
     /// EParticleDrawStyle: 0 regular, 1 alpha blend, 2 modulated, 3
     /// translucent (additive), 4 alpha modulate, 5 darken, 6 brighten.
@@ -192,6 +209,19 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         let class_axes = axes_of(defaults.get(&class, p));
         [0, 1, 2].map(|i| own_axes[i].or(class_axes[i]).unwrap_or(d))
     };
+    // A Plane (X, Y, Z, W): members the emitter leaves out keep the class
+    // default's (the engine's is 1, 1, 1, 1).
+    let plane = |p: &str| -> [f32; 4] {
+        let member = |v: Option<(Value, Rc<LoadedPackage>)>, n: &str| match v {
+            Some((Value::TaggedStruct { props, .. }, lp)) => struct_float(&lp, &props, n),
+            _ => None,
+        };
+        ["X", "Y", "Z", "W"].map(|n| {
+            member(own.get(pkg, p).map(|v| (v.clone(), h.package.clone())), n)
+                .or_else(|| member(defaults.get(&class, p), n))
+                .unwrap_or(1.0)
+        })
+    };
     let object = |p: &str| match get(p) {
         Some((Value::Object(r), lp)) if r != ObjectRef::Null => set.resolve(&lp, r),
         _ => None,
@@ -253,8 +283,10 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         initial_particles_per_second: float("InitialParticlesPerSecond", 0.0),
         particles_per_second: float("ParticlesPerSecond", 0.0),
         lifetime: range("LifetimeRange", (4.0, 4.0)),
+        initial_delay_range: range("InitialDelayRange", (0.0, 0.0)),
         seconds_before_inactive: float("SecondsBeforeInactive", 1.0),
         reset_after_change: boolean("ResetAfterChange"),
+        start_location_offset: vector("StartLocationOffset", [0.0; 3]),
         start_location_range: range_vector("StartLocationRange", (0.0, 0.0)),
         start_location_shape: byte("StartLocationShape"),
         sphere_radius_range: range("SphereRadiusRange", (0.0, 0.0)),
@@ -262,6 +294,7 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         coordinate_system: byte("CoordinateSystem"),
         start_velocity_range: range_vector("StartVelocityRange", (0.0, 0.0)),
         get_velocity_direction_from: byte("GetVelocityDirectionFrom"),
+        start_velocity_radial_range: range("StartVelocityRadialRange", (0.0, 0.0)),
         velocity_loss_range: range_vector("VelocityLossRange", (0.0, 0.0)),
         max_abs_velocity: vector("MaxAbsVelocity", [0.0; 3]),
         acceleration: vector("Acceleration", [0.0; 3]),
@@ -280,6 +313,8 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         use_color_scale: boolean("UseColorScale"),
         color_scale,
         opacity: float("Opacity", 1.0),
+        fade_out_factor: plane("FadeOutFactor"),
+        fade_in_factor: plane("FadeInFactor"),
         fade_in: boolean("FadeIn"),
         fade_in_end_time: float("FadeInEndTime", 0.0),
         fade_out: boolean("FadeOut"),
@@ -289,6 +324,13 @@ fn read_def(set: &PackageSet, defaults: &ClassDefaults, h: &ObjectHandle) -> Res
         spins_per_second_range: range_vector("SpinsPerSecondRange", (0.0, 0.0)),
         damp_rotation: boolean("DampRotation"),
         use_rotation_from: byte("UseRotationFrom"),
+        rotation_offset: match get("RotationOffset") {
+            Some((Value::Rotator(r), _)) => r,
+            _ => Rotator::default(),
+        },
+        rotation_normal: vector("RotationNormal", [0.0; 3]),
+        effect_axis: byte("EffectAxis"),
+        rotate_velocity_loss_range: boolean("RotateVelocityLossRange"),
         draw_style: byte("DrawStyle"),
         use_direction_as: byte("UseDirectionAs"),
         projection_normal: vector("ProjectionNormal", [0.0, 0.0, 1.0]),

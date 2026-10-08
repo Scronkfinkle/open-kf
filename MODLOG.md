@@ -6457,3 +6457,217 @@ dropped). Streaks and bullet holes landed as before.
 not looked at. For non-square textures KF's frustum is set from the
 half-diagonal (audit DEC-3), not copied: low value, needs a closer read.
 **Next:** your look at blood decals.
+## 2026-10-08 P1: particle sprites drawn at KF's size (branch fix/particles)
+
+**Changed:** `src/render/particles.rs` (`sprite_corners`: corners at
+centre +- Size, not +- Size / 2; unit test); DESIGN.md "Particle rules
+read from KF's engine" (plan P1-P7).
+**Why:** KF's engine puts a sprite's corners Size away from its centre, so
+a sprite is 2 x Size across; we drew every sprite at half that width.
+**Tested how:** `cargo test --bin open-kf particles`
+(sprite_is_twice_size_wide: Size 10 gives corners 20 apart); headless
+before/after screenshots of a shot Clot (see P7 entry for the run).
+**Result:** test passes. Mesh particles unchanged (Size is a scale there).
+**Still broken / not tested:** not compared with KF by you.
+**Next:** P2 rotation rules.
+
+## 2026-10-08 P2: particles turn with the effect only by UseRotationFrom (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads RotationOffset,
+RotationNormal, EffectAxis, RotateVelocityLossRange);
+`src/render/particles.rs` (`start_rotation`; `spawn_particle` turns the
+start offset, velocity and, if asked, the velocity loss by it; 3 tests);
+DESIGN.md (vomit-jet note corrected).
+**Why:** KF turns a new particle's start position and velocity only by
+UseRotationFrom (None = world axes, Actor = the effect's rotation, Offset,
+Normal), for every coordinate system. We turned every non-Relative emitter
+with the effect, and never turned Relative ones' velocity.
+**Tested how:** unit tests rotation_none_keeps_world_axes,
+rotation_actor_turns_with_effect, rotation_normal; headless run at the end
+of the series (see the last fix/particles entry).
+**Result:** tests pass.
+**Still broken / not tested:** the order of the effect's rotation and
+RotationOffset for Actor is assumed (RotationOffset is zero in all KF
+data). Head-jet chunks flying up world Z: not checked in a game run.
+**Next:** P3 spawn rates.
+
+## 2026-10-08 P3: particle spawn rates follow KF's rules (branch fix/particles)
+
+**Changed:** `src/render/particles.rs`: particles kept in a ring of
+MaxParticles slots (`EmitterState.slots`, `next`); `spawn_rate`,
+`spawn_count`, `put`, `update_emitter` (the per-emitter update, moved out
+of `update_effects` so it can be tested); `effect_status` log now shows
+live/spawned@rate per sub-emitter; 5 tests.
+**Why:** KF picks the rate as: while fewer slots than MaxParticles have
+been used, MaxParticles / average lifetime with AutomaticInitialSpawning,
+else InitialParticlesPerSecond; then ParticlesPerSecond, with or without
+RespawnDeadParticles. A new particle replaces the oldest slot; dead ones
+respawn in place only with RespawnDeadParticles; an emitter is finished
+only with no rate, no respawning and no live particle. We let
+InitialParticlesPerSecond win over the automatic rate, used
+ParticlesPerSecond only for respawning emitters (so FireLarge / Smoke*
+burnt out after one batch), and fell back to ParticlesPerSecond when
+nothing else was set. SpawnParticle(n) requests are now clamped to
+MaxParticles per update, as in KF.
+**Tested how:** unit tests steady_rate_without_respawn_keeps_spawning
+(FireLarge numbers: 50 spawned in 10 s, still going),
+automatic_rate_wins, burst_then_finished, respawn_in_place,
+requests_go_into_the_ring. Headless KF-WestLondon, 500 frames, 2 shots.
+**Result:** tests pass. Map fire Emitter12: rate 2.5/s until its 10 slots
+are used, then 0 and respawning (10 live, spawned 11, 13 ...). Muzzle
+flash and shell ejector: 2/1 and 1/3 particles per shot as before.
+Blood puffs removed after 0.63 s as before (0.64 / 0.65).
+**Still broken / not tested:** effects whose emitters have a rate but no
+LifeSpan now live until their owner removes them (as in KF); not seen in
+this run. Shell casings fall through the floor (also before this change).
+**Next:** P4 GetVelocityDirectionFrom.
+
+## 2026-10-08 P4: GetVelocityDirectionFrom (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads
+StartVelocityRadialRange); `src/render/particles.rs`
+(`velocity_direction`, called after turning; test
+velocity_direction_modes).
+**Why:** read but unused before. KF, after turning the start velocity,
+multiplies it axis by axis with the direction from the particle to the
+effect (StartPositionAndOwner: negated; OwnerAndStartPosition: as is), or
+adds StartVelocityRadialRange along it (AddRadial). Used by ROBloodPuff
+(all sizes), BrainSplash, KFGibJet, KFDoorExplode* and the charge-ups.
+**Tested how:** unit test with ROBloodPuff's numbers on an effect turned a
+quarter turn: velocity (0, 100, 0), i.e. out of the wound along the
+effect's X; the other two modes checked too.
+**Result:** test passes.
+**Still broken / not tested:** blood puff look in a game run not compared
+with KF.
+**Next:** P5 InitialDelayRange.
+
+## 2026-10-08 P5: InitialDelayRange (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads InitialDelayRange);
+`src/render/particles.rs` (`EmitterState.delay`, rolled when the effect
+starts; `update_emitter` waits it out; test initial_delay).
+**Why:** KF rolls a delay in InitialDelayRange per sub-emitter and does not
+update or spawn it until the delay has run out (the effect is not
+finished meanwhile). Used by the door explosions, the Husk / ZED gun
+charge-ups and the Kar / flare revolver third-person flashes; we started
+them all at once.
+**Tested how:** unit test: no particles during a 0.52 s delay, 5 in the
+update after.
+**Result:** test passes.
+**Still broken / not tested:** not looked at in a game run.
+**Next:** P6 StartLocationOffset.
+
+## 2026-10-08 P6: StartLocationOffset (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads StartLocationOffset);
+`src/render/particles.rs` (start position = offset + box + sphere; test
+start_location_offset).
+**Why:** KF starts every particle at StartLocationOffset, then adds the
+start shapes, then turns the sum (P2). Not read before; 40 of our
+sub-emitters set it (muzzle flashes: KFLawMuzzFlash, MuzzleFlash3rd*).
+**Tested how:** unit test: offset 5 along X lands 5 along world X with
+UseRotationFrom None and along the effect's X (world Y) with Actor.
+**Result:** test passes.
+**Still broken / not tested:** flash positions not checked in a game run.
+**Next:** P7 fading per draw style.
+
+## 2026-10-08 P7: particle fading and Opacity per draw style (branch fix/particles)
+
+**Changed:** `crates/ue-assets/src/emitter.rs` (reads FadeOutFactor and
+FadeInFactor, missing members from the class default 1,1,1,1);
+`src/render/particles.rs` (`particle_color`; test fade_per_draw_style).
+**Why:** KF fades by draw style, not by one alpha multiply: fade-out wins
+(f = (age - FadeOutStartTime) / (life - FadeOutStartTime)), else fade-in
+(f = (FadeInEndTime - age) / FadeInEndTime); AlphaBlend takes
+FadeOutFactor.W x f off the alpha, Modulated goes toward "no change"
+(alpha 1 - W x f), additive styles take FadeOutFactor.XYZ x f off the
+colour (so dark ColorScale colours vanish sooner). Opacity scales the
+alpha (AlphaBlend, Modulated, AlphaModulate) or the colour (additive).
+The ColorScale alpha now counts for AlphaBlend only (part of the same
+engine rule). KFNade* emitters with FadeOutFactor 0 no longer fade (they
+have FadeOut off anyway).
+**Tested how:** unit test (colours per style at mid-fade, Opacity,
+fade-in, factor 0); `kfpkg emitter KFMod.KFNadeExplosion` shows factors
+0,0,0,0 for SpriteEmitter0-2 and 1,1,1,1 for 86/87. Headless
+KF-WestLondon, same camera and shots as the baseline, screenshots at
+frames 62, 64, 102, 106, 140.
+**Result:** test passes. Screenshots: muzzle flash and blood puff look
+as before; the map smoke (KFSmoke, Brighten, Emitter12 about 475 units
+away) now shows as large hazy rectangles with straight edges. Cause, as
+far as I can tell: our additive particles get the fog colour added
+(Bevy fogs before blending), and P1 made them 4 x the area; KF fogs
+additive particles toward black. Fixed in the next step (P8).
+**Still broken / not tested:** see above until P8.
+**Next:** P8 blend modes (Brighten, Darken, AlphaModulate) with KF's fog.
+
+## 2026-10-08 P8: KF's particle blends for Translucent, AlphaModulate, Darken, Brighten; fog toward black (branch fix/particles)
+
+**Changed:** `src/render/particles.rs`: new `BlendMaterial` (own shader;
+blend set per draw style in `specialize`; texture x vertex colour; fog
+toward black), used for draw styles 3-6; StandardMaterial now only for
+AlphaBlend (and Regular); test blend_factors.
+**Why:** KF's engine blends Brighten as a screen (texture + scene x
+(1 - texture)), Darken as scene x (1 - texture), AlphaModulate as
+premultiplied alpha, Translucent as plain adding. We added Brighten
+(85 of our sub-emitters: fire, muzzle flashes; half + half gave 1.0
+instead of 0.75), multiplied for Darken (inverted) and used straight
+alpha for AlphaModulate. KF also fogs all four toward black (no change);
+Bevy's fog added the fog colour to our additive particles, which after
+P1 showed as large hazy rectangles around the map smoke.
+**Tested how:** unit test of the blend factors; headless KF-WestLondon,
+same run as P7 (screenshots at frames 62, 64, 102, 106, 140); log checked
+for shader errors (none; only the known slab_allocator line).
+**Result:** the hazy rectangles of P7 are gone at frame 64; muzzle flash
+and blood puffs still drawn.
+**Still broken / not tested:** Darken and AlphaModulate are used by none
+of our current effects (only 3, 6, 1, 2 in the logs), so untested in a
+game run. Blending happens in linear colour, KF's in gamma, so the screen
+blend's midtones differ somewhat (not measured). Modulated particles are
+still not fogged (KF fogs them toward grey = no change); that material is
+shared with the decals, left alone. Fire / muzzle flash brightness not
+compared with KF by you.
+**Next:** draw sub-emitters in order, spread spawns along the path.
+
+## 2026-10-08 P9: an effect's sub-emitters drawn in their list order (branch fix/particles)
+
+**Changed:** `src/render/particles.rs` (`draw_anchor`, `add_anchor`: two
+unused vertices centre each sub-emitter mesh's bounds on the effect's
+location, nudged 0.05 Unreal units toward the camera per list position;
+test draw_order_anchor).
+**Why:** KF draws an effect's sub-emitters in their Emitters list order.
+Bevy sorts see-through meshes back to front by the centre of their
+bounds, so our sub-emitters were ordered by where their particles
+happened to be (smoke over fire could swap from frame to frame).
+**Tested how:** unit test (bounds centred on the anchor and holding every
+vertex; a later index is nearer the camera); headless KF-WestLondon run
+as in P7 (5 screenshots, no errors besides the known slab_allocator line).
+**Result:** test passes; screenshots look as in P8.
+**Still broken / not tested:** I did not see a case where the order
+mattered (e.g. KFNadeExplosion) in a game run. Whole effects are now
+sorted by their location, as KF sorts actors (assumed).
+**Next:** spread one frame's spawns along a moving effect's path.
+
+## 2026-10-08 P10: one update's new particles spread over time and along the path (branch fix/particles)
+
+**Changed:** `src/render/particles.rs` (`spawn_times`, `pre_age`,
+`spread`; `ParticleEffect.prev_origin`; `update_emitter` takes the
+effect's previous location; test spawns_spread_along_the_path).
+**Why:** KF gives each particle spawned in one update its own birth time
+within the update (leftover fraction / rate + dt - (i + 1) / rate) and
+ages it by that much (velocity += Acceleration x t, position += velocity
+x t), and, for Independent emitters of an effect that moved over 1 unit,
+moves the i-th of n new particles back along the path by
+(1 - (i + 1) / n). Respawned and SpawnParticle particles get the same
+spread. We started a frame's particles all at the same spot and age, so
+trails (rockets, fireballs, ZED bolts, tracers) clumped per frame.
+**Tested how:** unit test (an effect moving 100 units in 0.05 s at 100/s:
+particles at 20, 40, 60, 80, 100, ages 0.04 ... 0); headless
+KF-WestLondon, 300 frames, 2 shots.
+**Result:** test passes; muzzle flash, shell ejector and blood puffs
+spawn and are removed as before (puffs 0.61 / 0.62 s).
+**Still broken / not tested:** a moving trail (fireball, LAW rocket) not
+looked at in a game run. Respawned particles are not pre-aged (KF uses a
+time I could not read reliably). KF adds the acceleration before turning
+the velocity; we add it in world axes (differs only for turned emitters,
+over part of a frame).
+**Next:** your look at fire, muzzle flashes and trails against KF.
