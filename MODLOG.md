@@ -6240,3 +6240,50 @@ KF-WestLondon: event_driven_movers=2 [Mover2 Mover1 TriggerOpenTimed],
 player_start_events=6.
 **Still broken / not tested:** log only; nothing new is simulated.
 **Next:** MOV-1 (map gravity) and MOV-4 (event movers) are separate fixes.
+
+## 2026-10-08 Doors push players and zeds; "return" doors bounce back (branch fix/movers)
+
+**Changed:** `src/world/door.rs`: the mover step (`physics_with`) calls
+`encroach_pawns` before each move: pawns the door would overlap at its new
+pose are pushed (door's move + 1.5 x the turn's carry at the pawn centre,
+a sliding move), pulled back by half the push to rest against the door
+when clear; a pawn still in the way makes a "return" door
+(MoverEncroachType 1, and 0) stop that step and go back
+(`make_group_return`); "ignore" doors (the KFDoorMover default) move on.
+`move_doors` gathers the player and living zeds and writes their pushed
+positions back. `crates/ue-assets/src/level.rs`: DoorInfo reads
+MoverEncroachType. DESIGN.md Doors ("Doors push pawns"), test-views.md
+(two log-only test runs).
+**Why:** audit finding MOV-2: doors swung and closed through pawns; KF's
+engine pushes them, and 12 doors (KF-FilthsCross 10, KF-Crash 1,
+KF-WestLondon's station back gate) reverse when blocked.
+**Tested how:** unit tests (push of a quarter-turn door: (-60, 60) for a
+pawn 40 out; a return door blocked while closing goes back to Open
+without moving into the pawn; an ignore door moves on). Headless:
+KF-Manor KFDoorMover5 closed on the player (`--camera " -1544,-2070,-4150,
+3.14159,0" --input 30:use,150:use --autowalk 0.6 --frames 300`); same door
+opened by a Clot and closed on it (`--camera " -1470,-2070,-4150,3.14159,0"
+--god --zed --zed-at " -1640,-2060,-4200" --input 120:use --frames 400`);
+KF-WestLondon station back gate (`--camera " -7250,4188,-3740,3.14159,0"
+--input 30:use,210:walk_on,235:walk_off,260:use --frames 650`).
+Workspace tests and clippy.
+**Result:** 239 + 24 tests pass; clippy: no new warnings. KF-Manor: 28
+`door_push` lines on the player during the close, the last ones
+`cleared=true`, door `closed`, player ends at (-1543, -2035), next to the
+door. Zed run: 18 pushes on zed0. KF-WestLondon: the gate pushed the
+player 40 times along +Y (only the last still overlapping, `slide_hit=true`
+against the gate post), then `door_encroach result=return`, gate reopened
+from Y 4159 (40 short of closed) and `opened` 3.2 s later. Frame time 35 ms
+as before. First version pulled the pawn back against the door's old
+position: the sliding gate then "returned" with the player standing free
+(fixed: the pull-back stops at the door's new location, as KF).
+**Still broken / not tested:** on a turning "ignore" door about half the
+pushes leave the pawn still overlapping (the rule is applied as in KF,
+not compared with KF itself); a pawn trapped in a swing can be carried
+round to the other side of the doorway; remote players in network games,
+corpses and pickups are not pushed or crushed; the pawn's mover-hit
+sound on a return is not played; KF-FilthsCross / KF-Crash return doors
+not run. Not looked at by you.
+**Next:** your check in game: stand in a KF-Manor doorway and close the
+door on yourself; on KF-WestLondon stand in the station back gate and
+close it.

@@ -2184,8 +2184,8 @@ not part of this milestone and keep being drawn but not blocking.
   of the frame's time carries on toward the next key if KeyFrameReached
   chains on (engine loop, also checked); before 2026-10-08 we dropped it.
 - *Defaults (KFDoorMover).* InitialState TriggerToggle, MoveTime 1 (maps
-  often set 0.5-2), MoverEncroachType 3 = ignore: a door swings through
-  pawns, it never pushes or stops. Blocks players, zeds, bullets and
+  often set 0.5-2), MoverEncroachType 3 = ignore (12 doors set 1 =
+  return, see "Doors push pawns" below). Blocks players, zeds, bullets and
   ragdolls (Actor defaults; 23 doors switch blocking off). DamageThreshold
   50, ZombieDamageReductionFactor 0.85.
 - *Trigger.* A `KFUseTrigger` is an invisible cylinder (CollisionRadius /
@@ -2370,6 +2370,38 @@ text width = glyph widths + Kerning, glyphs blended by the font page's
 alpha, DrawTile's colour multiplies. The 2 decimals are UE2's float to
 string ("%.2f", found in the game's engine files). The welder's fuel is not on the
 screen in KF (it is the HUD's bar).
+
+**Doors push pawns (added 2026-10-08, audit MOV-2).** Engine rule
+(native, checked): every step of a moving door, before it moves, each
+pawn it would overlap at its new pose is pushed. The push is the door's
+own move plus, when it turns, 1.5 x how far the door's move carries the
+point at the pawn's centre. The pawn makes a normal colliding move by the
+push (sliding along walls; the door counts at its old pose). If the pawn
+still overlaps the door at the new pose, the door's script decides
+(Mover.EncroachingOn): KFDoorMover's default "ignore" moves on (the pawn
+may end up inside the door; the next steps push it again), "return" (12
+doors: KF-FilthsCross 10, KF-Crash 1, KF-WestLondon's StationBackGate)
+stops the door that step and sends it back: to 'Open' if it was closing,
+else to 'Close' (MakeGroupReturn; KFDoorMover's "stop" is the same). If
+the pawn got clear and the push was over 2 units, it is moved back by half
+the push, stopping at the door, so it ends next to the door, not 1.5x
+away. Static meshes are not pushed; pawns without a controller, pickups
+and gore get crushed or destroyed in KF (not done here: our corpses are
+ragdolls, not pawns). As built (`door.rs` `encroach_pawns`, called from
+the mover step): pawns are this game's player (walk mode) and the living
+zeds (host or single player); overlap tests are the door's collision mesh
+against the pawn cylinder; the moves use the walking code's sweep. Log
+lines `door_push` (push, how far the pawn moved, whether it hit
+something, how far it was pulled back, cleared) and `door_encroach`
+(return). Not done / differences: remote players in network games are not
+pushed by this game (their own game pushes them); the pawn-against-pawn
+blocking is not part of the push sweep; the level's collision copy of the
+door can be a frame behind, so the "old pose" during the push is
+approximate; PlayMoverHitSound (the pawn's hit sound on a return) is not
+played; return groups with a leader (KF-IceCave, all "ignore") are not
+followed. A player trapped in an "ignore" door's arc is pushed in front
+of the panel and can be carried round to the other side of a doorway
+(seen on KF-Manor); that follows from the rule, not checked in KF.
 
 Not in this milestone: sounds (no sound yet), keys for locked doors
 (bKeyLocked, 3 doors: stay locked), on-screen messages and the weld bar
