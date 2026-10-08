@@ -7126,12 +7126,13 @@ blend").
 270,-13050,150,-1.2,0.35`, inside the trader room): before, the screen was
 solid dark (the camera inside a cone); after, the room shows with faint
 beams under the ceiling lamps. You checked it in game ("Fixed"). All maps
-loaded headless with the additive meshes counted (19 of 34 done at
-commit time).
-**Result:** ThrillsChills 13 additive meshes (4 materials). Other maps
-so far: 0 to 185 additive meshes (light cones, LightBeamsShader, FBGlass
+loaded headless with the additive meshes counted (all 35 map files load,
+no panics; the counts were finished after the commit).
+**Result:** ThrillsChills 13 additive meshes (4 materials). Other maps:
+0 (Farm, Menu) to 185 (Foundry; SirensBelch 151) additive meshes (light cones, LightBeamsShader, FBGlass
 windows, FogFB, ContainerFB, rain, the Fleshpound bloom shader, sky
-aurora / LondonSkyFB in the sky zone); no BSP surface uses one.
+aurora / LondonSkyFB in the sky zone, Wyre's corona and x-ray
+skeleton, signs and lit windows on SirensBelch); no BSP surface uses one.
 **Still broken / not tested:** the cones' colour is missing (KF multiplies
 Light_Cone by a ConstantColor in a Combiner; we take only the texture), so
 they are pale white. FBGlass windows now brighten what is behind them
