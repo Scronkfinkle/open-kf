@@ -40,6 +40,7 @@ mod animate;
 mod methods;
 mod spotted;
 mod net;
+mod motion;
 pub use net::{PuppetFeed, PuppetSample, SpawnPuppet, ZedNet, ZedNetSide};
 use load::*;
 use sounds::*;
@@ -566,6 +567,8 @@ pub struct Zed {
     air_velocity: Vec3,
     /// The class Mass (for explosive knockback).
     mass: f32,
+    /// Falling bookkeeping (motion.rs).
+    motion: motion::Motion,
     /// Seconds before the zed may try another jump.
     jump_cooldown: f32,
     /// Crawler: in a pounce (bPouncing), and seconds since the last one.

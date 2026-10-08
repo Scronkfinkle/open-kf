@@ -348,18 +348,13 @@ fn show_path_to(
     // FindPathToward(TelList[0]): from the points the player can walk to,
     // to the teleporter's own point (it is a NavigationPoint), else the
     // points that can walk to it.
-    let range = 1500.0 * SCALE;
-    let starts: Vec<(usize, f32)> = nav
-        .near(centre_b, range)
-        .into_iter()
-        .take(8)
-        .filter(|&(i, _)| reach(centre_b, nav.points[i].pos))
-        .map(|(i, d)| (i, d / SCALE))
-        .collect();
+    // KF's anchor search (nav.rs `anchor`): the first point in sight and
+    // reachable, within 1200 units, nearest first.
+    let starts: Vec<(usize, f32)> = crate::world::nav::anchor(nav, spatial, centre_b, half, |i| reach(centre_b, nav.points[i].pos)).0.into_iter().collect();
     let tel_b = coords::pos(tel.location.to_array());
     let goals: Vec<(usize, f32)> = match nav.points.iter().position(|p| p.name.eq_ignore_ascii_case(&tel.name)) {
         Some(i) => vec![(i, 0.0)],
-        None => nav.near(tel_b, range).into_iter().take(8).filter(|&(i, _)| reach(nav.points[i].pos, tel_b)).map(|(i, d)| (i, d / SCALE)).collect(),
+        None => crate::world::nav::anchor(nav, spatial, tel_b, half, |i| reach(nav.points[i].pos, tel_b)).0.into_iter().collect(),
     };
     let extra = |i: usize| nav.extra_cost.get(i).copied().unwrap_or(0.0);
     let (mut route, _) = nav.route(&starts, &goals, &extra, &|_, _| false).ok_or_else(|| format!("no_route starts={} goals={}", starts.len(), goals.len()))?;

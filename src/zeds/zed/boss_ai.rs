@@ -244,7 +244,10 @@ pub(super) fn boss_escape(z: &mut Zed, c: &ZedClass, player: Vec3, dt: f32, nav:
         d.with_y(0.0).length() / SCALE <= crate::world::nav::HUNT_RADIUS + 8.0 && (d.y / SCALE).abs() <= 2.0 * c.collision_height
     });
     let gave_up = e.seconds > crate::zeds::boss::ESCAPE_GIVE_UP;
-    if (arrived || gave_up)
+    // SyrRetreat: no path to the hiding spot from where he is (e.g. after
+    // falling off a ledge) -> BeginHealing right there.
+    let no_path = e.goal.is_some() && z.router.no_route;
+    if (arrived || gave_up || no_path)
         && z.attack.is_none()
         && let Some((seq, _)) = bc.heal_anim
     {
@@ -256,7 +259,13 @@ pub(super) fn boss_escape(z: &mut Zed, c: &ZedClass, player: Vec3, dt: f32, nav:
         z.state = ZedState::BossBusy;
         z.sequence = None;
         start_anim(z, Some(seq), false);
-        let why = if gave_up && !arrived { "gave_up" } else { "arrived" };
+        let why = if arrived {
+            "arrived"
+        } else if no_path {
+            "no_path"
+        } else {
+            "gave_up"
+        };
         runlog::kv(
             "boss_heal",
             &format!("id={} start reason={why} escape_seconds={:.1} health={:.0} player_sees={}", z.id, e.seconds, z.health, sees(spatial, z.centre, player)),

@@ -1510,12 +1510,24 @@ pub(super) fn think_and_move(
                 }
                 air = clipped;
             }
+            let old = z.centre;
             let (moved, hit) = mover.slide(z.centre, air + Vec3::Y * z.vertical_speed * dt);
             z.centre = moved;
             if hit.as_ref().is_some_and(|h| h.normal.y < -0.7) && z.vertical_speed > 0.0 {
                 z.vertical_speed = 0.0; // head hit a ceiling
             }
-            if hit.is_some_and(|h| h.normal.y > 0.7) {
+            let normal = hit.as_ref().map(|h| h.normal);
+            // KF lands on a floor (normal up 0.7 or more), or in a V between
+            // two up-facing slopes facing each other (motion.rs `ditch`).
+            let in_ditch = normal.is_some_and(|n| motion::ditch(z.motion.fall_hit, n, old.y - moved.y));
+            if in_ditch {
+                let u = moved / SCALE;
+                runlog::kv("zed_ditch_landed", &format!("id={} at_unreal=({:.0}, {:.0}, {:.0})", z.id, -u.z, u.x, u.y));
+            }
+            if normal.is_some() {
+                z.motion.fall_hit = normal;
+            }
+            if normal.is_some_and(|n| n.y > 0.7) || in_ditch {
                 let impact = -z.vertical_speed / SCALE;
                 if z.health > 0.0 && impact > 0.0 {
                     z.sound_events.push(ZedSound::Land((0.3 * impact / c.jump_z).min(1.0)));
@@ -1535,7 +1547,37 @@ pub(super) fn think_and_move(
                 } else {
                     z.state = ZedState::Idle;
                 }
+            } else if dt > 0.0 {
+                // KF recomputes the velocity from the actual move after each
+                // falling step, so whatever blocked the fall takes its speed.
+                let actual = (moved - old) / dt;
+                z.air_velocity = actual.with_y(0.0);
+                z.vertical_speed = actual.y;
             }
+        }
+        // A fall that does not end (wedged between surfaces) is logged once.
+        if z.state == ZedState::Falling {
+            let before = z.motion.fall_seconds;
+            z.motion.fall_seconds += dt;
+            if before < motion::LONG_FALL && z.motion.fall_seconds >= motion::LONG_FALL {
+                let u = z.centre / SCALE;
+                runlog::kv(
+                    "zed_fall_long",
+                    &format!(
+                        "id={} at_unreal=({:.0}, {:.0}, {:.0}) seconds={:.1} air_speed_unreal={:.0} vertical_unreal={:.0}",
+                        z.id,
+                        -u.z,
+                        u.x,
+                        u.y,
+                        z.motion.fall_seconds,
+                        z.air_velocity.length() / SCALE,
+                        z.vertical_speed / SCALE
+                    ),
+                );
+            }
+        } else {
+            z.motion.fall_seconds = 0.0;
+            z.motion.fall_hit = None;
         }
 
         match z.state {

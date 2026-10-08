@@ -369,6 +369,7 @@ impl Zed {
             router: Default::default(),
             air_velocity: Vec3::ZERO,
             mass: 100.0,
+            motion: Default::default(),
             jump_cooldown: 0.0,
             door_bash: None,
             door_checked: None,
