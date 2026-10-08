@@ -77,6 +77,9 @@ pub struct SkyInfo {
     /// the sky view with this fog, measured from the sky camera, never the
     /// player's zone fog (details in the local RE.md).
     pub fog: Option<crate::world::zones::ZoneFog>,
+    /// The SkyZoneInfo's Rotation (Bevy space). KF turns the sky view by
+    /// it: the sky camera's rotation is this times the view's rotation.
+    pub rotation: Quat,
 }
 
 /// Each zone's fog: its ZoneInfo (zone 0 and zones without one: the
@@ -686,13 +689,24 @@ fn load_map(
                 if let Some((_, name)) = &sky_zone {
                     let actor = (0..lp.pkg.exports.len())
                         .find(|&i| lp.pkg.object_path(ObjectRef::Export(i)) == *name);
-                    let location = actor
-                        .and_then(|i| read_export_properties(&lp.pkg, i).ok())
-                        .and_then(|p| match p.get(&lp.pkg, "Location") {
-                            Some(Value::Vector(v)) => Some(*v),
-                            _ => None,
-                        });
+                    let props = actor.and_then(|i| read_export_properties(&lp.pkg, i).ok());
+                    let location = props.as_ref().and_then(|p| match p.get(&lp.pkg, "Location") {
+                        Some(Value::Vector(v)) => Some(*v),
+                        _ => None,
+                    });
                     sky.camera_position = location.map(coords::pos);
+                    let rotation = props
+                        .as_ref()
+                        .and_then(|p| match p.get(&lp.pkg, "Rotation") {
+                            Some(Value::Rotator(r)) => Some(*r),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    sky.rotation = coords::rotation(rotation);
+                    runlog::kv(
+                        "sky_rotation",
+                        &format!("pitch={} yaw={} roll={} (65536 = full turn)", rotation.pitch, rotation.yaw, rotation.roll),
+                    );
                 }
                 // Zones and their fog (zones.rs).
                 let zone_fog = zone_fog(&lp, &class_defaults, &model);

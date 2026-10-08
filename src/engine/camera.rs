@@ -242,10 +242,11 @@ pub fn spawn_camera(
 }
 
 #[allow(clippy::type_complexity)] // Bevy system parameters
-/// Keeps the sky camera's rotation equal to the main camera's, and both
-/// cameras at the current view FOV.
+/// Keeps the sky camera turned like the main camera (times the sky zone's
+/// own rotation, as KF does), and both cameras at the current view FOV.
 pub fn follow_sky(
     fov: Res<ViewFov>,
+    sky_info: Res<SkyInfo>,
     main: Query<&Transform, (With<FlyCamera>, Without<SkyCamera>)>,
     mut sky: Query<&mut Transform, With<SkyCamera>>,
     mut projections: Query<&mut Projection, Or<(With<FlyCamera>, With<SkyCamera>)>>,
@@ -254,7 +255,7 @@ pub fn follow_sky(
         return;
     };
     for mut t in &mut sky {
-        t.rotation = main.rotation;
+        t.rotation = sky_info.rotation * main.rotation;
     }
     let vertical = vertical_fov(fov.0);
     for mut proj in &mut projections {

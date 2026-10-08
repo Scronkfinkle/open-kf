@@ -177,6 +177,7 @@ fn update_scope(
     >,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut was_active: Local<bool>,
+    sky_info: Res<SkyInfo>,
 ) {
     let Ok(main) = main.single() else {
         return;
@@ -188,7 +189,7 @@ fn update_scope(
             continue;
         }
         if is_sky {
-            t.rotation = main.rotation;
+            t.rotation = sky_info.rotation * main.rotation;
         } else {
             *t = *main;
         }

@@ -489,6 +489,7 @@ fn shake_cameras(
     view: Res<crate::engine::view_target::ViewTarget>,
     mut main: Query<(&Transform, &mut GlobalTransform), (With<FlyCamera>, Without<SkyCamera>)>,
     mut sky: Query<(&Transform, &mut GlobalTransform), (With<SkyCamera>, Without<FlyCamera>)>,
+    sky_info: Res<crate::world::map::SkyInfo>,
 ) {
     let (amb_offset, amb_rot) = cam.ambient.sample(time.elapsed_secs());
     let rot = Vec3::new(cam.shake.rot[0] as f32, cam.shake.rot[1] as f32, cam.shake.rot[2] as f32) + amb_rot;
@@ -509,7 +510,7 @@ fn shake_cameras(
     let rotation = Quat::from_mat3(&(c * shaken * c.transpose())).normalize();
     *global = GlobalTransform::from(Transform::from_translation(t.translation + coords::pos(offset_ue.to_array())).with_rotation(rotation));
     for (st, mut sg) in &mut sky {
-        *sg = GlobalTransform::from(Transform::from_translation(st.translation).with_rotation(rotation));
+        *sg = GlobalTransform::from(Transform::from_translation(st.translation).with_rotation(sky_info.rotation * rotation));
     }
 }
 
