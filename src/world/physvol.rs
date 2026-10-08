@@ -76,7 +76,8 @@ pub fn load(map: &Rc<LoadedPackage>, defaults: &ClassDefaults) -> PhysicsVolumes
     let pkg = &map.pkg;
     let mut out = PhysicsVolumes::default();
     let mut saved_default = 0;
-    for i in 0..pkg.exports.len() {
+    // The level's own actors only (deleted ones stay in the file).
+    for i in pkg.level_actor_exports() {
         if !pkg.export_class_name(i).ends_with("Volume") {
             continue;
         }

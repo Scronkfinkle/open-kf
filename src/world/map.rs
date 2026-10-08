@@ -237,7 +237,7 @@ fn log_map_features(pkg: &ue_assets::package::Package) {
     let mut overrides = Vec::new();
     let mut event_movers = Vec::new();
     let mut start_events = 0usize;
-    for i in 0..pkg.exports.len() {
+    for i in pkg.level_actor_exports() {
         let class = pkg.export_class_name(i);
         let volume = matches!(class, "PhysicsVolume" | "KFPhysicsVolume" | "DefaultPhysicsVolume" | "WaterVolume" | "LavaVolume");
         let mover = matches!(class, "Mover" | "ClientMover" | "KFElevator");
