@@ -6285,3 +6285,40 @@ rate=0.91`; Gorefast running `ZombieRun ... speed_unreal=225 rate=1.70`.
 **Still broken / not tested:** side / back animations not seen in a run (zeds
 mostly walk forward); turn-in-place stays our guess (ANIM-5).
 **Next:** ANIM-2.
+
+## 2026-10-08 ANIM-2: tweens into new animations for zeds and the first-person weapon (branch fix/animation)
+
+**Changed:** `src/render/anim.rs` (`Tween` ignores the frame it starts in);
+`src/zeds/zed/animate.rs` (`start_anim_tween`, main-channel tween from the
+pose last shown: 0.1 s for actions / movement / turning / air, 0.25 s for the
+idle; the clock, notifies and attack progress wait for it; log
+`zed_anim_tween ... start/end`; clock unit test); `src/zeds/zed/think.rs`
+(the Idle state uses the 0.25 s tween); `src/weapons/weapon/input.rs`
+(`play_tween`: idle 0.2, reload 0.1, fire / fire-end the fire mode's
+TweenTime, fire loops 0; asking for the looping animation already looping
+only changes its rate); `animate.rs` (weapon clock waits for the tween, pose
+blended from the last shown pose); `load.rs`, `mod.rs` (TweenTime per fire
+mode; SyringeAltFire 0). Also a clippy fix in the ANIM-3 test.
+**Why:** KF starts most animations with a tween: every bone moves linearly in
+time from the pose on screen to the new animation's first frame, and only
+then does the animation run. We snapped. Because the clock waits, zed claw
+hits and attack ends now come later, as in KF. KF updates animations before
+the scripts in each tick, so an animation started in a tick first moves in
+the next one; the tween does the same.
+**Tested how:** unit tests (clock waits during the tween; a notify at 0.5 of a
+30-frame 30 fps animation fires at 0.6 s; the one-shot ends at 0.1 + 29/30 s);
+`cargo test` 242 + 24 pass; clippy: no new warnings (one old one in boss.rs).
+Headless KF-WestLondon `--spawn gorefast --god --frames 1200` before and
+after; `--spawn clot --god` with fire and weapon switches.
+**Result:** Gorefast full-body attack start -> first claw hit: before 0.393 s
+mean (0.376..0.409, 25 attacks), after 0.528 s (0.511..0.546, 26 attacks);
+tween logged 0.113 s mean (ends on the first frame past 0.1). The extra ~0.035 s
+beyond the 0.1 s tween is the one frame of head start the old code gave
+(it advanced the animation in the frame it started). Weapon: `weapon_anim
+... anim=fire ... tween=0.025` (9mm TweenTime), PutDown `held_frame=10.0
+frames=11`. Clot layer: start 8.234 -> end 9.505 (1.27 s = 0.1 + 35/30).
+**Still broken / not tested:** a layer fade running to 0 was not seen in a
+run (the Clot's next grab starts one frame after the last one ends and
+cancels the fade, as in KF); body (third person) tweens unchanged (ANIM-4);
+not looked at in game.
+**Next:** your look at a zed starting an attack and at the 9mm switch.

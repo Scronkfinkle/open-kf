@@ -70,7 +70,17 @@ pub(super) fn animate_weapon(
     }
 
     // Advance the animation; finished one-shots lead to the next action.
-    w.frame += dt * w.play_rate;
+    // The clock waits for a tween, then runs the leftover time of the tick
+    // the tween ends in.
+    let play_dt = match w.tween.as_mut().map(|t| t.advance(dt)) {
+        None => dt,
+        Some(None) => 0.0,
+        Some(Some(left)) => {
+            w.tween = None;
+            left
+        }
+    };
+    w.frame += play_dt * w.play_rate;
     let length = w.sequence.map_or(1.0, |s| w.defs[w.current].model.length(s));
     // A one-shot ends on its last key (N - 1) and holds it there; a loop
     // runs through all N frames (last key back to the first) and wraps.
@@ -88,7 +98,7 @@ pub(super) fn animate_weapon(
         w.notify_frame = w.frame;
     }
     if w.frame >= end {
-        if !w.looping && w.frame - dt * w.play_rate < end {
+        if !w.looping && w.frame - play_dt * w.play_rate < end {
             runlog::kv(
                 "weapon_anim_end",
                 &format!("weapon={} anim={} action={:?} held_frame={end:.1} frames={length:.0}", w.defs[w.current].class, w.anim, w.action),
@@ -189,7 +199,14 @@ pub(super) fn animate_weapon(
 
     // Pose, then mesh space -> drawn: subtract MeshOrigin, scale by MeshScale (UE2).
     let def = &w.defs[w.current];
-    let (skinned, bones) = def.model.pose_with_bones(w.sequence, w.frame);
+    let mut locals = def.model.sample_locals(w.sequence, w.frame);
+    if let Some(tw) = w.tween.as_ref().filter(|t| t.from.len() == locals.len()) {
+        let mut from = tw.from.clone();
+        def.model.blend_locals(&mut from, &locals, tw.weight(), None);
+        locals = from;
+    }
+    let bones = def.model.pose_from_locals(&locals, &[]);
+    let skinned = def.model.skin(&bones, &[]);
     let scale = Vec3::from_array(def.model.mesh.scale);
     let origin = Vec3::from_array(def.model.mesh.origin);
     def.model.upload(&skinned, |p| coords::pos(((p - origin) * scale).to_array()), &mut meshes);
@@ -210,6 +227,7 @@ pub(super) fn animate_weapon(
         Err(_) => Vec::new(),
     };
     w.hand_frames = frames;
+    w.last_locals = (w.current, locals);
     // The flashlight's LightBone (torch.rs).
     let light = main_cam.single().ok().and_then(|main| light_frame(&w.defs[w.current], &bones, part_translation, main));
     w.torch.frame = light;

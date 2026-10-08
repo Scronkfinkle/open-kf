@@ -35,6 +35,11 @@ pub(super) fn passed_notifies(model: &SkinnedModel, seq: usize, prev: Option<f32
 /// AnimBlendToAlpha(1, 0, 0.12)).
 pub(super) const LAYER_TWEEN: f32 = 0.1;
 pub(super) const LAYER_FADE_OUT: f32 = 0.12;
+/// Tween into a new main-channel animation: zed actions (DoAnimAction),
+/// movement, turning and air animations 0.1 s; the idle (PlayIdle,
+/// IdleRestAnim) 0.25 s.
+pub(super) const ANIM_TWEEN: f32 = 0.1;
+pub(super) const IDLE_TWEEN: f32 = 0.25;
 
 /// Animation state beyond the playing sequences: tweens, the fading
 /// upper-body layer, and the local bone pose last shown.
@@ -46,6 +51,12 @@ pub(super) struct ZedAnim {
     /// Direction index of the last movement animation (0 forward, 1 back,
     /// 2 left, 3 right).
     pub move_dir: usize,
+    /// The main channel's tween into its animation; the animation's clock
+    /// (frame, notifies, attack progress) waits for it.
+    pub tween: Option<crate::render::anim::Tween>,
+    /// Asked for by `start_anim`; started by `animate_zeds` from the pose
+    /// last shown.
+    pub tween_request: Option<f32>,
     /// Local bone transforms of the pose last drawn (tweens start here).
     pub last_locals: Vec<(Quat, Vec3)>,
     /// The upper-body layer's tween into its first frame.
@@ -60,7 +71,16 @@ pub(super) struct ZedAnim {
 
 impl Default for ZedAnim {
     fn default() -> Self {
-        ZedAnim { rate: 1.0, move_dir: 0, last_locals: Vec::new(), overlay_tween: None, overlay_written: None, overlay_fade: None }
+        ZedAnim {
+            rate: 1.0,
+            move_dir: 0,
+            tween: None,
+            tween_request: None,
+            last_locals: Vec::new(),
+            overlay_tween: None,
+            overlay_written: None,
+            overlay_fade: None,
+        }
     }
 }
 
@@ -103,7 +123,8 @@ pub(super) fn move_rate(speed: f32, default_ground_speed: f32) -> f32 {
 /// units/s, Bevy axes.
 pub(super) fn play_chase_anim(z: &mut Zed, c: &ZedClass, moving: bool, forward: Option<usize>, still: Option<usize>, velocity: Vec3) {
     if !moving {
-        start_anim(z, still, true);
+        let tween = if still == c.idle { IDLE_TWEEN } else { ANIM_TWEEN };
+        start_anim_tween(z, still, true, tween);
         return;
     }
     let dir = four_way(Vec2::new(-velocity.z, velocity.x), z.yaw);
@@ -133,11 +154,20 @@ pub(super) fn play_chase_anim(z: &mut Zed, c: &ZedClass, moving: bool, forward: 
 }
 
 /// Plays `seq` on the main channel at rate 1 (restarting it unless it is
-/// already playing).
+/// already playing), tweening into it over 0.1 s.
 pub(super) fn start_anim(z: &mut Zed, seq: Option<usize>, looping: bool) {
+    start_anim_tween(z, seq, looping, ANIM_TWEEN);
+}
+
+/// `start_anim` with a given tween time (KF PlayAnim's TweenTime): a new
+/// animation starts from the pose on screen and reaches its first frame
+/// after `tween` seconds; only then does its clock run.
+pub(super) fn start_anim_tween(z: &mut Zed, seq: Option<usize>, looping: bool, tween: f32) {
     if z.sequence != seq {
         z.sequence = seq;
         z.frame = 0.0;
+        z.anim.tween = None;
+        z.anim.tween_request = Some(tween);
     }
     z.looping = looping;
     z.anim.rate = 1.0;
@@ -374,9 +404,32 @@ pub(super) fn animate_zeds(
         }
         let mut heard = Vec::new();
         let mut speech = Vec::new();
+        // A new main animation tweens from the pose last shown; its clock
+        // waits, then runs the leftover time of the tick the tween ends in.
+        if let Some(tween) = z.anim.tween_request.take() {
+            z.anim.tween = crate::render::anim::Tween::start(&z.anim.last_locals, tween);
+            if z.anim.tween.is_some() {
+                runlog::kv(
+                    "zed_anim_tween",
+                    &format!("id={} sequence={} tween={tween} start", z.id, z.sequence.and_then(|s| c.model.sequence_name(s)).unwrap_or("none")),
+                );
+            }
+        }
+        let play_dt = match z.anim.tween.as_mut().map(|t| t.advance(dt)) {
+            None => dt,
+            Some(None) => 0.0,
+            Some(Some(left)) => {
+                let total = z.anim.tween.take().map_or(0.0, |t| t.total);
+                runlog::kv(
+                    "zed_anim_tween",
+                    &format!("id={} sequence={} tween={total} end", z.id, z.sequence.and_then(|s| c.model.sequence_name(s)).unwrap_or("none")),
+                );
+                left
+            }
+        };
         if let Some(s) = z.sequence {
             let len = c.model.length(s).max(1e-3);
-            z.frame += time.delta_secs() * c.model.rate(s) * z.anim.rate;
+            z.frame += play_dt * c.model.rate(s) * z.anim.rate;
             if z.looping {
                 z.frame %= len;
             } else {
@@ -475,6 +528,11 @@ pub(super) fn animate_zeds(
         // The pose: the main sequence, the fading layer at its weight, the
         // playing layer over it (through its tween).
         let mut locals = c.model.sample_locals(z.sequence, z.frame);
+        if let Some(tw) = z.anim.tween.as_ref().filter(|t| t.from.len() == locals.len()) {
+            let mut from = tw.from.clone();
+            c.model.blend_locals(&mut from, &locals, tw.weight(), None);
+            locals = from;
+        }
         if let Some((seq, f, root, fade)) = z.anim.overlay_fade {
             let layer = c.model.sample_locals(Some(seq), f);
             c.model.blend_locals(&mut locals, &layer, fade.alpha, Some(root));
@@ -544,8 +602,8 @@ mod tests {
         // Facing +X (yaw 0); the actor's right is +Y.
         assert_eq!(four_way(Vec2::new(1.0, 0.0), 0.0), 0);
         assert_eq!(four_way(Vec2::new(0.83, 0.5578), 0.0), 0); // dot 0.83
-        assert_eq!(four_way(Vec2::new(0.7071, 0.7071), 0.0), 3); // 45 deg: right
-        assert_eq!(four_way(Vec2::new(0.7071, -0.7071), 0.0), 2);
+        assert_eq!(four_way(Vec2::new(1.0, 1.0), 0.0), 3); // 45 deg: right
+        assert_eq!(four_way(Vec2::new(1.0, -1.0), 0.0), 2);
         assert_eq!(four_way(Vec2::new(-1.0, 0.1), 0.0), 1);
         assert_eq!(four_way(Vec2::ZERO, 0.0), 0);
         // Facing +Y (yaw 16384): its right is (-sin, cos) = -X.
@@ -559,6 +617,46 @@ mod tests {
         assert!((move_rate(115.5, 105.0) - 1.0).abs() < 1e-5);
         // Raging Fleshpound: 2.3 x 130 = 299 uu/s.
         assert!((move_rate(299.0, 130.0) - 2.0909).abs() < 1e-3);
+    }
+
+    /// The main channel's clock as `animate_zeds` runs it: a tween first,
+    /// then frames. Checks when a notify at 0.5 fires and when the
+    /// one-shot reaches its last key, for a 30-frame, 30 fps animation.
+    #[test]
+    fn tween_delays_the_clock_notifies_and_end() {
+        let (len, fps, dt) = (30.0f32, 30.0f32, 1.0 / 60.0);
+        let pose = vec![(Quat::IDENTITY, Vec3::ZERO)];
+        let mut tween = crate::render::anim::Tween::start(&pose, ANIM_TWEEN);
+        // The frame the attack starts in (its time step is before the start).
+        assert_eq!(tween.as_mut().unwrap().advance(dt), None);
+        let (mut frame, mut prev, mut t) = (0.0f32, None, 0.0f32);
+        let (mut notify_at, mut end_at) = (None, None);
+        let last = crate::render::skinned::last_frame(30);
+        for _ in 0..200 {
+            t += dt;
+            let play_dt = match tween.as_mut().map(|tw| tw.advance(dt)) {
+                None => dt,
+                Some(None) => 0.0,
+                Some(Some(left)) => {
+                    tween = None;
+                    left
+                }
+            };
+            if tween.is_some() {
+                assert_eq!(frame, 0.0, "clock waits during the tween");
+            }
+            frame = (frame + play_dt * fps).min(last);
+            if notify_at.is_none() && notify_in_spans(0.5, len, &notify_spans(prev, frame, len, false)) {
+                notify_at = Some(t);
+            }
+            if end_at.is_none() && frame >= last {
+                end_at = Some(t);
+            }
+            prev = Some(frame);
+        }
+        let (n, e) = (notify_at.unwrap(), end_at.unwrap());
+        assert!((n - 0.6).abs() <= dt + 1e-4, "notify at {n}");
+        assert!((e - (0.1 + 29.0 / 30.0)).abs() <= dt + 1e-4, "end at {e}");
     }
 
     #[test]

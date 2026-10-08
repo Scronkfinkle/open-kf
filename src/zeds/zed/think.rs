@@ -1577,7 +1577,7 @@ pub(super) fn think_and_move(
                 play_chase_anim(&mut z, c, moving, anim, anim, velocity)
             }
             ZedState::Falling => start_anim(&mut z, c.air_anim.or(c.idle), true),
-            ZedState::Idle => start_anim(&mut z, c.idle, true),
+            ZedState::Idle => start_anim_tween(&mut z, c.idle, true, IDLE_TWEEN),
             ZedState::Melee | ZedState::KnockedDown | ZedState::Landing | ZedState::Enraging | ZedState::BossBusy | ZedState::DoorBashing | ZedState::Dead => {}
         }
         if z.sequence != old_sequence {

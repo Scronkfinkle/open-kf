@@ -13,19 +13,27 @@ pub struct Tween {
     pub from: Vec<(Quat, Vec3)>,
     pub left: f32,
     pub total: f32,
+    /// False until the first `advance`: a tween starts during a frame
+    /// whose time step had already passed before it, so that step is not
+    /// counted (the tween lasts `total` seconds from its start).
+    pub running: bool,
 }
 
 impl Tween {
     /// A tween of `time` seconds from `from`; none for `time <= 0` or when
     /// no pose has been shown yet (KF snaps then).
     pub fn start(from: &[(Quat, Vec3)], time: f32) -> Option<Tween> {
-        (time > 0.0 && !from.is_empty()).then(|| Tween { from: from.to_vec(), left: time, total: time })
+        (time > 0.0 && !from.is_empty()).then(|| Tween { from: from.to_vec(), left: time, total: time, running: false })
     }
 
     /// Advances by `dt`. `None` while still tweening; `Some(leftover)` on
     /// the tick it ends, with the part of `dt` past its end (KF plays that
     /// leftover time of the animation in the same tick).
     pub fn advance(&mut self, dt: f32) -> Option<f32> {
+        if !self.running {
+            self.running = true;
+            return None;
+        }
         self.left -= dt;
         (self.left <= 0.0).then(|| -self.left)
     }
@@ -68,6 +76,9 @@ mod tests {
         assert!(Tween::start(&from, 0.0).is_none());
         assert!(Tween::start(&[], 0.1).is_none());
         let mut t = Tween::start(&from, 0.1).unwrap();
+        assert_eq!(t.weight(), 0.0);
+        // The frame it starts in does not count.
+        assert_eq!(t.advance(0.5), None);
         assert_eq!(t.weight(), 0.0);
         assert_eq!(t.advance(0.025), None);
         assert!((t.weight() - 0.25).abs() < 1e-5);
