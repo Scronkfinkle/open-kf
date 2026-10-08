@@ -55,6 +55,8 @@ pub struct ViewBob {
     pub side: Vec3,
     /// Vertical part.
     pub up: f32,
+    /// Pawn.LandBob (the landing dip, eye.rs): the weapon moves up by it.
+    pub land: f32,
 }
 
 #[derive(Component, Default, Debug)]
@@ -608,7 +610,7 @@ fn walk(
             runlog::kv("player_push", &format!("velocity_add_unreal=({:.0}, {:.0}, {:.0})", v.x, v.y, v.z));
         }
         // Pawn.OldZ: the centre's height before this frame's physics.
-        let old_z = w.center.y;
+        let mut old_z = w.center.y;
         for _ in 0..steps {
             w.time += h;
             // Network games: overlapping another player (each game sees the
@@ -711,6 +713,12 @@ fn walk(
                 w.center = pos;
                 if let Some(n) = hit.map(|h| h.normal) {
                     if n.y >= kf::MIN_FLOOR_NORMAL_Y && w.velocity.y <= 0.0 {
+                        // Pawn.Landed: a landing faster than 200 down dips
+                        // the view; OldZ restarts at the landing point.
+                        let vz = w.velocity.y / SCALE;
+                        let dip = w.eye.landed(vz);
+                        old_z = w.center.y + kf::SKIN * SCALE;
+                        runlog::kv("land_dip", &format!("t={:.3} landing_speed_unreal={:.0} dip={dip}", w.time, -vz));
                         w.center.y += kf::SKIN * SCALE;
                         w.on_ground = true;
                         w.floor_normal = n;
@@ -740,6 +748,11 @@ fn walk(
             if speed2d > 10.0 {
                 up += 0.75 * BOB * speed2d * (16.0 * w.bob_time).sin();
             }
+            // The landing dip's LandBob pushes AppliedBob (next frame).
+            if w.eye.land_bob > 0.01 {
+                w.applied_bob += (16.0 * dt).min(1.0) * w.eye.land_bob;
+                w.eye.land_bob *= 1.0 - 8.0 * dt;
+            }
             bob.side = right * (BOB * speed2d * (8.0 * w.bob_time).sin()) * SCALE;
             bob.up = up * SCALE;
         } else {
@@ -765,6 +778,7 @@ fn walk(
                 &format!("t={:.3} eye_height_unreal={:.1} dz_unreal={dz:.1} on_ground={} ceiling_unreal={:?}", w.time, w.eye.height, w.on_ground, ceiling.map(|c| c.round())),
             );
         }
+        bob.land = w.eye.land_bob * SCALE;
         // Pawn.EyePosition = EyeHeight + WalkBob.
         t.translation = w.center + Vec3::Y * (w.eye.height * SCALE + bob.up) + bob.side;
 
