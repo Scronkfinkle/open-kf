@@ -467,6 +467,9 @@ pub struct Router {
     /// The goal given at the last update (the player, or the Patriarch's
     /// hiding spot).
     goal: Vec3,
+    /// The last route search found no way to the goal (and the goal was
+    /// not walkable directly).
+    pub no_route: bool,
 }
 
 /// Progress check: a zed that covers less than this share of its speed in
@@ -684,13 +687,16 @@ impl Router {
 
     /// PickDestination + FindBestPathToward.
     fn pick(&mut self, nav: &NavNetwork, spatial: &SpatialQuery, inp: &RouteInput, frand: &mut dyn FnMut() -> f32, reason: &str) {
+        self.no_route = false;
         if self.no_direct <= 0.0 && inp.walkable(spatial, inp.pos, inp.player, inp.touch_player) {
             self.route_len = 0;
             self.set(Target::Player, inp, nav, reason);
             return;
         }
         let Some(mut next) = self.find_path(nav, spatial, inp, None) else {
-            // KF would hunt the last seen position; we walk straight at the player.
+            // KF would hunt the last seen position; we walk straight at the
+            // player. The escaping Patriarch heals instead (boss_ai.rs).
+            self.no_route = true;
             self.route_len = 0;
             if self.target != Some(Target::Player) {
                 runlog::kv("zed_route_failed", &format!("id={} reason=no_route", inp.id));
