@@ -691,13 +691,13 @@ fn run_rules(
     }
     let rules = p.rules.as_mut().expect("checked");
     if let Some(why) = setup {
-        let (on_w, on_a) = rules.setup_pickups(now, crate::game::dosh::GAME_DIFFICULTY, &senses);
+        let (on_w, on_a) = rules.setup_pickups(now, crate::game::difficulty::game_difficulty(), &senses);
         runlog::kv(
             "pickup_setup",
             &format!(
                 "reason={why} wave={} difficulty={} spawn_points_on={}/{} {:?} ammo_on={}/{} {:?} placed={}",
                 game.wave_num + 1,
-                crate::game::dosh::GAME_DIFFICULTY,
+                crate::game::difficulty::game_difficulty(),
                 on_w.len(),
                 rules.spawns.len(),
                 on_w,

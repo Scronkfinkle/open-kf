@@ -49,6 +49,9 @@ pub struct HostInfo {
     pub map: String,
     pub mode: String,
     pub length: String,
+    /// `difficulty=HellOnEarth` etc. (empty from an older host: the
+    /// joiner keeps its own).
+    pub difficulty: String,
     /// Players connected now (the host included).
     pub players: u32,
     pub max_players: u32,
@@ -109,6 +112,7 @@ impl HostInfo {
             ("map", clean(&self.map)),
             ("mode", clean(&self.mode)),
             ("length", clean(&self.length)),
+            ("difficulty", clean(&self.difficulty)),
             ("players", self.players.to_string()),
             ("max_players", self.max_players.to_string()),
             ("match_started", self.match_started.to_string()),
@@ -136,6 +140,7 @@ impl HostInfo {
                 "map" => info.map = v.to_string(),
                 "mode" => info.mode = v.to_string(),
                 "length" => info.length = v.to_string(),
+                "difficulty" => info.difficulty = v.to_string(),
                 "players" => info.players = v.parse().unwrap_or(0),
                 "max_players" => info.max_players = v.parse().unwrap_or(0),
                 "match_started" => info.match_started = v == "true",
@@ -245,7 +250,7 @@ mod tests {
     use super::*;
 
     fn sample() -> HostInfo {
-        HostInfo { protocol: 0x4F4B_4600_0007, game_port: 7707, map: "KF-Farm".into(), mode: "Waves".into(), length: "Short".into(), players: 2, max_players: 6, match_started: true }
+        HostInfo { protocol: 0x4F4B_4600_0007, game_port: 7707, map: "KF-Farm".into(), mode: "Waves".into(), length: "Short".into(), difficulty: "HellOnEarth".into(), players: 2, max_players: 6, match_started: true }
     }
 
     #[test]

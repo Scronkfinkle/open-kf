@@ -32,6 +32,9 @@ pub struct NetGame {
     /// shared yet).
     pub mode: String,
     pub length: String,
+    /// The host's difficulty (KFGRI.GameDiff), for the log: the joiner
+    /// already took it from the host-info query.
+    pub difficulty: String,
     /// GRI.bMatchHasBegun.
     pub match_started: bool,
     /// KFGRI.LobbyTimeout: seconds left of the auto-start countdown,

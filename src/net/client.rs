@@ -121,10 +121,13 @@ fn check_game(mut link: ResMut<ClientLink>, game: Query<&NetGame>, map: Res<crat
     let Ok(g) = game.single() else { return };
     link.game_checked = true;
     let same_map = g.map.eq_ignore_ascii_case(&map.map);
-    let ours = (format!("{:?}", options.mode), format!("{:?}", options.length));
+    let ours = (format!("{:?}", options.mode), format!("{:?}", options.length), format!("{:?}", options.difficulty));
     runlog::kv(
         "net_game_info",
-        &format!("host_map={} my_map={} same_map={same_map} host_mode={} host_length={} my_mode={} my_length={} match_started={}", g.map, map.map, g.mode, g.length, ours.0, ours.1, g.match_started),
+        &format!(
+            "host_map={} my_map={} same_map={same_map} host_mode={} host_length={} host_difficulty={} my_mode={} my_length={} my_difficulty={} match_started={}",
+            g.map, map.map, g.mode, g.length, g.difficulty, ours.0, ours.1, ours.2, g.match_started
+        ),
     );
     if !same_map {
         eprintln!("error: the host plays {}; this game loaded {}. Start again with --map {}", g.map, map.map, g.map);

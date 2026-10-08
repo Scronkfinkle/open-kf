@@ -212,7 +212,7 @@ pub(super) fn pickup_inventory(
                 for (i, secondary, mut add, single_round) in plan {
                     // AmmoPickupAmount 1 (frags, pipe bombs): one round with
                     // chance 1 / GameDifficulty.
-                    if single_round && w.random() > 1.0 / crate::game::dosh::GAME_DIFFICULTY {
+                    if single_round && w.random() > 1.0 / crate::game::difficulty::game_difficulty() {
                         add = 0;
                     }
                     let d = &mut w.defs[i];

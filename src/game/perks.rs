@@ -952,7 +952,7 @@ impl Plugin for PerksPlugin {
 /// 100); the perk's weapons are added with the starting inventory
 /// (weapons/weapon/load.rs).
 fn log_perk(v: Res<Veterancy>, mut vest: ResMut<crate::player::armour::Armour>) {
-    let difficulty = crate::game::dosh::GAME_DIFFICULTY;
+    let difficulty = crate::game::difficulty::game_difficulty();
     let (items, armour) = v.vet.default_inventory(difficulty);
     if armour {
         vest.strength = crate::player::armour::MAX_ARMOUR;
@@ -983,7 +983,7 @@ pub fn log_summary(v: &Vet) {
             v.label(),
             v.syringe_charge_rate(),
             v.heal_potency(),
-            v.movement_speed(crate::game::dosh::GAME_DIFFICULTY),
+            v.movement_speed(crate::game::difficulty::game_difficulty()),
             v.melee_movement_speed(),
             v.carry_weight_bonus(),
             v.weld_speed(),

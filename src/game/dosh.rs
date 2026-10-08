@@ -1,17 +1,18 @@
 //! Dosh (T1): the player's cash (PlayerReplicationInfo.Score) and the team
 //! pot (Team.Score), from KFGameType ScoreKill, ScoreKillAssists and
-//! RewardSurvivingPlayers. One player, Normal difficulty. See DESIGN.md,
-//! "Game loop", T1.
+//! RewardSurvivingPlayers, for the game's difficulty (difficulty.rs). One
+//! player. See DESIGN.md, "Game loop", T1.
 
 use bevy::prelude::*;
 
 use crate::game::waves::{GameLength, GameOptions, WaveGame};
 use crate::engine::runlog;
 
-/// StartingCashNormal.
-pub const STARTING_CASH: f32 = 250.0;
-/// KillingFloor.ini GameDifficulty (Normal).
-pub const GAME_DIFFICULTY: f32 = 2.0;
+/// KFGameType.InitGame: StartingCash for the game's difficulty
+/// (StartingCashNormal 250).
+pub fn starting_cash() -> f32 {
+    crate::game::difficulty::current().starting_cash()
+}
 
 #[derive(Resource, Debug)]
 pub struct Dosh {
@@ -23,7 +24,7 @@ pub struct Dosh {
 
 impl Default for Dosh {
     fn default() -> Self {
-        Dosh { score: STARTING_CASH, team: 0.0 }
+        Dosh { score: starting_cash(), team: 0.0 }
     }
 }
 
@@ -31,7 +32,7 @@ impl Dosh {
     /// ScoreKill for a zed the player killed: KillScore to the player (all
     /// of it: the only kill assistant) and to the team pot.
     pub fn kill(&mut self, scoring_value: f32, length: GameLength) -> f32 {
-        let score = kill_score(scoring_value, length);
+        let score = kill_score(scoring_value, length, crate::game::difficulty::current());
         self.score += score;
         self.team += score;
         score
@@ -50,18 +51,23 @@ impl Dosh {
     /// ScoreKill on the player: lose GameDifficulty x 5% of the cash; the
     /// pot loses as much of the new cash.
     pub fn death(&mut self) -> f32 {
-        let lost = self.score * GAME_DIFFICULTY * 0.05;
+        self.death_at(crate::game::difficulty::game_difficulty())
+    }
+
+    fn death_at(&mut self, game_difficulty: f32) -> f32 {
+        let lost = self.score * game_difficulty * 0.05;
         self.score -= lost;
-        self.team -= self.score * GAME_DIFFICULTY * 0.05;
+        self.team -= self.score * game_difficulty * 0.05;
         self.score = self.score.max(0.0);
         self.team = self.team.max(0.0);
         lost
     }
 }
 
-/// KillScore = Max(1, int(ScoringValue x 1.0 (Normal) x 1.75 (Short))).
-pub fn kill_score(scoring_value: f32, length: GameLength) -> f32 {
-    let mut s = scoring_value * 1.0;
+/// KillScore = Max(1, int(ScoringValue x the difficulty's scale (Normal
+/// 1.0, Hard 0.85, Suicidal and up 0.65, Beginner 2) x 1.75 (Short))).
+pub fn kill_score(scoring_value: f32, length: GameLength, difficulty: crate::game::difficulty::Difficulty) -> f32 {
+    let mut s = scoring_value * difficulty.kill_score_scale();
     if length == GameLength::Short {
         s *= 1.75;
     }
@@ -132,21 +138,33 @@ fn update_dosh(
 mod tests {
     use super::*;
 
+    use crate::game::difficulty::Difficulty;
+
     #[test]
     fn kill_scores_match_kf() {
+        let n = Difficulty::Normal;
         // Short x 1.75, truncated: Clot 7 -> 12, Fleshpound 200 -> 350.
-        assert_eq!(kill_score(7.0, GameLength::Short), 12.0);
-        assert_eq!(kill_score(200.0, GameLength::Short), 350.0);
-        assert_eq!(kill_score(7.0, GameLength::Normal), 7.0);
+        assert_eq!(kill_score(7.0, GameLength::Short, n), 12.0);
+        assert_eq!(kill_score(200.0, GameLength::Short, n), 350.0);
+        assert_eq!(kill_score(7.0, GameLength::Normal, n), 7.0);
         // Never less than 1.
-        assert_eq!(kill_score(0.0, GameLength::Long), 1.0);
+        assert_eq!(kill_score(0.0, GameLength::Long, n), 1.0);
+        // Other difficulties: Clot 7 Short: Beginner int(7 x 2 x 1.75) = 24,
+        // Hard int(10.4125) = 10, Hell on Earth int(7.9625) = 7;
+        // Fleshpound 200 Short HoE: int(227.5) = 227.
+        assert_eq!(kill_score(7.0, GameLength::Short, Difficulty::Beginner), 24.0);
+        assert_eq!(kill_score(7.0, GameLength::Short, Difficulty::Hard), 10.0);
+        assert_eq!(kill_score(7.0, GameLength::Short, Difficulty::HellOnEarth), 7.0);
+        assert_eq!(kill_score(200.0, GameLength::Short, Difficulty::HellOnEarth), 227.0);
     }
 
     #[test]
     fn kills_pay_twice_solo() {
-        let mut d = Dosh::default();
-        d.kill(7.0, GameLength::Short);
-        d.kill(10.0, GameLength::Short);
+        let mut d = Dosh { score: 250.0, team: 0.0 };
+        d.score += kill_score(7.0, GameLength::Short, Difficulty::Normal);
+        d.team += 12.0;
+        d.score += kill_score(10.0, GameLength::Short, Difficulty::Normal);
+        d.team += 17.0;
         assert_eq!(d.score, 250.0 + 12.0 + 17.0);
         assert_eq!(d.wave_reward(), 29.0);
         assert_eq!(d.score, 250.0 + 2.0 * 29.0);
@@ -156,9 +174,13 @@ mod tests {
     #[test]
     fn death_costs_ten_percent() {
         let mut d = Dosh { score: 300.0, team: 100.0 };
-        d.death();
+        d.death_at(2.0);
         assert_eq!(d.score, 270.0);
         // The pot loses 10% of the new cash.
         assert_eq!(d.team, 73.0);
+        // Hell on Earth (7): 35%.
+        let mut d = Dosh { score: 200.0, team: 0.0 };
+        assert_eq!(d.death_at(7.0), 70.0);
+        assert_eq!(d.score, 130.0);
     }
 }

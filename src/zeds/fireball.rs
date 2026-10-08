@@ -4,15 +4,17 @@
 //! (ArmDistSquared 0: always armed): the level, the player, or another zed.
 //! Explode: FlameImpact 20 out from the surface, a FlameThrowerBurnMark
 //! decal, and HurtRadius(Damage 25, DamageRadius 150, DamTypeBurned,
-//! MomentumTransfer 125000), Normal difficulty. On the player:
+//! MomentumTransfer 125000), Damage x the difficulty's scale
+//! (HuskFireProjectile.PostBeginPlay: Normal 1.0). On the player:
 //! damageScale = 1 - (distance - 20) / 150, times KFPawn.GetExposureTo
 //! (half for each of head and root in sight of the blast), damage x scale;
 //! momentum pushes away from the blast. Burn damage sets the player on fire
 //! (combat.rs). Damage to other zeds and the view shake are not done.
 //!
 //! The Patriarch's rocket, KFChar.BossLAWProj (a LAWProj too), flies and
-//! explodes the same way with its own values: Speed 2600, Damage 200 x 0.375
-//! (one player, Normal) = 75 in DamageRadius 500, DamTypeFrag, the
+//! explodes the same way with its own values: Speed 2600, Damage 200 x the
+//! difficulty's scale (BossLAWProj.PostBeginPlay, one player: Normal
+//! 0.375 = 75) in DamageRadius 500, DamTypeFrag, the
 //! KillingFloorStatics.LAWRocket mesh (StaticMeshRef) at DrawScale 0.7, a
 //! PanzerfaustTrail (turned to point backward), LawExplosion and a
 //! RocketMarkDirt decal.
@@ -48,7 +50,7 @@ pub enum Projectile {
     BossRocket,
 }
 
-/// A projectile's values (class defaults, Normal difficulty, one player).
+/// A projectile's values (class defaults, the game's difficulty, one player).
 struct Spec {
     class: &'static str,
     /// StaticMeshRef, for classes that only name their mesh.
@@ -82,7 +84,7 @@ impl Projectile {
                 class: "KFChar.HuskFireProjectile",
                 mesh: None,
                 speed: 1800.0,
-                damage: 25.0,
+                damage: 25.0 * crate::game::difficulty::current().husk_fire_damage_scale(),
                 radius: 150.0,
                 momentum: 125000.0,
                 trail: "KFMod.FlameThrowerFlameB",
@@ -98,7 +100,7 @@ impl Projectile {
                 class: "KFChar.BossLAWProj",
                 mesh: Some("KillingFloorStatics.LAWRocket"),
                 speed: 2600.0,
-                damage: 200.0 * 0.375,
+                damage: 200.0 * crate::game::difficulty::current().boss_rocket_scale(true),
                 radius: 500.0,
                 momentum: 125000.0,
                 trail: "ROEffects.PanzerfaustTrail",

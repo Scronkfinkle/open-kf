@@ -472,10 +472,11 @@ const BLOAT_CHARGE_CHANCE: f32 = 0.4;
 const FLESHPOUND_RAGE_SPEED: f32 = 2.3;
 
 /// KFMonster.PostBeginPlay: MeleeDamage and ScreamDamage (ints) =
-/// Max(DifficultyDamageModifer x damage, 1); Normal 1.0, x 0.75 with one
-/// player.
-fn solo_damage(d: f32) -> f32 {
-    (d * 0.75).trunc().max(1.0)
+/// Max(DifficultyDamageModifer x damage, 1), for the game's difficulty
+/// (Normal 1.0) and one player (x 0.75). Applied when the classes load:
+/// the difficulty is fixed for the run.
+fn difficulty_damage(d: f32) -> f32 {
+    crate::game::difficulty::zed_damage(d, crate::game::difficulty::current())
 }
 
 /// KFMonster MinTimeBetweenPainAnims and StunTime (seconds).
@@ -518,6 +519,10 @@ pub struct Zed {
     stunned: f32,
     /// Class values the hit reaction rules need.
     default_health: f32,
+    /// KFMonster.PostBeginPlay MovementSpeedDifficultyScale: the class's
+    /// GroundSpeed x this is the zed's (OriginalGroundSpeed); the speed
+    /// changes (running, headless, zapped...) start from it.
+    speed_scale: f32,
     /// MeleeRange and MeleeDamage (doubled for a headless Clot).
     melee_range: f32,
     melee_damage: f32,
@@ -971,12 +976,5 @@ mod tests {
         assert_eq!((bits, due), (0b11, vec![0, 1]), "one long frame: both");
         // No notify: no hit.
         assert!(attacks::due_notifies(&[], 1.0, 0).1.is_empty());
-    }
-
-    #[test]
-    fn solo_damage_is_three_quarters_rounded_down() {
-        assert_eq!(solo_damage(6.0), 4.0); // Clot claw: 4.5 -> 4
-        assert_eq!(solo_damage(8.0), 6.0); // Siren scream
-        assert_eq!(solo_damage(1.0), 1.0); // at least 1
     }
 }

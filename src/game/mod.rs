@@ -1,6 +1,7 @@
 //! The game rules: waves, damage and health, dosh, the trader and shop (and the trader woman), the HUD, zed time, the end of the match, the menus (lobby, perk page, pause menu), pickups (weapons, ammo, vests lying in the map).
 
 pub mod waves;
+pub mod difficulty;
 pub mod combat;
 pub mod dosh;
 pub mod trader;

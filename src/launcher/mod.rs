@@ -393,12 +393,12 @@ fn poll_host_check(mut launcher: ResMut<Launcher>) {
         Ok((q, info)) => {
             runlog::kv(
                 "launcher_host_check",
-                &format!("address={addr} state=answer query_port={q} map={} mode={} length={} players={} max_players={} match_started={} protocol={:#x} same_version={}", info.map, info.mode, info.length, info.players, info.max_players, info.match_started, info.protocol, info.protocol == crate::net::PROTOCOL_ID),
+                &format!("address={addr} state=answer query_port={q} map={} mode={} length={} difficulty={} players={} max_players={} match_started={} protocol={:#x} same_version={}", info.map, info.mode, info.length, info.difficulty, info.players, info.max_players, info.match_started, info.protocol, info.protocol == crate::net::PROTOCOL_ID),
             );
             if info.protocol != crate::net::PROTOCOL_ID {
                 "The host runs a different version of Open KF.".to_string()
             } else {
-                format!("{} - {} {} - {}/{} players{}", info.map, info.mode, info.length, info.players, info.max_players, if info.match_started { " - started" } else { "" })
+                format!("{} - {} {} {} - {}/{} players{}", info.map, info.mode, info.length, crate::game::difficulty::Difficulty::parse(&info.difficulty).map_or("", |d| d.name()), info.players, info.max_players, if info.match_started { " - started" } else { "" })
             }
         }
         Err(e) => {

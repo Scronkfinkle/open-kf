@@ -4780,9 +4780,10 @@ For the subclass tests we keep each weapon's, damage type's and ammo's
 class chain (read with ClassDefaults at load); Berserker reads the damage
 type's `bIsMeleeDamage` default.
 
-Difficulty: we play Normal (GameDifficulty 2), so the Suicidal / Hell
-on Earth branches (Medic speed, Berserker armour, Sharpshooter's Dualies)
-take their below-5 / below-7 sides.
+Difficulty: the game's GameDifficulty (`--difficulty`, see
+"Difficulty"; default Normal 2) picks the Suicidal / Hell on Earth
+branches of Medic speed and Berserker armour. The Sharpshooter's Dualies
+rule is still the below-7 side (D2).
 
 Integers: KF keeps damage, weld damage, heal amounts and ammo maximums as
 whole numbers; a perk factor's result is cut down to a whole number where
@@ -6766,3 +6767,128 @@ class values, and fonts Vr20-26 (UT2LargeFont, UT2HeaderFont,
 UT2ServerListFont); `menus/mod.rs` loads the menu's textures and the 48
 trader pictures only with `--trader-menu kf`, and draws it. At 2560 x 1440
 the boxes land within a few pixels of the screenshot's.
+
+## Difficulty: Beginner to Hell on Earth (planned 2026-10-08: D1-D2)
+
+KF's difficulty is one number, `GameInfo.GameDifficulty` (set from the
+`?Difficulty=` URL option or KillingFloor.ini, saved by the server
+setup page). The values are fixed by the menu (`KFMod.int`
+`GIPropsExtras[0]` "1;Beginner;2;Normal;4;Hard;5;Suicidal;7;Hell on
+Earth", `KFGui.KFMapPage.GameDifficultyChange`): **1 Beginner, 2
+Normal, 4 Hard, 5 Suicidal, 7 Hell on Earth**. The names shown are
+`KFMod.int` `KFScoreBoard.SkillLevel[N]` and `KFGui.int` `LobbyMenu`
+`BeginnerString` .. `HellOnEarthString`. The rules almost always test it
+with thresholds (`>= 7`, `>= 5`, `>= 4`, `>= 2`, else Beginner, or the
+`< 2 / < 4 / < 5` form), so "Suicidal and up" also means Hell on Earth.
+KF copies it to the clients in `KFGameReplicationInfo.GameDiff` and
+`BaseDifficulty` (int); the clients' own copy is only used for display
+and a few client-side checks.
+
+Until now every one of our rules used Normal (GameDifficulty 2):
+`dosh::GAME_DIFFICULTY = 2.0` and hard-coded Normal values in the zed,
+wave and cash code.
+
+### Every rule that depends on difficulty (from the scripts)
+
+"Solo" below = KF's `Level.Game.NumPlayers == 1`; we assume one player
+everywhere (see "Not done"). B / N / H / S / HoE = 1 / 2 / 4 / 5 / 7.
+
+| KF class.function | Rule | B | N | H | S | HoE | Our code | D1? |
+|---|---|---|---|---|---|---|---|---|
+| KFMonster.DifficultyHealthModifer (PostBeginPlay) | zed Health (int, cut) and HealthMax x | 0.5 | 1.0 | 1.35 | 1.55 | 1.75 | zeds/zed/spawn.rs | yes |
+| KFMonster.DifficultyHeadHealthModifer | HeadHealth x | 0.5 | 1.0 | 1.35 | 1.55 | 1.75 | spawn.rs | yes |
+| KFMonster.DifficultyDamageModifer | MeleeDamage, ScreamDamage, SpinDamConst/Rand = Max(int(x d), 1); x 0.75 more solo | 0.3 | 1.0 | 1.25 | 1.5 | 1.75 | zed/load.rs (`solo_damage`) | yes |
+| ZombieScrake (sawing) | MeleeDamage = Max(DifficultyDamageModifer x default, 1) | as above | | | | | think.rs uses the class value | yes (same value) |
+| KFMonster.PostBeginPlay | MovementSpeedDifficultyScale: Ground/Air/WaterSpeed x (OriginalGroundSpeed); HiddenGroundSpeed not scaled | 0.95 | 1.0 | 1.15 | 1.22 | 1.3 | think.rs speed | yes |
+| KFGameType.SetupWave | TotalMaxMonsters = Clamp(WaveMaxMonsters x DifficultyMod x NumPlayersMod, 5, 800) | 0.7 | 1.0 | 1.3 | 1.5 | 1.7 | waves.rs `setup_wave` | yes |
+| KFGameType.InitGame | StartingCash | 300 | 250 | 250 | 200 | 100 | dosh.rs | yes |
+| KFGameType.InitGame | MinRespawnCash | 250 | 200 | 200 | 150 | 100 | net/starts.rs | yes |
+| KFGameType.InitGame | TimeBetweenWaves (s) | 90 | 60 | 60 | 60 | 60 | waves.rs `do_wave_end` | yes |
+| KFGameType.ScoreKill | KillScore = ScoringValue x (then x 1.75 Short), Max(1, int) | 2.0 | 1.0 | 0.85 | 0.65 | 0.65 | dosh.rs `kill_score` | yes |
+| KFGameType.ScoreKill | player death: lose Score x GameDifficulty x 0.05 | 5% | 10% | 20% | 25% | 35% | dosh.rs (already used the number) | yes |
+| KFGameType.CalcNextSquadSpawnTime | NextSpawnTime x 0.85 at Hard and up (before the sine term) | 1 | 1 | 0.85 | 0.85 | 0.85 | waves.rs `next_squad_time` | yes |
+| KFBloatVomit.DifficultyDamageModifer | BaseDamage, Damage = Max(int(x d), 1) | 0.3 | 1.0 | 1.5 | 2.0 | 2.5 | zeds/vomit.rs | yes |
+| HuskFireProjectile.PostBeginPlay | Damage x | 0.75 | 1.0 | 1.15 | 1.3 | 1.3 | zeds/fireball.rs | yes |
+| BossLAWProj.PostBeginPlay | Damage x (solo; others in brackets) | 0.25 (0.375) | 0.375 (1.0) | 1.15 | 1.3 | 1.3 | fireball.rs | yes |
+| ZombieBoss.PostBeginPlay | MGDamage x (solo; others in brackets) | 0.375 | 0.75 (1.0) | 1.15 | 1.3 | 1.3 | boss.rs `MG_DAMAGE` | yes |
+| ZombieBoss.PostBeginPlay | HealingLevels from the scaled Health | | | | | | boss.rs `BossState::new` | yes (gets the scaled health) |
+| KFGameType.SetupPickups | share of weapon / ammo pickups on | 50/65% | 30/50% | 20/35% | 10/10% | 10/10% | pickups/rules.rs (already takes the number) | yes |
+| KFAmmoPickup / (our pickup.rs) | extra round with chance 1 / GameDifficulty | | | | | | already takes the number | yes |
+| KFVetFieldMedic, KFVetBerserker, KFVetSharpshooter | Medic speed at >= 5, Berserker L6 armour below 5, Dualies headshot bonus below 7 / 8% at 7 | | | | | | perks.rs (Medic, Berserker take the number) | yes; Dualies: check in D2 |
+| LobbyMenu / KFScoreBoard / KFLobbyTitleLabel | the name shown | | | | | | menus/lobby.rs, net/scoreboard.rs | yes |
+| ZombieBloat.RangedAttack | ChargeChance (moving vomit) | 0.2 | 0.4 | 0.6 | 0.8 | 0.8 | zed/mod.rs `BLOAT_CHARGE_CHANCE` | D2 |
+| ZombieGoreFast.RangedAttack | ChargeChance | 0.1 | 0.2 | 0.3 | 0.4 | 0.4 | `GOREFAST_CHARGE_CHANCE` | D2 |
+| ZombieScrake.RangedAttack | ChargeChance / RagingChargeChance | 0.25/0.5 | 0.5/0.7 | 0.65/0.85 | 0.95/1.0 | 0.95/1.0 | think.rs | D2 |
+| ZombieScrake.RangedAttack, TakeDamage | rage below 75% health at >= 5 (else 50%); at >= 5 TakeDamage also calls RangedAttack under 75% | | | | | | think.rs | D2 |
+| ZombieScrake.PlayTakeHit | at >= 5 a flinch only while StunsRemaining != 0 | | | | | | | D2 |
+| ZombieScrake / ZombieFleshPound.TakeDamage | crossbow headshot x 0.5 (Scrake), x 0.35 (FP) at >= 5 | | | | | | combat | D2 |
+| ZombieFleshPound (StartCharging) | rage length 5 x m + FRand x 6 x m | 0.85 | 1.0 | 1.25 | 3.0 | 3.0 | think.rs | D2 |
+| ZombieHusk.PostBeginPlay | ProjectileFireInterval x / BurnDamageScale x | 1.25/2.0 | 1/1 | 0.75/0.75 | 0.6/0.5 | 0.6/0.5 | zed/load.rs | D2 |
+| AIController.PreBeginPlay | Skill = Clamp(Skill + GameDifficulty, 0, 3): KFMonsterController's leap/jump checks (`Skill > 1 + 2 x FRand`), HuskZombieController's aim | | | | | | not modelled | D2 |
+| KFPawn.TakeDamage (vomit, Siren scream) | at >= 4 the view effects flag on the controller (bVomittedOn / bScreamedAt) | | | | | | | D2 |
+| KFPawn (movement disabled) | at >= 5 no upward velocity while bMovementDisabled | | | | | | | D2 |
+| Pawn / KFMonster / ZombieStalker.DoJump | above 2, MakeNoise(0.1 x GameDifficulty) on a jump | | | | | | | D2 |
+| KFGameType.ReduceDamage | own damage x 0.5 at <= 3 in single player | | | | | | combat.rs (Normal) | D2 |
+| Pickup / KFWeaponPickup / WeaponPickup | respawn sleep FMin(30, GameDifficulty x 8) standalone; respawn time x (0.33 + 0.22 x GD) at <= 3 | | | | | | | D2 (check which apply) |
+| CashPickup | CashAmount x GameDiff x 0.5 | | | | | | not built (no cash pickups) | D2 |
+| KFGameType.GetServerInfo / achievements | flags, achievements | | | | | | | never |
+
+Number of players (NumPlayersHealthModifer, the x 0.75 solo damage,
+NumPlayersMod in SetupWave, the boss's solo rules) stays "one player"
+as before: it is a separate rule set, not part of this work.
+
+### Our design
+
+- `src/game/difficulty.rs`: `enum Difficulty` (five values), its
+  GameDifficulty number, names, the `--difficulty` word
+  (`beginner|normal|hard|suicidal|hoe`), and one function per rule in
+  the table, each citing its KF class.function. The game's setting is
+  kept like KF's `Level.Game.GameDifficulty`: one value for the whole
+  run, set at startup (`difficulty::set_current`), read with
+  `difficulty::current()`. A global (not a Bevy resource) because many
+  of the users are plain functions (perks, pickups rules); the formulas
+  themselves take the difficulty as a parameter so tests do not depend
+  on it. `GameOptions.difficulty` holds it too, for the logs and
+  sharing.
+- Default **Normal**: everything we built so far uses Normal values, and
+  KF's own default (KillingFloor.ini) is 2.
+- Multiplayer: the host's difficulty wins. The joiner's host-info query
+  gets a `difficulty=` key (like `length=`) and uses it before anything
+  is loaded; `NetGame` carries it too for the log (protocol id raised).
+  Zeds are simulated on the host, so their health, damage and speed come
+  from the host anyway; the joiner needs it for its own dosh, starting
+  cash, perks and the names shown.
+- Launcher: a Difficulty spinner in the Game section (with Length),
+  saved as `difficulty=`; passed as `--difficulty` in waves mode, not
+  when joining.
+- Logs: `difficulty level=hoe name="Hell on Earth" game_difficulty=7`
+  at startup with the scales; `zed_spawned` gains `health= health_max=
+  head_health= melee_damage= speed_scale=`; `wave_start` gains
+  `difficulty_mod=`.
+
+### Steps
+
+- **D1** (this step): the setting, launcher, lobby/scoreboard names,
+  network sharing, and every row marked "yes".
+- **D2**: the zed behaviour rows (charge chances, Scrake and Fleshpound
+  rage, Husk fire rate and fire resistance, crossbow resistances, AI
+  skill), the player-side rows, pickup respawn times.
+
+### As built (D1, 2026-10-08; headless runs, not played by you)
+
+`src/game/difficulty.rs` (the enum, every D1 formula, the global setting,
+4 unit tests); `dosh.rs` (StartingCash, KillScore scale, the death loss
+now read the setting; `GAME_DIFFICULTY` / `STARTING_CASH` constants
+gone), `net/starts.rs` (MinRespawnCash), `waves.rs` (`wave_total`,
+TimeBetweenWaves, the x 0.85 squad time; `GameOptions.difficulty`),
+`zeds/zed/spawn.rs` (health, head health, speed scale; the boss's
+healing levels from the scaled health), `zed/load.rs` + `zed/mod.rs`
+(melee and scream damage), `think.rs` (speed), `vomit.rs`,
+`fireball.rs`, `boss.rs` (MG), `main.rs` (`--difficulty`, the host's
+difficulty for a joiner), `net/query.rs` (`difficulty=` key),
+`net/protocol.rs` + `net/mod.rs` (`NetGame.difficulty`, protocol id
+...0009), `net/client.rs` / `server.rs` (log), `menus/lobby.rs` and
+`net/scoreboard.rs` (the name), the launcher (`choices.rs`, `draw.rs`,
+`mod.rs`: a Difficulty spinner under Length, saved as `difficulty=`).
+SpinDamConst / SpinDamRand have no counterpart in our code (nothing
+uses them yet).

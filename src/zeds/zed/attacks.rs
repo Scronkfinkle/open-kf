@@ -131,7 +131,7 @@ pub(super) fn boss_mg_shot(
     let on_player = crate::game::combat::ray_cylinder(origin, dir_bevy, player, PLAYER_RADIUS * SCALE, PLAYER_HALF_HEIGHT * SCALE)
         .filter(|d| *d <= world.unwrap_or(max));
     let what = if on_player.is_some() {
-        let amount = (crate::zeds::boss::MG_DAMAGE + (z.random() % 3) as f32).floor();
+        let amount = (crate::zeds::boss::mg_damage() + (z.random() % 3) as f32).floor();
         player_damage.write(crate::game::combat::PlayerDamaged {
             amount,
             armor_stops: true,

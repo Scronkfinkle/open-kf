@@ -76,12 +76,14 @@ struct Args {
     msaa: Option<u32>,
     /// `--anisotropy 1|2|4|8|16`: map texture filtering.
     anisotropy: Option<u16>,
-    /// `--mode waves|debug` and `--length short|normal|long`.
+    /// `--mode waves|debug`, `--length short|normal|long` and
+    /// `--difficulty beginner|normal|hard|suicidal|hoe`.
     game: waves::GameOptions,
-    /// Were `--mode` / `--length` typed (a joiner takes the host's and
-    /// says so when they differ from typed ones).
+    /// Were `--mode` / `--length` / `--difficulty` typed (a joiner takes
+    /// the host's and says so when they differ from typed ones).
     mode_given: bool,
     length_given: bool,
+    difficulty_given: bool,
     /// `--character NAME`: a KF character (System/*.upl); default Corporal_Lewis.
     character: Option<String>,
     /// `--behind-view`: start in behind view (KF's BehindView command; F4
@@ -170,6 +172,11 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 let n = it.next().ok_or("--length needs short, normal or long")?;
                 args.game.length = waves::GameLength::parse(&n).ok_or(format!("bad --length value: {n}"))?;
                 args.length_given = true;
+            }
+            "--difficulty" => {
+                let n = it.next().ok_or("--difficulty needs beginner, normal, hard, suicidal or hoe")?;
+                args.game.difficulty = game::difficulty::Difficulty::parse(&n).ok_or(format!("bad --difficulty value: {n} (beginner, normal, hard, suicidal or hoe)"))?;
+                args.difficulty_given = true;
             }
             "--wave" => {
                 let n = it.next().ok_or("--wave needs a number")?;
@@ -288,7 +295,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE] [--settings FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--log FILE] [--settings FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -353,15 +360,18 @@ fn main() -> AppExit {
         runlog::kv("frame_limit", &format!("fps={fps}"));
     }
     let game_options = args.game;
+    // KF's GameInfo.GameDifficulty: one value for the whole run.
+    game::difficulty::set_current(game_options.difficulty);
+    runlog::kv("difficulty", &game::difficulty::log_line(game_options.difficulty));
     let trader_menu = args.trader_menu;
     runlog::kv("trader_menu", &format!("kind={}", trader_menu.word()));
     let lobby = lobby_settings(&args);
     let veterancy = perks::Veterancy::from_options(args.perk);
     let net_plugin = net::NetPlugin {
         mode: args.net.clone(),
-        info: net::query::HostInfo { map: request.map.clone(), mode: format!("{:?}", game_options.mode), length: format!("{:?}", game_options.length), ..default() },
+        info: net::query::HostInfo { map: request.map.clone(), mode: format!("{:?}", game_options.mode), length: format!("{:?}", game_options.length), difficulty: format!("{:?}", game_options.difficulty), ..default() },
     };
-    runlog::kv("game_options", &format!("mode={:?} length={:?}", game_options.mode, game_options.length));
+    runlog::kv("game_options", &format!("mode={:?} length={:?} difficulty={:?}", game_options.mode, game_options.length, game_options.difficulty));
     let walk_settings = walk::WalkSettings {
         start_walking: !args.fly,
         autowalk: args.autowalk,
@@ -447,8 +457,9 @@ const QUERY_TRIES: u32 = 5;
 const QUERY_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
 
 /// `--join`: asks the host's query port (game port + 1, net/query.rs)
-/// for its map, mode and length and uses them, so `--join ADDR` alone is
-/// enough. The host wins over typed `--map` / `--mode` / `--length` (a
+/// for its map, mode, length and difficulty and uses them, so `--join
+/// ADDR` alone is enough. The host wins over typed `--map` / `--mode` /
+/// `--length` / `--difficulty` (a
 /// note is printed when they differ). No answer: an error, unless `--map`
 /// was typed (then the game goes on with the typed options, as before the
 /// query existed, e.g. when only the game port is open in a firewall).
@@ -463,11 +474,12 @@ fn ask_host(args: &mut Args) -> Result<(), String> {
             runlog::kv(
                 "net_query_answer",
                 &format!(
-                    "from={qaddr} after_ms={} host_map={} mode={} length={} players={} max_players={} match_started={} protocol={:#x} game_port={}",
+                    "from={qaddr} after_ms={} host_map={} mode={} length={} difficulty={} players={} max_players={} match_started={} protocol={:#x} game_port={}",
                     took.as_millis(),
                     info.map,
                     info.mode,
                     info.length,
+                    info.difficulty,
                     info.players,
                     info.max_players,
                     info.match_started,
@@ -520,6 +532,15 @@ fn ask_host(args: &mut Args) -> Result<(), String> {
             args.game.length = l;
         }
         None => runlog::kv("net_query_override", &format!("what=length host={} reason=unknown_kept_mine mine={:?}", host.length, args.game.length)),
+    }
+    // The host's difficulty (its KFGRI.GameDiff): the joiner's dosh,
+    // perks and names follow it; the zeds are the host's anyway.
+    match game::difficulty::Difficulty::parse(&host.difficulty) {
+        Some(d) => {
+            note("difficulty", args.difficulty_given.then(|| format!("{:?}", args.game.difficulty)), &host.difficulty);
+            args.game.difficulty = d;
+        }
+        None => runlog::kv("net_query_override", &format!("what=difficulty host={} reason=unknown_kept_mine mine={:?}", host.difficulty, args.game.difficulty)),
     }
     if host.match_started {
         println!("note: the match at {} has already started", server.ip());

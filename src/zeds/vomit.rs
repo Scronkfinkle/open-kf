@@ -4,8 +4,8 @@
 //! on; reaching the level it lands (Flying.Landed / HitWall), leaves a
 //! VomitDecal and, in OnGround.BeginState, blows up at once: HurtRadius of
 //! BaseDamage 3 + Damage 4 x GoopLevel 1 = 7 within 120. All vomit damage is
-//! DamTypeVomit, which starts the player's bile burn (combat.rs). Normal
-//! difficulty (damage modifier 1).
+//! DamTypeVomit, which starts the player's bile burn (combat.rs). Damage
+//! and BaseDamage x the difficulty's scale (`vomit_damage`).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -24,6 +24,13 @@ const CLASS: &str = "KFMod.KFBloatVomit";
 pub const SPEED: f32 = 400.0;
 const DAMAGE: f32 = 4.0;
 const BASE_DAMAGE: f32 = 3.0;
+
+/// KFBloatVomit.PostBeginPlay: BaseDamage and Damage = Max(int(x
+/// DifficultyDamageModifer), 1) (Beginner 0.3, Normal 1, Hard 1.5,
+/// Suicidal 2, Hell on Earth 2.5).
+fn vomit_damage(d: f32) -> f32 {
+    (d * crate::game::difficulty::current().vomit_damage_scale()).trunc().max(1.0)
+}
 const GOOP_LEVEL: f32 = 1.0;
 const DAMAGE_RADIUS: f32 = 120.0;
 const LIFE_SPAN: f32 = 8.0;
@@ -195,7 +202,7 @@ fn move_globs(
             let flat = (end - p).truncate().length();
             if flat <= PLAYER_RADIUS + GLOB_RADIUS && (end.z - p.z).abs() <= PLAYER_HALF_HEIGHT + GLOB_RADIUS {
                 g.touched.push(who);
-                let hurt = hurt_radius(&spatial, p, end, DAMAGE);
+                let hurt = hurt_radius(&spatial, p, end, vomit_damage(DAMAGE));
                 if let Some(amount) = hurt {
                     damage.write(crate::game::combat::PlayerDamaged {
                         amount,
@@ -229,7 +236,7 @@ fn move_globs(
             let mut hurt = None;
             let mut hit_others = Vec::new();
             for &(who, p) in &targets {
-                let Some(amount) = hurt_radius(&spatial, p, at, BASE_DAMAGE + DAMAGE * GOOP_LEVEL) else { continue };
+                let Some(amount) = hurt_radius(&spatial, p, at, vomit_damage(BASE_DAMAGE) + vomit_damage(DAMAGE) * GOOP_LEVEL) else { continue };
                 damage.write(crate::game::combat::PlayerDamaged {
                     amount,
                     armor_stops: true,

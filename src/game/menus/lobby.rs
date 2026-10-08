@@ -9,9 +9,6 @@ use super::DrawCtx;
 use super::gui::{Align, Painter, State, named_font};
 use super::perk_panel;
 
-/// LobbyMenu.DifficultyString values by KFGRI.BaseDifficulty; we play
-/// Normal (GameDifficulty 2).
-const DIFFICULTY: &str = "Normal";
 
 pub(super) fn draw(p: &mut Painter, c: &DrawCtx) {
     let gui = p.gui;
@@ -84,9 +81,10 @@ pub(super) fn draw(p: &mut Painter, c: &DrawCtx) {
     let movie = Rect::from_corners(ad.min + Vec2::new(5.0, 30.0), ad.min + Vec2::new(5.0 + 320.0 * s, 30.0 + 240.0 * s));
     p.fill(movie, [0, 0, 0, 255], "Movie(not_played)");
 
-    // Map, difficulty and wave.
+    // Map, difficulty (LobbyMenu: BeginnerString .. HellOnEarthString by
+    // KFGRI.BaseDifficulty) and wave.
     p.section(gui.comp("LobbyMenu.GameInfoB").rect(screen), "", true, "GameInfoB");
-    for (name, text) in [("LobbyMenu.CurrentMapL", format!("Current Map: {}", c.data.map_title)), ("LobbyMenu.DifficultyL", format!("Difficulty Level: {DIFFICULTY}"))] {
+    for (name, text) in [("LobbyMenu.CurrentMapL", format!("Current Map: {}", c.data.map_title)), ("LobbyMenu.DifficultyL", format!("Difficulty Level: {}", crate::game::difficulty::current().name()))] {
         let l = gui.comp(name);
         p.text_in(named_font(&l.font, w), &text, l.rect(screen), l.text_align(), true, l.color.unwrap_or(white), name);
     }
