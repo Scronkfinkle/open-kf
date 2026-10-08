@@ -6201,3 +6201,33 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Player movement from KF's rules (branch fix/player-movement)
+
+**Changed:** seven commits, one per rule: walking key and iron sights at
+40 % speed with no walking off ledges (`player/walk.rs`, `WeaponEffects.aiming`
+in `weapons/weapon/`); eye height smoothing on steps and a ceiling limit
+(new `player/eye.rs`); landing dip and LandBob; the walking bob applied
+twice to the camera (`weapons/weapon/animate.rs`); low-health slowdown;
+falling damage (type Fell, armour does not stop it); gravity and
+ZoneVelocity from physics volumes (new `world/physvol.rs`, loaded in
+`world/map.rs`). DESIGN.md "Player movement details from KF" PM1-PM7.
+**Why:** the player-movement audit against KF's scripts and engine
+(local notes in work/re/audits/player-movement.md, pointers in RE.md).
+**Tested how:** `cargo test` (244 + 24 pass, new tests for the 40 %
+speed, health factor, fall damage, eye smoothing, volume lookup); clippy
+(only the old boss.rs warning); headless KF-WestLondon walk with Ctrl
+held from a script, a jump, then walking on; headless KF-MoonBase jumps.
+**Result:** WestLondon: speed 198 -> 79 while Ctrl is held (cap 79.3),
+back to 198 on release; eye height 45.6 one sample after a 10-unit step
+down, 44.0 the next; jump apex 54.1 (KF: 325^2 / 1900 = 55.6); walking
+on off a drop landed at 776 units/s, 29.3 damage. MoonBase: default
+volume gravity -320, ZoneVelocity +15, 7 more volumes read; jump apex
+179.3 (165 from gravity + about 15 from the zone velocity).
+**Still broken / not tested:** the ledge stop while walking was not
+reached in a run (unit-tested logic only); the landing dip and double
+bob not looked at; KF-MoonBase's low-gravity volumes not entered; zeds
+still use 950 gravity everywhere; crouch, box-shaped collision and ramp
+step-up (MOV-5/6/10) not done. Not played by you.
+**Next:** your play test (Ctrl walk, a jump, a fall), then zed gravity
+per volume.
