@@ -501,6 +501,38 @@ impl RouteInput<'_> {
     }
 }
 
+/// KF's anchor search: nav points within this many Unreal units...
+const ANCHOR_RANGE: f32 = 1200.0;
+/// ...at most this many, nearest first.
+const ANCHOR_CANDIDATES: usize = 32;
+
+/// KF's cheap check before the reach test: a line from `a` to `b`, or, if
+/// that is blocked, from `b` raised by the pawn's half height (Unreal
+/// units) to `a` raised the same.
+fn sees(spatial: &SpatialQuery, a: Vec3, b: Vec3, half_height: f32) -> bool {
+    let clear = |a: Vec3, b: Vec3| {
+        let Ok(d) = Dir3::new(b - a) else { return true };
+        spatial.cast_ray(a, d, (b - a).length(), true, &crate::world::collision::zed_filter()).is_none()
+    };
+    let up = Vec3::Y * half_height * SCALE;
+    clear(a, b) || clear(b + up, a + up)
+}
+
+/// KF's anchor search (FindPathToward): nav points within 1200 units of
+/// `at`, nearest first, at most 32; the first one in sight that passes
+/// `reach` is the anchor. Returns it with its distance (Unreal units) and
+/// the number of points tried.
+pub fn anchor(nav: &NavNetwork, spatial: &SpatialQuery, at: Vec3, half_height: f32, reach: impl Fn(usize) -> bool) -> (Option<(usize, f32)>, usize) {
+    let mut tried = 0;
+    for (i, d) in nav.near(at, ANCHOR_RANGE * SCALE).into_iter().take(ANCHOR_CANDIDATES) {
+        tried += 1;
+        if sees(spatial, at, nav.points[i].pos, half_height) && reach(i) {
+            return (Some((i, d / SCALE)), tried);
+        }
+    }
+    (None, tried)
+}
+
 /// Re-check interval for walking straight at the player while following a
 /// route, and for re-aiming while walking straight at the player (assumed;
 /// KF re-runs PickDestination when a move ends).
@@ -670,21 +702,12 @@ impl Router {
     /// FindPathToward: the first point to head for (with the RouteCache[1]
     /// shortcut), avoiding `extra` (point, cost) and the blocked way.
     fn find_path(&mut self, nav: &NavNetwork, spatial: &SpatialQuery, inp: &RouteInput, extra: Option<(usize, f32)>) -> Option<usize> {
-        let range = 1500.0 * SCALE;
-        let starts: Vec<(usize, f32)> = nav
-            .near(inp.pos, range)
-            .into_iter()
-            .take(8)
-            .filter(|&(i, _)| inp.walkable(spatial, inp.pos, nav.points[i].pos, HUNT_RADIUS))
-            .map(|(i, d)| (i, d / SCALE))
-            .collect();
-        let goals: Vec<(usize, f32)> = nav
-            .near(inp.player, range)
-            .into_iter()
-            .take(8)
-            .filter(|&(i, _)| inp.walkable(spatial, nav.points[i].pos, inp.player, inp.touch_player))
-            .map(|(i, d)| (i, d / SCALE))
-            .collect();
+        // KF: one start anchor near the zed and one near the player (the
+        // first nav point in sight that the zed can reach), not a set.
+        let (start, start_tried) = anchor(nav, spatial, inp.pos, inp.half_height, |i| inp.walkable(spatial, inp.pos, nav.points[i].pos, HUNT_RADIUS));
+        let (goal, goal_tried) = anchor(nav, spatial, inp.player, inp.half_height, |i| inp.walkable(spatial, nav.points[i].pos, inp.player, inp.touch_player));
+        let starts: Vec<(usize, f32)> = start.into_iter().collect();
+        let goals: Vec<(usize, f32)> = goal.into_iter().collect();
         let blocked = self.blocked_way;
         let cost = |i: usize| -> f32 {
             let mut c = 0.0;
@@ -701,7 +724,10 @@ impl Router {
         let failed = &self.failed_links;
         let skip = |a: usize, b: usize| failed.iter().any(|&(l, n)| l == (a, b) && n >= 2);
         let Some((path, total)) = nav.route(&starts, &goals, &cost, &skip) else {
-            runlog::kv("zed_path_none", &format!("id={} starts={} goals={}", inp.id, starts.len(), goals.len()));
+            runlog::kv(
+                "zed_path_none",
+                &format!("id={} starts={} goals={} start_tried={start_tried} goal_tried={goal_tried}", inp.id, starts.len(), goals.len()),
+            );
             return None;
         };
         self.route_len = path.len();
