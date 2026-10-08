@@ -101,7 +101,7 @@ struct Args {
     net: net::NetMode,
     /// `--log FILE` (read before parsing, see runlog::path_from_args).
     log: Option<String>,
-    /// `--trader-menu nu|kf`: our NuMenu (default) or the KF-style list.
+    /// `--trader-menu nu|kf`: our NuMenu (default) or the classic KF screen (classic_menu.rs).
     trader_menu: buy_menu::MenuKind,
     /// `--settings FILE`: the settings file the volumes and the aim mode
     /// are read from and saved to (default: the launcher's, `settings/launcher.txt`).

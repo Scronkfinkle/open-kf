@@ -6674,3 +6674,95 @@ gets ANIM-1 in this pass. One commit per step, in this order:
   rate. Because the clock waits, zed claw hits and attack ends come 0.1 s
   later than before (as in KF). Logs: `zed_anim_tween`, and the hit line's
   `since_anim_start=`.
+
+## The classic KF trader menu (planned 2026-10-08: CT1-CT3)
+
+`--trader-menu kf` used to show a text list standing in for KF's
+GUIBuyMenu. This step draws it the way KF does (reference screenshot,
+untracked: `references/classic_trader_menu.jpg`, 2560 x 1440), with the
+menus' painter (`menus/gui.rs`: KF's textures and bitmap fonts, read from
+the install at startup). The shop rules do not change: the menu still
+only sends `ShopRequest` / `BuyVest` / `PerkRequest`, and
+`weapons/weapon/inventory.rs` / `player/armour.rs` decide. NuMenu stays
+the default.
+
+**Where the layout comes from.** Every piece is a GUI component saved in
+`System/KFGui.u` (read like the lobby's, log `menu_layout`); its class
+defaults (`kfpkg defaults KFGui.<Class>`) give the list drawing numbers.
+
+| Piece | KF component / class | Textures |
+|---|---|---|
+| page background | `GUIBuyMenu.PageBackground` | WhiteSquareTexture tinted 20,20,20 |
+| header boxes | `GUIBuyMenu.HBGLeft / HBGCenter / HBGRight` | `Thin_border` |
+| quick perk select (left header) | `GUIBuyMenu.QS` (`KFQuickPerkSelect`, `PB0-5`, `PSI0-5`), label `HBGLL` | `Perk_box`, `Perk_box_unselected`, perk OnHUDIcons |
+| Perk / Store buttons | `GUIBuyMenu.PerkTabB / StoreTabB` | KF_SquareButton (`Button`, `button_Highlight`) |
+| trader time, wave | `GUIBuyMenu.Time / Wave` (`UpdateHeader`) | - |
+| current perk, filter icons (right header) | `GUIBuyMenu.Perk`, `GUIBuyMenu.filter` (`KFBuyMenuFilter`, `PSI0-8`, `RealignIcons`) | `Perk_box_unselected`, perk icons, `No_Perk_Icon`, `Favorite_Perk_Icon` |
+| the store panel | `KFTab_BuyMenu`, docked under `GUIBuyMenu.PageTabs` | - |
+| inventory (left) | `KFTab_BuyMenu.Inv`, `SaleB` ("Sell Weapon"), `MagB/MagL`, `FillB/FillL`, `InventoryBox` (`KFBuyMenuInvList.DrawInvItem`, 11 rows: 7 weapons, "Equipment", knife, grenades, armour) | `Thick_border_Transparent`, `Item_box_box/bar` (+ `_Highlighted`), `Innerborder_transparent`, `Button`, `button_Highlight`, `button_Disabled` |
+| money | `KFTab_BuyMenu.MoneyBack`, `Cash`, `Money` | `Thin_border_Transparent`, `PatchTex.Statics.BanknoteSkin` |
+| selected item info (middle) | `KFTab_BuyMenu.Item`, `SelectedItemL`, `ItemInf` (`GUIBuyWeaponInfoPanel`: `INameBG/IName`, `IImage`, `PowerCap/RangeCap/SpeedCap`, `PowerBar/RangeBar/SpeedBar` (`GUIWeaponBar`), `LWeightBG/LWeight`), `SaleValueBG/SaleValue` | `Med_border_Transparent`, `Innerborder_transparent`, `progress_bar`, the pickup's TraderInfoTexture |
+| for sale (right) | `KFTab_BuyMenu.Sale`, `PurchaseB` ("Purchase Weapon"), `SaleBox` (`KFBuyMenuSaleList.DrawInvItem`, 10 rows, scroll bar) | `Thick_border_Transparent`, `Item_box_*` (+ `_Disabled`), `scrollbar` |
+| description (bottom left) | `KFTab_BuyMenu.Info`, `IScrollText` (`SetInfoText`) | `Thin_border` |
+| auto fill, exit (bottom right) | `KFTab_BuyMenu.AmmoExit`, `AutoFill`, `Exit` | `Thin_border`, KF_SquareButton |
+| encumbrance (footer) | `GUIBuyMenu.Weight`, `WeightIcoBG`, `WeightIco`, `WeightB` (`KFWeightBar.MyOnDraw`) | `Thin_border`, `Perk_box_unselected`, `Hud_Weight`, `Progress` |
+
+Texts are KF's defaults (KFGui.int says the same in English): "Trader
+Closes in", "Wave", "Current Perk", "Lv", "Sell Value: £", "Auto Fill
+Ammo", InfoText[0-2], "Weight: %i blocks", "Encumbrance Level",
+"Equipment", "Buy", "Purchased", "Repair". The catalogue gains each
+pickup's ItemShortName, Description (the weapon's), PowerValue /
+RangeValue / SpeedValue, CorrespondingPerkIndex, TraderInfoTexture and
+SecondaryAmmoShortName (display only).
+
+**Native parts (not in the scripts), guessed and labelled in the code:**
+the tab panel's docking (under PageTabs, to the bottom of the screen:
+fitted to the screenshot); bBoundToParent children without
+bScaleToParent (position inside the parent, size of the screen: fitted
+to the filter icons); `GUIProgressBar` (fill = Value / High, fitted to
+the screenshot's three bars); ImageStyle Justified (aspect kept,
+centred); the list font (UT2SmallFont) and button font (UT2MenuFont);
+disabled buttons drawn darker; double-click time 0.5 s.
+
+**Input.** Mouse as in KF: click a row to select it (left or right
+list; the other list loses its selection), double-click a sale row to
+buy it or an inventory name to sell it, the row's clip / fill buttons,
+the armour's buy / repair button, Purchase Weapon, Sell Weapon, Auto Fill
+Ammo, Exit Trader Menu, the filter icons, the quick perk icons, the
+wheel and the arrows scroll the sale list. Keys (ours, KF has none):
+Up / Down move in the list, Tab switches list, Left / Right change the
+filter, Enter buys / sells / buys armour, C clip, F fill, A auto fill,
+1-7 change perk, E / Escape / Backspace close (shared). Test actions
+`kf:up`, `kf:down`, `kf:tab`, `kf:left`, `kf:right`, `kf:enter`,
+`kf:clip`, `kf:fill`, `kf:fill_all`, `kf:buy`, `kf:sell`, `kf:filter:N`,
+`kf:select:CLASS`, `kf:click:ID` (a box drawn last frame), `kf:wheel:N`;
+the old `menu_*` actions still work.
+
+**Logs.** `classic_menu_open` (dosh, weight, filter, rows),
+`classic_menu_layout` (window size and every panel's box, once per size),
+`classic_menu_select`, `classic_menu_click`, `classic_menu_request`
+(action, weapon, shown price), `classic_menu_result` (next frame: dosh
+and weight before / after), `classic_menu_close`. `menu_dump` lists
+every quad.
+
+**Not in this step:** the Perks tab (the Perk button logs `not_built`),
+favourites (the ninth filter shows an empty list; no Favorite button),
+the item list's hover sounds, DLC / locked items (we sell base weapons
+only), the description's typing effect (`CharDelay`), FontScale.
+
+### Steps
+
+- **CT1** catalogue display fields, component list, textures and fonts.
+- **CT2** the drawing (`src/game/classic_menu.rs`), the text list goes.
+- **CT3** the input, test actions and logs.
+
+### As built (2026-10-08; headless runs, not played by you)
+
+CT1-CT3 built together (they only work together). `src/game/classic_menu.rs`
+(model `inv_rows`, input, drawing, 3 unit tests); `buy_menu.rs` lost the
+text list and its keys (opening / closing / test actions `buy:C` etc.
+unchanged), `ShopItem.info` added; `menus/gui.rs` reads the components,
+class values, and fonts Vr20-26 (UT2LargeFont, UT2HeaderFont,
+UT2ServerListFont); `menus/mod.rs` loads the menu's textures and the 48
+trader pictures only with `--trader-menu kf`, and draws it. At 2560 x 1440
+the boxes land within a few pixels of the screenshot's.

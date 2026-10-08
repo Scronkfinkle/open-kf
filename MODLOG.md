@@ -7140,3 +7140,52 @@ instead of dulling it (FB_Translucent is additive in UE2, so assumed
 right; not compared with the game). Additive meshes are drawn unlit
 (assumed). Spawn-view screenshots of the other maps not looked at.
 **Next:** the Combiner colour (CO_Multiply by a ConstantColor).
+
+## 2026-10-08 The classic KF trader menu (CT1-CT3)
+
+**Changed:** new `src/game/classic_menu.rs`: `--trader-menu kf` now draws
+KF's GUIBuyMenu / KFTab_BuyMenu screen (header with quick perk select,
+trader time, wave, current perk and the 9 filter icons; inventory list
+with 1 Mag / Fill buttons, Equipment, knife, grenades, armour; money;
+selected item info with picture, Power / Range / Speed bars, weight, sell
+value; for-sale list with scroll bar; description; Auto Fill Ammo, Exit;
+encumbrance bar), mouse, keys and `kf:` test actions, logs
+`classic_menu_*`, 3 unit tests. `src/game/buy_menu.rs`: the text list and
+its keys removed (opening / closing / `buy:C`-style actions unchanged);
+`ShopItem.info` (ItemShortName, Description, Power/Range/SpeedValue,
+CorrespondingPerkIndex, TraderInfoTexture, SecondaryAmmoShortName), log
+`shop_info`. `src/game/menus/gui.rs`: the screen's KFGui.u components and
+class values, fonts Vr20-26, UT2LargeFont / UT2HeaderFont /
+UT2ServerListFont. `src/game/menus/mod.rs`: loads the screen's textures
+and the trader pictures only with `--trader-menu kf`; draws it.
+`docs/DESIGN.md` (plan "The classic KF trader menu" and as built),
+`README.md`, a comment in `main.rs`.
+**Why:** you asked for the trader menu to look and work like KF's
+(references/classic_trader_menu.jpg) instead of a text list.
+**Tested how:** headless KF-WestLondon, waves, Commando, 2560 x 1440:
+`next_wave`, `end_wave`, `warp_shop`, `buy_menu`, then `kf:select`,
+`kf:click:` on the drawn boxes (purchase, fill, vest, sale row twice,
+autofill, exit), `kf:sell`, `kf:filter:1`, `kf:down`; screenshots
+compared with the reference; one 1280 x 720 run with `menu_dump`. Clippy
+(raw output counted). `cargo test` was refused by the agent's command
+guard: not run.
+**Result:** layout within a few pixels of the screenshot (log
+`classic_menu_layout`: e.g. Inv (1,144,854,971), ItemInf
+(856,399,846,632), Sale (1704,144,851,971) at 2560 x 1440). Opening:
+`classic_menu_open dosh=580 weight=1/15 filter=3 sale_rows=6 can_buy=1
+inv_rows=4 selected=inv:0:Single auto_fill=160`. Bullpup bought for 360
+(dosh 580 -> 220, weight 1 -> 7), filled for 60, sold for 270, armour 0 ->
+100 for 300, Shotgun double click refused as too expensive, auto fill 2
+requests, Exit closes (`buy_menu open=false reason=classic_exit_button`).
+962 quads at 1280 x 720. Clippy: 1 warning, old (zeds/boss.rs).
+**Still broken / not tested:** real mouse and keys (none on the virtual
+display; clicks driven by `kf:click:`); unit tests not run; the Perks tab
+(Perk button logs `not_built`), favourites, DLC/locked rows, hover sounds,
+typing effect; native parts guessed (panel docking, bar fill, disabled
+button look, list font, double click 0.5 s); the scroll bar arrows are
+plain (no arrow icons); at 1280 x 720 the shared font-size guess picks
+the biggest fonts, so the inventory's ammo text touches its buttons.
+Seen in the logs (shared rules, not changed): auto fill with 50 dosh left
+logged `shop_ammo weapon=KFMod.Frag added=1 paid=80.0 ... dosh=0` (paid
+more than one grenade's 40?) - worth checking. Not played by you.
+**Next:** your look at it in game; the Perks tab.

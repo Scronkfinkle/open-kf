@@ -1,8 +1,8 @@
 //! The buy menu (T3a): what the trader sells (KFLevelRules' per-perk
-//! lists and each pickup's prices), a keyboard text menu standing in for
-//! KF's GUI (KFBuyMenuSaleList / KFBuyMenuInvList), and the requests it
-//! sends; weapon.rs carries them out with KFPawn's rules. See DESIGN.md,
-//! T3a.
+//! lists and each pickup's prices), opening and closing the menu, and
+//! the requests a menu sends; weapon.rs carries them out with KFPawn's
+//! rules. The screens are numenu.rs (ours) and classic_menu.rs (KF's
+//! GUIBuyMenu). See DESIGN.md, T3a.
 
 use std::rc::Rc;
 
@@ -30,6 +30,28 @@ pub struct ShopItem {
     pub never_throw: bool,
     /// Numbers to compare weapons by (NuMenu's details panel only).
     pub stats: ShopStats,
+    /// What the classic menu shows (display only, no rule reads these).
+    pub info: ShopInfo,
+}
+
+/// A pickup's trader texts and pictures (KFWeaponPickup defaults, the
+/// weapon's Description), read for the classic menu (classic_menu.rs).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShopInfo {
+    /// ItemShortName (KFBuyMenuInvList's names), else ItemName.
+    pub short_name: String,
+    /// The weapon's Description (the inventory list's, KFTab_BuyMenu.SetInfoText).
+    pub description: String,
+    /// PowerValue, RangeValue, SpeedValue (GUIBuyWeaponInfoPanel's bars).
+    pub power: f32,
+    pub range: f32,
+    pub speed: f32,
+    /// CorrespondingPerkIndex (0-6 a perk's icon, 7 none).
+    pub perk_index: usize,
+    /// TraderInfoTexture, as "Package.Group.Name".
+    pub image: String,
+    /// SecondaryAmmoShortName (the M4 203's grenades).
+    pub secondary_name: String,
 }
 
 /// A weapon's comparable numbers from its class defaults (display only;
@@ -138,6 +160,7 @@ pub fn load_catalogue(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
             buy_clip_size: num("BuyClipSize", 0.0) as i32,
             never_throw: matches!(defaults.get(&wc, "bKFNeverThrow"), Some((Value::Bool(true), _))),
             stats: read_stats(set, defaults, &wc),
+            info: read_info(set, defaults, &wc, &pickup, name),
             weapon,
         });
     }
@@ -197,7 +220,46 @@ pub fn load_catalogue(set: &PackageSet, defaults: &ClassDefaults, map: &Rc<Loade
             .collect::<Vec<_>>()
             .join(" "),
     );
+    runlog::kv(
+        "shop_info",
+        &cat.items
+            .iter()
+            .map(|i| {
+                let f = &i.info;
+                format!("{}:p{}/r{}/s{}/perk{}/img={}", i.weapon.trim_start_matches("KFMod."), f.power, f.range, f.speed, f.perk_index, if f.image.is_empty() { "none" } else { f.image.as_str() })
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
     cat
+}
+
+/// `ShopInfo` from a pickup's (and its weapon's) defaults.
+fn read_info(set: &PackageSet, defaults: &ClassDefaults, wc: &ObjectHandle, pickup: &ObjectHandle, name: &str) -> ShopInfo {
+    let text = |h: &ObjectHandle, p: &str| match defaults.get(h, p) {
+        Some((Value::Str(s), _)) => Some(s),
+        _ => None,
+    };
+    let num = |p: &str| match defaults.get(pickup, p) {
+        Some((Value::Int(i), _)) => i as f32,
+        Some((Value::Float(f), _)) => f,
+        Some((Value::Byte(b), _)) => b as f32,
+        _ => 0.0,
+    };
+    let image = match defaults.get(pickup, "TraderInfoTexture").or_else(|| defaults.get(wc, "TraderInfoTexture")) {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r).map(|h| h.path()).unwrap_or_default(),
+        _ => String::new(),
+    };
+    ShopInfo {
+        short_name: text(pickup, "ItemShortName").or_else(|| text(pickup, "ItemName")).unwrap_or_else(|| name.to_string()),
+        description: text(wc, "Description").or_else(|| text(pickup, "Description")).unwrap_or_default(),
+        power: num("PowerValue"),
+        range: num("RangeValue"),
+        speed: num("SpeedValue"),
+        perk_index: num("CorrespondingPerkIndex") as usize,
+        image,
+        secondary_name: text(pickup, "SecondaryAmmoShortName").unwrap_or_default(),
+    }
 }
 
 /// `ShopStats` from a weapon class's defaults.
@@ -284,8 +346,8 @@ impl Default for ShopInventory {
 pub const MAX_CARRY_WEIGHT: f32 = 15.0;
 
 /// Which trader menu draws and reads the keys (`--trader-menu`): our
-/// NuMenu (numenu.rs, the default) or the KF-style text list (this file).
-/// Both send the same requests.
+/// NuMenu (numenu.rs, the default) or KF's classic screen
+/// (classic_menu.rs). Both send the same requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MenuKind {
     #[default]
@@ -310,17 +372,12 @@ impl MenuKind {
     }
 }
 
-/// KF opens on your perk's list; without perks, the first (Medic).
+/// Whether the menu is open, and which one is shown.
 #[derive(Resource, Default)]
 pub struct BuyMenu {
     pub open: bool,
     /// Which menu is shown (opening and closing are shared).
     pub kind: MenuKind,
-    /// 0 "For sale", 1 "Yours".
-    tab: usize,
-    cursor: [usize; 2],
-    /// The perk filter (index into the catalogue lists).
-    filter: usize,
 }
 
 impl BuyMenu {
@@ -332,7 +389,7 @@ impl BuyMenu {
 /// A row of the "For sale" list: item, price and weight as shown
 /// (KFBuyMenuSaleList.PopulateBuyables: int(Cost x GetCostScaling /
 /// DualDivider)).
-fn sale_rows(cat: &ShopCatalogue, inv: &ShopInventory, filter: usize, vet: &crate::game::perks::Vet) -> Vec<(usize, i32, f32)> {
+pub(crate) fn sale_rows(cat: &ShopCatalogue, inv: &ShopInventory, filter: usize, vet: &crate::game::perks::Vet) -> Vec<(usize, i32, f32)> {
     let Some((_, list)) = cat.lists.get(filter) else { return Vec::new() };
     list.iter()
         .filter_map(|&i| {
@@ -390,35 +447,9 @@ impl Plugin for BuyMenuPlugin {
             .init_resource::<ShopCatalogue>()
             .init_resource::<ShopInventory>()
             .add_message::<ShopRequest>()
-            .add_plugins(crate::game::numenu::NuMenuPlugin)
-            .add_systems(Startup, spawn_menu_text)
-            .add_systems(PreUpdate, menu_input.after(bevy::input::InputSystems))
-            .add_systems(Update, draw_menu);
+            .add_plugins((crate::game::numenu::NuMenuPlugin, crate::game::classic_menu::ClassicMenuPlugin))
+            .add_systems(PreUpdate, menu_input.after(bevy::input::InputSystems));
     }
-}
-
-#[derive(Component)]
-struct MenuText;
-
-fn spawn_menu_text(mut commands: Commands) {
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: bevy::text::FontSize::Px(26.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.95, 0.9, 0.8)),
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(40.0),
-            left: Val::Px(40.0),
-            padding: UiRect::all(Val::Px(12.0)),
-            display: Display::None,
-            ..default()
-        },
-        MenuText,
-    ));
 }
 
 /// Opens and runs the menu. While it is open the keys, mouse buttons,
@@ -431,13 +462,13 @@ pub(crate) fn menu_input(
     mut motion: ResMut<AccumulatedMouseMotion>,
     mut scroll: ResMut<AccumulatedMouseScroll>,
     mut menu: ResMut<BuyMenu>,
-    (game, shops, cat, inv): (Res<crate::game::waves::WaveGame>, Res<crate::game::trader::Shops>, Res<ShopCatalogue>, Res<ShopInventory>),
+    (game, shops, cat): (Res<crate::game::waves::WaveGame>, Res<crate::game::trader::Shops>, Res<ShopCatalogue>),
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     mut requests: MessageWriter<ShopRequest>,
     mut vest: MessageWriter<crate::player::armour::BuyVest>,
-    (vet, mut perk_requests): (Res<crate::game::perks::Veterancy>, MessageWriter<crate::game::perks::PerkRequest>),
+    vet: Res<crate::game::perks::Veterancy>,
 ) {
-    // Scripted test actions this frame ("buy_menu", "menu_down", ...,
+    // Scripted test actions this frame ("buy_menu", ...,
     // "buy:Shotgun", "sell:Shotgun", "ammo_fill:Shotgun", "ammo_clip:Shotgun").
     let actions: Vec<&str> = script.0.iter().filter(|(f, _)| *f == frames.0).map(|(_, a)| a.as_str()).collect();
     let act = |name: &str| actions.contains(&name);
@@ -466,12 +497,10 @@ pub(crate) fn menu_input(
         if use_pressed && in_shop && !wave_running {
             menu.open = true;
             // GUIBuyMenu: the sale list starts on your perk's
-            // (BuyMenuFilterIndex = the selected perk's index).
-            if let Some(p) = vet.selected {
-                menu.filter = p.index().min(cat.lists.len().saturating_sub(1));
-                menu.cursor[0] = 0;
-            }
-            runlog::kv("buy_menu", &format!("open=true filter={} kind={}", cat.lists.get(menu.filter).map_or("", |l| l.0), menu.kind.word()));
+            // (BuyMenuFilterIndex = the selected perk's index; each menu
+            // sets its own).
+            let filter = vet.selected.map_or(0, |p| p.index());
+            runlog::kv("buy_menu", &format!("open=true filter={} kind={}", cat.lists.get(filter).map_or("", |l| l.0), menu.kind.word()));
             keys.reset_all();
         }
         return;
@@ -481,142 +510,11 @@ pub(crate) fn menu_input(
     if wave_running || !in_shop || use_pressed || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::Escape) {
         menu.open = false;
         runlog::kv("buy_menu", &format!("open=false wave_running={wave_running} in_shop={in_shop}"));
-    } else if menu.kind == MenuKind::Kf {
-        // The KF-style list's keys (NuMenu reads its own: numenu.rs).
-        // "Yours" ends with the vest row (KFBuyMenuInvList adds it last).
-        // KFQuickPerkSelect (the perk icons in the buy menu): keys 1-7
-        // pick a perk, KF's PerkIndex order.
-        const PERK_KEYS: [KeyCode; 7] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7];
-        for (k, p) in PERK_KEYS.iter().zip(crate::game::perks::Perk::ALL) {
-            if keys.just_pressed(*k) {
-                perk_requests.write(crate::game::perks::PerkRequest(p));
-            }
-        }
-        let rows = [sale_rows(&cat, &inv, menu.filter, &vet.vet).len(), inv.owned.len() + 1];
-        let tab = menu.tab;
-        let n = rows[tab];
-        if keys.just_pressed(KeyCode::ArrowDown) || act("menu_down") {
-            menu.cursor[tab] = (menu.cursor[tab] + 1).min(n.saturating_sub(1));
-        }
-        if keys.just_pressed(KeyCode::ArrowUp) || act("menu_up") {
-            menu.cursor[tab] = menu.cursor[tab].saturating_sub(1);
-        }
-        if keys.just_pressed(KeyCode::ArrowRight) || act("menu_right") {
-            menu.filter = (menu.filter + 1) % cat.lists.len().max(1);
-            menu.cursor[0] = 0;
-        }
-        if keys.just_pressed(KeyCode::ArrowLeft) || act("menu_left") {
-            let len = cat.lists.len().max(1);
-            menu.filter = (menu.filter + len - 1) % len;
-            menu.cursor[0] = 0;
-        }
-        if keys.just_pressed(KeyCode::Tab) || act("menu_tab") {
-            menu.tab = 1 - menu.tab;
-        }
-        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-        let cursor = menu.cursor[menu.tab];
-        if keys.just_pressed(KeyCode::Enter) || act("menu_enter") {
-            if menu.tab == 0 {
-                if let Some(&(i, _, _)) = sale_rows(&cat, &inv, menu.filter, &vet.vet).get(cursor) {
-                    requests.write(ShopRequest::Buy(cat.items[i].weapon.clone()));
-                }
-            } else if let Some(o) = inv.owned.get(cursor) {
-                requests.write(ShopRequest::Sell(o.weapon.clone()));
-            } else if cursor == inv.owned.len() {
-                vest.write(crate::player::armour::BuyVest);
-            }
-        }
-        if (keys.just_pressed(KeyCode::KeyF) || act("menu_fill")) && menu.tab == 1 && cursor == inv.owned.len() {
-            vest.write(crate::player::armour::BuyVest);
-        }
-        for (key, name, fill) in [(KeyCode::KeyF, "menu_fill", true), (KeyCode::KeyC, "menu_clip", false)] {
-            if (keys.just_pressed(key) || act(name))
-                && menu.tab == 1
-                && let Some(o) = inv.owned.get(cursor)
-            {
-                requests.write(ShopRequest::Ammo { weapon: o.weapon.clone(), secondary: shift, fill });
-            }
-        }
     }
     keys.reset_all();
     mouse.reset_all();
     motion.delta = Vec2::ZERO;
     scroll.delta = Vec2::ZERO;
-}
-
-fn draw_menu(
-    menu: Res<BuyMenu>,
-    cat: Res<ShopCatalogue>,
-    inv: Res<ShopInventory>,
-    dosh: Res<crate::game::dosh::Dosh>,
-    game: Res<crate::game::waves::WaveGame>,
-    (armour, vet): (Res<crate::player::armour::Armour>, Res<crate::game::perks::Veterancy>),
-    mut text: Query<(&mut Text, &mut Node), With<MenuText>>,
-) {
-    let Ok((mut t, mut node)) = text.single_mut() else { return };
-    // NuMenu draws itself (numenu.rs).
-    if !menu.open || menu.kind != MenuKind::Kf {
-        node.display = Display::None;
-        return;
-    }
-    node.display = Display::Flex;
-    let score = dosh.score as i32;
-    let mut s = format!(
-        "TRADER    DOSH {score}    WEIGHT {:.0}/{:.0}    NEXT WAVE IN {}\n",
-        inv.weight,
-        inv.max_weight,
-        game.countdown.max(0)
-    );
-    // GUIBuyMenu.CurrentPerkLabel: "Current Perk: <SelectedVeterancy> Lv<level>".
-    s += &match vet.selected {
-        Some(p) => format!("Current Perk: {} Lv{}", p.name(), vet.vet.level),
-        None => "Current Perk: No Active Perk!".to_string(),
-    };
-    if vet.selected != vet.vet.perk {
-        s += &format!("  (now: {})", vet.vet.perk.map_or("none", |p| p.name()));
-    }
-    s += "    keys 1-7: Medic Support Sharpshooter Commando Berserker Firebug Demolitions\n";
-    s += "Up/Down select   Tab switch list   Enter buy/sell   C clip   F fill (Shift: 2nd ammo)   E close\n\n";
-    let filter = cat.lists.get(menu.filter).map_or("", |l| l.0);
-    s += &format!("{}FOR SALE   < {filter} >\n", if menu.tab == 0 { "> " } else { "  " });
-    let rows = sale_rows(&cat, &inv, menu.filter, &vet.vet);
-    if rows.is_empty() {
-        s += "    (nothing)\n";
-    }
-    for (k, &(i, price, weight)) in rows.iter().enumerate() {
-        let it = &cat.items[i];
-        let mark = if menu.tab == 0 && k == menu.cursor[0] { ">>" } else { "  " };
-        let why = if price > score {
-            "  (not enough dosh)"
-        } else if weight > 0.0 && inv.weight + weight > inv.max_weight {
-            "  (too heavy)"
-        } else {
-            ""
-        };
-        s += &format!("  {mark} {:<28} {:>5}   {:>2} kg{why}\n", it.name, price, weight);
-    }
-    s += &format!("\n{}YOURS\n", if menu.tab == 1 { "> " } else { "  " });
-    for (k, o) in inv.owned.iter().enumerate() {
-        let mark = if menu.tab == 1 && k == menu.cursor[1] { ">>" } else { "  " };
-        let ammo = match (o.ammo, cat.item(&o.weapon)) {
-            (Some((total, max, cap)), Some(item)) => {
-                let (clip, fill) = ammo_prices(item, total, max, cap, o.ammo_scale, o.mag_mod);
-                format!("ammo {total}/{max}  clip {clip}  fill {fill}")
-            }
-            _ => String::new(),
-        };
-        let alt = match (o.alt_ammo, cat.item(&o.weapon)) {
-            (Some((cur, max)), Some(item)) => format!("  2nd {cur}/{max} ({} each)", item.ammo_cost),
-            _ => String::new(),
-        };
-        let sell = if o.sellable { format!("sell {}", o.sell_value) } else { String::new() };
-        s += &format!("  {mark} {:<28} {:<10} {ammo}{alt}\n", o.name, sell);
-    }
-    let mark = if menu.tab == 1 && menu.cursor[1] == inv.owned.len() { ">>" } else { "  " };
-    let (points, fill) = crate::player::armour::menu_row(&armour, vet.vet.cost_scaling("vest"));
-    // BuyableVest.ItemName.
-    s += &format!("  {mark} {:<28} {:<10} armour {points}/100  fill {fill}\n", "Combat armour", "");
-    **t = s;
 }
 
 #[cfg(test)]
@@ -634,6 +532,7 @@ mod tests {
             buy_clip_size: 0,
             never_throw: weapon == "KFMod.Single",
             stats: ShopStats::default(),
+            info: ShopInfo::default(),
         }
     }
 

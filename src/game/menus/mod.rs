@@ -165,7 +165,7 @@ fn load_menus(
     request: Res<crate::world::map::MapRequest>,
     character: Res<crate::player::character::CharacterChoice>,
     mut images: ResMut<Assets<Image>>,
-    preview: Option<Res<crate::player::body::CharacterPreview>>,
+    (preview, buy_menu, cat): (Option<Res<crate::player::body::CharacterPreview>>, Res<crate::game::buy_menu::BuyMenu>, Option<Res<crate::game::buy_menu::ShopCatalogue>>),
 ) {
     let started = std::time::Instant::now();
     let root = &request.install_root;
@@ -187,6 +187,17 @@ fn load_menus(
     let mut extra: Vec<String> = Perk::ALL.iter().map(|p| p.icons().0.to_string()).collect();
     // The network scoreboard's boxes (net/scoreboard.rs).
     extra.push("InterfaceArt_tex.Menu.changeme_texture".to_string());
+    if buy_menu.kind == crate::game::buy_menu::MenuKind::Kf {
+        // The classic trader menu's textures and the weapons' trader
+        // pictures (TraderInfoTexture), only when that menu is chosen.
+        extra.extend(crate::game::classic_menu::TEXTURES.iter().map(|t| t.to_string()));
+        if let Some(cat) = &cat {
+            let mut images: Vec<String> = cat.items.iter().map(|i| i.info.image.clone()).filter(|i| !i.is_empty()).collect();
+            images.sort();
+            images.dedup();
+            extra.extend(images);
+        }
+    }
     if settings.open {
         // The portraits and biographies are only needed by the lobby.
         data.characters = crate::player::character::model_select_records(root).into_iter().map(|r| (r.name, r.portrait)).collect();
@@ -860,7 +871,7 @@ fn draw_menus(
     mut shown: Local<usize>,
     (script, frames): (Res<crate::weapons::weapon::ScriptedInput>, Res<bevy::diagnostic::FrameCount>),
     net: Res<crate::net::lobby::NetLobby>,
-    mut nu: crate::game::numenu::NuDraw,
+    (mut nu, mut classic): (crate::game::numenu::NuDraw, crate::game::classic_menu::ClassicDraw),
     audio: Option<Res<crate::audio::mixer::Audio>>,
     aim: Res<crate::weapons::weapon::AimSetting>,
 ) {
@@ -925,6 +936,8 @@ fn draw_menus(
         }
         // The trader's NuMenu (game/numenu.rs) uses the same painter.
         None if nu.showing() => crate::game::numenu::draw(&mut p, &mut nu),
+        // The classic KF trader menu (game/classic_menu.rs), the same way.
+        None if classic.showing() => crate::game::classic_menu::draw(&mut p, &mut classic),
         None => {}
     }
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "menu_dump") {
