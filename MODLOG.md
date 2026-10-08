@@ -6244,3 +6244,80 @@ in KF's list order instead of file order, which can change the order of
 things like shop lists (no ordering effect seen in the logs, not checked
 in play).
 **Next:** nothing for this fix.
+## 2026-10-08 Terrain lit by the map's stored vertex light (L3, REN-1) (branch fix/terrain)
+
+**Changed:** `crates/ue-assets/src/terrain.rs` (reads the light colour
+array saved at the end of each TerrainInfo: count, then R, G, B, A per
+heightmap vertex; KF's rules for a count that does not match the
+heightmap: more = first ones, fewer = white; unit tests);
+`crates/ue-assets/src/bin/kfpkg.rs` (`kfpkg terrain MAP` prints a
+`vertex_light` line); `src/world/map.rs` (terrain vertex colour = stored
+light x 2 in linear light, as baked meshes; layer materials unlit, with
+the baked-mesh swap so the flashlight still lights terrain; sun only as a
+fallback when the colours cannot be read; log `terrain_light`);
+`src/render/baked.rs` (the lit variant keeps the vertex alpha, needed for
+the additive terrain layers; baked meshes have alpha 1, unchanged);
+DESIGN.md "Terrain lighting (L3)"; test-views.md (KF-Farm expectation).
+**Why:** terrain was lit by our made-up sun on all 21 terrain maps. KF
+draws terrain as texture x stored vertex colour x 2 plus dynamic lights,
+and never uses a sun on it (from KF's native code; details in the local
+RE.md).
+**Tested how:** `kfpkg terrain` on every map; workspace tests; clippy;
+headless screenshots (mean brightness) of 10 terrain views at 60 frames
+and all 34 maps' start views at 8 frames, before and after; flashlight
+on/off on KF-Farm terrain.
+**Result:** 31 terrains on 21 maps: 30 store exactly width x height
+colours, KF-Hell's TerrainInfo6 stores 65536 for a 64 x 64 heightmap
+(first 4096 used). Logged e.g. `terrain_light terrain=0 stored=65536
+vertices=65536 drawn_vertices=28513 nonblack=28494 mean_rgb=10.3,15.2,25.2`
+(KF-Farm: blue night light, orange glow around the burning wreck).
+Screen mean brightness before -> after (start views): Farm 34.6 -> 14.0,
+SirensBelch 52.3 -> 14.0, EvilSantasLair 56.1 -> 17.9, ThrillsChills
+96.1 -> 54.6, Crash 92.3 -> 45.1, AbusementPark 37.6 -> 13.3, Hell 50.1 ->
+31.8, HillbillyHorror 48.8 -> 20.6, Wyre 17.1 -> 9.4, MountainPass 62.9 ->
+55.1, Manor 28.6 -> 27.8, Stronghold 15.5 -> 12.9; the 13 maps without
+terrain on screen unchanged (within 0.1). Nothing went black: snow and
+dirt now match the darkness of the buildings around them instead of
+glowing white. Flashlight on KF-Farm terrain: centre 8.7 -> 35.0.
+Tests 235 + 26 pass; clippy: no new warnings (1 old one in zeds/boss.rs).
+**Still broken / not tested:** not compared with real KF screenshots of
+a terrain map (none in references/); fog on painted upper layers still
+counted twice (REN-3, next); decoration layers (grass) still not drawn;
+KF blends in gamma space, we in linear light (small difference); not
+looked at by you.
+**Next:** REN-3 (terrain layers fog once).
+
+## 2026-10-08 Terrain layers add fog once, not once per layer (REN-3) (branch fix/terrain)
+
+**Changed:** `src/render/baked.rs` (the baked-mesh material gets a flags
+uniform: TERRAIN_WEIGHTED scales layer 0's colour by the weight in its
+vertex alpha, TERRAIN_FOG_BLACK makes fog fade a layer toward black
+instead of adding the fog colour); `src/world/map.rs` (terrain with
+stored light, outside the sky, always uses that material with the black
+lightmap instead of the unlit/lit swap; weights moved into
+`layer_weights` with a unit test; `terrain_loaded` logs
+`lit_by_stored_light`); DESIGN.md "Terrain lighting (L3)".
+**Why:** layer 0 is drawn opaque and the other layers added on top; Bevy
+fogged each added layer too, so the fog colour was counted 1 + (sum of
+upper-layer weights) times: up to double fog on painted terrain. KF
+alpha-blends each fogged layer over the one below, so fog counts once.
+**Tested how:** unit test (weights sum to 1; weighted sum = layer-over-
+layer blend; fog-once sum = KF's per-layer fog); workspace tests and
+clippy; headless screenshots of 10 terrain views (60 frames) and all 34
+start views (8 frames) against the REN-1 build; terrain-only crop
+(lower left 700x250) brightness; frame times on the KF-Farm view (600
+frames, two runs each); flashlight on/off on KF-Farm terrain.
+**Result:** terrain crop REN-1 -> REN-3: Manor 40.0 -> 35.9, MountainPass
+66.2 -> 53.7 (same both runs), Farm 10.6 -> 9.2, Hell 11.4 -> 9.6,
+HillbillyHorror 29.7 -> 28.9; Crash, SirensBelch, Stronghold, Wyre
+unchanged (no painted upper layers in view or little fog). The 21 maps
+without terrain in their start view: identical to the REN-1 build (so
+baked meshes are unchanged). Frame time KF-Farm view: about 37.5 ms ->
+38.8 ms. Flashlight centre 7.4 -> 26.6 (REN-1 build 8.7 -> 35.0, which
+over-counted the light on painted spots). Tests 236 + 26 pass; clippy
+no new warnings.
+**Still broken / not tested:** KF blends layers in gamma space, we in
+linear light (small colour difference where layers overlap); KF samples
+the alpha maps per pixel, we per vertex; not compared with real KF
+screenshots of a fogged terrain map; not looked at by you.
+**Next:** your look at KF-Manor and KF-MountainPass in fog.

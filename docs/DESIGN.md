@@ -370,7 +370,8 @@ Steps:
 6. Log: heightmap size, height range, PathNode offset statistics, triangles,
    layers. Check by screenshot on KF-Farm.
 
-Not covered: decoration layers (grass meshes), terrain lighting.
+Not covered: decoration layers (grass meshes); terrain lighting came later
+(L3, below).
 
 **Results.** The height formula holds: on every terrain checked, ground actors
 sit a median 43-44 units above the computed ground (KF-Farm: 805 of 847
@@ -385,6 +386,50 @@ the others are additive, scaled by theirs. That gives the same result as
 layer-over-layer blending regardless of draw order. All 21 terrain maps load
 (up to 4 terrains per map, heightmaps from 32x32 to 512x512, including
 non-square ones).
+
+### Terrain lighting (L3, planned 2026-10-08)
+
+**What KF does (from its native code; details in the local RE.md).** The
+map stores a light colour for every heightmap vertex at the very end of each
+TerrainInfo: a count, then R, G, B, A per vertex (row by row, y x width +
+x; A always 255). The editor's lighting build computes them from the zone
+ambient and the map's lights; the game never recomputes them, it only draws
+them. Each terrain pixel is texture x vertex colour x 2, plus dynamic lights
+(the flashlight). There is no sun on terrain. The game reads the array with
+the current heightmap width: if fewer colours are stored than the heightmap
+has vertices it uses white; if more (KF-Hell's TerrainInfo6: 65536 stored
+for a 64 x 64 heightmap) the first ones.
+
+**Plan.**
+1. `ue-assets/terrain.rs` reads the array (checks the count in front of
+   it), `kfpkg terrain MAP` prints stored count, vertex count, mean colour.
+2. The terrain mesh's vertex colour becomes stored colour x K (K = 2, the
+   same linear-light conversion as baked placed meshes) times the layer
+   weight; the layer materials become unlit, with the baked-mesh swap
+   (render/baked.rs) so the flashlight still lights terrain. If the colours
+   cannot be read, the terrain keeps the old sun lighting and the log says
+   `terrain_light ... missing`.
+3. Log `terrain_light terrain=N stored= vertices= drawn_vertices= nonblack=
+   mean_rgb=` per terrain.
+
+**Fog on terrain layers (planned and built 2026-10-08).** KF draws layer 0
+opaque and every further layer alpha-blended over it, each fogged, so the
+fog colour counts once whatever is painted. Ours adds the upper layers
+(order-independent), and before this fix each added layer brought its own
+share of fog colour: up to double fog where an upper layer is painted.
+Now layer 0 is fogged normally and the added layers fade toward black with
+distance instead; the sum equals KF's blend exactly (unit test
+`terrain_layer_weights_match_blending_and_sum_to_one`). To do that the
+terrain always uses the baked-mesh material (render/baked.rs) with a flag
+per layer (layer 0: scaled by its weight carried in the vertex alpha;
+upper layers: fog to black). Being always lit costs about 1 ms a frame on
+KF-Farm (headless: 37.5 -> 38.8 ms); the flashlight on terrain is now
+scaled by the layer weights too. Terrain in the sky zone (no fog there)
+and terrain without stored colours keep the plain material.
+
+Effect on zeds and players standing on terrain: none. Actor lighting
+already uses the map's own lights and zone ambient, not the terrain's
+colours, and the made-up sun is not an actor light source.
 
 ## Walking with collision (milestone 2, implemented 2026-10-03; play test pending)
 
@@ -3128,7 +3173,8 @@ result in the map file; we read and draw that.
   modulate). The HUD text is not tinted. Log `vision_overlay` on each
   target change. Measured on your matching screenshot (ZoneInfo4, x1.16,
   1.04, 0.86): it accounts for most of the colour gap.
-- **L3, terrain lighting.** Find where KF keeps it; draw it.
+- **L3, terrain lighting.** Implemented 2026-10-08: see "Terrain lighting
+  (L3)" under Terrain.
 - **L4, moving things.** Zeds and weapons lit by the map's Light actors
   near them plus zone ambient, as UE2 lights actors; the made-up sun goes.
   See "Actor lighting (L4)" below.

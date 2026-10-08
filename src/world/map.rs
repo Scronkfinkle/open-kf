@@ -628,6 +628,7 @@ fn load_map(
     compressed: Option<Res<CompressedImageFormatSupport>>,
     graphics: Option<Res<crate::engine::graphics::GraphicsSettings>>,
     mut baked_materials: ResMut<Assets<crate::render::baked::BakedMaterial>>,
+    black_lightmap: Option<Res<crate::render::baked::BlackLightmap>>,
 ) {
     let started = Instant::now();
     let set = PackageSet::new(&request.install_root);
@@ -1405,7 +1406,8 @@ fn load_map(
 
     // --- Terrain ---
     let sky_zone_index = sky_zone.as_ref().map(|z| z.0);
-    spawn_terrains(&mut commands, &mut meshes, &mut loader, &set, &lp, sky_zone_index, &mut collision.terrain);
+    let terrain_black = black_lightmap.as_deref().cloned();
+    spawn_terrains(&mut commands, &mut meshes, &mut loader, &set, &lp, sky_zone_index, terrain_black.as_ref(), &mut collision.terrain);
 
     runlog::kv(
         "sky_zone",
@@ -1509,6 +1511,19 @@ fn level_title(lp: &ue_assets::package_set::LoadedPackage) -> String {
 /// coverage left by the layers above it, so weights sum to 1. Layer 0 is
 /// drawn opaque scaled by its weight; the others are added on top
 /// (additive blending), which makes the result independent of draw order.
+///
+/// Light: KF draws terrain as texture x the vertex light colour stored in
+/// the map x 2 (plus dynamic lights such as the flashlight), the same rule
+/// as baked placed meshes, so terrain uses the baked-mesh material
+/// (render/baked.rs) with the colour carried in the vertex colour and the
+/// layer weight in the vertex alpha. Only if the stored colours cannot be
+/// read does it fall back to the sun.
+///
+/// Fog: KF alpha-blends each fogged layer over the one below, so the fog
+/// colour counts once. With additive layers that means: layer 0 is fogged
+/// normally, the added layers fade toward black with distance (their share
+/// of the fog colour is already in layer 0's), which gives the same sum.
+#[allow(clippy::too_many_arguments)]
 fn spawn_terrains(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -1516,6 +1531,7 @@ fn spawn_terrains(
     set: &PackageSet,
     lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>,
     sky_zone: Option<u8>,
+    black_lightmap: Option<&crate::render::baked::BlackLightmap>,
     collision: &mut TriSoup,
 ) {
     for (ti, result) in read_terrains(set, lp).into_iter().enumerate() {
@@ -1576,17 +1592,8 @@ fn spawn_terrains(
             .iter()
             .map(|layer| layer_alpha(set, &handle, layer.alpha_map, &t))
             .collect();
-        // Effective weights: a_i * product over j > i of (1 - a_j); layer 0 counts as fully covering.
         let n_layers = t.layers.len();
-        let mut weights = vec![vec![0f32; w * h]; n_layers];
-        for v in 0..w * h {
-            let mut remaining = 1.0f32;
-            for i in (0..n_layers).rev() {
-                let a = if i == 0 { 1.0 } else { alphas[i][v] };
-                weights[i][v] = a * remaining;
-                remaining *= 1.0 - a;
-            }
-        }
+        let weights = layer_weights(&alphas, w * h);
 
         // Collision, each triangle with the SurfaceType of the layer that
         // shows most at its corners (a guess: what a trace on terrain
@@ -1603,6 +1610,23 @@ fn spawn_terrains(
             }
         }
 
+        // Stored vertex light x K, in linear light (as baked meshes).
+        let k_lin = crate::render::lighting::brightness_linear();
+        let light: Option<Vec<[f32; 3]>> = (!t.vertex_light.is_empty()).then(|| {
+            t.vertex_light
+                .iter()
+                .map(|c| {
+                    let l = Color::srgb_u8(c[0], c[1], c[2]).to_linear();
+                    [l.red * k_lin, l.green * k_lin, l.blue * k_lin]
+                })
+                .collect()
+        });
+        log_terrain_light(ti, &t, &tris);
+
+        // Stored light outside the sky: the baked-mesh material, always lit
+        // (flashlight), with the terrain fog rule (see the function note).
+        // KF_BAKED_UNLIT=1 (for comparing): plain unlit layers instead.
+        let terrain_lit = light.is_some() && !in_sky && black_lightmap.is_some() && std::env::var_os("KF_BAKED_UNLIT").is_none();
         let (mut layer_tris, mut layers_drawn) = (0usize, 0usize);
         for (li, layer) in t.layers.iter().enumerate() {
             let Some(tex_handle) = resolve(set, &handle, layer.texture).texture else {
@@ -1623,8 +1647,15 @@ fn spawn_terrains(
                         b.normals.push(normals[v]);
                         b.uvs.push(layer.uv(ue[v]));
                         let wgt = weights[li][v];
-                        // Layer 0 is opaque: scale its colour. Others: additive, scaled by alpha.
-                        b.colors.push(if li == 0 { [wgt, wgt, wgt, 1.0] } else { [1.0, 1.0, 1.0, wgt] });
+                        let l = light.as_ref().map_or([1.0; 3], |l| l[v]);
+                        // Layer 0 is opaque, scaled by its weight (in the colour for the
+                        // plain material, in the alpha for the terrain-lit one). Others:
+                        // additive, scaled by alpha.
+                        b.colors.push(if li == 0 && !terrain_lit { [l[0] * wgt, l[1] * wgt, l[2] * wgt, 1.0] } else { [l[0], l[1], l[2], wgt] });
+                        if light.is_some() {
+                            // Lightmap UVs for the black lightmap (render/baked.rs).
+                            b.uvs1.push([0.5, 0.5]);
+                        }
                         (b.positions.len() - 1) as u32
                     });
                     b.indices.push(idx);
@@ -1639,10 +1670,21 @@ fn spawn_terrains(
                 alpha_mode: if li == 0 { AlphaMode::Opaque } else { AlphaMode::Add },
                 perceptual_roughness: 1.0,
                 reflectance: 0.1,
-                unlit: in_sky,
+                unlit: in_sky || light.is_some(),
                 ..default()
             });
-            let mut e = commands.spawn((Mesh3d(meshes.add(b.build())), MeshMaterial3d(material), Transform::IDENTITY, MapGeometry));
+            let mesh = meshes.add(b.build());
+            let mut e = commands.spawn((Mesh3d(mesh), Transform::IDENTITY, MapGeometry));
+            match black_lightmap.filter(|_| terrain_lit) {
+                Some(black) => {
+                    let mut lit = crate::render::baked::baked_material(loader.materials.get(&material).expect("just added"));
+                    lit.extension.flags = if li == 0 { crate::render::baked::TERRAIN_WEIGHTED } else { crate::render::baked::TERRAIN_FOG_BLACK };
+                    e.insert((MeshMaterial3d(loader.baked_materials.add(lit)), crate::render::baked::black_lightmap(black)));
+                }
+                None => {
+                    e.insert(MeshMaterial3d(material));
+                }
+            }
             if in_sky {
                 e.insert(RenderLayers::layer(SKY_LAYER));
             }
@@ -1652,13 +1694,64 @@ fn spawn_terrains(
             "terrain_loaded",
             &format!(
                 "terrain={ti} heightmap={w}x{h} visible_triangles={} layers={n_layers} layers_drawn={layers_drawn} \
-                 layer_triangles={layer_tris} in_sky={in_sky} inverted={} seconds={:.2}",
+                 layer_triangles={layer_tris} in_sky={in_sky} lit_by_stored_light={terrain_lit} inverted={} seconds={:.2}",
                 tris.len(),
                 t.inverted,
                 started.elapsed().as_secs_f64()
             ),
         );
     }
+}
+
+/// Effective weight of each terrain layer at each vertex: a_i x product
+/// over the layers above (j > i) of (1 - a_j); layer 0 counts as fully
+/// covering, so the weights at a vertex sum to 1. Drawing layer 0 opaque
+/// and adding the others scaled by these weights gives the same colour as
+/// KF's layer-over-layer alpha blending.
+fn layer_weights(alphas: &[Vec<f32>], vertices: usize) -> Vec<Vec<f32>> {
+    let n_layers = alphas.len();
+    let mut weights = vec![vec![0f32; vertices]; n_layers];
+    for v in 0..vertices {
+        let mut remaining = 1.0f32;
+        for i in (0..n_layers).rev() {
+            let a = if i == 0 { 1.0 } else { alphas[i][v] };
+            weights[i][v] = a * remaining;
+            remaining *= 1.0 - a;
+        }
+    }
+    weights
+}
+
+/// Log the terrain's stored vertex light: how many colours the map stored,
+/// how many vertices there are, and the mean colour over the vertices of
+/// drawn triangles (`terrain_light`), or `terrain_light=missing` when the
+/// colours could not be read (then the terrain stays sun-lit).
+fn log_terrain_light(ti: usize, t: &Terrain, tris: &[[usize; 3]]) {
+    let vertices = t.width * t.height;
+    if t.vertex_light.is_empty() {
+        runlog::kv("terrain_light", &format!("terrain={ti} missing vertices={vertices} fallback=sun"));
+        return;
+    }
+    let mut used = vec![false; vertices];
+    for &v in tris.iter().flatten() {
+        used[v] = true;
+    }
+    let (mut sum, mut n, mut nonblack) = ([0u64; 3], 0u64, 0usize);
+    for (c, _) in t.vertex_light.iter().zip(&used).filter(|(_, u)| **u) {
+        for i in 0..3 {
+            sum[i] += c[i] as u64;
+        }
+        n += 1;
+        nonblack += c.iter().any(|&x| x > 0) as usize;
+    }
+    let mean = sum.map(|s| s as f64 / n.max(1) as f64);
+    runlog::kv(
+        "terrain_light",
+        &format!(
+            "terrain={ti} stored={} vertices={vertices} drawn_vertices={n} nonblack={nonblack} mean_rgb={:.1},{:.1},{:.1}",
+            t.vertex_light_stored, mean[0], mean[1], mean[2]
+        ),
+    );
 }
 
 /// Alpha (0..1) of a terrain layer at each heightmap vertex, from its
@@ -1696,6 +1789,27 @@ fn layer_alpha(set: &PackageSet, from: &ObjectHandle, alpha_map: ObjectRef, t: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_layer_weights_match_blending_and_sum_to_one() {
+        // Three layers, alphas (ignored for layer 0) 0.5 and 0.25 at one vertex.
+        let alphas = vec![vec![0.0], vec![0.5], vec![0.25]];
+        let w = layer_weights(&alphas, 1);
+        let sum: f32 = w.iter().map(|l| l[0]).sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        // Layer-over-layer blending of colours 10, 20, 40 (layer 0 first).
+        let (c0, c1, c2) = (10.0f32, 20.0, 40.0);
+        let blended = (c0 * (1.0 - 0.5) + c1 * 0.5) * (1.0 - 0.25) + c2 * 0.25;
+        let weighted = c0 * w[0][0] + c1 * w[1][0] + c2 * w[2][0];
+        assert!((blended - weighted).abs() < 1e-4);
+        // Fog once: each blended layer fogged as mix(c, fog, 1 - f) equals
+        // layer 0 fogged normally plus the others faded toward black.
+        let (f, fog) = (0.3f32, 100.0f32);
+        let fog_each = |c: f32| c * f + fog * (1.0 - f);
+        let kf = (fog_each(c0) * 0.5 + fog_each(c1) * 0.5) * 0.75 + fog_each(c2) * 0.25;
+        let ours = (c0 * w[0][0] * f + fog * (1.0 - f)) + c1 * w[1][0] * f + c2 * w[2][0] * f;
+        assert!((kf - ours).abs() < 1e-3, "{kf} vs {ours}");
+    }
 
     #[test]
     fn newell_handles_collinear_start() {

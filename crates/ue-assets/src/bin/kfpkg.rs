@@ -1155,6 +1155,27 @@ fn terrain(install: &Install, map: &str, at: Option<&str>) -> Result<bool, Strin
             t.width, t.height, t.location, t.scale, t.layers.len(),
             100.0 * t.visible_fraction(), t.inverted, t.zone_number
         );
+        {
+            let n = t.vertex_light.len();
+            let nonblack = t.vertex_light.iter().filter(|c| c.iter().any(|&v| v > 0)).count();
+            let mut sum = [0u64; 3];
+            let mut max = [0u8; 3];
+            for c in &t.vertex_light {
+                for i in 0..3 {
+                    sum[i] += c[i] as u64;
+                    max[i] = max[i].max(c[i]);
+                }
+            }
+            let mean = sum.map(|s| s as f64 / n.max(1) as f64);
+            println!(
+                "  vertex_light: stored={} used={n} vertices={} match={} nonblack={nonblack} mean_rgb={:.1},{:.1},{:.1} max_rgb={},{},{}",
+                t.vertex_light_stored,
+                t.width * t.height,
+                t.vertex_light_stored == t.width * t.height,
+                mean[0], mean[1], mean[2], max[0], max[1], max[2]
+            );
+            ok &= n == t.width * t.height;
+        }
         for (li, l) in t.layers.iter().enumerate() {
             println!(
                 "  layer {li}: texture={} alpha_map={} uv_per_unit=({:.5}, {:.5})",
