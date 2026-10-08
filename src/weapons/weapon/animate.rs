@@ -127,12 +127,12 @@ pub(super) fn animate_weapon(
 
     // Weapon bob (Pawn.WeaponBob): BobDamping x WalkBob sideways, and
     // (0.45 + 0.55 x BobDamping) x WalkBob vertically, plus LandBob. The
-    // camera already moved by WalkBob, so relative to it the weapon moves
-    // by the difference.
+    // camera already moved by twice WalkBob (CalcFirstPersonView), so
+    // relative to it the weapon moves by the difference.
     let mut part_translation = offset;
     if let Ok(main) = main_cam.single() {
         let d = w.defs[w.current].bob_damping;
-        let world = bob.side * (d - 1.0) + Vec3::Y * (bob.up * (0.45 + 0.55 * d - 1.0) + bob.land);
+        let world = bob.side * (d - 2.0) + Vec3::Y * (bob.up * (0.45 + 0.55 * d - 2.0) + bob.land);
         let local = main.rotation.inverse() * world;
         part_translation = offset + local;
         for &e in &w.defs[w.current].entities {

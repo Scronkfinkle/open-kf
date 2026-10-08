@@ -48,7 +48,7 @@ pub struct WalkSettings {
 }
 
 /// Walking bob shared with the weapon (KFPawn.CheckBob's WalkBob), Bevy space,
-/// metres. The camera is offset by it; weapons add BobDamping times it.
+/// metres. The camera is offset by twice it; weapons by BobDamping times it.
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct ViewBob {
     /// Sideways part (along the view's right axis).
@@ -779,8 +779,10 @@ fn walk(
             );
         }
         bob.land = w.eye.land_bob * SCALE;
-        // Pawn.EyePosition = EyeHeight + WalkBob.
-        t.translation = w.center + Vec3::Y * (w.eye.height * SCALE + bob.up) + bob.side;
+        // PlayerController.CalcFirstPersonView: Location + EyePosition()
+        // + WalkBob, and EyePosition = EyeHeight + WalkBob, so the camera
+        // gets the walking bob twice (no KF class changes this).
+        t.translation = w.center + Vec3::Y * (w.eye.height * SCALE + 2.0 * bob.up) + 2.0 * bob.side;
 
         // Twice a second: position, speed and ground state.
         if w.time - *last_log >= 0.1 {
