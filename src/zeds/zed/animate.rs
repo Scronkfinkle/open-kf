@@ -30,6 +30,28 @@ pub(super) fn passed_notifies(model: &SkinnedModel, seq: usize, prev: Option<f32
     model.notifies(seq).iter().filter(|n| notify_in_spans(n.time, len, &spans)).cloned().collect()
 }
 
+/// Tween in time of the upper-body layer (KFMonster.DoAnimAction plays
+/// channel 1 with tween 0.1) and its fade out once it ends (xPawn.AnimEnd:
+/// AnimBlendToAlpha(1, 0, 0.12)).
+pub(super) const LAYER_TWEEN: f32 = 0.1;
+pub(super) const LAYER_FADE_OUT: f32 = 0.12;
+
+/// Animation state beyond the playing sequences: tweens, the fading
+/// upper-body layer, and the local bone pose last shown.
+#[derive(Default)]
+pub(super) struct ZedAnim {
+    /// Local bone transforms of the pose last drawn (tweens start here).
+    pub last_locals: Vec<(Quat, Vec3)>,
+    /// The upper-body layer's tween into its first frame.
+    pub overlay_tween: Option<crate::render::anim::Tween>,
+    /// `Zed::overlay` as this system left it; anything else there means
+    /// another system started a new layer animation.
+    pub overlay_written: Option<(usize, f32, usize)>,
+    /// A finished upper-body layer holding its last key while its weight
+    /// fades out: (sequence, frame, root bone, fade).
+    pub overlay_fade: Option<(usize, f32, usize, crate::render::anim::Fade)>,
+}
+
 pub(super) fn start_anim(z: &mut Zed, seq: Option<usize>, looping: bool) {
     if z.sequence != seq {
         z.sequence = seq;
@@ -312,19 +334,52 @@ pub(super) fn animate_zeds(
                 );
             }
         }
-        // Upper-body layer, played once; it ends on its last key.
-        let overlay = z.overlay;
+        // Upper-body layer, played once. A new one (set by another system)
+        // tweens from the pose on screen to its first frame over 0.1 s and
+        // cancels a fading one; it ends on its last key, which then holds
+        // while the layer's weight fades to 0 over 0.12 s.
+        if let Some((_, _, _, fade)) = z.anim.overlay_fade.as_mut()
+            && fade.advance(dt)
+        {
+            z.anim.overlay_fade = None;
+            runlog::kv("zed_layer_fade_done", &format!("id={}", z.id));
+        }
+        if z.overlay.is_some() && z.overlay != z.anim.overlay_written {
+            z.anim.overlay_fade = None;
+            z.anim.overlay_tween = crate::render::anim::Tween::start(&z.anim.last_locals, LAYER_TWEEN);
+            if let Some((seq, _, _)) = z.overlay {
+                runlog::kv("zed_layer_start", &format!("id={} sequence={} tween={LAYER_TWEEN}", z.id, c.model.sequence_name(seq).unwrap_or("?")));
+            }
+        }
         if let Some((seq, f, root)) = z.overlay {
-            let next = f + dt * c.model.rate(seq);
+            // The layer's clock waits for its tween; the leftover time of
+            // the tick the tween ends in is played.
+            let play_dt = match z.anim.overlay_tween.as_mut().map(|t| t.advance(dt)) {
+                None => dt,
+                Some(None) => 0.0,
+                Some(Some(left)) => {
+                    z.anim.overlay_tween = None;
+                    left
+                }
+            };
+            let next = f + play_dt * c.model.rate(seq);
             let last = c.model.last_frame(seq);
             z.overlay = (next < last).then_some((seq, next, root));
+            if next >= last {
+                z.anim.overlay_tween = None;
+                z.anim.overlay_fade = Some((seq, last, root, crate::render::anim::Fade { alpha: 1.0, target: 0.0, left: LAYER_FADE_OUT }));
+                runlog::kv("zed_layer_end", &format!("id={} sequence={} fade_out={LAYER_FADE_OUT}", z.id, c.model.sequence_name(seq).unwrap_or("?")));
+            }
             let reached = next.min(last);
             let prev = z.overlay_sounds_heard.filter(|(s, _)| *s == seq).map(|(_, f)| f);
             let passed = passed_notifies(&c.model, seq, prev, reached, false);
             heard.extend(passed.iter().filter_map(|n| n.sound.clone()));
             speech.extend(passed.iter().filter(|_| c.boss.is_some()).filter_map(|n| boss_speech(&n.name)));
             z.overlay_sounds_heard = Some((seq, reached));
+        } else {
+            z.anim.overlay_tween = None;
         }
+        z.anim.overlay_written = z.overlay;
         // AnimNotify_Sound: played on the zed. Its slot and radius handling
         // are native (not in the scripts): SLOT_None and the default radius
         // for 0 are guesses; volumes over 1 (Siren scream 255) are capped
@@ -334,8 +389,26 @@ pub(super) fn animate_zeds(
             let radius = if n.radius > 0.0 { n.radius } else { crate::audio::mixer::DEFAULT_RADIUS };
             sounds.write(crate::audio::mixer::PlaySound::new(n.sound, crate::audio::mixer::Emitter::Entity(entity)).volume(n.volume).radius(radius));
         }
+        // The pose: the main sequence, the fading layer at its weight, the
+        // playing layer over it (through its tween).
+        let mut locals = c.model.sample_locals(z.sequence, z.frame);
+        if let Some((seq, f, root, fade)) = z.anim.overlay_fade {
+            let layer = c.model.sample_locals(Some(seq), f);
+            c.model.blend_locals(&mut locals, &layer, fade.alpha, Some(root));
+        }
+        if let Some((seq, f, root)) = z.overlay {
+            let mut layer = c.model.sample_locals(Some(seq), f);
+            if let Some(tw) = z.anim.overlay_tween.as_ref().filter(|t| t.from.len() == layer.len()) {
+                let mut from = tw.from.clone();
+                c.model.blend_locals(&mut from, &layer, tw.weight(), None);
+                layer = from;
+            }
+            c.model.blend_locals(&mut locals, &layer, 1.0, Some(root));
+        }
         // Decapitated: the head (and anything under it) shrinks into the neck.
-        let (skinned, bones) = c.model.pose_layered(z.sequence, z.frame, overlay, &collapse);
+        let bones = c.model.pose_from_locals(&locals, &[]);
+        let skinned = c.model.skin(&bones, &collapse);
+        z.anim.last_locals = locals;
         let to_actor = mesh_to_actor(c);
         c.model.upload_to(&z.meshes, &skinned, |p| coords::pos(to_actor(p).to_array()), &mut meshes);
         if let Some(gore) = gore.as_deref() {

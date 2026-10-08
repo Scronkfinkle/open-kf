@@ -2,6 +2,7 @@
 //! and the hit blur.
 
 pub mod skinned;
+pub mod anim;
 pub mod particles;
 pub mod decals;
 pub mod overlay;

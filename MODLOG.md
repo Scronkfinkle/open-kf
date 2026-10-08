@@ -6239,3 +6239,23 @@ footsteps with some weapons, the L85 reload, the Crawler's leap idle).
 **Result:** as above.
 **Still broken / not tested:** not checked in game (the affected notifies are rare).
 **Next:** ANIM-7.
+
+## 2026-10-08 ANIM-7: the zed upper-body layer tweens in and fades out (branch fix/animation)
+
+**Changed:** new `src/render/anim.rs` (`Tween`: linear-in-time move from the
+pose last shown to a new animation's first frame, the clock waiting for
+it; `Fade`: KF's linear layer-weight fade; unit tests);
+`src/zeds/zed/animate.rs` (`ZedAnim`: last shown local pose, layer tween,
+fading layer; a new layer tweens in over 0.1 s, a finished one holds its
+last key while its weight fades 1 -> 0 over 0.12 s; the pose is now built
+from local transforms); `mod.rs`, `spawn.rs`, `methods.rs` (the new field).
+**Why:** KF plays the zed's flinch / grab / ranged layer with a 0.1 s tween
+and, when it ends, fades the layer out over 0.12 s. Ours snapped in and out.
+**Tested how:** unit tests (tween weight 0.25 / 0.75 / 1 at 25 / 75 / 110 ms
+of 100, leftover 15 ms; fade 0.75 / 0.5 / 0.25 / 0 every 30 ms of 120);
+`cargo test` (239 + 24 pass). Headless: see the last entry of this series.
+**Result:** as above.
+**Still broken / not tested:** the layer's clock waits 0.1 s, so layered
+attacks (Clot grab, Husk / Patriarch fire) reach their notifies 0.1 s later,
+as in KF. Not looked at in game.
+**Next:** ANIM-3.

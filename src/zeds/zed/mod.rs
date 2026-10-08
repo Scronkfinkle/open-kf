@@ -491,6 +491,8 @@ pub struct Zed {
     /// reaction or a grab. One layer, as KF's channel 1: a new one replaces
     /// the old (a flinch interrupts a grab).
     overlay: Option<(usize, f32, usize)>,
+    /// Tweens and fades of the animation layers, and the pose last shown.
+    anim: ZedAnim,
     /// The attack in progress, if any.
     attack: Option<Attack>,
     /// Seconds since the head came off (DECAP lasts 2 s: no melee hits).
