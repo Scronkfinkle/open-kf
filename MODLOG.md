@@ -6259,3 +6259,29 @@ of 100, leftover 15 ms; fade 0.75 / 0.5 / 0.25 / 0 every 30 ms of 120);
 attacks (Clot grab, Husk / Patriarch fire) reach their notifies 0.1 s later,
 as in KF. Not looked at in game.
 **Next:** ANIM-3.
+
+## 2026-10-08 ANIM-3: zed movement animation rate from speed, and direction (branch fix/animation)
+
+**Changed:** `src/zeds/zed/animate.rs` (`four_way`, `move_rate`,
+`play_chase_anim`, `ZedAnim::rate` applied to the main sequence's clock,
+unit tests); `src/zeds/zed/load.rs` (MovementAnims / HeadlessWalkAnims /
+BurningWalkAnims per direction, log `zed_move_anims`); `src/zeds/zed/mod.rs`
+(the fields; standing threshold 10 -> 5 uu/s); `src/zeds/zed/think.rs` (the
+Chase branch calls `play_chase_anim`; `anim_rate=` on the `zed` line);
+`crates/ue-assets/src/class_defaults.rs` (`get_array_names_merged`: array
+defaults inherited element by element).
+**Why:** KF plays the movement animation at speed / (class default
+GroundSpeed x 1.1) and picks forward / back / left / right by the 0.82 rule;
+we played the forward one at rate 1 (feet sliding, raging Fleshpound and
+running Gorefast legs too slow). A direction the mesh lacks keeps the current
+animation, as in KF.
+**Tested how:** unit tests (0.82 rule incl. 45 deg -> side; Clot 115.5 uu/s ->
+1.0, Fleshpound 299 uu/s -> 2.09); `cargo test` 241 + 24 pass; headless
+KF-WestLondon `--spawn clot` and `--spawn gorefast`.
+**Result:** `zed_move_anim ... sequence=ClotWalk dir=0 speed_unreal=105
+rate=0.91`; Gorefast running `ZombieRun ... speed_unreal=225 rate=1.70`.
+`zed_move_anims` per class, e.g. Clot [ClotWalk,RunR,RunL,RunR], Fleshpound
+[PoundWalk,WalkB,RunL,RunR], Crawler [ZombieScuttle,B,L,R].
+**Still broken / not tested:** side / back animations not seen in a run (zeds
+mostly walk forward); turn-in-place stays our guess (ANIM-5).
+**Next:** ANIM-2.

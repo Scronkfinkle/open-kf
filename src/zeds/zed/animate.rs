@@ -38,8 +38,14 @@ pub(super) const LAYER_FADE_OUT: f32 = 0.12;
 
 /// Animation state beyond the playing sequences: tweens, the fading
 /// upper-body layer, and the local bone pose last shown.
-#[derive(Default)]
 pub(super) struct ZedAnim {
+    /// PlayAnim rate of the main sequence (x the sequence's own frames per
+    /// second): the movement animations scale it with speed, everything
+    /// else plays at 1.
+    pub rate: f32,
+    /// Direction index of the last movement animation (0 forward, 1 back,
+    /// 2 left, 3 right).
+    pub move_dir: usize,
     /// Local bone transforms of the pose last drawn (tweens start here).
     pub last_locals: Vec<(Quat, Vec3)>,
     /// The upper-body layer's tween into its first frame.
@@ -52,12 +58,89 @@ pub(super) struct ZedAnim {
     pub overlay_fade: Option<(usize, f32, usize, crate::render::anim::Fade)>,
 }
 
+impl Default for ZedAnim {
+    fn default() -> Self {
+        ZedAnim { rate: 1.0, move_dir: 0, last_locals: Vec::new(), overlay_tween: None, overlay_written: None, overlay_fade: None }
+    }
+}
+
+/// Engine rule for which of the four movement animations plays: from the
+/// horizontal velocity (Unreal x, y) and the actor's yaw (rotation units).
+/// Forward if the movement direction's dot with facing is over 0.82
+/// (within about 35 degrees), back under -0.82, else right if it points to
+/// the actor's right (+Y), else left.
+pub(super) fn four_way(velocity: Vec2, yaw: f32) -> usize {
+    if velocity.x.abs() < 1e-4 && velocity.y.abs() < 1e-4 {
+        return 0;
+    }
+    let d = velocity.normalize_or_zero();
+    let a = yaw * std::f32::consts::TAU / 65536.0;
+    let (x, y) = (Vec2::new(a.cos(), a.sin()), Vec2::new(-a.sin(), a.cos()));
+    let f = d.dot(x);
+    if f > 0.82 {
+        0
+    } else if f < -0.82 {
+        1
+    } else if d.dot(y) > 0.0 {
+        3
+    } else {
+        2
+    }
+}
+
+/// Engine rule for the movement animation's rate: speed over the class's
+/// default GroundSpeed x 1.1 (not the zed's own randomised or raging
+/// speed), no clamp.
+pub(super) fn move_rate(speed: f32, default_ground_speed: f32) -> f32 {
+    speed / (default_ground_speed * 1.1).max(1e-3)
+}
+
+/// A chasing zed's animation each tick. Moving: `forward` (MovementAnims[0]
+/// as its state sets it) or the direction's animation, looping at a rate
+/// from its speed; a direction whose animation the mesh lacks keeps the
+/// current animation playing (KF's PlayAnim fails and nothing changes).
+/// Standing: `still` (idle or turning) at rate 1. `velocity` in Unreal
+/// units/s, Bevy axes.
+pub(super) fn play_chase_anim(z: &mut Zed, c: &ZedClass, moving: bool, forward: Option<usize>, still: Option<usize>, velocity: Vec3) {
+    if !moving {
+        start_anim(z, still, true);
+        return;
+    }
+    let dir = four_way(Vec2::new(-velocity.z, velocity.x), z.yaw);
+    let burning = z.zapped() || (z.burn_down > 0 && z.burn_down < CRISP_UP_THRESHOLD);
+    let anim = match dir {
+        0 => forward,
+        // ZombieBoss charging: all four are ChargingAnim.
+        _ if z.boss.is_some_and(|b| b.charge.is_some() || b.escaping()) && z.attack.is_none() => forward,
+        _ if z.decapitated => c.headless_dirs[dir],
+        _ if burning => c.burning_dirs[dir - 1],
+        _ => c.walk_dirs[dir],
+    };
+    let Some(anim) = anim else {
+        return;
+    };
+    let rate = move_rate(velocity.length(), c.ground_speed);
+    let changed = z.sequence != Some(anim) || z.anim.move_dir != dir;
+    start_anim(z, Some(anim), true);
+    z.anim.rate = rate;
+    z.anim.move_dir = dir;
+    if changed {
+        runlog::kv(
+            "zed_move_anim",
+            &format!("id={} sequence={} dir={dir} speed_unreal={:.0} rate={rate:.2}", z.id, c.model.sequence_name(anim).unwrap_or("?"), velocity.length()),
+        );
+    }
+}
+
+/// Plays `seq` on the main channel at rate 1 (restarting it unless it is
+/// already playing).
 pub(super) fn start_anim(z: &mut Zed, seq: Option<usize>, looping: bool) {
     if z.sequence != seq {
         z.sequence = seq;
         z.frame = 0.0;
     }
     z.looping = looping;
+    z.anim.rate = 1.0;
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)] // Bevy system parameters
@@ -293,7 +376,7 @@ pub(super) fn animate_zeds(
         let mut speech = Vec::new();
         if let Some(s) = z.sequence {
             let len = c.model.length(s).max(1e-3);
-            z.frame += time.delta_secs() * c.model.rate(s);
+            z.frame += time.delta_secs() * c.model.rate(s) * z.anim.rate;
             if z.looping {
                 z.frame %= len;
             } else {
@@ -454,6 +537,28 @@ mod tests {
             prev = Some(frame);
         }
         count
+    }
+
+    #[test]
+    fn four_way_uses_the_0_82_rule() {
+        // Facing +X (yaw 0); the actor's right is +Y.
+        assert_eq!(four_way(Vec2::new(1.0, 0.0), 0.0), 0);
+        assert_eq!(four_way(Vec2::new(0.83, 0.5578), 0.0), 0); // dot 0.83
+        assert_eq!(four_way(Vec2::new(0.7071, 0.7071), 0.0), 3); // 45 deg: right
+        assert_eq!(four_way(Vec2::new(0.7071, -0.7071), 0.0), 2);
+        assert_eq!(four_way(Vec2::new(-1.0, 0.1), 0.0), 1);
+        assert_eq!(four_way(Vec2::ZERO, 0.0), 0);
+        // Facing +Y (yaw 16384): its right is (-sin, cos) = -X.
+        assert_eq!(four_way(Vec2::new(0.0, 1.0), 16384.0), 0);
+        assert_eq!(four_way(Vec2::new(-1.0, 0.0), 16384.0), 3);
+    }
+
+    #[test]
+    fn move_rate_is_speed_over_default_ground_speed_x_1_1() {
+        // Clot: default GroundSpeed 105.
+        assert!((move_rate(115.5, 105.0) - 1.0).abs() < 1e-5);
+        // Raging Fleshpound: 2.3 x 130 = 299 uu/s.
+        assert!((move_rate(299.0, 130.0) - 2.0909).abs() < 1e-3);
     }
 
     #[test]

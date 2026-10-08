@@ -1544,8 +1544,10 @@ pub(super) fn think_and_move(
                 // or a turn-in-place animation while turning. The engine picks
                 // these natively; this is an approximation of that rule.
                 let speed = if dt > 0.0 { (z.centre - old_centre).with_y(0.0).length() / SCALE / dt } else { 0.0 };
+                let velocity = if dt > 0.0 { (z.centre - old_centre) / SCALE / dt } else { Vec3::ZERO };
                 let turn_rate = if dt > 0.0 { (z.yaw - old_yaw) / dt } else { 0.0 };
-                let anim = if speed >= STANDING_SPEED {
+                let moving = speed >= STANDING_SPEED;
+                let anim = if moving {
                     if z.decapitated {
                         c.headless_walk.or(c.walk)
                     } else if z.zapped() || (z.burn_down > 0 && z.burn_down < CRISP_UP_THRESHOLD) {
@@ -1572,7 +1574,7 @@ pub(super) fn think_and_move(
                 } else {
                     c.idle
                 };
-                start_anim(&mut z, anim, true)
+                play_chase_anim(&mut z, c, moving, anim, anim, velocity)
             }
             ZedState::Falling => start_anim(&mut z, c.air_anim.or(c.idle), true),
             ZedState::Idle => start_anim(&mut z, c.idle, true),
@@ -1603,7 +1605,7 @@ pub(super) fn think_and_move(
             runlog::kv(
                 "zed",
                 &format!(
-                    "id={} state={:?} centre_unreal=({:.0}, {:.0}, {:.0}) distance_to_player={dist:.0} yaw={:.0} sequence={:?} frame={:.1} speed_unreal={:.0} running={}",
+                    "id={} state={:?} centre_unreal=({:.0}, {:.0}, {:.0}) distance_to_player={dist:.0} yaw={:.0} sequence={:?} frame={:.1} anim_rate={:.2} speed_unreal={:.0} running={}",
                     z.id,
                     z.state,
                     -u.z,
@@ -1612,6 +1614,7 @@ pub(super) fn think_and_move(
                     z.yaw,
                     z.sequence,
                     z.frame,
+                    z.anim.rate,
                     z.velocity.with_y(0.0).length() / SCALE,
                     z.running
                 ),

@@ -255,6 +255,14 @@ struct ZedClass {
     bleed_out_duration: f32,
     /// HeadlessWalkAnims[0] (forward), if the mesh has it.
     headless_walk: Option<usize>,
+    /// MovementAnims[0..3] (forward, back, left, right) as the class
+    /// defaults set them, element by element up the class chain; None where
+    /// the mesh lacks the sequence. Headless: HeadlessWalkAnims where the
+    /// mesh has them, else these. Burning: BurningWalkAnims (back, left,
+    /// right).
+    walk_dirs: [Option<usize>; 4],
+    headless_dirs: [Option<usize>; 4],
+    burning_dirs: [Option<usize>; 3],
     /// Hit reactions (KFMonster.PlayDirectionalHit): KFHitFront, KFHitBack,
     /// KFHitLeft, KFHitRight, played on the upper body from SpineBone1 up;
     /// HitAnims (stuns, picked at random); KnockDown (FlipOver, full body).
@@ -437,9 +445,10 @@ pub enum HitReaction {
     KnockDown,
 }
 
-/// Below this ground speed (Unreal units/s) a chasing zed counts as standing,
-/// and above this yaw rate (rotation units/s) as turning in place.
-const STANDING_SPEED: f32 = 10.0;
+/// Below this ground speed (Unreal units/s) a chasing zed counts as standing
+/// (the engine: |Velocity|^2 < 25), and above this yaw rate (rotation
+/// units/s) as turning in place.
+const STANDING_SPEED: f32 = 5.0;
 const TURNING_RATE: f32 = 2000.0;
 
 /// ZombieGoreFast: runs when its target is within this many units, at
