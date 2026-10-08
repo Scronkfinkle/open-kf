@@ -187,7 +187,7 @@ fn publish_pawn_weapon(
 
 /// Scripted input for tests: at frame N do an action ("fire", "fire_down" /
 /// "fire_up" = hold / release, the same for "altfire", "1" to "5" =
-/// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = press the aim button (one frame), "aim_down" / "aim_up" = hold / let go of it, "aim_mode:toggle|hold" = the aim setting (menus), "walk_on" / "walk_off" = hold / release forward (walk.rs), "zed" = spawn a Clot, "zed_drop" =
+/// weapon slot keys, "next" / "prev" = mouse wheel, "reload", "aim" = press the aim button (one frame), "aim_down" / "aim_up" = hold / let go of it, "aim_mode:toggle|hold" = the aim setting (menus), "walk_on" / "walk_off" = hold / release forward (walk.rs), "walk_key_down" / "walk_key_up" = hold / release the Walking key (Ctrl, walk.rs), "zed" = spawn a Clot, "zed_drop" =
 /// spawn one 200 units up, "gorefast" = spawn a Gorefast,
 /// "gorefast_far" = one 900 units away, "zed_line" = three Clots in a
 /// line ahead ("zed_line_far": 700-900 away), "cycle_zed" = press N,
@@ -213,6 +213,9 @@ pub struct WeaponEffects {
     /// The perk's GetMovementSpeedModifier (GroundSpeed x this, after the
     /// weight and the melee bonus); 1 without a perk.
     pub perk_speed_mult: f32,
+    /// Iron sights up (KFHumanPawn.bAimingRifle): the player walks at
+    /// WalkingPct (KFPlayerController.HandleWalking).
+    pub aiming: bool,
 }
 
 impl Default for WeaponEffects {
@@ -222,6 +225,7 @@ impl Default for WeaponEffects {
             weight_speed_mult: 1.0,
             fire_velocity_scale: None,
             perk_speed_mult: 1.0,
+            aiming: false,
         }
     }
 }

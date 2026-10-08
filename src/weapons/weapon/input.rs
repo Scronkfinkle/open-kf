@@ -1537,6 +1537,7 @@ pub(super) fn weapon_input(
     }
     if let Some(e) = effects.as_mut() {
         e.ground_speed_bonus = w.defs[w.current].speed_bonus;
+        e.aiming = w.aiming;
     }
     ammo_display.weapon = w.defs[w.current].item_name;
     if ammo_display.class != w.defs[w.current].class {

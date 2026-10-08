@@ -30,6 +30,7 @@ pub(crate) mod kf {
     pub const MAX_STEP: f32 = 35.0; // engine constant (not verified in data)
     pub const MIN_FLOOR_NORMAL_Y: f32 = 0.7; // engine constant (not verified in data)
     pub const SKIN: f32 = 0.5; // gap kept from surfaces, to avoid starting casts in contact
+    pub const WALKING_PCT: f32 = 0.4; // xPawn (KF's species and classes keep it)
 }
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,6 +70,10 @@ pub struct Walker {
     /// KFPawn.CheckBob state.
     pub bob_time: f32,
     pub applied_bob: f32,
+    /// Pawn.bIsWalking: the Walking key (Ctrl) is held or iron sights are
+    /// up (KFPlayerController.HandleWalking). Speed and acceleration x
+    /// WalkingPct; no walking off ledges.
+    pub walking: bool,
 }
 
 /// Momentum on the player from damage (Unreal units: mass x velocity),
@@ -340,7 +345,9 @@ impl Mover<'_, '_, '_> {
 }
 
 /// Unreal's CalcVelocity: friction turns velocity toward the input
-/// direction; with no input it brakes; then accelerate and clamp.
+/// direction; with no input it brakes; then accelerate and clamp. A
+/// walking pawn passes its acceleration and speed limit already times
+/// WalkingPct.
 fn calc_velocity(v: Vec3, accel: Vec3, friction: f32, max_speed: f32, dt: f32) -> Vec3 {
     let mut v = v;
     if accel.length_squared() < 1e-8 {
@@ -391,7 +398,7 @@ fn walk(
     mut pinned: Option<ResMut<crate::game::combat::PlayerPinned>>,
     mut pushes: MessageReader<PlayerPush>,
     mut kicks: MessageReader<PlayerAddVelocity>,
-    (mut last_log, mut scripted_walk, mut pushed): (Local<f32>, Local<bool>, Local<f32>),
+    (mut last_log, mut scripted_walk, mut pushed, mut walk_key_script, mut ledge_stopped): (Local<f32>, Local<bool>, Local<f32>, Local<bool>, Local<bool>),
     mut glass: WalkMap,
 ) {
     let mut last_block: Option<(String, Vec3)> = None;
@@ -486,6 +493,11 @@ fn walk(
                     *scripted_walk = a == "walk_on";
                     runlog::kv("scripted_walk", &format!("forward={}", *scripted_walk));
                 }
+                // Hold / release the Walking key (Ctrl).
+                "walk_key_down" | "walk_key_up" => {
+                    *walk_key_script = a == "walk_key_down";
+                    runlog::kv("scripted_walk_key", &format!("held={}", *walk_key_script));
+                }
                 _ => {}
             }
         }
@@ -503,6 +515,19 @@ fn walk(
             wish -= right;
         }
         let mut wish = wish.normalize_or_zero();
+        // KFPlayerController.HandleWalking: aiming down the sights walks;
+        // otherwise the Walking key (KF's default: Ctrl) does.
+        let aiming = effects.as_ref().is_some_and(|e| e.aiming);
+        let key = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) || *walk_key_script;
+        let walking = aiming || key;
+        if walking != w.walking {
+            w.walking = walking;
+            runlog::kv(
+                "walk_state",
+                &format!("walking={walking} aiming={aiming} key={key} speed_cap_unreal={:.1}", if walking { ground_speed * kf::WALKING_PCT } else { ground_speed }),
+            );
+        }
+        let pct = if walking { kf::WALKING_PCT } else { 1.0 };
         // Test action "jump".
         let mut jump = keys.just_pressed(KeyCode::Space) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "jump");
         // Held by a Clot's grab (KFPawn.DisableMovement / ModifyVelocity):
@@ -592,6 +617,7 @@ fn walk(
                 w.center = pos;
             }
             let accel = wish * kf::ACCEL_RATE * SCALE;
+            let sub_start = w.center;
             if w.on_ground && jump {
                 w.velocity.y = kf::JUMP_Z * SCALE;
                 w.on_ground = false;
@@ -601,9 +627,9 @@ fn walk(
             if w.on_ground {
                 let hv = calc_velocity(
                     w.velocity.with_y(0.0),
-                    accel,
+                    accel * pct,
                     kf::GROUND_FRICTION,
-                    ground_speed * SCALE,
+                    ground_speed * pct * SCALE,
                     h,
                 );
                 w.velocity = hv;
@@ -643,6 +669,19 @@ fn walk(
                         // horizontal sweep "touch" the floor at distance 0.
                         w.center.y -= floor.distance - kf::SKIN * SCALE;
                         w.floor_normal = floor.normal;
+                        *ledge_stopped = false;
+                    }
+                    // A walking player does not walk off a ledge: the
+                    // move is undone and the speed set to 0 (KF's walking
+                    // physics; players cannot walk off while walking).
+                    _ if walking => {
+                        if !*ledge_stopped {
+                            let c = sub_start / SCALE;
+                            runlog::kv("ledge_stop", &format!("center_unreal=({:.1}, {:.1}, {:.1}) aiming={aiming}", -c.z, c.x, c.y));
+                        }
+                        *ledge_stopped = true;
+                        w.center = sub_start;
+                        w.velocity = Vec3::ZERO;
                     }
                     _ => w.on_ground = false,
                 }
@@ -714,7 +753,7 @@ fn walk(
             runlog::kv(
                 "walk",
                 &format!(
-                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} floor_normal_y={:.2} input={} held={held} bob_side_unreal={:.2} bob_up_unreal={:.2}",
+                    "t={:.1} center_unreal=({:.0}, {:.0}, {:.0}) speed_unreal={:.0} ground_speed_unreal={ground_speed:.1} vertical_unreal={:.0} on_ground={} floor_normal_y={:.2} input={} held={held} walking={} bob_side_unreal={:.2} bob_up_unreal={:.2}",
                     w.time,
                     -c.z,
                     c.x,
@@ -724,6 +763,7 @@ fn walk(
                     w.on_ground,
                     w.floor_normal.y,
                     wish != Vec3::ZERO,
+                    w.walking,
                     bob.side.length() / SCALE * (bob.side.dot(right)).signum(),
                     bob.up / SCALE
                 ),
@@ -771,6 +811,17 @@ mod tests {
             v = calc_velocity(v, accel, kf::GROUND_FRICTION, kf::GROUND_SPEED, 1.0 / 120.0);
         }
         assert!((v.length() - kf::GROUND_SPEED).abs() < 1.0, "speed {}", v.length());
+    }
+
+    #[test]
+    fn walking_converges_to_40_percent() {
+        let mut v = Vec3::ZERO;
+        let p = kf::WALKING_PCT;
+        let accel = Vec3::X * kf::ACCEL_RATE * p;
+        for _ in 0..240 {
+            v = calc_velocity(v, accel, kf::GROUND_FRICTION, kf::GROUND_SPEED * p, 1.0 / 120.0);
+        }
+        assert!((v.length() - 80.0).abs() < 0.5, "speed {}", v.length());
     }
 
     #[test]

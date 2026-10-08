@@ -437,6 +437,52 @@ verified**): max step height 35, minimum walkable floor normal Z 0.7.
    height 44 + 50 above the ground), then moves at about 200 units/s until
    blocked.
 
+### Player movement details from KF (2026-10-08, branch fix/player-movement)
+
+Seven fixes, one commit each, in this order. All values come from KF's
+scripts, class defaults and engine behaviour (details in the local RE.md).
+
+- **PM1 Walking (Ctrl) and aiming slow the player to 40 %.** KF's "Walking"
+  key (Ctrl in the default key list) and iron sights put the pawn in its
+  walking state. Walking caps the acceleration at AccelRate x WalkingPct
+  (1000 x 0.4) and the speed at GroundSpeed x 0.4 (80 units/s plus the
+  other modifiers). A walking player does not walk off a ledge: when the
+  floor below disappears, the move is undone and the speed set to 0
+  (KF players cannot override this; only jumping leaves the ledge).
+- **PM2 Eye height smoothing.** The view keeps its world height when the
+  body steps up or down and catches up with the normal eye height (44
+  above the centre) at `min(0.9, 10 x dt)` per frame. Eye height stays
+  between -25 (half the collision height down) and the ceiling limit: 85
+  above the centre, or 14 below a ceiling found by a line check up to 99
+  above the centre. While falling the eye eases back to 44 the same way.
+- **PM3 Landing dip.** Landing faster than 200 units/s downward dips the
+  view: the eye height drops by `1.5 x min(0.65, 10 dt)` of itself per
+  frame (each frame's drop x 0.03 adds to LandBob) until it is under 12 or
+  LandBob is over 3, then recovers at `0.6 x min(0.9, 10 dt)` per frame to
+  44. A step of more than 15 units in one frame cancels the dip. LandBob
+  feeds the walking bob's vertical part (AppliedBob) and moves the weapon
+  up by LandBob.
+- **PM4 Camera bob twice.** KF's first-person camera adds the walking bob
+  twice (once in the eye position and once more on top); the weapon gets
+  it once (times its BobDamping).
+- **PM5 Low health slows.** GroundSpeed = 200 x (health/100 x 0.3 + 0.7)
+  before the weight factor, the melee bonus and the perk.
+- **PM6 Falling damage.** On landing (vertical speed Vz < 0, Unreal units/s,
+  limit 600, x2 in a volume with weaker gravity than -950): Vz below -600
+  takes `100 x (-Vz - 600) / 600` damage of type Fell (armour does not stop
+  it); KF also makes a noise for the zeds' hearing and a tiny view shake
+  (not done: no hearing; the shake is covered by the hit's own shake).
+  Players only (zeds never take falling damage in KF).
+- **PM7 Gravity and zone velocity per physics volume.** Each map has a
+  default physics volume and may place more; the pawn uses the
+  highest-priority volume containing its centre (a later volume wins only
+  with a strictly higher priority; the default volume is the start). While
+  falling, its gravity replaces -950 and its ZoneVelocity is added to the
+  move (not kept in the velocity). Only KF-MoonBase changes these: default
+  gravity -320 with ZoneVelocity Z +15, and its low-gravity volumes -150
+  with ZoneVelocity Z 30 to 55. The volume lookup is a shared helper so the
+  zeds can use it later (their movement is unchanged for now).
+
 ## Weapons in first person (milestone 3, planned 2026-10-03)
 
 **What the data says.** Weapon classes in KFMod.u give, via class defaults:
