@@ -6306,6 +6306,23 @@ falling or landing. Zeds that are knocked down, raging, door-bashing or
 in a Patriarch move are not pushed (a simplification). Log:
 `zed_knockback`.
 
+**Shotgun pellets and the extended cylinder.** Big zeds (Clot, Gorefast,
+Bloat, Siren, Husk, Scrake, Fleshpound, Patriarch) carry a second
+collision cylinder, the "extended" one, at head and shoulder height. In
+KF it is a separate actor that passes any damage on to its zed. KF's
+engine touches every actor a moving projectile crosses, once each. A
+shotgun pellet (or a Trenchgun pellet or a nail) that crosses both
+cylinders therefore damages the zed twice and loses PenDamageReduction
+twice. The touch on the extended cylinder gets no pellet headshot
+multiplier, because that cylinder is not the zed itself; the damage
+type's headshot rule still applies. Crossbow and M99 bolts ignore a
+zed, and anything attached to it, once they have hit it, so they hit
+each zed once (ours already did that). We now do the same for pellets.
+A shotgun pellet through a Scrake's chest does 35 + 17.5 and stops,
+where before it did 35 + 17.5 to two different zeds. The tracer's end
+point counts both touches too. Log: `projectile_hit ... cylinder=main
+|extended`.
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms

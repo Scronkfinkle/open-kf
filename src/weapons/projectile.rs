@@ -415,7 +415,7 @@ struct PlayerProjectile {
     damage: f32,
     stats: ProjectileStats,
     weapon: &'static str,
-    /// Zeds already hit (each once).
+    /// Zed cylinders already touched (`hit_key`): each once.
     hit: Vec<usize>,
     bounces_left: u32,
     falling: bool,
@@ -710,7 +710,8 @@ fn spawn_projectiles(
                 let mut zed_t: Vec<f32> = zeds
                     .iter()
                     .filter(|z| z.health > 0.0)
-                    .filter_map(|z| crate::game::combat::zed_hit(z, from, dir))
+                    .flat_map(|z| pellet_touches(z, from, dir, s.stats.rule))
+                    .map(|(t, _)| t)
                     .filter(|&t| t < wall)
                     .collect();
                 zed_t.sort_by(f32::total_cmp);
@@ -742,6 +743,47 @@ fn spawn_projectiles(
     }
 }
 
+/// Which of a zed's collision cylinders a projectile touched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cylinder {
+    Main,
+    /// The ExtendedZCollision cylinder (a separate actor in KF).
+    Extended,
+    /// Either (a bolt: one hit per zed).
+    Any,
+}
+
+impl Cylinder {
+    fn label(self) -> &'static str {
+        match self {
+            Cylinder::Main => "main",
+            Cylinder::Extended => "extended",
+            Cylinder::Any => "any",
+        }
+    }
+}
+
+/// A projectile's record of a touched zed cylinder.
+fn hit_key(zed: usize, part: Cylinder) -> usize {
+    zed * 2 + (part == Cylinder::Extended) as usize
+}
+
+/// Where a projectile's path enters a zed: for pellets each cylinder
+/// separately (main and extended: KF touches them as two actors, so a
+/// pellet through both hits the zed twice and loses PenDamageReduction
+/// twice); for bolts the nearer one, once.
+fn pellet_touches(z: &Zed, from: Vec3, dir: Vec3, rule: PenRule) -> Vec<(f32, Cylinder)> {
+    if rule == PenRule::Bolt {
+        return crate::game::combat::zed_hit(z, from, dir).map(|t| (t, Cylinder::Any)).into_iter().collect();
+    }
+    let main = crate::game::combat::ray_cylinder(from, dir, z.centre, z.radius * SCALE, z.half_height * SCALE).map(|t| (t, Cylinder::Main));
+    let ext = z
+        .ext
+        .and_then(|(c, r, h)| crate::game::combat::ray_cylinder(from, dir, c, r * SCALE, h * SCALE))
+        .map(|t| (t, Cylinder::Extended));
+    main.into_iter().chain(ext).collect()
+}
+
 /// How many zeds a projectile passes before it stops (ProcessTouch's rule),
 /// for drawing its tracer only as far as it goes.
 pub fn penetration_limit(stats: &ProjectileStats) -> usize {
@@ -769,7 +811,7 @@ fn move_projectiles(
     time: Res<Time>,
     spatial: SpatialQuery,
     mut projectiles: Query<(Entity, &mut PlayerProjectile)>,
-    mut zeds: Query<&mut Zed>,
+    mut zeds: Query<(Entity, &mut Zed)>,
     mut kills: ResMut<crate::game::combat::KillCount>,
     mut bullet_fx: MessageWriter<crate::weapons::bullet_fx::BulletFx>,
     player: Query<&Transform, With<crate::engine::camera::FlyCamera>>,
@@ -799,36 +841,46 @@ fn move_projectiles(
         let Ok(dir3) = Dir3::new(dir) else { continue };
         let world = spatial.cast_ray(from, dir3, len * SCALE, true, &crate::world::collision::world_filter());
         let world_t = world.map_or(len * SCALE, |h| h.distance);
-        // Zeds along this step, before the wall, nearest first.
-        let mut hits: Vec<(f32, Mut<Zed>)> = Vec::new();
-        for z in &mut zeds {
-            if z.health <= 0.0 || p.hit.contains(&z.id) {
+        // Zed cylinders along this step, before the wall, nearest first.
+        // Pellets (ShotgunBullet, TrenchgunBullet) touch a zed's main and
+        // extended cylinders separately, as KF's engine does (they are
+        // two actors); bolts take one hit per zed (their ProcessTouch
+        // ignores the zed and its parts once hit).
+        let mut hits: Vec<(f32, Entity, Cylinder)> = Vec::new();
+        for (e, z) in &zeds {
+            if z.health <= 0.0 {
                 continue;
             }
-            if let Some(t) = crate::game::combat::zed_hit(&z, from, dir)
-                && t <= world_t
-            {
-                hits.push((t, z));
+            for (t, part) in pellet_touches(z, from, dir, p.stats.rule) {
+                if t <= world_t && !p.hit.contains(&hit_key(z.id, part)) {
+                    hits.push((t, e, part));
+                }
             }
         }
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut stopped = false;
-        for (t, mut z) in hits {
+        for (t, e, part) in hits {
+            let Ok((_, mut z)) = zeds.get_mut(e) else { continue };
+            if z.health <= 0.0 {
+                continue;
+            }
             let point = from + dir * t;
-            // ProcessTouch: x HeadShotDamageMult on a headshot; then
-            // KFMonster.TakeDamage checks again and applies the damage
+            // ProcessTouch: x HeadShotDamageMult on a headshot (only when it
+            // touched the zed itself: the extended cylinder is not a Pawn);
+            // then KFMonster.TakeDamage checks again and applies the damage
             // type's multiplier too.
             let head = crate::game::combat::is_headshot(&z, point, dir, 1.0);
-            let damage = if head { p.damage * p.stats.headshot_mult } else { p.damage };
+            let damage = if head && part != Cylinder::Extended { p.damage * p.stats.headshot_mult } else { p.damage };
             z.last_hit = Some((point, dir));
-            p.hit.push(z.id);
+            p.hit.push(hit_key(z.id, part));
             runlog::kv(
                 "projectile_hit",
                 &format!(
-                    "id={} weapon={} zed={} hit_number={} damage={damage:.1} headshot={head} flight_unreal={:.0}",
+                    "id={} weapon={} zed={} cylinder={} hit_number={} damage={damage:.1} headshot={head} flight_unreal={:.0}",
                     p.id,
                     p.weapon,
                     z.id,
+                    part.label(),
                     p.hit.len(),
                     p.age * p.stats.speed
                 ),
@@ -2360,6 +2412,25 @@ mod tests {
         let (t_old, end_old, _) = *old.last().unwrap();
         println!("m79 to 300 below: new {:.0} units in {t_new:.2} s, old {:.0} units in {t_old:.2} s", end_new.x, end_old.x);
         assert!(end_new.x < 0.5 * end_old.x);
+    }
+
+    #[test]
+    fn pellets_touch_both_cylinders_bolts_once() {
+        // A Scrake: main cylinder 26 x 44, extended 29 x 18 at 55 up.
+        let mut z = Zed::test_clot();
+        z.ext = Some((z.centre + Vec3::Y * 55.0 * SCALE, 29.0, 18.0));
+        // A level shot along Unreal X, 40 above the centre: it crosses both.
+        let from = coords::pos([-500.0, 0.0, 40.0]);
+        let dir = coords::dir([1.0, 0.0, 0.0]);
+        let both = pellet_touches(&z, from, dir, PenRule::Pellet);
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(both.iter().any(|h| h.1 == Cylinder::Main) && both.iter().any(|h| h.1 == Cylinder::Extended));
+        assert_ne!(hit_key(z.id, Cylinder::Main), hit_key(z.id, Cylinder::Extended));
+        // At the knees: only the main cylinder.
+        let legs = pellet_touches(&z, coords::pos([-500.0, 0.0, -30.0]), dir, PenRule::Pellet);
+        assert_eq!(legs.len(), 1);
+        // A bolt: once.
+        assert_eq!(pellet_touches(&z, from, dir, PenRule::Bolt).len(), 1);
     }
 
     fn stats(r: f32, max: f32) -> ProjectileStats {

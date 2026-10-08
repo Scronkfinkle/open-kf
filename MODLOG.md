@@ -6301,3 +6301,32 @@ for 0.115 s and walked on (0.124 s predicted from 59 up).
 a scripted move are not pushed; multiplayer clients do not apply it
 (the host does); not played by you.
 **Next:** shotgun pellets hitting a zed's two cylinders.
+
+## 2026-10-08 Shotgun pellets can hit a zed twice (both cylinders), as in KF (branch fix/combat)
+
+**Changed:** `src/weapons/projectile.rs`: pellet-rule projectiles
+(ShotgunBullet family, TrenchgunBullet, nails) now hit a zed's main and
+extended cylinders separately (`pellet_touches`, `Cylinder`,
+`hit_key`); the extended-cylinder hit gets no pellet headshot
+multiplier; bolts still hit each zed once; the pellet tracer counts both
+hits. `projectile_hit` logs `cylinder=`. DESIGN.md "Combat physics
+fixes".
+**Why:** the audit asked whether KF pellets hit twice. Yes: KF's engine
+touches every actor a moving projectile crosses, once each (checked in
+its move and touch code; details in the local RE.md). The extended
+cylinder is its own actor and passes the damage to its zed.
+ShotgunBullet.ProcessTouch and TrenchgunBullet.ProcessTouch have no
+check against it; CrossbowArrow / M99Bullet do (IgnoreImpactPawn). Ours
+gave one hit per zed.
+**Tested how:** unit test (Scrake cylinders: chest shot 2 touches, knee
+shot 1, bolt 1); all tests; clippy; headless Shotgun into a Scrake
+(`--map KF-WestLondon --camera -4090,1100,-3650,-1.5708,-0.03 --god
+--spawn scrake --zed-at -4090,1500,-3820 --give Shotgun --input
+60:3,150:fire --frames 300`).
+**Result:** all 7 pellets: `cylinder=main damage=35.0`, then
+`cylinder=extended damage=17.5`, then stopped (penetration rule): 367.5
+damage instead of 245 at that height.
+**Still broken / not tested:** which cylinder is entered first depends
+on the shot's height and angle; not compared with the real game; not
+played by you.
+**Next:** report.
