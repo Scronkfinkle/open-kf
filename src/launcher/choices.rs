@@ -164,7 +164,7 @@ pub struct Choices {
     pub msaa: u32,
     pub anisotropy: u16,
     pub sound: bool,
-    /// The trader's menu (`--trader-menu`): NuMenu (default) or KF's.
+    /// The trader's menu (`--trader-menu`): KF's (default) or NuMenu.
     pub trader: MenuKind,
     /// More options typed by hand (e.g. `--god`).
     pub extra: String,
@@ -198,7 +198,7 @@ impl Default for Choices {
             msaa: graphics::DEFAULT_MSAA,
             anisotropy: graphics::DEFAULT_ANISOTROPY,
             sound: true,
-            trader: MenuKind::Nu,
+            trader: MenuKind::Kf,
             extra: String::new(),
             volumes: Volumes::default(),
             aim_hold: false,
@@ -491,9 +491,9 @@ impl Choices {
         if !self.sound || mute {
             push(&["--mute"]);
         }
-        // NuMenu is the game's default: only the KF menu needs the option.
-        if self.trader == MenuKind::Kf {
-            push(&["--trader-menu", "kf"]);
+        // The KF menu is the game's default: only NuMenu needs the option.
+        if self.trader == MenuKind::Nu {
+            push(&["--trader-menu", "nu"]);
         }
         a.extend(split_words(&self.extra)?);
         Ok(a)
@@ -718,15 +718,15 @@ mod tests {
     #[test]
     fn trader_menu_choice() {
         let mut c = Choices::default();
-        assert_eq!(c.get("trader"), "nu");
+        assert_eq!(c.get("trader"), "kf");
         assert!(!c.to_args(false).unwrap().contains(&"--trader-menu".to_string()));
         c.step("trader", 1, &[]);
-        assert_eq!(c.trader, MenuKind::Kf);
-        let a = c.to_args(false).unwrap();
-        assert!(a.windows(2).any(|w| w == ["--trader-menu", "kf"]));
-        assert!(c.set("trader", "wizard").is_err());
-        c.set("trader", "nu").unwrap();
         assert_eq!(c.trader, MenuKind::Nu);
+        let a = c.to_args(false).unwrap();
+        assert!(a.windows(2).any(|w| w == ["--trader-menu", "nu"]));
+        assert!(c.set("trader", "wizard").is_err());
+        c.set("trader", "kf").unwrap();
+        assert_eq!(c.trader, MenuKind::Kf);
     }
 
     #[test]

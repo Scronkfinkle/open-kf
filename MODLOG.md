@@ -7235,3 +7235,18 @@ Seen in the logs (shared rules, not changed): auto fill with 50 dosh left
 logged `shop_ammo weapon=KFMod.Frag added=1 paid=80.0 ... dosh=0` (paid
 more than one grenade's 40?) - worth checking. Not played by you.
 **Next:** your look at it in game; the Perks tab.
+
+## 2026-10-08 Classic KF trader menu is the default
+
+**Changed:** `MenuKind` defaults to `Kf` (`src/game/buy_menu.rs`); the
+launcher's default too, and it passes `--trader-menu nu` for NuMenu
+(`src/launcher/choices.rs`); tests, the `--trader-menu` comment and
+README updated.
+**Why:** you asked for the classic menu as the default.
+**Tested how:** headless KF-WestLondon run with no `--trader-menu`; tests
+(289 + 39) and clippy.
+**Result:** `trader_menu kind=kf`, `classic_menu_open dosh=388 ...`.
+**Still broken / not tested:** see the classic menu entry (Perks tab,
+favourites, DLC rows, scroll arrows not built). A saved launcher setting
+`trader=nu` still picks NuMenu.
+**Next:** your play test.

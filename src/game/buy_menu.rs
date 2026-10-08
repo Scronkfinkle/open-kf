@@ -345,13 +345,13 @@ impl Default for ShopInventory {
 /// KFHumanPawn MaxCarryWeight.
 pub const MAX_CARRY_WEIGHT: f32 = 15.0;
 
-/// Which trader menu draws and reads the keys (`--trader-menu`): our
-/// NuMenu (numenu.rs, the default) or KF's classic screen
-/// (classic_menu.rs). Both send the same requests.
+/// Which trader menu draws and reads the keys (`--trader-menu`): KF's
+/// classic screen (classic_menu.rs, the default) or our NuMenu
+/// (numenu.rs). Both send the same requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MenuKind {
-    #[default]
     Nu,
+    #[default]
     Kf,
 }
 

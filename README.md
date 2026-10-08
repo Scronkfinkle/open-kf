@@ -78,7 +78,7 @@ cargo run --release -- --input 200:jump   # test action: jump (also "jump" in an
 scripts/headless.sh --fly --camera -4090,1300,-3650,-1.5708,0 --screenshot 60   # the same, on a virtual display: no window opens
 cargo run --release -- --no-vsync --frames 600   # test runs: frames do not wait for the display (a hidden window ran at 1 fps)
 cargo run --release -- --mute                 # no sound (still logged)
-cargo run --release -- --trader-menu kf       # the classic KF trader menu (GUIBuyMenu look) instead of NuMenu (the default)
+cargo run --release -- --trader-menu nu       # our NuMenu trader menu instead of the classic KF one (the default)
 cargo run --release -- --fps 30               # cap the frame rate (vsync still caps it at the monitor's refresh rate)
 cargo run --release -- --window 1600x900 --display fullscreen   # graphics (also in the launcher): --display windowed|borderless|fullscreen,
                                               # --window WxH, --fov 80-120, --brightness 50-200 (%), --msaa 0|2|4|8, --anisotropy 1|2|4|8|16

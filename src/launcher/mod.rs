@@ -963,7 +963,7 @@ mod tests {
             c.window = Some((1280, 720));
             c.fps = Some(60);
             c.vsync = false;
-            c.trader = crate::game::buy_menu::MenuKind::Kf;
+            c.trader = crate::game::buy_menu::MenuKind::Nu;
             c.display = crate::engine::graphics::DisplayMode::Borderless;
             c.fov = 110;
             c.brightness = 130;
@@ -973,7 +973,7 @@ mod tests {
             let parsed = crate::parse_args(args.clone()).unwrap_or_else(|e| panic!("{play:?}: {e} ({args:?})"));
             assert_eq!(parsed.display, crate::engine::graphics::DisplayMode::Borderless);
             assert_eq!((parsed.fov, parsed.brightness, parsed.msaa, parsed.anisotropy), (Some(110), Some(130), Some(1), Some(16)));
-            assert_eq!(parsed.trader_menu, crate::game::buy_menu::MenuKind::Kf);
+            assert_eq!(parsed.trader_menu, crate::game::buy_menu::MenuKind::Nu);
             assert_eq!(parsed.name.as_deref(), Some("Big Al"));
             assert!(parsed.mute && parsed.no_vsync);
             assert_eq!(parsed.net.active(), play != PlayType::Solo);
