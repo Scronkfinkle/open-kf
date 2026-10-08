@@ -56,6 +56,7 @@ const USAGE: &str = "usage:
   kfpkg exports <file> [CLASS]
   kfpkg mesh <file> <name>   (a static mesh's sections and their materials)
   kfpkg lighting <map>   (baked mesh colours vs mesh vertex counts)
+  kfpkg lightmaps <map>   (build the BSP lightmap pages as KF does at load; compare with saved pages)
   kfpkg raw <file> <name> [FROM]   (hex dump of an export, after its properties)
   kfpkg props <file> [CLASS]
   kfpkg scanprops
@@ -118,6 +119,7 @@ fn main() -> ExitCode {
         ["nav", map] => nav(&install, map),
         ["meshtags", file, mesh] => mesh_tags(&install, file, mesh),
         ["mesh", file, name] => mesh_materials(&install, file, name),
+        ["lightmaps", map] => lightmaps(&install, map),
         ["lighting", map] => lighting(&install, map, None),
         ["lighting", map, at] => lighting(&install, map, Some(at)),
         ["raw", file, name] => raw(&install, file, name, None),
@@ -1670,6 +1672,94 @@ fn mesh_materials(install: &Install, file: &str, name: &str) -> Result<bool, Str
 }
 
 /// Checks each StaticMeshActor's baked colours against its mesh.
+/// Builds every lightmap page the way KF does at load (lightmap_build.rs).
+/// Pages with an up-to-date saved copy are compared with it texel by texel
+/// (texels a surface lightmap covers; per channel, 0..255); pages without
+/// one are only built. All built pages go to work/lighting/<map>-built<N>.png.
+fn lightmaps(install: &Install, map: &str) -> Result<bool, String> {
+    use ue_assets::lightmap_build as lb;
+    use ue_assets::package_set::PackageSet;
+    let file = if map.contains('/') || map.contains('.') { map.to_string() } else { format!("Maps/{map}.rom") };
+    let set = PackageSet::new(&install.root);
+    let lp = set.load_path(&resolve_path(install, &file)).map_err(|e| e.to_string())?;
+    let pkg = &lp.pkg;
+    let defaults = ue_assets::class_defaults::ClassDefaults::new(&set);
+    let contents = ue_assets::level::read_level_with(&lp, &defaults);
+    let m = contents.bsp_model.ok_or("no BSP model")?;
+    let model = ue_assets::bsp::read_model(pkg, m).map_err(|e| e.to_string())?;
+    let l = ue_assets::bsp::read_lighting(pkg, m, &model).map_err(|e| e.to_string())?;
+    let level_brightness = lb::level_brightness(&lp, &defaults);
+    let lights = lb::bake_lights(&contents.lights, level_brightness);
+    let ambients = lb::zone_ambients(&lp, &defaults, &model);
+    let light_of = |rf: ObjectRef| lights.get(pkg.object_name(rf)).cloned();
+    let ambient_of = |z: usize| ambients.get(z).copied().unwrap_or([0; 3]);
+    println!("{map}: pages={} surface_lightmaps={} lights={} level_brightness={level_brightness} zone_ambients={ambients:?}", l.textures.len(), l.surface_lightmaps.len(), lights.len());
+    std::fs::create_dir_all("work/lighting").map_err(|e| e.to_string())?;
+    let mut stats = lb::BuildStats::default();
+    let (mut all_sum, mut all_n) = (0f64, 0usize);
+    for (i, t) in l.textures.iter().enumerate() {
+        let started = std::time::Instant::now();
+        let built = lb::build_page(&model, &l, i, &light_of, &ambient_of, &mut stats);
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let cover = lb::page_coverage(&l, i);
+        let covered = cover.iter().filter(|&&c| c).count();
+        let mean_built = built.as_chunks::<4>().0.iter().zip(&cover).filter(|(_, c)| **c).map(|(p, _)| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0).sum::<f64>() / covered.max(1) as f64;
+        let saved = (t.saved_is_current() && !t.mips.is_empty())
+            .then(|| {
+                let mip = ue_assets::texture::Mip { width: t.width as usize, height: t.height as usize, data: t.mips[0].clone() };
+                decode_rgba(ue_assets::texture::TextureFormat::from_byte(t.format), &mip, None)
+            })
+            .flatten()
+            .filter(|_| t.width as usize == lb::PAGE && t.height as usize == lb::PAGE);
+        match saved {
+            Some(s) => {
+                let (mut sum, mut max, mut signed, mut over8) = (0u64, 0u8, 0i64, 0usize);
+                for (k, c) in cover.iter().enumerate() {
+                    if !c {
+                        continue;
+                    }
+                    let mut texel_max = 0;
+                    for ch in 0..3 {
+                        let (a, b) = (built[k * 4 + ch], s[k * 4 + ch]);
+                        let d = a.abs_diff(b);
+                        sum += d as u64;
+                        signed += a as i64 - b as i64;
+                        max = max.max(d);
+                        texel_max = texel_max.max(d);
+                    }
+                    if texel_max > 8 {
+                        over8 += 1;
+                    }
+                }
+                let n = covered * 3;
+                all_sum += sum as f64;
+                all_n += n;
+                println!(
+                    "page {i}: revision {} built vs saved: mean_abs={:.2} mean_signed={:+.2} max={max} texels_off_by_more_than_8={over8} of {covered} built_mean={mean_built:.1} ms={ms:.0}",
+                    t.revision,
+                    sum as f64 / n.max(1) as f64,
+                    signed as f64 / n.max(1) as f64
+                );
+            }
+            None => println!("page {i}: revision {} (saved {}) built only: built_mean={mean_built:.1} texels={covered} ms={ms:.0}", t.revision, t.saved_revision),
+        }
+        let path = Path::new("work/lighting").join(format!("{map}-built{i}.png"));
+        let out = File::create(&path).map_err(|e| e.to_string())?;
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(out), lb::PAGE as u32, lb::PAGE as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().and_then(|mut w| w.write_image_data(&built)).map_err(|e| e.to_string())?;
+    }
+    if all_n > 0 {
+        println!("all compared pages: mean_abs={:.2}", all_sum / all_n as f64);
+    }
+    println!(
+        "lightmaps={} lights_used={} lights_missing={} lights_black={} lights_bad_box={} effects_approximated={:?}",
+        stats.lightmaps, stats.lights, stats.lights_missing, stats.lights_black, stats.lights_bad_box, stats.effects_approximated
+    );
+    Ok(true)
+}
+
 fn lighting(install: &Install, map: &str, probe: Option<&str>) -> Result<bool, String> {
     use std::collections::BTreeMap;
     use ue_assets::package_set::PackageSet;

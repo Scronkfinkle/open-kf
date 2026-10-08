@@ -31,19 +31,25 @@ pub fn lightmap_exposure() -> f32 {
 /// A lightmap page as a Bevy image (top mip, decoded to RGBA, sRGB).
 pub fn lightmap_image(t: &LightmapTexture, images: &mut Assets<Image>) -> Option<Handle<Image>> {
     let mip = Mip { width: t.width as usize, height: t.height as usize, data: t.mips.first()?.clone() };
-    let mut rgba = decode_rgba(UeFormat::from_byte(t.format), &mip, None)?;
+    let rgba = decode_rgba(UeFormat::from_byte(t.format), &mip, None)?;
+    Some(rgba_lightmap_image(rgba, t.width, t.height, images))
+}
+
+/// A lightmap page from RGBA bytes (a decoded saved page, or one built at
+/// load), alpha forced to 255.
+pub fn rgba_lightmap_image(mut rgba: Vec<u8>, width: u32, height: u32, images: &mut Assets<Image>) -> Handle<Image> {
     for p in rgba.as_chunks_mut::<4>().0.iter_mut() {
         p[3] = 255;
     }
     let mut image = Image::new(
-        Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+        Extent3d { width, height, depth_or_array_layers: 1 },
         TextureDimension::D2,
         rgba,
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
-    Some(images.add(image))
+    images.add(image)
 }
 
 /// The material lit by a lightmap only: its exposure set (see

@@ -720,10 +720,59 @@ fn load_map(
                         None
                     }
                 };
+                // Pages whose saved copy is out of date are built here the
+                // way KF builds them at load (zone ambient + each light's
+                // softened shadow bits x falloff x colour; lightmap_build.rs).
+                let started = std::time::Instant::now();
+                let mut build_stats = ue_assets::lightmap_build::BuildStats::default();
+                let mut built_pages = Vec::new();
                 let lightmap_pages: Vec<Option<Handle<Image>>> = bsp_lighting
                     .as_ref()
-                    .map(|l| l.textures.iter().map(|t| crate::render::lighting::lightmap_image(t, loader.images)).collect())
+                    .map(|l| {
+                        let stale = l.textures.iter().any(|t| !t.saved_is_current());
+                        let build = stale.then(|| {
+                            use ue_assets::lightmap_build as lb;
+                            let lights = lb::bake_lights(&contents.lights, lb::level_brightness(&lp, &class_defaults));
+                            let ambients = lb::zone_ambients(&lp, &class_defaults, &model);
+                            (lights, ambients)
+                        });
+                        l.textures
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| match &build {
+                                Some((lights, ambients)) if !t.saved_is_current() => {
+                                    use ue_assets::lightmap_build as lb;
+                                    let light_of = |rf: ObjectRef| lights.get(lp.pkg.object_name(rf)).cloned();
+                                    let ambient_of = |z: usize| ambients.get(z).copied().unwrap_or([0; 3]);
+                                    let rgba = lb::build_page(&model, l, i, &light_of, &ambient_of, &mut build_stats);
+                                    let cover = lb::page_coverage(l, i);
+                                    let n = cover.iter().filter(|&&c| c).count().max(1);
+                                    let mean = rgba.as_chunks::<4>().0.iter().zip(&cover).filter(|(_, c)| **c).map(|(p, _)| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0).sum::<f64>() / n as f64;
+                                    built_pages.push(format!("{i}:{mean:.1}"));
+                                    Some(crate::render::lighting::rgba_lightmap_image(rgba, lb::PAGE as u32, lb::PAGE as u32, loader.images))
+                                }
+                                _ => crate::render::lighting::lightmap_image(t, loader.images),
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
+                if !built_pages.is_empty() {
+                    runlog::kv(
+                        "bsp_lightmaps_built",
+                        &format!(
+                            "pages={} mean_by_page=[{}] lightmaps={} lights_used={} lights_missing={} lights_black={} lights_bad_box={} effects_approximated={:?} ms={:.0}",
+                            built_pages.len(),
+                            built_pages.join(" "),
+                            build_stats.lightmaps,
+                            build_stats.lights,
+                            build_stats.lights_missing,
+                            build_stats.lights_black,
+                            build_stats.lights_bad_box,
+                            build_stats.effects_approximated,
+                            started.elapsed().as_secs_f64() * 1000.0
+                        ),
+                    );
+                }
                 let (mut lightmapped_polys, mut no_lightmap_polys, mut missing_page_polys) = (0usize, 0usize, 0usize);
                 let mut lightmapped_materials: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>> = HashMap::new();
                 // Per (material, flags, lightmap page): material, in sky, page, mesh.
