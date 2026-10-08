@@ -31,6 +31,7 @@ pub(crate) mod kf {
     pub const MIN_FLOOR_NORMAL_Y: f32 = 0.7; // engine constant (not verified in data)
     pub const SKIN: f32 = 0.5; // gap kept from surfaces, to avoid starting casts in contact
     pub const WALKING_PCT: f32 = 0.4; // xPawn (KF's species and classes keep it)
+    pub const MAX_FALL_SPEED: f32 = 600.0; // KFHumanPawn
 }
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq, Debug)]
@@ -348,6 +349,14 @@ impl Mover<'_, '_, '_> {
     }
 }
 
+/// KFPawn.TakeFallingDamage: landing at vertical speed `vz` (Unreal
+/// units/s, negative down) faster than `max_fall_speed` hurts
+/// 100 x (-vz - max) / max (damage type Fell). Ours: no water volumes
+/// (KF takes 100 off the speed when touching water).
+fn falling_damage(vz: f32, max_fall_speed: f32) -> Option<f32> {
+    (vz < -max_fall_speed).then(|| -100.0 * (vz + max_fall_speed) / max_fall_speed)
+}
+
 /// KFHumanPawn.ModifyVelocity's HealthMod: (Health / HealthMax) x
 /// HealthSpeedModifier (0.3) + 0.7.
 fn health_speed_mult(health: f32, health_max: f32) -> f32 {
@@ -406,7 +415,7 @@ fn walk(
     mut bob: ResMut<ViewBob>,
     (zeds, remote_pawns, lobby): Blockers,
     mut pinned: Option<ResMut<crate::game::combat::PlayerPinned>>,
-    mut pushes: MessageReader<PlayerPush>,
+    (mut pushes, mut fall_damage): (MessageReader<PlayerPush>, MessageWriter<crate::game::combat::PlayerDamaged>),
     mut kicks: MessageReader<PlayerAddVelocity>,
     (mut last_log, mut scripted_walk, mut pushed, mut walk_key_script, mut ledge_stopped): (Local<f32>, Local<bool>, Local<f32>, Local<bool>, Local<bool>),
     mut glass: WalkMap,
@@ -726,6 +735,21 @@ fn walk(
                         let dip = w.eye.landed(vz);
                         old_z = w.center.y + kf::SKIN * SCALE;
                         runlog::kv("land_dip", &format!("t={:.3} landing_speed_unreal={:.0} dip={dip}", w.time, -vz));
+                        // KFPawn.TakeFallingDamage (from Pawn.Landed).
+                        if let Some(amount) = falling_damage(vz, kf::MAX_FALL_SPEED) {
+                            runlog::kv("fall_damage", &format!("landing_speed_unreal={:.0} max_fall_speed={} damage={amount:.1}", -vz, kf::MAX_FALL_SPEED));
+                            fall_damage.write(crate::game::combat::PlayerDamaged {
+                                amount,
+                                zed_id: crate::game::combat::LEVEL_DAMAGE,
+                                kind: crate::game::combat::HurtKind::Plain,
+                                // DamageType Fell: bArmorStops false.
+                                armor_stops: false,
+                                dam_type: crate::game::combat::DamType::Other,
+                                source: None,
+                                dam: None,
+                                to_peer: None,
+                            });
+                        }
                         w.center.y += kf::SKIN * SCALE;
                         w.on_ground = true;
                         w.floor_normal = n;
@@ -875,6 +899,14 @@ mod tests {
         assert_eq!(health_speed_mult(100.0, 100.0), 1.0);
         assert!((health_speed_mult(50.0, 100.0) - 0.85).abs() < 1e-6);
         assert!((health_speed_mult(10.0, 100.0) - 0.73).abs() < 1e-6);
+    }
+
+    #[test]
+    fn falling_damage_over_600() {
+        assert_eq!(falling_damage(-325.0, 600.0), None);
+        assert_eq!(falling_damage(-600.0, 600.0), None);
+        assert!((falling_damage(-870.0, 600.0).unwrap() - 45.0).abs() < 1e-3);
+        assert!((falling_damage(-1200.0, 600.0).unwrap() - 100.0).abs() < 1e-3);
     }
 
     #[test]
