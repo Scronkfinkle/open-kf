@@ -823,12 +823,15 @@ pub(super) fn weapon_input(
                     let text = crate::game::hud::message_text(&msg).unwrap_or_default();
                     w.hud_messages.push(msg);
                     // PlayOwnedSound(ToggleSound, SLOT_None, 2.0, .., false):
-                    // not attenuated. See `toggle_click` for the fallback.
-                    let (sound, source) = toggle_click(&w.defs[cur]);
-                    w.sounds.push(PlaySound::new(sound.clone(), Emitter::Listener).volume(2.0));
+                    // not attenuated. No stock weapon sets ToggleSound, so
+                    // stock KF switches silently.
+                    let sound = w.defs[cur].toggle_sound.clone();
+                    if let Some(s) = &sound {
+                        w.sounds.push(PlaySound::new(s.clone(), Emitter::Listener).volume(2.0));
+                    }
                     runlog::kv(
                         "fire_mode_switch",
-                        &format!("weapon={} mode={mode} sound={sound} sound_source={source} message=\"{text}\"", w.defs[cur].item_name),
+                        &format!("weapon={} mode={mode} sound={} message=\"{text}\"", w.defs[cur].item_name, sound.as_deref().unwrap_or("none")),
                     );
                 } else {
                     runlog::kv("fire_mode_toggle_refused", &format!("weapon={} action={:?}", w.defs[cur].item_name, w.action));
@@ -1608,17 +1611,3 @@ pub(super) fn weapon_input(
     };
 }
 
-/// Not KF: stock KF plays no sound here (KFWeapon.DoToggle plays
-/// ToggleSound, which no stock weapon sets; its commented-out line names
-/// Inf_Weapons_Foley's stg44_firemodeswitch01). We play that click when a
-/// weapon has no ToggleSound, so the switch is heard. Returns the sound
-/// and where it came from ("ToggleSound" or "fallback").
-pub(super) fn toggle_click(def: &WeaponDef) -> (String, &'static str) {
-    match &def.toggle_sound {
-        Some(s) => (s.clone(), "ToggleSound"),
-        None => (TOGGLE_CLICK_FALLBACK.to_string(), "fallback"),
-    }
-}
-
-/// See `toggle_click`.
-pub(super) const TOGGLE_CLICK_FALLBACK: &str = "Inf_Weapons_Foley.stg44.stg44_firemodeswitch01";

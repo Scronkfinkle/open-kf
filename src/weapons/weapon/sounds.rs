@@ -99,7 +99,7 @@ pub(super) fn send_weapon_sounds(
                 sounds.extend(s.melee_hits.iter().cloned());
             }
             if def.toggles_on_alt.is_some() {
-                sounds.push(super::input::toggle_click(def).0);
+                sounds.extend(def.toggle_sound.iter().cloned());
             }
             sounds.extend(def.model.all_notify_sounds());
             sounds.sort();

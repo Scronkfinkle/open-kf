@@ -7285,3 +7285,17 @@ shows the red text under the crosshair. Clippy: 0 warnings.
 the KSG message not run; not heard (muted). The old "[SEMI]/[AUTO]" tag
 in our ammo text is not KF and was left as it was.
 **Next:** your listen in game; decide whether to keep the non-KF click.
+
+## 2026-10-08 Fire mode switch: fallback click removed
+
+**Changed:** `src/weapons/weapon/input.rs`, `sounds.rs`: the stg44 click
+played when a weapon has no ToggleSound is gone; the switch plays the
+weapon's ToggleSound only if it has one (none of the stock weapons do), as
+KFWeapon.DoToggle does. `fire_mode_switch` logs `sound=none`.
+**Why:** you asked to remove the click since stock KF makes none.
+**Tested how:** headless KF-WestLondon, `--give AK47AssaultRifle --input
+600:3,800:altfire,1000:altfire`; tests, clippy.
+**Result:** `fire_mode_switch weapon=AK47 mode=single sound=none
+message="Set to Semi-Automatic."`, then `mode=auto ... "Set to Fully
+Automatic."`; both `hud_message` lines; no `firemodeswitch` sound played.
+**Still broken / not tested:** as the entry above (KSG message not run).
