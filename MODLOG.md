@@ -6791,3 +6791,131 @@ run (the Clot's next grab starts one frame after the last one ends and
 cancels the fade, as in KF); body (third person) tweens unchanged (ANIM-4);
 not looked at in game.
 **Next:** your look at a zed starting an attack and at the 9mm switch.
+## 2026-10-08 Bouncing grenades fall at half gravity, as in KF (CP-1, branch fix/combat)
+
+**Changed:** `src/weapons/projectile.rs`: thrown frags, fire and medic
+nades, pipe bombs, and nails after their first bounce now gain only half
+of gravity (475 units/s^2) per second of fall, velocity first, then the
+move. Everything else that falls keeps 950. New log line `thrown_bounce`
+(where, when, speed coming in). DESIGN.md "Combat physics fixes".
+**Why:** KF's engine moves a falling object by adding half of gravity x
+the step to its velocity. For objects that do not bounce it then corrects
+the velocity to full gravity and caps it at 2500; for bouncing objects
+(bBounce) it skips that, so they fall at half gravity and are never
+capped. Ours used full gravity: frags flew about half as far as KF's.
+Details in the local RE.md.
+**Tested how:** unit test (frag at 850 units/s, 45 degrees, flat floor);
+all tests; clippy; one headless frag throw on KF-WestLondon
+(`--camera -4090,1300,-3650,-1.5708,0.35 --input 60:nade --frames 400`).
+**Result:** unit test: first-arc range 1521 units and apex 380 (it was
+761 and 190 at 950). Headless: the frag hit the tunnel wall 1.31 s after
+the throw at 864 units/s; half gravity predicts 865 (full gravity would
+be about 1250). It came to rest after 5 bounces and exploded at 3.29 s.
+**Still broken / not tested:** not played by you; no side-by-side check
+against the real game.
+**Next:** CP-2 (ragdoll start spin).
+
+## 2026-10-08 Ragdoll start spin in KF's units, around the zed's centre (CP-2, branch fix/combat)
+
+**Changed:** `src/zeds/zed/effects.rs` (`death_launch`): spin = 4 x (hit
+offset x push) x 2pi/65536 (rotation units to radians), no extra scale;
+pivot = the zed's cylinder centre; with no hit, a random spin of 18000
+rotation units/s. `src/zeds/ragdoll.rs`: `Launch` has a `pivot`, and
+each body starts at push + spin x (body - pivot) (the player's own body
+keeps its root as pivot). DESIGN.md "Combat physics fixes".
+**Why:** KF's engine reads the death spin in rotation units; we scaled
+it up about 4x and it hit the 10 rad/s cap on most kills, so corpses
+pinwheeled. Details in the local RE.md.
+**Tested how:** unit test (Clot hit 2 units in front, 40 up, from the
+side); all tests; clippy; headless Clot kill on KF-WestLondon
+(`--camera -4090,1100,-3650,-1.5708,-0.12 --zed --input 60:fire,...`).
+**Result:** unit test 1.64 rad/s (was capped at 10); headless
+`ragdoll_started ... angular_velocity=1.5`; the corpse settled with
+joint gaps under 4 units.
+**Still broken / not tested:** not looked at by you; a bleed-out death
+still uses the last hit's direction (KF has no momentum then and would
+use the random spin).
+**Next:** CP-3 (M79 flight).
+
+## 2026-10-08 M79 / M32 / M203 grenades fly by KF's ballistics (CP-3, branch fix/combat)
+
+**Changed:** `src/weapons/projectile.rs`: `Ballistics` (from the class
+defaults: BallisticCoefficient, SpeedFudgeScale, MinFudgeScale,
+InitialAccelerationTime) on `ExplosiveStats`; `ballistic_step` (start-up
+fudge, G1 drag table, gravity 591.45) while the propellant lasts;
+`fall_step` (full gravity, speed cap 2500, steps of at most 0.05 s)
+after it and for duds. New log `explosive_propellant_out`.
+`src/weapons/weapon/load.rs` reads the values (LAWProj and its children
+have bTrueBallistics false: unchanged). DESIGN.md "Combat physics
+fixes".
+**Why:** ours flew straight at 8000 for 0.25 s, then fell with no speed
+cap, so grenades went more than twice as far as in KF. The engine's
+ballistics, drag table and speed cap are now read from KF (details in
+the local RE.md).
+**Tested how:** unit test (M79 fired level at 60 fps); all tests;
+clippy; two headless M79 shots on KF-WestLondon (`--give
+M79GrenadeLauncher --input 60:3,200:fire`, camera
+`-4090,1100,-3650,1.5708,0.05` and pitch 0.3).
+**Result:** unit test: 344 units at 0.1 s (old 800), 1535 at 0.25 s,
+speed 2500 on the first falling step, 300 units below the muzzle after
+3513 units (old 8400). Headless level shot: propellant out at 0.258 s
+after 1313 units at speed 7910, then it hit a wall. Pitch 0.3 shot:
+propellant out at 0.255 s (speed 7888), exploded on the ground 4231
+units further at 1.95 s.
+**Still broken / not tested:** not compared with the real game side by
+side; not played by you. Darts (HealingProjectile) still fly straight.
+**Next:** CP-5 (explosion knockback on zeds).
+
+## 2026-10-08 Explosions push surviving zeds (CP-5, branch fix/combat)
+
+**Changed:** `src/zeds/zed/methods.rs` (`Zed::knockback`), `mod.rs`
+(the class and zed `mass`, test), `load.rs` (Mass), `spawn.rs`;
+`src/weapons/projectile.rs` (`Blast.knockback`, applied in `blast` to
+zeds that survive; `ThrownStats.momentum`), `src/weapons/weapon/load.rs`
+(MomentumTransfer for frag / pipe). DESIGN.md "Combat physics fixes".
+**Why:** in KF a Scrake or Fleshpound that survives a frag, pipe bomb or
+M79 blast is shoved and lifted; ours never moved. Rules from
+KFMonster.TakeDamage, Pawn.TakeDamage and AddVelocity (scripts).
+**Tested how:** unit test (Scrake: 100000 push -> 200 sideways, 80 up;
+halving above 380; under 50 ignored; knocked-down zed untouched); all
+tests; clippy; headless M79 into a Scrake (`--map KF-WestLondon
+--camera -4090,1100,-3650,-1.5708,-0.05 --god --spawn scrake --zed-at
+-4090,1900,-3820 --give M79GrenadeLauncher --input 60:3,150:fire
+--frames 400`).
+**Result:** `zed_knockback id=0 ... scale=0.98 added_unreal=(45, 108,
+59) velocity_unreal=(45, 23, 59)`: 0.98 x 75000 / 500 = 147, pointing
+down (the blast was above its centre), upward part raised to 59; it fell
+for 0.115 s and walked on (0.124 s predicted from 59 up).
+**Still broken / not tested:** zeds that are knocked down, raging or in
+a scripted move are not pushed; multiplayer clients do not apply it
+(the host does); not played by you.
+**Next:** shotgun pellets hitting a zed's two cylinders.
+
+## 2026-10-08 Shotgun pellets can hit a zed twice (both cylinders), as in KF (branch fix/combat)
+
+**Changed:** `src/weapons/projectile.rs`: pellet-rule projectiles
+(ShotgunBullet family, TrenchgunBullet, nails) now hit a zed's main and
+extended cylinders separately (`pellet_touches`, `Cylinder`,
+`hit_key`); the extended-cylinder hit gets no pellet headshot
+multiplier; bolts still hit each zed once; the pellet tracer counts both
+hits. `projectile_hit` logs `cylinder=`. DESIGN.md "Combat physics
+fixes".
+**Why:** the audit asked whether KF pellets hit twice. Yes: KF's engine
+touches every actor a moving projectile crosses, once each (checked in
+its move and touch code; details in the local RE.md). The extended
+cylinder is its own actor and passes the damage to its zed.
+ShotgunBullet.ProcessTouch and TrenchgunBullet.ProcessTouch have no
+check against it; CrossbowArrow / M99Bullet do (IgnoreImpactPawn). Ours
+gave one hit per zed.
+**Tested how:** unit test (Scrake cylinders: chest shot 2 touches, knee
+shot 1, bolt 1); all tests; clippy; headless Shotgun into a Scrake
+(`--map KF-WestLondon --camera -4090,1100,-3650,-1.5708,-0.03 --god
+--spawn scrake --zed-at -4090,1500,-3820 --give Shotgun --input
+60:3,150:fire --frames 300`).
+**Result:** all 7 pellets: `cylinder=main damage=35.0`, then
+`cylinder=extended damage=17.5`, then stopped (penetration rule): 367.5
+damage instead of 245 at that height.
+**Still broken / not tested:** which cylinder is entered first depends
+on the shot's height and angle; not compared with the real game; not
+played by you.
+**Next:** report.

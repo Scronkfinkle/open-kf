@@ -6463,6 +6463,89 @@ Details:
 - The window's title is now "Settings" (it holds more than Audio).
 - At 1280 x 800 the launcher's map list shows 5 rows (it scrolls).
 
+## Combat physics fixes (planned 2026-10-08: CP-1 onward; details in the local RE.md)
+
+An audit compared our projectile and ragdoll movement with KF's engine
+code. Each step below is one commit.
+
+**CP-1 Bouncing things fall at half gravity.** KF's engine moves a
+falling object in small steps (at most 0.05 s). Each step it adds half
+of gravity x the step time to the velocity and moves by the velocity.
+For an object that does not bounce it then recomputes the velocity from
+how far it actually moved and extrapolates to the end of the step, which
+gives full gravity (950 units/s^2), and caps the speed at the zone's
+terminal velocity (2500). For an object that bounces (bBounce: the frag,
+fire and medic nades, the pipe bomb, nails after their first bounce)
+that second part is skipped: the velocity only ever gains half of
+gravity, so they fall at 475 units/s^2 and are never capped. A frag
+thrown at 45 degrees therefore flies twice as far on its first arc as a
+full-gravity throw would. We now use 475 for those (thrown objects and
+bounced nails); 950 stays for everything else that falls.
+
+**CP-2 Ragdoll start spin.** KFMonster computes the death spin as
+RagInvInertia x (hit offset x push). The engine reads that number in
+Unreal rotation units per second (65536 = one full turn) and converts it
+to radians per second; we had treated it as an unknown unit and scaled
+it so far up that almost every corpse spun at the 10 rad/s cap. The
+engine also gives every body part the same spin and a velocity of push +
+spin x (part - the zed's cylinder centre), so the spin turns around the
+cylinder centre, not the pelvis. A typical Clot kill now starts at about
+1.5 rad/s. With no hit to go by, KF uses a random direction x 18000
+rotation units/s (1.73 rad/s) and no push; ours did not spin at all.
+
+**CP-3 M79, M32 and M203 grenade flight.** These grenades use Red
+Orchestra's "true ballistics" while their propellant lasts (0.25 s); the
+LAW, Husk Gun and ZED guns switch it off and fly straight. Each frame:
+- A start-up "fudge" scales speed and movement from 2.5% up to 100% over
+  the first 0.1 s (so the grenade cannot pass through something right in
+  front of the muzzle). It covers about 350 units in that time, not 800.
+- Drag: the engine works in feet (18.4 units = 1 foot). It takes
+  (speed in ft/s)^2 x G1(Mach) / 0.3 x dt x 0.00384 off the speed, where
+  G1 is the standard drag table (0.2155 at the M79's Mach 0.39). It
+  subtracts that number straight from the speed in units, without
+  converting it back; we copy that. About 520 units/s^2 at 8000.
+- Gravity 591.45 units/s^2 (32.144 ft/s^2), times the fudge.
+When the propellant runs out the grenade falls like any non-bouncing
+object: full gravity, and its speed is capped at the zone's terminal
+velocity, 2500, on the first falling step (from about 7900). It
+therefore drops much sooner than before: 300 units below the muzzle after
+about 3500 units of flight instead of 8400.
+
+**CP-5 Explosions push surviving zeds.** From the scripts: a zed that
+survives a hit loses the hit's push (momentum) unless the damage type is
+exactly the frag's, the pipe bomb's or the M79 / M32 / M203's (also the
+Dwarf axe, SP grenade, Seal Squeal and Seeker Six, which we do not
+have; the LAW, Husk Gun and fire nade are not on the list). The blast's
+push is damage scale x MomentumTransfer (frag and pipe 100000, M79
+75000) along the line from the blast to the zed's centre. On the ground
+the upward part is raised to at least 0.4 x the push's size; then it
+is divided by the zed's Mass (Clot, Crawler, Stalker, Siren 100;
+Gorefast 350; Bloat, Husk 400; Scrake 500; Fleshpound 600; Patriarch
+1000). Pushes of 50 units/s or less do nothing. Otherwise the zed starts
+falling; if it already rises faster than 380 the upward part is halved;
+and the push adds to its velocity. We apply it through the zeds' existing
+falling movement, only to zeds that are walking, idle, attacking,
+falling or landing. Zeds that are knocked down, raging, door-bashing or
+in a Patriarch move are not pushed (a simplification). Log:
+`zed_knockback`.
+
+**Shotgun pellets and the extended cylinder.** Big zeds (Clot, Gorefast,
+Bloat, Siren, Husk, Scrake, Fleshpound, Patriarch) carry a second
+collision cylinder, the "extended" one, at head and shoulder height. In
+KF it is a separate actor that passes any damage on to its zed. KF's
+engine touches every actor a moving projectile crosses, once each. A
+shotgun pellet (or a Trenchgun pellet or a nail) that crosses both
+cylinders therefore damages the zed twice and loses PenDamageReduction
+twice. The touch on the extended cylinder gets no pellet headshot
+multiplier, because that cylinder is not the zed itself; the damage
+type's headshot rule still applies. Crossbow and M99 bolts ignore a
+zed, and anything attached to it, once they have hit it, so they hit
+each zed once (ours already did that). We now do the same for pellets.
+A shotgun pellet through a Scrake's chest does 35 + 17.5 and stops,
+where before it did 35 + 17.5 to two different zeds. The tracer's end
+point counts both touches too. Log: `projectile_hit ... cylinder=main
+|extended`.
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms

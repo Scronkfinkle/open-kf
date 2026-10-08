@@ -308,6 +308,7 @@ pub(super) fn load_class(
         ],
         left_arm_gibbed: matches!(get("bLeftArmGibbed"), Some((Value::Bool(true), _))),
         jump_z: float("JumpZ", 320.0),
+        mass: float("Mass", 100.0),
         pounce_speed: if kind == ZedKind::Crawler { float("PounceSpeed", 0.0) } else { 0.0 },
         no_flip: matches!(kind, ZedKind::Crawler | ZedKind::Fleshpound | ZedKind::Bloat | ZedKind::Siren | ZedKind::Patriarch),
         flinch_root: if kind == ZedKind::Crawler { name_of("NeckBone").and_then(|n| model.find_bone(&n)) } else { None },

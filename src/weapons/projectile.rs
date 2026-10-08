@@ -14,8 +14,109 @@ use crate::engine::coords::{self, SCALE};
 use crate::engine::runlog;
 use crate::zeds::zed::Zed;
 
-/// PhysicsVolume gravity (Unreal units/s^2), for nails after a bounce.
+/// PhysicsVolume gravity (Unreal units/s^2).
 const GRAVITY: f32 = 950.0;
+
+/// What a bouncing object (bBounce: frag, fire / medic nade, pipe bomb, a
+/// nail after its first bounce) really falls at in KF: the engine's
+/// falling step adds only half of gravity x dt to such an object's
+/// velocity (the full-gravity correction it applies to everything else is
+/// skipped for bouncers), and never caps its speed. See DESIGN.md, "Combat
+/// physics fixes", CP-1.
+const BOUNCE_GRAVITY: f32 = 0.5 * GRAVITY;
+
+/// One falling step of a bouncing object, as KF does it: velocity first,
+/// then the move with the new velocity. Returns the step to move by.
+fn bouncer_fall_step(vel: &mut Vec3, dt: f32) -> Vec3 {
+    vel.z -= BOUNCE_GRAVITY * dt;
+    *vel * dt
+}
+
+/// PhysicsVolume TerminalVelocity: KF caps the speed of falling things that
+/// do not bounce at this, every falling step.
+const TERMINAL_VELOCITY: f32 = 2500.0;
+
+/// The longest falling step KF's engine takes (longer frames are split).
+const MAX_FALL_STEP: f32 = 0.05;
+
+/// Falling for things that do not bounce (an M79 grenade out of propellant,
+/// a dud), as KF's engine does it: move with the velocity at mid-step
+/// (full gravity, 950), then cap the speed at TerminalVelocity. Returns
+/// the whole move (frames over 0.05 s are split as KF does).
+fn fall_step(vel: &mut Vec3, dt: f32) -> Vec3 {
+    let mut step = Vec3::ZERO;
+    let mut left = dt;
+    while left > 1e-6 {
+        let h = if left <= MAX_FALL_STEP { left } else { (left * 0.5).min(MAX_FALL_STEP) };
+        left -= h;
+        step += (*vel - Vec3::Z * (0.5 * GRAVITY * h)) * h;
+        vel.z -= GRAVITY * h;
+        if vel.length() > TERMINAL_VELOCITY {
+            *vel = vel.normalize() * TERMINAL_VELOCITY;
+        }
+    }
+    step
+}
+
+/// ROBallisticProjectile's "true ballistics" (the M79, M32 and M203
+/// grenades; the LAW family switches it off). Values from the class
+/// defaults.
+#[derive(Clone, Copy, Debug)]
+pub struct Ballistics {
+    /// 1 / BallisticCoefficient.
+    pub bc_inverse: f32,
+    /// SpeedFudgeScale, MinFudgeScale, InitialAccelerationTime: the
+    /// projectile's speed and movement are scaled from MinFudgeScale up to
+    /// SpeedFudgeScale over its first InitialAccelerationTime seconds.
+    pub speed_fudge: f32,
+    pub min_fudge: f32,
+    pub accel_time: f32,
+}
+
+/// The drag coefficient KF's engine uses for true-ballistics projectiles
+/// (a standard G1 table): (lowest Mach number, coefficient), fastest
+/// first; under Mach 0.05 it is 0.2629. Read from the engine (details in
+/// the local RE.md).
+const G1_TABLE: [(f32, f32); 78] = [
+    (5.0, 0.4988), (4.8, 0.4990), (4.6, 0.4992), (4.4, 0.4995), (4.2, 0.4998), (4.0, 0.5006),
+    (3.9, 0.5010), (3.8, 0.5016), (3.7, 0.5022), (3.6, 0.5030), (3.5, 0.5040), (3.4, 0.5054),
+    (3.3, 0.5067), (3.2, 0.5084), (3.1, 0.5105), (3.0, 0.5133), (2.9, 0.5168), (2.8, 0.5211),
+    (2.7, 0.5264), (2.6, 0.5325), (2.5, 0.5397), (2.45, 0.5438), (2.4, 0.5481), (2.35, 0.5527),
+    (2.3, 0.5577), (2.25, 0.5630), (2.2, 0.5685), (2.15, 0.5743), (2.1, 0.5804), (2.05, 0.5867),
+    (2.0, 0.5934), (1.95, 0.6003), (1.9, 0.6072), (1.85, 0.6141), (1.8, 0.6210), (1.75, 0.6280),
+    (1.7, 0.6347), (1.65, 0.6413), (1.6, 0.6474), (1.55, 0.6528), (1.5, 0.6573), (1.45, 0.6607),
+    (1.4, 0.6625), (1.35, 0.6621), (1.3, 0.6589), (1.25, 0.6518), (1.2, 0.6393), (1.15, 0.6191),
+    (1.125, 0.6053), (1.1, 0.5883), (1.075, 0.5677), (1.05, 0.5427), (1.025, 0.5136), (1.0, 0.4805),
+    (0.975, 0.4448), (0.95, 0.4084), (0.925, 0.3734), (0.9, 0.3415), (0.875, 0.3136), (0.85, 0.2901),
+    (0.825, 0.2706), (0.8, 0.2546), (0.775, 0.2417), (0.75, 0.2313), (0.725, 0.2230), (0.7, 0.2165),
+    (0.6, 0.2034), (0.55, 0.2020), (0.5, 0.2032), (0.45, 0.2061), (0.4, 0.2104), (0.35, 0.2155),
+    (0.3, 0.2214), (0.25, 0.2278), (0.2, 0.2344), (0.15, 0.2413), (0.1, 0.2487), (0.05, 0.2558),
+];
+
+fn g1(mach: f32) -> f32 {
+    G1_TABLE.iter().find(|(m, _)| mach >= *m).map_or(0.2629, |(_, cd)| *cd)
+}
+
+/// One step of KF's true-ballistics flight (before the propellant runs
+/// out). `flight` is the time flown so far (updated). The engine works in
+/// feet (18.4 units per foot): drag = (speed in ft/s)^2 x G1(Mach) /
+/// BallisticCoefficient x dt x 0.00384 taken off the speed (as the engine
+/// does, without converting back to units), gravity 591.45 units/s^2
+/// (32.144 ft/s^2), both and the move scaled by the start-up fudge.
+fn ballistic_step(vel: &mut Vec3, flight: &mut f32, b: &Ballistics, dt: f32) -> Vec3 {
+    let fudge = if *flight < b.accel_time {
+        (b.speed_fudge - b.min_fudge) / b.accel_time * *flight + b.min_fudge
+    } else {
+        b.speed_fudge
+    };
+    *flight += dt;
+    let v_fps = vel.length() * 0.0543;
+    let mach = v_fps * 0.000_895_824_6;
+    let drag = v_fps * v_fps * g1(mach) * b.bc_inverse * dt * 0.003_840_841;
+    *vel -= vel.normalize_or_zero() * drag * fudge;
+    vel.z -= dt * 591.4496 * fudge;
+    *vel * dt * fudge
+}
 
 /// A projectile class's values (from its defaults).
 #[derive(Clone, Copy, Debug, Default)]
@@ -111,6 +212,9 @@ pub struct ExplosiveStats {
     /// StraightFlightTime: flies straight this long, then falls (M79
     /// family; None = straight until it hits, the LAW).
     pub straight_time: Option<f32>,
+    /// True ballistics while the propellant lasts (M79 family); None:
+    /// straight at constant speed (LAWProj family).
+    pub ballistics: Option<Ballistics>,
     pub life_span: f32,
     /// ZombieFleshPound.TakeDamage's multiplier for this damage type, if it
     /// is in its explosives list (None: the small-arms rule).
@@ -295,6 +399,8 @@ struct PlayerExplosive {
     stats: ExplosiveStats,
     weapon: &'static str,
     age: f32,
+    /// FlightTime: time flown under true ballistics (its start-up fudge).
+    flight: f32,
     falling: bool,
     /// bDud: armed too close; falls and vanishes a second later.
     dud: Option<f32>,
@@ -309,7 +415,7 @@ struct PlayerProjectile {
     damage: f32,
     stats: ProjectileStats,
     weapon: &'static str,
-    /// Zeds already hit (each once).
+    /// Zed cylinders already touched (`hit_key`): each once.
     hit: Vec<usize>,
     bounces_left: u32,
     falling: bool,
@@ -573,6 +679,7 @@ fn spawn_projectiles(
                 stats: x,
                 weapon: s.weapon,
                 age: 0.0,
+                flight: 0.0,
                 falling: false,
                 dud: None,
                 trail,
@@ -603,7 +710,8 @@ fn spawn_projectiles(
                 let mut zed_t: Vec<f32> = zeds
                     .iter()
                     .filter(|z| z.health > 0.0)
-                    .filter_map(|z| crate::game::combat::zed_hit(z, from, dir))
+                    .flat_map(|z| pellet_touches(z, from, dir, s.stats.rule))
+                    .map(|(t, _)| t)
                     .filter(|&t| t < wall)
                     .collect();
                 zed_t.sort_by(f32::total_cmp);
@@ -635,6 +743,47 @@ fn spawn_projectiles(
     }
 }
 
+/// Which of a zed's collision cylinders a projectile touched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cylinder {
+    Main,
+    /// The ExtendedZCollision cylinder (a separate actor in KF).
+    Extended,
+    /// Either (a bolt: one hit per zed).
+    Any,
+}
+
+impl Cylinder {
+    fn label(self) -> &'static str {
+        match self {
+            Cylinder::Main => "main",
+            Cylinder::Extended => "extended",
+            Cylinder::Any => "any",
+        }
+    }
+}
+
+/// A projectile's record of a touched zed cylinder.
+fn hit_key(zed: usize, part: Cylinder) -> usize {
+    zed * 2 + (part == Cylinder::Extended) as usize
+}
+
+/// Where a projectile's path enters a zed: for pellets each cylinder
+/// separately (main and extended: KF touches them as two actors, so a
+/// pellet through both hits the zed twice and loses PenDamageReduction
+/// twice); for bolts the nearer one, once.
+fn pellet_touches(z: &Zed, from: Vec3, dir: Vec3, rule: PenRule) -> Vec<(f32, Cylinder)> {
+    if rule == PenRule::Bolt {
+        return crate::game::combat::zed_hit(z, from, dir).map(|t| (t, Cylinder::Any)).into_iter().collect();
+    }
+    let main = crate::game::combat::ray_cylinder(from, dir, z.centre, z.radius * SCALE, z.half_height * SCALE).map(|t| (t, Cylinder::Main));
+    let ext = z
+        .ext
+        .and_then(|(c, r, h)| crate::game::combat::ray_cylinder(from, dir, c, r * SCALE, h * SCALE))
+        .map(|t| (t, Cylinder::Extended));
+    main.into_iter().chain(ext).collect()
+}
+
 /// How many zeds a projectile passes before it stops (ProcessTouch's rule),
 /// for drawing its tracer only as far as it goes.
 pub fn penetration_limit(stats: &ProjectileStats) -> usize {
@@ -662,7 +811,7 @@ fn move_projectiles(
     time: Res<Time>,
     spatial: SpatialQuery,
     mut projectiles: Query<(Entity, &mut PlayerProjectile)>,
-    mut zeds: Query<&mut Zed>,
+    mut zeds: Query<(Entity, &mut Zed)>,
     mut kills: ResMut<crate::game::combat::KillCount>,
     mut bullet_fx: MessageWriter<crate::weapons::bullet_fx::BulletFx>,
     player: Query<&Transform, With<crate::engine::camera::FlyCamera>>,
@@ -679,10 +828,9 @@ fn move_projectiles(
             commands.entity(entity).despawn();
             continue;
         }
-        if p.falling {
-            p.vel.z -= GRAVITY * dt;
-        }
-        let step = p.vel * dt;
+        // Only nails fall (after their first bounce): NailGunProjectile is
+        // bBounce, so half gravity (CP-1).
+        let step = if p.falling { bouncer_fall_step(&mut p.vel, dt) } else { p.vel * dt };
         let len = step.length();
         if len <= 0.0 {
             continue;
@@ -693,36 +841,46 @@ fn move_projectiles(
         let Ok(dir3) = Dir3::new(dir) else { continue };
         let world = spatial.cast_ray(from, dir3, len * SCALE, true, &crate::world::collision::world_filter());
         let world_t = world.map_or(len * SCALE, |h| h.distance);
-        // Zeds along this step, before the wall, nearest first.
-        let mut hits: Vec<(f32, Mut<Zed>)> = Vec::new();
-        for z in &mut zeds {
-            if z.health <= 0.0 || p.hit.contains(&z.id) {
+        // Zed cylinders along this step, before the wall, nearest first.
+        // Pellets (ShotgunBullet, TrenchgunBullet) touch a zed's main and
+        // extended cylinders separately, as KF's engine does (they are
+        // two actors); bolts take one hit per zed (their ProcessTouch
+        // ignores the zed and its parts once hit).
+        let mut hits: Vec<(f32, Entity, Cylinder)> = Vec::new();
+        for (e, z) in &zeds {
+            if z.health <= 0.0 {
                 continue;
             }
-            if let Some(t) = crate::game::combat::zed_hit(&z, from, dir)
-                && t <= world_t
-            {
-                hits.push((t, z));
+            for (t, part) in pellet_touches(z, from, dir, p.stats.rule) {
+                if t <= world_t && !p.hit.contains(&hit_key(z.id, part)) {
+                    hits.push((t, e, part));
+                }
             }
         }
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut stopped = false;
-        for (t, mut z) in hits {
+        for (t, e, part) in hits {
+            let Ok((_, mut z)) = zeds.get_mut(e) else { continue };
+            if z.health <= 0.0 {
+                continue;
+            }
             let point = from + dir * t;
-            // ProcessTouch: x HeadShotDamageMult on a headshot; then
-            // KFMonster.TakeDamage checks again and applies the damage
+            // ProcessTouch: x HeadShotDamageMult on a headshot (only when it
+            // touched the zed itself: the extended cylinder is not a Pawn);
+            // then KFMonster.TakeDamage checks again and applies the damage
             // type's multiplier too.
             let head = crate::game::combat::is_headshot(&z, point, dir, 1.0);
-            let damage = if head { p.damage * p.stats.headshot_mult } else { p.damage };
+            let damage = if head && part != Cylinder::Extended { p.damage * p.stats.headshot_mult } else { p.damage };
             z.last_hit = Some((point, dir));
-            p.hit.push(z.id);
+            p.hit.push(hit_key(z.id, part));
             runlog::kv(
                 "projectile_hit",
                 &format!(
-                    "id={} weapon={} zed={} hit_number={} damage={damage:.1} headshot={head} flight_unreal={:.0}",
+                    "id={} weapon={} zed={} cylinder={} hit_number={} damage={damage:.1} headshot={head} flight_unreal={:.0}",
                     p.id,
                     p.weapon,
                     z.id,
+                    part.label(),
                     p.hit.len(),
                     p.age * p.stats.speed
                 ),
@@ -893,12 +1051,27 @@ fn move_explosives(
         // M79GrenadeProjectile.Tick: out of propellant after
         // StraightFlightTime, then PHYS_Falling.
         if p.stats.straight_time.is_some_and(|s| p.age > s) || p.dud.is_some() {
+            if !p.falling && p.dud.is_none() {
+                runlog::kv(
+                    "explosive_propellant_out",
+                    &format!(
+                        "id={} weapon={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.3} speed={:.0} vel_z={:.0}",
+                        p.id, p.weapon, p.pos.x, p.pos.y, p.pos.z, p.age, p.vel.length(), p.vel.z
+                    ),
+                );
+            }
             p.falling = true;
         }
-        if p.falling {
-            p.vel.z -= GRAVITY * dt;
-        }
-        let step = p.vel * dt;
+        // Falling: full gravity, speed capped at 2500 (CP-3). Before that the
+        // M79 family flies by KF's true ballistics, the LAW family straight.
+        let step = if p.falling {
+            fall_step(&mut p.vel, dt)
+        } else if let Some(b) = p.stats.ballistics {
+            let p = &mut *p;
+            ballistic_step(&mut p.vel, &mut p.flight, &b, dt)
+        } else {
+            p.vel * dt
+        };
         let len = step.length();
         if len <= 0.0 {
             continue;
@@ -1014,6 +1187,9 @@ fn move_explosives(
                 hurts_self: p.stats.hurts_self,
                 zap: p.stats.zap,
                 frag: false,
+                // KFMonster.TakeDamage keeps the push for DamTypeM79Grenade,
+                // M32 and M203 (the M79 family), not the LAW family's.
+                knockback: p.stats.straight_time.is_some().then_some(p.stats.momentum),
                 weapon: p.weapon,
                 id: p.id,
                 dam: p.stats.dam,
@@ -1415,6 +1591,9 @@ struct Blast {
     /// MyDamageType is DamTypeFrag (the Nade): the only player blast
     /// KFDoorMover.TakeDamage accepts.
     frag: bool,
+    /// MomentumTransfer, if a zed that survives keeps the push (the frag,
+    /// pipe bomb and M79 family damage types; all have bExtraMomentumZ).
+    knockback: Option<f32>,
     weapon: &'static str,
     id: u32,
     /// The damage type and the instigator's perk.
@@ -1508,6 +1687,20 @@ fn blast(
         if before > 0.0 && z.health <= 0.0 {
             zeds_killed += 1;
         }
+        // A survivor is pushed: damageScale x MomentumTransfer along the
+        // line from the blast to its centre.
+        if let Some(transfer) = b.knockback
+            && z.health > 0.0
+            && let Some((added, vel)) = z.knockback(scale * transfer * dirs, true)
+        {
+            runlog::kv(
+                "zed_knockback",
+                &format!(
+                    "id={} weapon={} blast={} scale={scale:.2} added_unreal=({:.0}, {:.0}, {:.0}) velocity_unreal=({:.0}, {:.0}, {:.0})",
+                    z.id, b.weapon, b.id, added.x, added.y, added.z, vel.x, vel.y, vel.z
+                ),
+            );
+        }
     }
     // The player: KFPawn.GetExposureTo (head and root, half each);
     // KFGameType.ReduceDamage reduces self damage; KFHumanPawn.TakeDamage
@@ -1553,6 +1746,8 @@ pub struct ThrownStats {
     /// DampenFactorParallel; at rest under 20.
     pub dampen_normal: f32,
     pub dampen_parallel: f32,
+    /// MomentumTransfer (the blast's push on surviving zeds).
+    pub momentum: f32,
     pub fleshpound_mult: f32,
     pub effect: &'static str,
     pub decal: crate::render::decals::DecalKind,
@@ -1738,8 +1933,8 @@ fn move_thrown(
         }
         // Fly: PHYS_Falling, bouncing off the level; a zed stops it dead.
         if !p.resting {
-            p.vel.z -= GRAVITY * dt;
-            let step = p.vel * dt;
+            // Nade and PipeBombProjectile are bBounce: half gravity (CP-1).
+            let step = bouncer_fall_step(&mut p.vel, dt);
             let len = step.length();
             if len > 0.0 {
                 let dir_ue = step / len;
@@ -1758,6 +1953,13 @@ fn move_thrown(
                         let n = if h.normal.dot(dir) > 0.0 { -h.normal } else { h.normal };
                         let n = to_ue(n).normalize_or_zero();
                         p.pos += dir_ue * (h.distance / SCALE) + n;
+                        runlog::kv(
+                            "thrown_bounce",
+                            &format!(
+                                "id={} weapon={} at_unreal=({:.0}, {:.0}, {:.0}) age={:.2} speed_in={:.0}",
+                                p.id, p.weapon, p.pos.x, p.pos.y, p.pos.z, p.age, p.vel.length()
+                            ),
+                        );
                         let v_norm = p.vel.dot(n) * n;
                         p.vel = -v_norm * p.stats.dampen_normal + (p.vel - v_norm) * p.stats.dampen_parallel;
                         // HitWall: ImpactSound (SLOT_Misc, TransientSoundVolume)
@@ -1904,6 +2106,9 @@ fn move_thrown(
                 // DamTypePipeBomb; FlameNade's DamTypeFlameNade (doors take
                 // only DamTypeFrag).
                 frag: matches!(p.stats.kind, ThrownKind::Frag { .. }) && p.stats.fire.is_none(),
+                // DamTypeFrag and DamTypePipeBomb keep the push;
+                // DamTypeFlameNade does not.
+                knockback: p.stats.fire.is_none().then_some(p.stats.momentum),
                 weapon: p.weapon,
                 id: p.id,
                 dam: p.stats.dam,
@@ -2123,6 +2328,109 @@ mod tests {
         assert_eq!(scream_result(ScreamTarget::Pipe, 5.0, 700.0, 14.0, true), (ScreamResult::Ignored, 14));
         // A (modded) scream of 25 or more would destroy it.
         assert_eq!(scream_result(ScreamTarget::Pipe, 8.0, 700.0, 30.0, true), (ScreamResult::Disintegrated, 30));
+    }
+
+    /// Flies a bouncer from z = 0 until it is back below 0; returns the
+    /// distance and the apex height.
+    fn bouncer_first_arc(speed: f32, angle_deg: f32, dt: f32) -> (f32, f32) {
+        let a = angle_deg.to_radians();
+        let mut vel = Vec3::new(speed * a.cos(), 0.0, speed * a.sin());
+        let mut pos = Vec3::ZERO;
+        let mut apex: f32 = 0.0;
+        loop {
+            pos += bouncer_fall_step(&mut vel, dt);
+            apex = apex.max(pos.z);
+            if pos.z < 0.0 {
+                return (pos.x, apex);
+            }
+        }
+    }
+
+    #[test]
+    fn frag_throw_falls_at_half_gravity() {
+        // A quick frag throw (mHoldSpeedMin 850) at 45 degrees over flat
+        // ground: range v^2 / g with g = 475 is 1521 units (it was 761 at
+        // 950); apex v^2 sin^2 / 2g = 380 (was 190).
+        let (range, apex) = bouncer_first_arc(850.0, 45.0, 1.0 / 60.0);
+        assert!((range - 850.0 * 850.0 / 475.0).abs() < 25.0, "range {range}");
+        assert!((apex - 850.0 * 850.0 * 0.5 / 950.0).abs() < 8.0, "apex {apex}");
+        // Frame rate barely matters (KF steps at most 0.05 s).
+        let (range20, _) = bouncer_first_arc(850.0, 45.0, 0.05);
+        assert!((range20 - range).abs() < 40.0, "range at 20 fps {range20}");
+    }
+
+    /// Flies an M79 grenade (Speed 8000, StraightFlightTime 0.25, the
+    /// ROBallisticProjectile defaults) fired level from z = 0 at 60 fps.
+    /// Returns (time, position, speed) per frame until it is 300 below.
+    fn m79_flight(new: bool) -> Vec<(f32, Vec3, f32)> {
+        let b = Ballistics { bc_inverse: 1.0 / 0.3, speed_fudge: 1.0, min_fudge: 0.025, accel_time: 0.1 };
+        let dt = 1.0 / 60.0;
+        let (mut pos, mut vel, mut age, mut flight, mut falling) = (Vec3::ZERO, Vec3::new(8000.0, 0.0, 0.0), 0.0f32, 0.0f32, false);
+        let mut out = Vec::new();
+        while pos.z > -300.0 && age < 10.0 {
+            age += dt;
+            if age > 0.25 {
+                falling = true;
+            }
+            let step = if new {
+                if falling { fall_step(&mut vel, dt) } else { ballistic_step(&mut vel, &mut flight, &b, dt) }
+            } else {
+                // The old model: straight, then plain gravity, no cap.
+                if falling {
+                    vel.z -= GRAVITY * dt;
+                }
+                vel * dt
+            };
+            pos += step;
+            out.push((age, pos, vel.length()));
+        }
+        out
+    }
+
+    #[test]
+    fn m79_flies_by_kf_ballistics() {
+        // Drag at the M79's Mach 0.39: G1 0.2155.
+        assert!((g1(0.389) - 0.2155).abs() < 1e-4);
+        assert!((g1(0.01) - 0.2629).abs() < 1e-4);
+        let new = m79_flight(true);
+        let old = m79_flight(false);
+        let at = |f: &[(f32, Vec3, f32)], t: f32| f.iter().find(|s| s.0 >= t - 1e-4).copied().unwrap();
+        // The first 0.1 s it ramps up from 2.5% speed: about half the
+        // distance (old: 800).
+        let (_, p01, _) = at(&new, 0.1);
+        assert!((300.0..450.0).contains(&p01.x), "x at 0.1 s: {}", p01.x);
+        // At 0.25 s: about 1600 units out, about 15 lower.
+        let (_, p25, v25) = at(&new, 0.25);
+        assert!((1450.0..1650.0).contains(&p25.x), "x at 0.25 s: {}", p25.x);
+        assert!((-25.0..-8.0).contains(&p25.z), "z at 0.25 s: {}", p25.z);
+        assert!(v25 > 7800.0 && v25 < 7950.0, "speed at 0.25 s: {v25}");
+        // First falling step: capped at TerminalVelocity.
+        let (_, _, v_fall) = at(&new, 0.26);
+        assert!((v_fall - 2500.0).abs() < 1.0, "speed falling: {v_fall}");
+        // Distance until 300 units below the muzzle: far shorter.
+        let (t_new, end_new, _) = *new.last().unwrap();
+        let (t_old, end_old, _) = *old.last().unwrap();
+        println!("m79 to 300 below: new {:.0} units in {t_new:.2} s, old {:.0} units in {t_old:.2} s", end_new.x, end_old.x);
+        assert!(end_new.x < 0.5 * end_old.x);
+    }
+
+    #[test]
+    fn pellets_touch_both_cylinders_bolts_once() {
+        // A Scrake: main cylinder 26 x 44, extended 29 x 18 at 55 up.
+        let mut z = Zed::test_clot();
+        z.ext = Some((z.centre + Vec3::Y * 55.0 * SCALE, 29.0, 18.0));
+        // A level shot along Unreal X, 40 above the centre: it crosses both.
+        let from = coords::pos([-500.0, 0.0, 40.0]);
+        let dir = coords::dir([1.0, 0.0, 0.0]);
+        let both = pellet_touches(&z, from, dir, PenRule::Pellet);
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(both.iter().any(|h| h.1 == Cylinder::Main) && both.iter().any(|h| h.1 == Cylinder::Extended));
+        assert_ne!(hit_key(z.id, Cylinder::Main), hit_key(z.id, Cylinder::Extended));
+        // At the knees: only the main cylinder.
+        let legs = pellet_touches(&z, coords::pos([-500.0, 0.0, -30.0]), dir, PenRule::Pellet);
+        assert_eq!(legs.len(), 1);
+        // A bolt: once.
+        assert_eq!(pellet_touches(&z, from, dir, PenRule::Bolt).len(), 1);
     }
 
     fn stats(r: f32, max: f32) -> ProjectileStats {

@@ -91,6 +91,7 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 since_hit: f32::MAX,
                 router: Default::default(),
                 air_velocity: Vec3::ZERO,
+                mass: c.mass,
                 jump_cooldown: 0.0,
                 door_bash: None,
                 door_checked: None,

@@ -300,6 +300,9 @@ struct ZedClass {
     left_arm_gibbed: bool,
     /// JumpZ (KFMonster 320).
     jump_z: f32,
+    /// Mass (KFMonster 100; Gorefast 350, Bloat and Husk 400, Scrake 500,
+    /// Fleshpound 600, Patriarch 1000): divides explosive knockback.
+    mass: f32,
     /// Crawler: PounceSpeed (0 = cannot pounce).
     pounce_speed: f32,
     /// FlipOver returns false (ZombieCrawler): no knock-down.
@@ -561,6 +564,8 @@ pub struct Zed {
     router: crate::world::nav::Router,
     /// Horizontal velocity kept while falling or jumping (Bevy, m/s).
     air_velocity: Vec3,
+    /// The class Mass (for explosive knockback).
+    mass: f32,
     /// Seconds before the zed may try another jump.
     jump_cooldown: f32,
     /// Crawler: in a pounce (bPouncing), and seconds since the last one.
@@ -855,6 +860,33 @@ pub enum BossAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explosion_knockback_follows_kf_rules() {
+        // A frag at full strength on a walking Scrake (Mass 500), pushed
+        // along Unreal X: 100000 / 500 = 200 sideways, the upward part
+        // raised to 0.4 x 100000 / 500 = 80; it starts falling.
+        let mut z = Zed { mass: 500.0, state: ZedState::Chase, ..Zed::test_clot() };
+        let (added, vel) = z.knockback(Vec3::new(100000.0, 0.0, 0.0), true).unwrap();
+        assert!((added - Vec3::new(200.0, 0.0, 80.0)).length() < 1e-3, "{added}");
+        assert!((vel - added).length() < 1e-3);
+        assert_eq!(z.state, ZedState::Falling);
+        assert!((z.vertical_speed - 80.0 * SCALE).abs() < 1e-5);
+        assert!((ue_dir(z.air_velocity) / SCALE - Vec3::new(200.0, 0.0, 0.0)).length() < 1e-3);
+        // Already rising faster than 380: the upward part is halved, and a
+        // falling zed gets no extra upward boost.
+        z.vertical_speed = 400.0 * SCALE;
+        z.air_velocity = Vec3::ZERO;
+        let (added, _) = z.knockback(Vec3::new(0.0, 0.0, 100000.0), true).unwrap();
+        assert!((added.z - 100.0).abs() < 1e-3, "{added}");
+        // 50 units/s or less: nothing (KFMonster.AddVelocity).
+        let mut fp = Zed { mass: 600.0, state: ZedState::Chase, ..Zed::test_clot() };
+        assert!(fp.knockback(Vec3::new(25000.0, 0.0, 0.0), true).is_none());
+        assert_eq!(fp.state, ZedState::Chase);
+        // A dead zed or one in a scripted move: nothing.
+        let mut down = Zed { mass: 500.0, state: ZedState::KnockedDown, ..Zed::test_clot() };
+        assert!(down.knockback(Vec3::new(100000.0, 0.0, 0.0), true).is_none());
+    }
 
     #[test]
     fn zap_builds_up_lasts_and_raises_the_threshold() {
