@@ -73,6 +73,13 @@ pub const SKY_LAYER: usize = 1;
 #[derive(Resource, Default)]
 pub struct SkyInfo {
     pub camera_position: Option<Vec3>,
+    /// The sky zone's own fog (its SkyZoneInfo), if it has fog. KF draws
+    /// the sky view with this fog, measured from the sky camera, never the
+    /// player's zone fog (details in the local RE.md).
+    pub fog: Option<crate::world::zones::ZoneFog>,
+    /// The SkyZoneInfo's Rotation (Bevy space). KF turns the sky view by
+    /// it: the sky camera's rotation is this times the view's rotation.
+    pub rotation: Quat,
 }
 
 /// Each zone's fog: its ZoneInfo (zone 0 and zones without one: the
@@ -87,7 +94,7 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 _ => level_info,
             };
             let Some(e) = export else {
-                return crate::world::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], overlay: None, ambient: [0, 0, 255], ambient_vector: None };
+                return crate::world::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], clear_to_fog: false, blend_time: 1.0, overlay: None, ambient: [0, 0, 255], ambient_vector: None };
             };
             let props = read_export_properties(pkg, e).ok();
             let value = |n: &str| props.as_ref().and_then(|p| defaults.actor_value(lp, e, p, n));
@@ -111,6 +118,8 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 fog: matches!(value("bDistanceFog"), Some(Value::Bool(true))),
                 start: float("DistanceFogStart", 3000.0),
                 end: float("DistanceFogEnd", 8000.0),
+                clear_to_fog: matches!(value("bClearToFogColor"), Some(Value::Bool(true))),
+                blend_time: float("DistanceFogBlendTime", 1.0),
                 color: match value("DistanceFogColor") {
                     Some(Value::Color(c)) => c,
                     _ => [128, 128, 128, 0],
@@ -713,13 +722,24 @@ fn load_map(
                 if let Some((_, name)) = &sky_zone {
                     let actor = (0..lp.pkg.exports.len())
                         .find(|&i| lp.pkg.object_path(ObjectRef::Export(i)) == *name);
-                    let location = actor
-                        .and_then(|i| read_export_properties(&lp.pkg, i).ok())
-                        .and_then(|p| match p.get(&lp.pkg, "Location") {
-                            Some(Value::Vector(v)) => Some(*v),
-                            _ => None,
-                        });
+                    let props = actor.and_then(|i| read_export_properties(&lp.pkg, i).ok());
+                    let location = props.as_ref().and_then(|p| match p.get(&lp.pkg, "Location") {
+                        Some(Value::Vector(v)) => Some(*v),
+                        _ => None,
+                    });
                     sky.camera_position = location.map(coords::pos);
+                    let rotation = props
+                        .as_ref()
+                        .and_then(|p| match p.get(&lp.pkg, "Rotation") {
+                            Some(Value::Rotator(r)) => Some(*r),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    sky.rotation = coords::rotation(rotation);
+                    runlog::kv(
+                        "sky_rotation",
+                        &format!("pitch={} yaw={} roll={} (65536 = full turn)", rotation.pitch, rotation.yaw, rotation.roll),
+                    );
                 }
                 // Zones and their fog (zones.rs).
                 let zone_fog = zone_fog(&lp, &class_defaults, &model);
@@ -743,6 +763,25 @@ fn load_map(
                     .filter(|&i| lp.pkg.export_class_name(i) == "KFSPLevelInfo")
                     .filter_map(|i| read_export_properties(&lp.pkg, i).ok())
                     .all(|p| !matches!(p.get(&lp.pkg, "bUseVisionOverlay"), Some(Value::Bool(false))));
+                // The sky view's fog: the sky zone's own (KF: no blending,
+                // no volume fog, distances from the sky camera).
+                sky.fog = sky_zone.as_ref().and_then(|(z, _)| zone_fog.get(*z as usize)).filter(|f| f.fog).cloned();
+                if let Some((z, _)) = &sky_zone {
+                    let f = zone_fog.get(*z as usize);
+                    runlog::kv(
+                        "sky_fog",
+                        &format!(
+                            "zone={z} name={} fog={} start={} end={} colour={},{},{}",
+                            f.map_or("?", |f| f.name.as_str()),
+                            f.is_some_and(|f| f.fog),
+                            f.map_or(0.0, |f| f.start),
+                            f.map_or(0.0, |f| f.end),
+                            f.map_or(0, |f| f.color[0]),
+                            f.map_or(0, |f| f.color[1]),
+                            f.map_or(0, |f| f.color[2]),
+                        ),
+                    );
+                }
                 commands.insert_resource(crate::world::zones::Zones { bsp: model.clone(), zones: zone_fog, vision_overlay });
                 // Baked lighting (lighting.rs): the render sections carry
                 // each polygon's lightmap UVs and page.

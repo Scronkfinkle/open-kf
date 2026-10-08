@@ -6359,3 +6359,34 @@ TriggerLights are taken at their saved brightness. Terrain lighting is
 another branch.
 **Next:** your look at KF-Clandestine and KF-Forgotten in the real game
 at the start view.
+## 2026-10-08 Sky fog, sky rotation, clear colour, fog fade (branch fix/sky-fog)
+
+**Changed:** four commits: the sky view gets the sky zone's own distance
+fog (`world/map.rs` SkyInfo.fog, `engine/camera.rs`, `weapons/scope.rs`);
+the sky view is turned by the SkyZoneInfo's Rotation (SkyInfo.rotation;
+`follow_sky`, the shaken view in `player/hit_cam.rs`, the scope); the
+screen clears to black, or to the zone's fog colour with bClearToFogColor
+(`world/zones.rs`, `main.rs`); the view's fog fades between zones over
+DistanceFogBlendTime (`FogBlend` in `world/zones.rs`). DESIGN.md "Sky
+zone" subsection.
+**Why:** the rendering and map-loading audits (local
+work/re/audits/rendering.md REN-2, REN-6, REN-7; map-loading.md MAP-3).
+**Tested how:** cargo test (238 + 24, three new fog-fade tests); clippy
+(only the old boss.rs warning); headless KF-WestLondon spawn view before
+and after each sky step; KF-BioticsLab start view before / after; walks
+from five KF-WestLondon spawn points looking for a zone change.
+**Result:** `sky_fog zone=8 start=-700 end=2500 colour=86,74,54`;
+`sky_rotation pitch=-65520 yaw=-32848 roll=-80` (about 180 degrees). Sky
+strip above the scaffold (our camera, 1280x720): before (102, 82, 55),
+sky fog (102, 81, 53), sky rotation (133, 108, 75); your real screenshot's
+sky (146, 104, 63); the dark smoke column behind the scaffold is gone, as
+in your screenshot. KF-BioticsLab start: `clear_colour rgb=0,0,0`, no
+visible change (indoors).
+**Still broken / not tested:** the rotation's direction cannot be told on
+KF-WestLondon (180 degrees either way); it follows KF's code, unchecked on
+a map with another sky turn (KF-Manor 65 degrees). The fog fade was not
+seen in a run: all five spawns walked inside one zone. Fog from
+PhysicsVolumes (KF-Manor's 3) is not done. Our distant buildings still
+look hazier than in your screenshot (likely the fog maths, REN-5, not
+done).
+**Next:** your look at the KF-WestLondon sky; fog maths (REN-5).

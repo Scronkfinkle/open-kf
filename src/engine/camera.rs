@@ -216,7 +216,7 @@ pub fn spawn_camera(
         FlyCamera { yaw, pitch, speed: 8.0 },
     ));
     if let Some(sky_pos) = sky.camera_position {
-        commands.spawn((
+        let mut cam = commands.spawn((
             Camera3d::default(),
             Camera { order: -1, ..default() },
             kf_projection(settings.fov),
@@ -225,6 +225,10 @@ pub fn spawn_camera(
             RenderLayers::layer(SKY_LAYER),
             SkyCamera,
         ));
+        // KF fogs the sky view with the sky zone's own fog.
+        if let Some(f) = &sky.fog {
+            cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
+        }
     }
     runlog::kv(
         "camera_spawned",
@@ -238,10 +242,11 @@ pub fn spawn_camera(
 }
 
 #[allow(clippy::type_complexity)] // Bevy system parameters
-/// Keeps the sky camera's rotation equal to the main camera's, and both
-/// cameras at the current view FOV.
+/// Keeps the sky camera turned like the main camera (times the sky zone's
+/// own rotation, as KF does), and both cameras at the current view FOV.
 pub fn follow_sky(
     fov: Res<ViewFov>,
+    sky_info: Res<SkyInfo>,
     main: Query<&Transform, (With<FlyCamera>, Without<SkyCamera>)>,
     mut sky: Query<&mut Transform, With<SkyCamera>>,
     mut projections: Query<&mut Projection, Or<(With<FlyCamera>, With<SkyCamera>)>>,
@@ -250,7 +255,7 @@ pub fn follow_sky(
         return;
     };
     for mut t in &mut sky {
-        t.rotation = main.rotation;
+        t.rotation = sky_info.rotation * main.rotation;
     }
     let vertical = vertical_fov(fov.0);
     for mut proj in &mut projections {

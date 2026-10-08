@@ -91,7 +91,7 @@ fn spawn_scope(
         })
     };
     if let Some(sky_pos) = sky.camera_position {
-        commands.spawn((
+        let mut sky_cam = commands.spawn((
             Camera3d::default(),
             Camera {
                 order: -3,
@@ -104,6 +104,10 @@ fn spawn_scope(
             RenderLayers::layer(SKY_LAYER),
             ScopeSkyCamera,
         ));
+        // The sky zone's own fog, as on the main sky camera.
+        if let Some(f) = &sky.fog {
+            sky_cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
+        }
     }
     let cam = commands
         .spawn((
@@ -173,6 +177,7 @@ fn update_scope(
     >,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut was_active: Local<bool>,
+    sky_info: Res<SkyInfo>,
 ) {
     let Ok(main) = main.single() else {
         return;
@@ -184,7 +189,7 @@ fn update_scope(
             continue;
         }
         if is_sky {
-            t.rotation = main.rotation;
+            t.rotation = sky_info.rotation * main.rotation;
         } else {
             *t = *main;
         }
