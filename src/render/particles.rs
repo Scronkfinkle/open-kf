@@ -355,8 +355,14 @@ impl ParticleEffect {
     }
 }
 
+/// One sub-emitter's particles, kept as KF keeps them: a ring of at most
+/// MaxParticles slots. A new particle goes into slot `next` (replacing
+/// whatever was there, alive or not); `slots.len()` is how many slots have
+/// ever been used (KF's ActiveParticles). Dead particles stay in their
+/// slot (not drawn) until it is reused.
 struct EmitterState {
-    particles: Vec<Particle>,
+    slots: Vec<Particle>,
+    next: usize,
     /// Asked for by SpawnParticle / Trigger, spawned on the next update.
     pending: u32,
     /// StartVelocityRange / LifetimeRange as last set by a script.
@@ -365,12 +371,16 @@ struct EmitterState {
     /// Particles spawned so far, and the fractional spawn carry-over.
     spawned: u32,
     carry: f32,
+    /// Spawn rate used on the last update (particles per second), for the log.
+    rate: f32,
     /// One mesh per drawn section.
     meshes: Vec<Handle<Mesh>>,
 }
 
 #[derive(Clone, Copy)]
 struct Particle {
+    /// False once its lifetime is over (until its slot is reused).
+    alive: bool,
     /// Effect-local for CoordinateSystem Relative, else world (Unreal units).
     pos: Vec3,
     vel: Vec3,
@@ -795,7 +805,9 @@ pub fn spawn_effect_with(
             handles.push(mesh);
         }
         states.push(EmitterState {
-            particles: Vec::new(),
+            slots: Vec::new(),
+            next: 0,
+            rate: 0.0,
             spawned: 0,
             carry: 0.0,
             meshes: handles,
@@ -848,37 +860,141 @@ fn curve<T: Copy>(keys: &[(f32, T)], t: f32, lerp: impl Fn(T, T, f32) -> T) -> O
     keys.last().map(|k| k.1)
 }
 
-/// How many particles to spawn this frame (UE2 spawning rules, assumed from
-/// the settings' meaning): InitialParticlesPerSecond until MaxParticles
-/// have been spawned, then ParticlesPerSecond (0 = MaxParticles over the
-/// longest lifetime) if dead particles respawn. AutomaticInitialSpawning
-/// uses that automatic rate for the initial phase too.
-fn spawn_count(d: &EmitterDef, s: &mut EmitterState, dt: f32) -> u32 {
-    let max = d.max_particles.max(0) as u32;
-    let alive = s.particles.len() as u32;
-    let auto_rate = max as f32 / d.lifetime.1.max(0.01);
-    let initial = s.spawned < max;
-    let rate = if initial {
-        if d.initial_particles_per_second > 0.0 {
-            d.initial_particles_per_second
-        } else if d.automatic_initial_spawning {
-            auto_rate
-        } else {
-            d.particles_per_second
-        }
-    } else if d.respawn_dead_particles {
-        if d.particles_per_second > 0.0 { d.particles_per_second } else { auto_rate }
-    } else {
+/// Spawn rate (particles per second), as KF's engine picks it: while fewer
+/// slots than MaxParticles have ever been used, MaxParticles / average
+/// lifetime with AutomaticInitialSpawning, else InitialParticlesPerSecond
+/// (so with neither, nothing spawns by itself); after that
+/// ParticlesPerSecond, whether or not dead particles respawn. 0 once killed.
+fn spawn_rate(d: &EmitterDef, s: &EmitterState, killed: bool) -> f32 {
+    let max = d.max_particles.max(0) as usize;
+    if killed {
         0.0
-    };
-    s.carry += rate * dt;
-    let mut n = s.carry.floor() as u32;
-    s.carry -= n as f32;
-    n = n.min(max.saturating_sub(alive));
-    if !d.respawn_dead_particles {
-        n = n.min(max.saturating_sub(s.spawned));
+    } else if s.slots.len() < max {
+        if d.automatic_initial_spawning {
+            let average = (d.lifetime.0 + d.lifetime.1) * 0.5;
+            if average > 0.0 { max as f32 / average } else { 0.0 }
+        } else {
+            d.initial_particles_per_second
+        }
+    } else {
+        d.particles_per_second
     }
-    n
+}
+
+/// How many particles a rate gives this frame: whole particles of rate x dt
+/// plus the fraction carried over, at most MaxParticles.
+fn spawn_count(d: &EmitterDef, s: &mut EmitterState, rate: f32, dt: f32) -> u32 {
+    if rate <= 0.0 {
+        return 0;
+    }
+    s.carry += rate * dt;
+    let n = s.carry.floor();
+    s.carry -= n;
+    (n as u32).min(d.max_particles.max(0) as u32)
+}
+
+/// Puts a new particle in the next slot of the ring.
+fn put(d: &EmitterDef, s: &mut EmitterState, p: Particle) {
+    let max = d.max_particles.max(1) as usize;
+    if s.next < s.slots.len() {
+        s.slots[s.next] = p;
+    } else {
+        s.slots.push(p);
+    }
+    s.next = (s.next + 1) % max;
+    s.spawned += 1;
+}
+
+/// Moves one sub-emitter's particles on by `dt` and spawns new ones (KF's
+/// rules, see `spawn_rate`). `other`: world positions of the live particles
+/// of the emitter named by AddLocationFromOtherEmitter. `cast`: a level ray
+/// test from one Unreal point to another, giving the hit fraction and the
+/// Unreal normal. Returns true when the emitter is finished: no spawn rate,
+/// no respawning, and no live particle (KF's "all particles dead").
+#[allow(clippy::too_many_arguments)]
+fn update_emitter(
+    d: &EmitterDef,
+    s: &mut EmitterState,
+    frame: &(Vec3, Mat3),
+    dt: f32,
+    killed: bool,
+    other: Option<&[Vec3]>,
+    rng: &mut u32,
+    cast: &mut dyn FnMut(Vec3, Vec3) -> Option<(f32, Vec3)>,
+) -> bool {
+    let rate = spawn_rate(d, s, killed);
+    s.rate = rate;
+    // Kill() also stops respawning.
+    let respawn = d.respawn_dead_particles && !killed;
+    // Age and move; a particle whose time is up respawns in its slot if
+    // RespawnDeadParticles, else it is dead.
+    let relative = d.coordinate_system == 1;
+    let accel = Vec3::from_array(d.acceleration);
+    let max_abs = Vec3::from_array(d.max_abs_velocity);
+    for i in 0..s.slots.len() {
+        let p = &mut s.slots[i];
+        if !p.alive {
+            continue;
+        }
+        p.age += dt;
+        if p.age >= p.life {
+            if respawn {
+                let fresh = spawn_particle(d, frame, pick_other(other, rng), (s.start_velocity, s.lifetime), rng);
+                s.slots[i] = fresh;
+                s.spawned += 1;
+            } else {
+                p.alive = false;
+            }
+            continue;
+        }
+        p.vel += accel * dt;
+        p.vel -= p.vel * p.velocity_loss * dt;
+        for a in 0..3 {
+            if max_abs[a] > 0.0 {
+                p.vel[a] = p.vel[a].clamp(-max_abs[a], max_abs[a]);
+            }
+        }
+        let step = p.vel * dt;
+        if d.use_collision
+            && !relative
+            && step.length_squared() > 0.0
+            && let Some((fraction, n)) = cast(p.pos, p.pos + step)
+        {
+            p.pos += step * fraction + n * 0.5;
+            // Bounce: reflect, scaled per axis by DampingFactor.
+            p.vel = (p.vel - 2.0 * p.vel.dot(n) * n) * p.damping;
+            if d.damp_rotation {
+                p.spin_rate *= p.damping;
+            }
+        } else {
+            p.pos += step;
+        }
+        p.spin += p.spin_rate * dt;
+    }
+    // Spawn at the rate, into the ring.
+    let n = spawn_count(d, s, rate, dt);
+    for _ in 0..n {
+        let base = match other {
+            Some([]) => continue,
+            o => pick_other(o, rng),
+        };
+        let p = spawn_particle(d, frame, base, (s.start_velocity, s.lifetime), rng);
+        put(d, s, p);
+    }
+    // SpawnParticle / Trigger requests: into the ring too.
+    let asked = std::mem::take(&mut s.pending);
+    for _ in 0..asked.min(d.max_particles.max(0) as u32) {
+        let p = spawn_particle(d, frame, None, (s.start_velocity, s.lifetime), rng);
+        put(d, s, p);
+    }
+    rate == 0.0 && !respawn && !s.slots.iter().any(|p| p.alive)
+}
+
+/// A random live particle of the other emitter (AddLocationFromOtherEmitter);
+/// None when there is no other emitter or it has none.
+fn pick_other(other: Option<&[Vec3]>, rng: &mut u32) -> Option<Vec3> {
+    let list = other.filter(|l| !l.is_empty())?;
+    Some(list[(frand(rng) * list.len() as f32) as usize % list.len()])
 }
 
 /// The rotation KF gives a new particle's start position and velocity
@@ -949,6 +1065,7 @@ fn spawn_particle(d: &EmitterDef, frame: &(Vec3, Mat3), base: Option<Vec3>, star
     }
     let subdivisions = (d.texture_u_subdivisions.max(1) * d.texture_v_subdivisions.max(1)) as u32;
     Particle {
+        alive: true,
         pos,
         vel,
         size,
@@ -994,7 +1111,7 @@ fn update_effects(
             .emitters
             .iter()
             .zip(&fx.emitters)
-            .map(|(e, s)| s.particles.iter().map(|p| world_pos(&e.def, &frame, p)).collect())
+            .map(|(e, s)| s.slots.iter().filter(|p| p.alive).map(|p| world_pos(&e.def, &frame, p)).collect())
             .collect();
         let mut all_done = true;
         for (i, e) in effect.emitters.iter().enumerate() {
@@ -1003,96 +1120,39 @@ fn update_effects(
             if d.disabled {
                 continue;
             }
-            // Age and move.
-            let relative = d.coordinate_system == 1;
-            let accel = Vec3::from_array(d.acceleration);
-            let max_abs = Vec3::from_array(d.max_abs_velocity);
-            s.particles.retain_mut(|p| {
-                p.age += dt;
-                if p.age >= p.life {
-                    return false;
-                }
-                p.vel += accel * dt;
-                p.vel -= p.vel * p.velocity_loss * dt;
-                for a in 0..3 {
-                    if max_abs[a] > 0.0 {
-                        p.vel[a] = p.vel[a].clamp(-max_abs[a], max_abs[a]);
-                    }
-                }
-                let step = p.vel * dt;
-                if d.use_collision && !relative && step.length_squared() > 0.0 {
-                    let from = coords::pos(p.pos.to_array());
-                    let to = coords::pos((p.pos + step).to_array());
-                    if let Ok(dir) = Dir3::new(to - from)
-                        && let Some(hit) = spatial.cast_ray(from, dir, (to - from).length(), true, &crate::world::collision::world_filter())
-                    {
-                        let n = to_ue_dir(hit.normal).normalize_or_zero();
-                        p.pos += step * (hit.distance / (to - from).length()) + n * 0.5;
-                        // Bounce: reflect, scaled per axis by DampingFactor.
-                        p.vel = (p.vel - 2.0 * p.vel.dot(n) * n) * p.damping;
-                        if d.damp_rotation {
-                            p.spin_rate *= p.damping;
-                        }
-                        p.spin += p.spin_rate * dt;
-                        return true;
-                    }
-                }
-                p.pos += step;
-                p.spin += p.spin_rate * dt;
-                true
-            });
-            // Spawn (nothing once killed).
-            let n = if fx.killed { 0 } else { spawn_count(d, s, dt) };
-            let other = usize::try_from(d.add_location_from_other_emitter).ok().and_then(|o| snapshot.get(o));
-            for _ in 0..n {
-                let base = match other {
-                    Some(list) if !list.is_empty() => Some(list[(frand(&mut fx.rng) * list.len() as f32) as usize % list.len()]),
-                    // Assumed: nothing to spawn on, so no particle.
-                    Some(_) => continue,
-                    None => None,
-                };
-                let p = spawn_particle(d, &frame, base, (s.start_velocity, s.lifetime), &mut fx.rng);
-                s.particles.push(p);
-                s.spawned += 1;
-            }
-            // SpawnParticle / Trigger requests: at most MaxParticles alive,
-            // the oldest dropped to make room.
-            let asked = std::mem::take(&mut s.pending);
-            let max = d.max_particles.max(1) as usize;
-            for _ in 0..asked {
-                if s.particles.len() >= max {
-                    s.particles.remove(0);
-                }
-                let p = spawn_particle(d, &frame, None, (s.start_velocity, s.lifetime), &mut fx.rng);
-                s.particles.push(p);
-                s.spawned += 1;
-            }
-            let finished = !d.respawn_dead_particles && s.spawned >= d.max_particles.max(0) as u32 && s.particles.is_empty();
-            // An emitter that spawns on another's particles is done when that one is.
-            let waiting_on_other = other.is_some() && s.spawned < d.max_particles.max(0) as u32;
-            if !(finished || (waiting_on_other && s.particles.is_empty())) {
+            let other = usize::try_from(d.add_location_from_other_emitter).ok().and_then(|o| snapshot.get(o)).map(|v| v.as_slice());
+            let mut cast = |from: Vec3, to: Vec3| -> Option<(f32, Vec3)> {
+                let (a, b) = (coords::pos(from.to_array()), coords::pos(to.to_array()));
+                let dir = Dir3::new(b - a).ok()?;
+                let hit = spatial.cast_ray(a, dir, (b - a).length(), true, &crate::world::collision::world_filter())?;
+                Some((hit.distance / (b - a).length(), to_ue_dir(hit.normal).normalize_or_zero()))
+            };
+            let finished = update_emitter(d, s, &frame, dt, fx.killed, other, &mut fx.rng, &mut cast);
+            if !finished {
                 all_done = false;
             }
+            let live: Vec<Particle> = s.slots.iter().filter(|p| p.alive).copied().collect();
             // Draw.
             match d.kind {
-                EmitterKind::Sprite => build_sprites(d, &frame, &s.particles, (cam_right, cam_up, cam_forward), &s.meshes, &mut meshes),
-                EmitterKind::Mesh => build_mesh_particles(d, &e.mesh, &frame, &s.particles, &s.meshes, &mut meshes),
+                EmitterKind::Sprite => build_sprites(d, &frame, &live, (cam_right, cam_up, cam_forward), &s.meshes, &mut meshes),
+                EmitterKind::Mesh => build_mesh_particles(d, &e.mesh, &frame, &live, &s.meshes, &mut meshes),
                 _ => {}
             }
         }
-        let alive: usize = fx.emitters.iter().map(|s| s.particles.len()).sum();
+        let live_count = |s: &EmitterState| s.slots.iter().filter(|p| p.alive).count();
+        let alive: usize = fx.emitters.iter().map(live_count).sum();
         if (fx.log_timer >= 0.5 || fx.age <= dt) && !(fx.persistent && alive == 0) {
             fx.log_timer = 0.0;
-            let counts: Vec<String> = fx.emitters.iter().map(|s| format!("{}/{}", s.particles.len(), s.spawned)).collect();
+            let counts: Vec<String> = fx.emitters.iter().map(|s| format!("{}/{}@{:.1}", live_count(s), s.spawned, s.rate)).collect();
             let first = fx
                 .emitters
                 .iter()
-                .find_map(|s| s.particles.first())
+                .find_map(|s| s.slots.iter().find(|p| p.alive))
                 .map_or("none".to_string(), |p| format!("({:.1}, {:.1}, {:.1})", p.pos.x, p.pos.y, p.pos.z));
             runlog::kv(
                 "effect_status",
                 &format!(
-                    "effect={} class={} age={:.2} alive/spawned=[{}] first_particle_unreal={first} frame_unreal=({:.1}, {:.1}, {:.1})",
+                    "effect={} class={} age={:.2} alive/spawned@rate=[{}] first_particle_unreal={first} frame_unreal=({:.1}, {:.1}, {:.1})",
                     fx.id,
                     effect.class,
                     fx.age,
@@ -1104,7 +1164,7 @@ fn update_effects(
             );
         }
         let expired = fx.life_span > 0.0 && fx.age > fx.life_span;
-        let killed_and_empty = fx.killed && fx.emitters.iter().all(|s| s.particles.is_empty());
+        let killed_and_empty = fx.killed && alive == 0;
         if expired || killed_and_empty || (all_done && fx.age > 0.1 && !fx.persistent) {
             let spawned: u32 = fx.emitters.iter().map(|s| s.spawned).sum();
             runlog::kv(
@@ -1393,6 +1453,114 @@ mod tests {
         d.rotation_normal = [0.0; 3];
         let p = spawn_particle(&d, &turned_frame(), None, (None, None), &mut 7);
         assert!(close(p.vel, Vec3::new(50.0, 0.0, 0.0)));
+    }
+
+    fn state() -> EmitterState {
+        EmitterState {
+            slots: Vec::new(),
+            next: 0,
+            pending: 0,
+            start_velocity: None,
+            lifetime: None,
+            spawned: 0,
+            carry: 0.0,
+            rate: 0.0,
+            meshes: Vec::new(),
+        }
+    }
+
+    /// Runs one emitter for `seconds` at 20 updates a second; returns
+    /// (finished, live particles) at the end.
+    fn run(d: &EmitterDef, s: &mut EmitterState, seconds: f32) -> (bool, usize) {
+        let frame = (Vec3::ZERO, Mat3::IDENTITY);
+        let mut rng = 12345;
+        let mut finished = false;
+        for _ in 0..(seconds * 20.0).round() as usize {
+            finished = update_emitter(d, s, &frame, 0.05, false, None, &mut rng, &mut |_, _| None);
+        }
+        (finished, s.slots.iter().filter(|p| p.alive).count())
+    }
+
+    /// ROEffects FireLarge: InitialParticlesPerSecond 5, ParticlesPerSecond
+    /// 5, no respawning: it keeps burning at 5 a second (it burnt out
+    /// after one batch of 10 before).
+    #[test]
+    fn steady_rate_without_respawn_keeps_spawning() {
+        let mut d = def();
+        d.initial_particles_per_second = 5.0;
+        d.particles_per_second = 5.0;
+        d.lifetime = (1.0, 1.15);
+        let mut s = state();
+        let (finished, live) = run(&d, &mut s, 10.0);
+        assert!(!finished);
+        assert!((49..=51).contains(&s.spawned), "spawned {}", s.spawned);
+        assert!((5..=7).contains(&live), "live {live}");
+        assert_eq!(s.slots.len(), 10);
+    }
+
+    /// AutomaticInitialSpawning wins over InitialParticlesPerSecond: rate
+    /// MaxParticles / average lifetime (ZEDProjectileTrail's glow: 1 / 0.1 s).
+    #[test]
+    fn automatic_rate_wins() {
+        let mut d = def();
+        d.max_particles = 1;
+        d.automatic_initial_spawning = true;
+        d.initial_particles_per_second = 1.0;
+        d.lifetime = (0.1, 0.1);
+        let mut s = state();
+        run(&d, &mut s, 0.1);
+        assert_eq!(s.spawned, 1);
+        run(&d, &mut s, 0.05);
+        assert_eq!(s.rate, 0.0, "after the first slot is used: ParticlesPerSecond 0");
+    }
+
+    /// A burst: InitialParticlesPerSecond fills the slots once, then
+    /// nothing (ParticlesPerSecond 0, no respawn), and it finishes when the
+    /// last one dies. With no rate at all it never spawns.
+    #[test]
+    fn burst_then_finished() {
+        let mut d = def();
+        d.max_particles = 5;
+        d.initial_particles_per_second = 100.0;
+        d.lifetime = (1.0, 1.0);
+        let mut s = state();
+        assert_eq!(run(&d, &mut s, 0.1), (false, 5));
+        assert_eq!(run(&d, &mut s, 2.0), (true, 0));
+        assert_eq!(s.spawned, 5);
+        d.initial_particles_per_second = 0.0;
+        let mut s = state();
+        assert_eq!(run(&d, &mut s, 1.0), (true, 0));
+        assert_eq!(s.spawned, 0);
+    }
+
+    /// RespawnDeadParticles: a dead particle comes back in its slot.
+    #[test]
+    fn respawn_in_place() {
+        let mut d = def();
+        d.max_particles = 3;
+        d.initial_particles_per_second = 100.0;
+        d.respawn_dead_particles = true;
+        d.lifetime = (0.5, 0.5);
+        let mut s = state();
+        let (finished, live) = run(&d, &mut s, 5.0);
+        assert!(!finished);
+        assert_eq!((live, s.slots.len()), (3, 3));
+        assert!(s.spawned >= 27, "spawned {}", s.spawned);
+    }
+
+    /// SpawnParticle(n): at most MaxParticles per update (as KF clamps
+    /// them), into the ring, which then reuses the oldest slots.
+    #[test]
+    fn requests_go_into_the_ring() {
+        let mut d = def();
+        d.max_particles = 2;
+        let mut s = state();
+        s.pending = 3;
+        run(&d, &mut s, 0.05);
+        assert_eq!((s.slots.len(), s.spawned, s.next), (2, 2, 0));
+        s.pending = 1;
+        run(&d, &mut s, 0.05);
+        assert_eq!((s.slots.len(), s.spawned, s.next), (2, 3, 1));
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.

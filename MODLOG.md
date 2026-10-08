@@ -6235,3 +6235,34 @@ of the series (see the last fix/particles entry).
 RotationOffset for Actor is assumed (RotationOffset is zero in all KF
 data). Head-jet chunks flying up world Z: not checked in a game run.
 **Next:** P3 spawn rates.
+
+## 2026-10-08 P3: particle spawn rates follow KF's rules (branch fix/particles)
+
+**Changed:** `src/render/particles.rs`: particles kept in a ring of
+MaxParticles slots (`EmitterState.slots`, `next`); `spawn_rate`,
+`spawn_count`, `put`, `update_emitter` (the per-emitter update, moved out
+of `update_effects` so it can be tested); `effect_status` log now shows
+live/spawned@rate per sub-emitter; 5 tests.
+**Why:** KF picks the rate as: while fewer slots than MaxParticles have
+been used, MaxParticles / average lifetime with AutomaticInitialSpawning,
+else InitialParticlesPerSecond; then ParticlesPerSecond, with or without
+RespawnDeadParticles. A new particle replaces the oldest slot; dead ones
+respawn in place only with RespawnDeadParticles; an emitter is finished
+only with no rate, no respawning and no live particle. We let
+InitialParticlesPerSecond win over the automatic rate, used
+ParticlesPerSecond only for respawning emitters (so FireLarge / Smoke*
+burnt out after one batch), and fell back to ParticlesPerSecond when
+nothing else was set. SpawnParticle(n) requests are now clamped to
+MaxParticles per update, as in KF.
+**Tested how:** unit tests steady_rate_without_respawn_keeps_spawning
+(FireLarge numbers: 50 spawned in 10 s, still going),
+automatic_rate_wins, burst_then_finished, respawn_in_place,
+requests_go_into_the_ring. Headless KF-WestLondon, 500 frames, 2 shots.
+**Result:** tests pass. Map fire Emitter12: rate 2.5/s until its 10 slots
+are used, then 0 and respawning (10 live, spawned 11, 13 ...). Muzzle
+flash and shell ejector: 2/1 and 1/3 particles per shot as before.
+Blood puffs removed after 0.63 s as before (0.64 / 0.65).
+**Still broken / not tested:** effects whose emitters have a rate but no
+LifeSpan now live until their owner removes them (as in KF); not seen in
+this run. Shell casings fall through the floor (also before this change).
+**Next:** P4 GetVelocityDirectionFrom.
