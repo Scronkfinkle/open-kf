@@ -6344,3 +6344,31 @@ far as I can tell: our additive particles get the fog colour added
 additive particles toward black. Fixed in the next step (P8).
 **Still broken / not tested:** see above until P8.
 **Next:** P8 blend modes (Brighten, Darken, AlphaModulate) with KF's fog.
+
+## 2026-10-08 P8: KF's particle blends for Translucent, AlphaModulate, Darken, Brighten; fog toward black (branch fix/particles)
+
+**Changed:** `src/render/particles.rs`: new `BlendMaterial` (own shader;
+blend set per draw style in `specialize`; texture x vertex colour; fog
+toward black), used for draw styles 3-6; StandardMaterial now only for
+AlphaBlend (and Regular); test blend_factors.
+**Why:** KF's engine blends Brighten as a screen (texture + scene x
+(1 - texture)), Darken as scene x (1 - texture), AlphaModulate as
+premultiplied alpha, Translucent as plain adding. We added Brighten
+(85 of our sub-emitters: fire, muzzle flashes; half + half gave 1.0
+instead of 0.75), multiplied for Darken (inverted) and used straight
+alpha for AlphaModulate. KF also fogs all four toward black (no change);
+Bevy's fog added the fog colour to our additive particles, which after
+P1 showed as large hazy rectangles around the map smoke.
+**Tested how:** unit test of the blend factors; headless KF-WestLondon,
+same run as P7 (screenshots at frames 62, 64, 102, 106, 140); log checked
+for shader errors (none; only the known slab_allocator line).
+**Result:** the hazy rectangles of P7 are gone at frame 64; muzzle flash
+and blood puffs still drawn.
+**Still broken / not tested:** Darken and AlphaModulate are used by none
+of our current effects (only 3, 6, 1, 2 in the logs), so untested in a
+game run. Blending happens in linear colour, KF's in gamma, so the screen
+blend's midtones differ somewhat (not measured). Modulated particles are
+still not fogged (KF fogs them toward grey = no change); that material is
+shared with the decals, left alone. Fire / muzzle flash brightness not
+compared with KF by you.
+**Next:** draw sub-emitters in order, spread spawns along the path.

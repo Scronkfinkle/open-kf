@@ -145,12 +145,17 @@ pub struct ParticlePlugin;
 impl Plugin for ParticlePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<ModulateMaterial>::default())
+            .add_plugins(MaterialPlugin::<BlendMaterial>::default())
             .add_systems(PostStartup, load_library)
             .add_systems(Update, spawn_map_emitters)
             .add_systems(PostUpdate, update_effects);
         app.world_mut()
             .resource_mut::<Assets<bevy::shader::Shader>>()
             .insert(&MODULATE_SHADER, bevy::shader::Shader::from_wgsl(MODULATE_WGSL, "particles.rs/modulate.wgsl"))
+            .expect("shader handle");
+        app.world_mut()
+            .resource_mut::<Assets<bevy::shader::Shader>>()
+            .insert(&BLEND_SHADER, bevy::shader::Shader::from_wgsl(BLEND_WGSL, "particles.rs/blend.wgsl"))
             .expect("shader handle");
     }
 }
@@ -207,11 +212,113 @@ impl Material for ModulateMaterial {
     }
 }
 
-/// A sprite emitter's material: modulated ones use their own shader.
+/// KF's other non-alpha particle draw styles, each with the engine's own
+/// blend (source x A + framebuffer x B):
+/// - Translucent: texture + framebuffer.
+/// - AlphaModulate: texture + framebuffer x (1 - texture alpha).
+/// - Darken: framebuffer x (1 - texture).
+/// - Brighten: texture + framebuffer x (1 - texture) (a "screen": half
+///   + half gives 0.75, not 1 as plain adding did).
+///
+/// The texture is multiplied by the vertex colour (fades, ColorScale).
+/// KF fogs these toward black (no change to the scene), not toward the fog
+/// colour, which is what Bevy's own fog did to our additive particles.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+#[bind_group_data(BlendKey)]
+pub struct BlendMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    pub texture: Handle<Image>,
+    /// EParticleDrawStyle: 3, 4, 5 or 6.
+    pub draw_style: u8,
+}
+
+/// Picks the blend when the pipeline is built.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlendKey {
+    draw_style: u8,
+}
+
+impl From<&BlendMaterial> for BlendKey {
+    fn from(m: &BlendMaterial) -> Self {
+        BlendKey { draw_style: m.draw_style }
+    }
+}
+
+const BLEND_SHADER: Handle<bevy::shader::Shader> = bevy::asset::uuid_handle!("2c7d9e41-5a6b-4c8d-8e9f-a0b1c2d3e4f5");
+
+const BLEND_WGSL: &str = r#"
+#import bevy_pbr::forward_io::VertexOutput
+#import bevy_pbr::mesh_view_bindings as view_bindings
+#ifdef DISTANCE_FOG
+#import bevy_pbr::pbr_functions::apply_fog
+#endif
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(0) var particle_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(1) var particle_sampler: sampler;
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    var c = textureSample(particle_texture, particle_sampler, in.uv) * in.color;
+#ifdef DISTANCE_FOG
+    // Fog toward black: a black particle changes nothing in these blends.
+    var fog = view_bindings::fog;
+    fog.base_color = vec4<f32>(0.0, 0.0, 0.0, fog.base_color.a);
+    fog.directional_light_color = vec4<f32>(0.0);
+    let fogged = apply_fog(fog, vec4<f32>(c.rgb, 1.0), in.world_position.xyz, view_bindings::view.world_position.xyz, in.position.xy);
+    c = vec4<f32>(fogged.rgb, c.a);
+#endif
+    return c;
+}
+"#;
+
+/// The engine's blend factors for a draw style (see `BlendMaterial`).
+fn blend_state(draw_style: u8) -> bevy::render::render_resource::BlendState {
+    use bevy::render::render_resource::{BlendComponent, BlendFactor as F, BlendOperation, BlendState};
+    let (src, dst) = match draw_style {
+        4 => (F::One, F::OneMinusSrcAlpha),
+        5 => (F::Zero, F::OneMinusSrc),
+        6 => (F::One, F::OneMinusSrc),
+        _ => (F::One, F::One),
+    };
+    BlendState {
+        color: BlendComponent { src_factor: src, dst_factor: dst, operation: BlendOperation::Add },
+        alpha: BlendComponent { src_factor: F::One, dst_factor: F::OneMinusSrcAlpha, operation: BlendOperation::Add },
+    }
+}
+
+impl Material for BlendMaterial {
+    fn fragment_shader() -> bevy::shader::ShaderRef {
+        BLEND_SHADER.into()
+    }
+
+    /// Drawn with the see-through objects (sorted, no depth writes); the
+    /// blend itself is set in `specialize`.
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        if let Some(target) = descriptor.fragment.as_mut().and_then(|f| f.targets.first_mut()).and_then(|t| t.as_mut()) {
+            target.blend = Some(blend_state(key.bind_group_data.draw_style));
+        }
+        Ok(())
+    }
+}
+
+/// A sprite emitter's material: modulated and the other non-alpha styles
+/// use their own shaders.
 #[derive(Clone)]
 enum SpriteMaterial {
     Standard(Handle<StandardMaterial>),
     Modulate(Handle<ModulateMaterial>),
+    Blend(Handle<BlendMaterial>),
 }
 
 /// A static mesh kept on the CPU, to be copied once per particle.
@@ -455,14 +562,12 @@ pub fn decode(h: &ObjectHandle, opaque: bool, modulate2x: bool, images: &mut Ass
     Some(images.add(image))
 }
 
-/// The Bevy blend for an EParticleDrawStyle (Modulated has its own material).
+/// The Bevy blend for the draw styles drawn with StandardMaterial
+/// (Modulated, Translucent, AlphaModulate, Darken and Brighten have their
+/// own materials).
 fn alpha_mode(draw_style: u8) -> AlphaMode {
     match draw_style {
-        1 | 4 => AlphaMode::Blend,
-        // Darken: multiply what is behind.
-        2 | 5 => AlphaMode::Multiply,
-        // Translucent and Brighten: add.
-        3 | 6 => AlphaMode::Add,
+        1 => AlphaMode::Blend,
         _ => AlphaMode::Mask(0.5),
     }
 }
@@ -473,6 +578,7 @@ fn load_library(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut modulate: ResMut<Assets<ModulateMaterial>>,
+    mut blend: ResMut<Assets<BlendMaterial>>,
 ) {
     let started = std::time::Instant::now();
     let set = PackageSet::new(&request.install_root);
@@ -486,7 +592,7 @@ fn load_library(
                 continue;
             }
         };
-        let loaded = load_effect(effect, class, &set, &mut images, &mut materials, &mut modulate);
+        let loaded = load_effect(effect, class, &set, &mut images, &mut materials, &mut modulate, &mut blend);
         library.0.insert(class.to_string(), Arc::new(loaded));
     }
     // Emitters placed in the map (fires, smoke...): loaded under
@@ -519,7 +625,7 @@ fn load_library(
                 _ => Rotator::default(),
             };
             let key = format!("map:{name}");
-            let loaded = load_effect(effect, &key, &set, &mut images, &mut materials, &mut modulate);
+            let loaded = load_effect(effect, &key, &set, &mut images, &mut materials, &mut modulate, &mut blend);
             library.0.insert(key.clone(), Arc::new(loaded));
             placed.0.push((key, location, rotation));
             ok += 1;
@@ -539,6 +645,7 @@ fn load_effect(
     images: &mut Assets<Image>,
     materials: &mut Assets<StandardMaterial>,
     modulate: &mut Assets<ModulateMaterial>,
+    blend: &mut Assets<BlendMaterial>,
 ) -> LoadedEffect {
     let mut emitters = Vec::new();
     let mut notes = Vec::new();
@@ -564,6 +671,7 @@ fn load_effect(
                 // from KF: drawn untextured they are grey squares.
                 loaded.material = image.map(|image| match d.draw_style {
                     2 => SpriteMaterial::Modulate(modulate.add(ModulateMaterial { texture: image })),
+                    3..=6 => SpriteMaterial::Blend(blend.add(BlendMaterial { texture: image, draw_style: d.draw_style })),
                     _ => SpriteMaterial::Standard(materials.add(StandardMaterial {
                         base_color_texture: Some(image),
                         unlit: true,
@@ -804,6 +912,7 @@ pub fn spawn_effect_with(
             match material {
                 SpriteMaterial::Standard(m) => commands.spawn((common, MeshMaterial3d(m), layers.clone())),
                 SpriteMaterial::Modulate(m) => commands.spawn((common, MeshMaterial3d(m), layers.clone())),
+                SpriteMaterial::Blend(m) => commands.spawn((common, MeshMaterial3d(m), layers.clone())),
             };
             handles.push(mesh);
         }
@@ -1720,6 +1829,18 @@ mod tests {
         d.fade_in = true;
         d.fade_in_end_time = 0.4;
         assert!(particle_color(&d, None, 0.1, 1.5).abs_diff_eq(Vec4::new(1.0, 1.0, 1.0, 0.25), 1e-5));
+    }
+
+    /// The engine's blends: Brighten is a screen (0.5 over 0.5 gives
+    /// 0.75), Darken takes the texture off, AlphaModulate is premultiplied.
+    #[test]
+    fn blend_factors() {
+        use bevy::render::render_resource::BlendFactor as F;
+        let f = |s: u8| (blend_state(s).color.src_factor, blend_state(s).color.dst_factor);
+        assert_eq!(f(3), (F::One, F::One));
+        assert_eq!(f(4), (F::One, F::OneMinusSrcAlpha));
+        assert_eq!(f(5), (F::Zero, F::OneMinusSrc));
+        assert_eq!(f(6), (F::One, F::OneMinusSrc));
     }
 
     /// KF's sprites are 2 x Size across: Size 10 gives corners 20 apart.
