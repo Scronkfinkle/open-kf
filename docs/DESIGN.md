@@ -1093,7 +1093,7 @@ head jet's chunks fly up world Z); Relative ones move and turn with the
 effect, whose frame is the bone tag's (AttachEmitterEffect sets a zero
 relative rotation).
 
-**Particle rules read from KF's engine (planned 2026-10-08, branch
+**Particle rules read from KF's engine (built 2026-10-08, branch
 fix/particles).** An audit compared our particle code with KF's compiled
 particle code (details in the local RE.md). One change per step, in this
 order, each its own commit:
@@ -1128,9 +1128,20 @@ order, each its own commit:
   the other styles subtract the factor's X/Y/Z times it from the colour.
   Opacity then scales the alpha (AlphaBlend, Modulated, AlphaModulate) or
   the colour (Translucent, Darken, Brighten).
-- Later, if time allows: Brighten / Darken blending, drawing sub-emitters
-  in their list order, spreading one frame's spawns along a moving
-  effect's path.
+- P8. Blends: Translucent adds, Brighten is a screen (texture + scene x
+  (1 - texture)), Darken is scene x (1 - texture), AlphaModulate is
+  premultiplied alpha; all four fogged toward black (no change), as KF
+  does. Drawn with their own material (`BlendMaterial`).
+- P9. Draw order: an effect's sub-emitters are drawn in list order (each
+  mesh's bounds centred on the effect, nudged toward the camera by its
+  list position, since Bevy sorts see-through meshes by that centre).
+- P10. The particles spawned in one update each get their own birth time
+  within it (and are aged by it), and for a moving Independent effect are
+  spread along the path it moved, so trails do not clump per frame.
+- Not done (lower priority in the audit): ColorScale / SizeScale curve
+  edges, VelocityScale, collision details, ColorMultiplierRange, warmup,
+  subdivision details, ZTest, round-robin AddLocationFromOtherEmitter,
+  polar start shape; Modulated particles are not fogged.
 
 ## Gore step D: blood decals (implemented 2026-10-04)
 
