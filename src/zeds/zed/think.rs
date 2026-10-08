@@ -1537,6 +1537,29 @@ pub(super) fn think_and_move(
                 }
             }
         }
+        // A fall that does not end (wedged between surfaces) is logged once.
+        if z.state == ZedState::Falling {
+            let before = z.motion.fall_seconds;
+            z.motion.fall_seconds += dt;
+            if before < motion::LONG_FALL && z.motion.fall_seconds >= motion::LONG_FALL {
+                let u = z.centre / SCALE;
+                runlog::kv(
+                    "zed_fall_long",
+                    &format!(
+                        "id={} at_unreal=({:.0}, {:.0}, {:.0}) seconds={:.1} air_speed_unreal={:.0} vertical_unreal={:.0}",
+                        z.id,
+                        -u.z,
+                        u.x,
+                        u.y,
+                        z.motion.fall_seconds,
+                        z.air_velocity.length() / SCALE,
+                        z.vertical_speed / SCALE
+                    ),
+                );
+            }
+        } else {
+            z.motion.fall_seconds = 0.0;
+        }
 
         match z.state {
             ZedState::Chase => {

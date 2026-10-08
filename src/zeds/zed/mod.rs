@@ -40,6 +40,7 @@ mod animate;
 mod methods;
 mod spotted;
 mod net;
+mod motion;
 pub use net::{PuppetFeed, PuppetSample, SpawnPuppet, ZedNet, ZedNetSide};
 use load::*;
 use sounds::*;
@@ -550,6 +551,8 @@ pub struct Zed {
     router: crate::world::nav::Router,
     /// Horizontal velocity kept while falling or jumping (Bevy, m/s).
     air_velocity: Vec3,
+    /// Falling bookkeeping (motion.rs).
+    motion: motion::Motion,
     /// Seconds before the zed may try another jump.
     jump_cooldown: f32,
     /// Crawler: in a pounce (bPouncing), and seconds since the last one.

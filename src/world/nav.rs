@@ -524,7 +524,12 @@ impl Router {
             if moved < STUCK_SHARE * expected {
                 runlog::kv(
                     "zed_stuck",
-                    &format!("id={} moved_unreal={moved:.0} expected={expected:.0} target={:?}", inp.id, self.target),
+                    &format!(
+                        "id={} moved_unreal={moved:.0} expected={expected:.0} target={:?} goal_distance_unreal={:.0}",
+                        inp.id,
+                        self.target,
+                        (inp.player - inp.pos).length() / SCALE
+                    ),
                 );
                 if self.target == Some(Target::Player) {
                     self.no_direct = NO_DIRECT;
