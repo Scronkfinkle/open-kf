@@ -1477,6 +1477,12 @@ fn level_title(lp: &ue_assets::package_set::LoadedPackage) -> String {
 /// coverage left by the layers above it, so weights sum to 1. Layer 0 is
 /// drawn opaque scaled by its weight; the others are added on top
 /// (additive blending), which makes the result independent of draw order.
+///
+/// Light: KF draws terrain as texture x the vertex light colour stored in
+/// the map x 2 (plus dynamic lights such as the flashlight), the same rule
+/// as baked placed meshes, so terrain uses the unlit / baked material pair
+/// (render/baked.rs) with the colour carried in the vertex colour. Only if
+/// the stored colours cannot be read does it fall back to the sun.
 fn spawn_terrains(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -1571,6 +1577,19 @@ fn spawn_terrains(
             }
         }
 
+        // Stored vertex light x K, in linear light (as baked meshes).
+        let k_lin = crate::render::lighting::brightness_linear();
+        let light: Option<Vec<[f32; 3]>> = (!t.vertex_light.is_empty()).then(|| {
+            t.vertex_light
+                .iter()
+                .map(|c| {
+                    let l = Color::srgb_u8(c[0], c[1], c[2]).to_linear();
+                    [l.red * k_lin, l.green * k_lin, l.blue * k_lin]
+                })
+                .collect()
+        });
+        log_terrain_light(ti, &t, &tris);
+
         let (mut layer_tris, mut layers_drawn) = (0usize, 0usize);
         for (li, layer) in t.layers.iter().enumerate() {
             let Some(tex_handle) = resolve(set, &handle, layer.texture).texture else {
@@ -1591,8 +1610,13 @@ fn spawn_terrains(
                         b.normals.push(normals[v]);
                         b.uvs.push(layer.uv(ue[v]));
                         let wgt = weights[li][v];
+                        let l = light.as_ref().map_or([1.0; 3], |l| l[v]);
                         // Layer 0 is opaque: scale its colour. Others: additive, scaled by alpha.
-                        b.colors.push(if li == 0 { [wgt, wgt, wgt, 1.0] } else { [1.0, 1.0, 1.0, wgt] });
+                        b.colors.push(if li == 0 { [l[0] * wgt, l[1] * wgt, l[2] * wgt, 1.0] } else { [l[0], l[1], l[2], wgt] });
+                        if light.is_some() {
+                            // Lightmap UVs for the black lightmap (render/baked.rs).
+                            b.uvs1.push([0.5, 0.5]);
+                        }
                         (b.positions.len() - 1) as u32
                     });
                     b.indices.push(idx);
@@ -1607,10 +1631,16 @@ fn spawn_terrains(
                 alpha_mode: if li == 0 { AlphaMode::Opaque } else { AlphaMode::Add },
                 perceptual_roughness: 1.0,
                 reflectance: 0.1,
-                unlit: in_sky,
+                unlit: in_sky || light.is_some(),
                 ..default()
             });
-            let mut e = commands.spawn((Mesh3d(meshes.add(b.build())), MeshMaterial3d(material), Transform::IDENTITY, MapGeometry));
+            let mesh = meshes.add(b.build());
+            let mut e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), Transform::IDENTITY, MapGeometry));
+            // Stored light plus the flashlight: switch to the lit material
+            // while a dynamic light reaches it (KF_BAKED_UNLIT=1: never).
+            if light.is_some() && !in_sky && std::env::var_os("KF_BAKED_UNLIT").is_none() {
+                e.insert(crate::render::baked::BakedSwap::new(material.clone(), loader.baked(&material), meshes.get(&mesh)));
+            }
             if in_sky {
                 e.insert(RenderLayers::layer(SKY_LAYER));
             }
@@ -1627,6 +1657,38 @@ fn spawn_terrains(
             ),
         );
     }
+}
+
+/// Log the terrain's stored vertex light: how many colours the map stored,
+/// how many vertices there are, and the mean colour over the vertices of
+/// drawn triangles (`terrain_light`), or `terrain_light=missing` when the
+/// colours could not be read (then the terrain stays sun-lit).
+fn log_terrain_light(ti: usize, t: &Terrain, tris: &[[usize; 3]]) {
+    let vertices = t.width * t.height;
+    if t.vertex_light.is_empty() {
+        runlog::kv("terrain_light", &format!("terrain={ti} missing vertices={vertices} fallback=sun"));
+        return;
+    }
+    let mut used = vec![false; vertices];
+    for &v in tris.iter().flatten() {
+        used[v] = true;
+    }
+    let (mut sum, mut n, mut nonblack) = ([0u64; 3], 0u64, 0usize);
+    for (c, _) in t.vertex_light.iter().zip(&used).filter(|(_, u)| **u) {
+        for i in 0..3 {
+            sum[i] += c[i] as u64;
+        }
+        n += 1;
+        nonblack += c.iter().any(|&x| x > 0) as usize;
+    }
+    let mean = sum.map(|s| s as f64 / n.max(1) as f64);
+    runlog::kv(
+        "terrain_light",
+        &format!(
+            "terrain={ti} stored={} vertices={vertices} drawn_vertices={n} nonblack={nonblack} mean_rgb={:.1},{:.1},{:.1}",
+            t.vertex_light_stored, mean[0], mean[1], mean[2]
+        ),
+    );
 }
 
 /// Alpha (0..1) of a terrain layer at each heightmap vertex, from its

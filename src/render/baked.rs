@@ -54,12 +54,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 #ifdef VERTEX_COLORS
     let baked = pbr_input.material.base_color.rgb * in.color.rgb;
+    // Vertex alpha: 1 on baked meshes; a layer's weight on terrain.
+    let alpha = pbr_input.material.base_color.a * in.color.a;
 #else
     let baked = pbr_input.material.base_color.rgb;
+    let alpha = pbr_input.material.base_color.a;
 #endif
     var out: FragmentOutput;
     let dynamic = apply_pbr_lighting(pbr_input);
-    out.color = vec4<f32>(baked + dynamic.rgb, pbr_input.material.base_color.a);
+    out.color = vec4<f32>(baked + dynamic.rgb, alpha);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

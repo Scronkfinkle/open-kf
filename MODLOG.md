@@ -6201,3 +6201,46 @@ and sky meshes are not lit by it; flashlight brightness on props is
 Bevy's light (as on the BSP), not KF's projector formula; not looked at
 by you.
 **Next:** your check in a dark tunnel and at a door.
+
+## 2026-10-08 Terrain lit by the map's stored vertex light (L3, REN-1) (branch fix/terrain)
+
+**Changed:** `crates/ue-assets/src/terrain.rs` (reads the light colour
+array saved at the end of each TerrainInfo: count, then R, G, B, A per
+heightmap vertex; KF's rules for a count that does not match the
+heightmap: more = first ones, fewer = white; unit tests);
+`crates/ue-assets/src/bin/kfpkg.rs` (`kfpkg terrain MAP` prints a
+`vertex_light` line); `src/world/map.rs` (terrain vertex colour = stored
+light x 2 in linear light, as baked meshes; layer materials unlit, with
+the baked-mesh swap so the flashlight still lights terrain; sun only as a
+fallback when the colours cannot be read; log `terrain_light`);
+`src/render/baked.rs` (the lit variant keeps the vertex alpha, needed for
+the additive terrain layers; baked meshes have alpha 1, unchanged);
+DESIGN.md "Terrain lighting (L3)"; test-views.md (KF-Farm expectation).
+**Why:** terrain was lit by our made-up sun on all 21 terrain maps. KF
+draws terrain as texture x stored vertex colour x 2 plus dynamic lights,
+and never uses a sun on it (from KF's native code; details in the local
+RE.md).
+**Tested how:** `kfpkg terrain` on every map; workspace tests; clippy;
+headless screenshots (mean brightness) of 10 terrain views at 60 frames
+and all 34 maps' start views at 8 frames, before and after; flashlight
+on/off on KF-Farm terrain.
+**Result:** 31 terrains on 21 maps: 30 store exactly width x height
+colours, KF-Hell's TerrainInfo6 stores 65536 for a 64 x 64 heightmap
+(first 4096 used). Logged e.g. `terrain_light terrain=0 stored=65536
+vertices=65536 drawn_vertices=28513 nonblack=28494 mean_rgb=10.3,15.2,25.2`
+(KF-Farm: blue night light, orange glow around the burning wreck).
+Screen mean brightness before -> after (start views): Farm 34.6 -> 14.0,
+SirensBelch 52.3 -> 14.0, EvilSantasLair 56.1 -> 17.9, ThrillsChills
+96.1 -> 54.6, Crash 92.3 -> 45.1, AbusementPark 37.6 -> 13.3, Hell 50.1 ->
+31.8, HillbillyHorror 48.8 -> 20.6, Wyre 17.1 -> 9.4, MountainPass 62.9 ->
+55.1, Manor 28.6 -> 27.8, Stronghold 15.5 -> 12.9; the 13 maps without
+terrain on screen unchanged (within 0.1). Nothing went black: snow and
+dirt now match the darkness of the buildings around them instead of
+glowing white. Flashlight on KF-Farm terrain: centre 8.7 -> 35.0.
+Tests 235 + 26 pass; clippy: no new warnings (1 old one in zeds/boss.rs).
+**Still broken / not tested:** not compared with real KF screenshots of
+a terrain map (none in references/); fog on painted upper layers still
+counted twice (REN-3, next); decoration layers (grass) still not drawn;
+KF blends in gamma space, we in linear light (small difference); not
+looked at by you.
+**Next:** REN-3 (terrain layers fog once).
