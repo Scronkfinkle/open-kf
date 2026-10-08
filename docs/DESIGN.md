@@ -6259,6 +6259,17 @@ thrown at 45 degrees therefore flies twice as far on its first arc as a
 full-gravity throw would. We now use 475 for those (thrown objects and
 bounced nails); 950 stays for everything else that falls.
 
+**CP-2 Ragdoll start spin.** KFMonster computes the death spin as
+RagInvInertia x (hit offset x push). The engine reads that number in
+Unreal rotation units per second (65536 = one full turn) and converts it
+to radians per second; we had treated it as an unknown unit and scaled
+it so far up that almost every corpse spun at the 10 rad/s cap. The
+engine also gives every body part the same spin and a velocity of push +
+spin x (part - the zed's cylinder centre), so the spin turns around the
+cylinder centre, not the pelvis. A typical Clot kill now starts at about
+1.5 rad/s. With no hit to go by, KF uses a random direction x 18000
+rotation units/s (1.73 rad/s) and no push; ours did not spin at all.
+
 ## Open questions
 
 - Exact Unreal-unit-to-metre scale (step 0 picks a value; milestone 2 confirms

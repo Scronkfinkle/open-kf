@@ -438,17 +438,24 @@ pub(super) fn mesh_to_actor(c: &ZedClass) -> impl Fn(Vec3) -> Vec3 + '_ {
 /// KFMonster.PlayDyingAnimation's start motion: 0.6 x the zed's horizontal
 /// velocity (full vertical) plus RagDeathVel along the shot; spin =
 /// RagInvInertia x (hit offset, sideways part scaled by RagSpinScale and
-/// capped at RagMaxSpinAmount) cross that push, capped at Karma's
-/// KMaxAngularSpeed. RagDeathUpKick is 0 for KF zeds.
+/// capped at RagMaxSpinAmount) cross that push. KF gives the spin in
+/// rotation units per second (65536 = one turn), turns it into radians
+/// per second, and spins the whole body around the zed's cylinder centre;
+/// Karma caps it at KMaxAngularSpeed. With no hit to go by (KF: no tear-off
+/// momentum) the spin is a random direction x 18000 rotation units/s and
+/// there is no push. RagDeathUpKick is 0 for KF zeds. See DESIGN.md,
+/// "Combat physics fixes", CP-2.
 pub(super) fn death_launch(z: &Zed) -> Launch {
+    let base = Vec3::new(0.6 * z.velocity.x, z.velocity.y, 0.6 * z.velocity.z);
     let Some((hit, dir)) = z.last_hit else {
         return Launch {
-            velocity: Vec3::new(0.6 * z.velocity.x, z.velocity.y, 0.6 * z.velocity.z),
-            angular_velocity: Vec3::ZERO,
+            velocity: base,
+            angular_velocity: cap_spin(random_unit(z.rng) * RAG_NO_MOMENTUM_SPIN * ROTATION_UNIT),
+            pivot: Some(z.centre),
         };
     };
     let push = dir.normalize_or_zero() * RAG_DEATH_VEL; // Unreal units/s, Bevy axes
-    let mut velocity = Vec3::new(0.6 * z.velocity.x, z.velocity.y, 0.6 * z.velocity.z) + push * SCALE;
+    let mut velocity = base + push * SCALE;
     let max_speed = ragdoll::MAX_SPEED * SCALE;
     if velocity.length() > max_speed {
         velocity = velocity.normalize() * max_speed;
@@ -458,16 +465,41 @@ pub(super) fn death_launch(z: &Zed) -> Launch {
     let mut rel = Vec3::new(-r.z, r.x, r.y);
     rel.x = (rel.x * RAG_SPIN_SCALE).clamp(-RAG_MAX_SPIN_AMOUNT, RAG_MAX_SPIN_AMOUNT);
     rel.y = (rel.y * RAG_SPIN_SCALE).clamp(-RAG_MAX_SPIN_AMOUNT, RAG_MAX_SPIN_AMOUNT);
-    // Back to Bevy axes (Unreal units) for a right-handed cross product.
+    // Back to Bevy axes (Unreal units). Taking the cross product in Bevy's
+    // (right-handed) axes is what maps KF's (left-handed) spin correctly.
     let rel_bevy = Vec3::new(rel.y, rel.z, -rel.x);
-    // Units of RagInvInertia are not known; the result is capped anyway.
-    let mut angular_velocity = RAG_INV_INERTIA * rel_bevy.cross(push) * SCALE * SCALE;
-    if angular_velocity.length() > ragdoll::MAX_ANGULAR_SPEED {
-        angular_velocity = angular_velocity.normalize() * ragdoll::MAX_ANGULAR_SPEED;
-    }
+    let spin = RAG_INV_INERTIA * rel_bevy.cross(push) * ROTATION_UNIT;
     Launch {
         velocity,
-        angular_velocity,
+        angular_velocity: cap_spin(spin),
+        pivot: Some(z.centre),
+    }
+}
+
+/// One Unreal rotation unit in radians (65536 per turn).
+const ROTATION_UNIT: f32 = std::f32::consts::TAU / 65536.0;
+/// KFMonster.PlayDyingAnimation: VRand() x 18000 when there is no momentum.
+const RAG_NO_MOMENTUM_SPIN: f32 = 18000.0;
+
+/// Karma's KMaxAngularSpeed.
+fn cap_spin(w: Vec3) -> Vec3 {
+    if w.length() > ragdoll::MAX_ANGULAR_SPEED { w.normalize() * ragdoll::MAX_ANGULAR_SPEED } else { w }
+}
+
+/// A random unit vector (VRand) from the zed's random state.
+fn random_unit(seed: u32) -> Vec3 {
+    let mut s = seed.max(1);
+    let mut next = || {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        (s as f32 / u32::MAX as f32) * 2.0 - 1.0
+    };
+    loop {
+        let v = Vec3::new(next(), next(), next());
+        if v.length_squared() > 1e-4 && v.length_squared() <= 1.0 {
+            return v.normalize();
+        }
     }
 }
 
@@ -495,5 +527,32 @@ pub(super) fn apply_cloaks(mut commands: Commands, classes: Option<Res<ZedClasse
             };
             commands.entity(e).insert(MeshMaterial3d(material));
         }
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn spin_is_in_rotation_units_around_the_centre() {
+        // A Clot shot from the side (along Unreal Y) 2 units in front of
+        // its centre (Unreal X) and 40 above: X x 7.5 = 15, Z 40; push 100.
+        // r x v = (15, 0, 40) x (0, 100, 0) = (-4000, 0, 1500), length
+        // 4272; x 4 x 2pi/65536 = 1.64 rad/s (before: capped at 10).
+        let mut z = Zed::test_clot();
+        z.last_hit = Some((coords::pos([2.0, 0.0, 40.0]), coords::dir([0.0, 1.0, 0.0])));
+        let l = death_launch(&z);
+        let expect = 4.0 * (4000.0f32 * 4000.0 + 1500.0 * 1500.0).sqrt() * ROTATION_UNIT;
+        assert!((l.angular_velocity.length() - expect).abs() < 1e-3, "{} vs {expect}", l.angular_velocity.length());
+        assert!((expect - 1.638).abs() < 0.01);
+        assert_eq!(l.pivot, Some(z.centre));
+        // A far-off hit: X, Y capped at RagMaxSpinAmount (100).
+        z.last_hit = Some((coords::pos([60.0, 60.0, 44.0]), coords::dir([0.0, 1.0, 0.0])));
+        assert!(death_launch(&z).angular_velocity.length() < 6.0);
+        // No hit: a random spin of 18000 units/s = 1.73 rad/s.
+        z.last_hit = None;
+        let w = death_launch(&z).angular_velocity.length();
+        assert!((w - 18000.0 * ROTATION_UNIT).abs() < 1e-3, "{w}");
     }
 }

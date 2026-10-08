@@ -432,7 +432,7 @@ pub(super) fn animate_bodies(
                             b.pre_pivot,
                             &actor,
                         );
-                        let launch = crate::zeds::ragdoll::Launch { velocity, angular_velocity: Vec3::ZERO };
+                        let launch = crate::zeds::ragdoll::Launch { velocity, angular_velocity: Vec3::ZERO, pivot: None };
                         // The pose at death, without the aim pitch (dying:
                         // SetTwistLook(0, 0)) and with the arm collars at
                         // their reference pose: our fix, not KF's. The held-

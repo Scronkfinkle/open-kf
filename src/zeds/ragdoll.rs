@@ -322,6 +322,9 @@ fn swing_twist(r1: Quat, b1: Quat, r2: Quat, b2: Quat) -> (f32, f32) {
 pub struct Launch {
     pub velocity: Vec3,
     pub angular_velocity: Vec3,
+    /// The point the spin turns around (KF: the actor's Location, the
+    /// collision cylinder's centre); None: the root body.
+    pub pivot: Option<Vec3>,
 }
 
 /// Spawns the bodies and joints of a ragdoll from a pose (mesh space).
@@ -386,7 +389,8 @@ pub fn spawn(
                 (AngularInertia::new(Vec3::splat(0.4 * mass * r * r)), frame.local(part.mass_offset * def.unit))
             }
         };
-        let velocity = launch.velocity + launch.angular_velocity.cross(pos - root_pos);
+        // KF sets every body to lin + w x (body - Location).
+        let velocity = launch.velocity + launch.angular_velocity.cross(pos - launch.pivot.unwrap_or(root_pos));
         let mut e = commands.spawn((
             RigidBody::Dynamic,
             Transform::from_translation(pos).with_rotation(rot),

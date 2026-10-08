@@ -6225,3 +6225,25 @@ be about 1250). It came to rest after 5 bounces and exploded at 3.29 s.
 **Still broken / not tested:** not played by you; no side-by-side check
 against the real game.
 **Next:** CP-2 (ragdoll start spin).
+
+## 2026-10-08 Ragdoll start spin in KF's units, around the zed's centre (CP-2, branch fix/combat)
+
+**Changed:** `src/zeds/zed/effects.rs` (`death_launch`): spin = 4 x (hit
+offset x push) x 2pi/65536 (rotation units to radians), no extra scale;
+pivot = the zed's cylinder centre; with no hit, a random spin of 18000
+rotation units/s. `src/zeds/ragdoll.rs`: `Launch` has a `pivot`, and
+each body starts at push + spin x (body - pivot) (the player's own body
+keeps its root as pivot). DESIGN.md "Combat physics fixes".
+**Why:** KF's engine reads the death spin in rotation units; we scaled
+it up about 4x and it hit the 10 rad/s cap on most kills, so corpses
+pinwheeled. Details in the local RE.md.
+**Tested how:** unit test (Clot hit 2 units in front, 40 up, from the
+side); all tests; clippy; headless Clot kill on KF-WestLondon
+(`--camera -4090,1100,-3650,-1.5708,-0.12 --zed --input 60:fire,...`).
+**Result:** unit test 1.64 rad/s (was capped at 10); headless
+`ragdoll_started ... angular_velocity=1.5`; the corpse settled with
+joint gaps under 4 units.
+**Still broken / not tested:** not looked at by you; a bleed-out death
+still uses the last hit's direction (KF has no momentum then and would
+use the random spin).
+**Next:** CP-3 (M79 flight).
