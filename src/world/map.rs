@@ -94,7 +94,7 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 _ => level_info,
             };
             let Some(e) = export else {
-                return crate::world::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], clear_to_fog: false, overlay: None, ambient: [0, 0, 255], ambient_vector: None };
+                return crate::world::zones::ZoneFog { name: "none".into(), fog: false, start: 0.0, end: 0.0, color: [128; 4], clear_to_fog: false, blend_time: 1.0, overlay: None, ambient: [0, 0, 255], ambient_vector: None };
             };
             let props = read_export_properties(pkg, e).ok();
             let value = |n: &str| props.as_ref().and_then(|p| defaults.actor_value(lp, e, p, n));
@@ -119,6 +119,7 @@ fn zone_fog(lp: &std::rc::Rc<ue_assets::package_set::LoadedPackage>, defaults: &
                 start: float("DistanceFogStart", 3000.0),
                 end: float("DistanceFogEnd", 8000.0),
                 clear_to_fog: matches!(value("bClearToFogColor"), Some(Value::Bool(true))),
+                blend_time: float("DistanceFogBlendTime", 1.0),
                 color: match value("DistanceFogColor") {
                     Some(Value::Color(c)) => c,
                     _ => [128, 128, 128, 0],
