@@ -7158,7 +7158,7 @@ Measured on KF-WestLondon's tunnel (AK-47, 30-round burst, 2 runs each,
 on, 33 baked meshes switch to the lit material there (`baked_swap`).
 A Clot 118 units ahead: drawn light 0.35 with, 0.24 without.
 
-## Map rotation and map voting without restarting (planned 2026-10-09)
+## Map rotation and map voting without restarting (planned and built 2026-10-09)
 
 **Goal:** at the end of a match the game moves to the next map by itself, in
 single player and in multiplayer, without anyone closing the game. Everyone
@@ -7220,3 +7220,26 @@ Steps (each its own branch, revertible on its own):
 Steps 1, 4 (logic, window, messages) and the map-list part of 2 and 5 can
 be built in parallel; steps 2 (wiring), 3 and the loading screen wait for
 step 1.
+
+**How it works now (all five steps built):**
+- `game/travel.rs` is where the end of a match goes on. The end screen
+  sends `RestartGame` (Fire after 5 s, or 14 s after the end). The
+  single player or the host then either starts the map vote (voting on
+  and a network game) or takes the map list's next map and saves the
+  list position in the settings file (not when the list came from
+  `--map-list`). Then everyone "travels": loading screen up, map
+  change once it is on the display, loading screen down when the map is
+  loaded. Enter / the test action `restart_game` still restart the same
+  map at once (our testing shortcut).
+- On every map after the first the player gets a new pawn (full health,
+  starting weapons, kills and deaths 0, cash back to the start) and the
+  lobby opens again (in a network game always; in single player when
+  the game started in the lobby). Name, perk, level and character stay.
+- Network: the host's shared game record (`NetGame`) carries the map and
+  a travel number. When the host travels it raises the number, marks
+  everyone not ready and restarts KF's lobby timer; clients that see the
+  new number load the map in place and stay connected. Door, pickup and
+  zed messages carry the travel number of their map, so a message about
+  the old map that arrives late is dropped. The connection timeout is
+  20 s so a map load does not drop anyone. A player who joins later
+  loads whatever map the host is on.
