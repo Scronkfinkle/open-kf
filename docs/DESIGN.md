@@ -3890,7 +3890,9 @@ with a test you can run):
 - **S2. The mixer** (done 2026-10-05). `src/audio/mixer.rs`. Systems write a
   `PlaySound` message (KF's PlaySound arguments, its defaults filled in);
   `play_sounds` finds the sound (cached, a weighted random pick for
-  groups), applies the slot rule, skips sounds out of range, and enforces
+  groups; the map's own sounds, preloaded with `per_map`, and the
+  packages only they use leave the cache at each map unload, shared
+  sounds stay), applies the slot rule, skips sounds out of range, and enforces
   32 voices (drops the quietest if quieter than the new one: a guess).
   `update_voices` sets each voice's left/right volume from the player's
   view each frame and its pitch x the game speed. The audio thread mixes
