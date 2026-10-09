@@ -8061,3 +8061,70 @@ next map starts at wave N, not 1); after the load `NetGame.match_over`
 is true for about 0.5 s (match not started, no effect seen); zed time
 commands are not stamped; not played by you; Windows not tested.
 **Next:** your play test of a network game through a vote and a map change.
+
+## 2026-10-09 KF-Manor ponds: terrain base layer and reflective water
+
+**Changed:** (1) `src/world/map.rs` `spawn_terrains`: terrain layer 0 is
+drawn under every visible triangle, also where the layers above cover it
+fully (black there); new `base_black_triangles` on `terrain_loaded`.
+(2) `crates/ue-assets/src/material.rs` (`EnvBlend`), new
+`src/render/env_map.rs`, `src/world/map.rs` (`SpecialMaterial::Env`,
+cube texture upload): a Combiner CO_AlphaBlend_With_Mask with a TexEnvMap
+over a Cubemap is drawn with its reflection on placed meshes with baked
+colours. (3) `kfpkg mesh` prints vertex count, bounds and UV ranges.
+`mesh_special` log lines name the mesh and skin. DESIGN.md (terrain,
+materials), test-views.md (2 rows); pointers in the local RE.md.
+**Why:** your report: KF-Manor's pools render as blocky squares and
+reflect wrongly. What the water is: one big flat lake mesh
+(`KillingFloorManorStatics.NastyLake`, 41 x 41 grid, DrawScale 36, at
+Z -4693, Skins[0] = `ManorWaterFB`) lying through the terrain, so it shows
+wherever the ground dips: FinalBlend FB_AlphaBlend, ZWrite off ->
+Shader (Diffuse = Combiner, Opacity = panned ripple texture) -> Combiner
+CO_AlphaBlend_With_Mask (Material1 = TexEnvMap EM_WorldSpace over
+`ManorWaterCubemap`, six faces all `ManorSkyEnvTex` (dark trees against
+the sky); Material2 = TexOscillator over `ManorWaterOpacity`; Mask = the
+same). No FluidSurfaceInfo on the map. Two causes found:
+- Blocky squares: not the water. The pond beds are painted with terrain
+  layers 1-2 only, so layer 0 has weight 0 there; those triangles were
+  left out of layer 0 and the additive layers were added onto the empty
+  background (fog colour): pale, flat, blocky patches. Found by hiding the
+  lake, the glass meshes, the rocks and finally the terrain (temporary
+  debug switch, removed). KF's first terrain pass takes every visible
+  triangle (native code, RE.md).
+- Reflection: the env map was dropped; the lake was its ripple texture
+  alone. KF (native code, RE.md): colour = Material2 x a + Material1 x
+  (1 - a), a = Mask alpha; vertex light multiplies the whole result.
+**Tested how:** before/after screenshots (6 Manor pond views, 3 builds:
+before / terrain fix / both), default-view screenshots of the 14 terrain
+maps with a changed count and of all 37 maps for the reflection change,
+mean brightness and changed pixels compared; logs; `cargo test` (354 +
+40 pass, 1 new test reads ManorWaterFB from the install); clippy: only the
+old boss.rs warning.
+**Result:** Manor `base_black_triangles=2096`; the pale patches in the
+ponds are gone (work/cmp/v3.png: before / terrain / both). Same fix on 13
+other terrain maps (KF-MountainPass 25618 triangles, KF-SirensBelch 23842,
+KF-ThrillsChills 12204, KF-HillbillyHorror 10803, ...): pale blocky patches
+gone on KF-HillbillyHorror's and KF-Hell's start views
+(work/cmp/pair-KF-HillbillyHorror.png); start-view brightness change
+under 0.3 of 255 elsewhere. Reflections: Manor `material_env ...
+ManorWaterFB ... drawn=env`, `cubemap_uploaded ... size=1024 mips=11`
+(34 MB; up to 44 MB of cubemaps per map), 148 Manor meshes drawn with it
+(1 lake, 94 rocks, ...); 35 maps use such materials. Start views change
+by under 0.5% of pixels except KF-Foundry (water under the glass shards
+less cyan, now mixed with its cubemap). The Manor water looks darker and
+smoother; the reflection itself is faint because ManorSkyEnvTex is dark
+(average 33/255) and weighs about 24%.
+**Dead ends:** first took the 26 `BrokenGlass` quads lying at water level
+(10 additive glass `FBGlass`, 16 `GroundMoundFB`) for the squares: hiding
+them changed nothing. Not a FluidSurfaceInfo either.
+**Still broken / not tested:** ripples stand still (TexOscillator /
+TexPanner not animated, in any map material); TexScaler ignored (KF-Foundry
+water tiles 33x in KF); the cube-face orientation (Unreal axes, Faces in
+Direct3D order) is assumed, not read from KF; Combiners that add a
+reflection (CO_Add_With_Mask_Modulation: Manor's wet sheet metal, ivy) and
+Shader Specular reflections are still not drawn; reflective BSP surfaces
+and meshes without baked colours keep the plain texture; the flashlight
+does not light reflective meshes; not compared with the real game; not
+played by you.
+**Next:** your look at the Manor ponds (command in test-views.md); then
+maybe animated TexOscillator/TexPanner for map materials.
