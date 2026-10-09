@@ -338,6 +338,10 @@ struct Loader<'a> {
     env_materials: &'a mut Assets<crate::render::env_map::EnvMaterial>,
     cubemap_cache: HashMap<String, Option<Handle<Image>>>,
     special: HashMap<AssetId<StandardMaterial>, SpecialMaterial>,
+    /// Materials with moving textures (world/uv_anim.rs), and the entry of
+    /// each base material, so its copies are moved too.
+    uv_anims: Vec<crate::world::uv_anim::UvAnimEntry>,
+    uv_anim_of: HashMap<AssetId<StandardMaterial>, usize>,
 }
 
 /// A map material Bevy's StandardMaterial cannot draw.
@@ -375,6 +379,7 @@ impl Loader<'_> {
         let m = self.materials.get(h).cloned().unwrap_or_default();
         let b = self.baked_materials.add(crate::render::baked::baked_material(&m));
         self.baked_cache.insert(h.id(), b.clone());
+        self.uv_anim_copy(h.id(), crate::world::uv_anim::UvTarget::Baked(b.clone()));
         b
     }
 
@@ -387,7 +392,16 @@ impl Loader<'_> {
         m.unlit = true;
         let u = self.materials.add(m);
         self.unlit_cache.insert(h.id(), u.clone());
+        self.uv_anim_copy(h.id(), crate::world::uv_anim::UvTarget::Standard(u.clone()));
         u
+    }
+
+    /// A copy of material `from` is drawn too: if `from`'s texture moves,
+    /// the copy's moves with it.
+    fn uv_anim_copy(&mut self, from: AssetId<StandardMaterial>, copy: crate::world::uv_anim::UvTarget) {
+        if let Some(&i) = self.uv_anim_of.get(&from) {
+            self.uv_anims[i].targets.push(copy);
+        }
     }
 
     /// Decodes a texture (all usable mips) and uploads it. Returns the handle
@@ -793,7 +807,19 @@ impl Loader<'_> {
                 && let Some(t) = &simple.texture
                 && let Some(image) = crate::render::particles::decode_tinted(t, true, false, simple.tint, self.images)
             {
-                let m = self.blend_materials.add(crate::render::particles::BlendMaterial { texture: image, draw_style: 3 });
+                // Unreal textures tile, so wrap rather than clamp (the
+                // particle decoder clamps). Shows once a texture pans:
+                // KF-Offices' rain sheets smeared their top row.
+                if let Some(mut img) = self.images.get_mut(&image) {
+                    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                        address_mode_u: ImageAddressMode::Repeat,
+                        address_mode_v: ImageAddressMode::Repeat,
+                        mag_filter: ImageFilterMode::Linear,
+                        min_filter: ImageFilterMode::Linear,
+                        ..default()
+                    });
+                }
+                let m = self.blend_materials.add(crate::render::particles::BlendMaterial { texture: image, draw_style: 3, uv_offset: Vec4::ZERO });
                 self.special.insert(handle.id(), SpecialMaterial::Additive(m));
             }
             // A texture blended with an environment map (KF-Manor's lake):
@@ -824,6 +850,32 @@ impl Loader<'_> {
                         self.special.get(&handle.id()).map_or("standard", SpecialMaterial::kind)
                     ),
                 );
+            }
+            // A texture moved by TexPanner / TexOscillator: moved each frame
+            // (world/uv_anim.rs). Modulated and reflective materials stay
+            // still (their shaders have no offset yet).
+            if !simple.uv_anim.is_empty() {
+                use crate::world::uv_anim::{UvAnimEntry, UvTarget};
+                let special = self.special.get(&handle.id());
+                let mut targets = vec![UvTarget::Standard(handle.clone())];
+                if let Some(SpecialMaterial::Additive(m)) = special {
+                    targets.push(UvTarget::Additive(m.clone()));
+                }
+                let moved = !matches!(special, Some(SpecialMaterial::Modulate(_) | SpecialMaterial::Env(_)));
+                runlog::kv(
+                    "material_uv_anim",
+                    &format!(
+                        "material={} anims=[{}] drawn={} moved={moved} chain={}",
+                        from.package.pkg.object_path(rf),
+                        simple.uv_anim.iter().map(|a| a.describe()).collect::<Vec<_>>().join(" "),
+                        special.map_or("standard", SpecialMaterial::kind),
+                        simple.chain.join(">")
+                    ),
+                );
+                if moved {
+                    self.uv_anim_of.insert(handle.id(), self.uv_anims.len());
+                    self.uv_anims.push(UvAnimEntry { name: from.package.pkg.object_path(rf), anims: simple.uv_anim.clone(), targets });
+                }
             }
             if let Some([r, g, b]) = simple.tint {
                 let drawn = self.special.get(&handle.id()).map_or("standard", SpecialMaterial::kind);
@@ -969,6 +1021,8 @@ fn load_map(
         env_materials: &mut env_materials,
         cubemap_cache: HashMap::new(),
         special: HashMap::new(),
+        uv_anims: Vec::new(),
+        uv_anim_of: HashMap::new(),
         textures_uploaded: 0,
         texture_bytes: 0,
         textures_failed: 0,
@@ -1184,7 +1238,9 @@ fn load_map(
                                 .entry(mat.id())
                                 .or_insert_with(|| {
                                     let m = loader.materials.get(&mat).cloned().unwrap_or_default();
-                                    loader.materials.add(crate::render::lighting::lightmapped(&m))
+                                    let copy = loader.materials.add(crate::render::lighting::lightmapped(&m));
+                                    loader.uv_anim_copy(mat.id(), crate::world::uv_anim::UvTarget::Standard(copy.clone()));
+                                    copy
                                 })
                                 .clone()
                         }
@@ -1716,7 +1772,9 @@ fn load_map(
                 && !matches!(m.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_))
             {
                 let d = (transform.translation - cam).length();
+                let base = material.id();
                 material = loader.materials.add(StandardMaterial { depth_bias: d * 100.0, ..m });
+                loader.uv_anim_copy(base, crate::world::uv_anim::UvTarget::Standard(material.clone()));
                 runlog::kv("sky_layer_order", &format!("actor={} distance_unreal={:.0}", lp.pkg.object_name(ObjectRef::Export(actor.export)), d / coords::SCALE));
             }
             let mut e = commands.spawn((
@@ -1852,6 +1910,15 @@ fn load_map(
             loader.special.values().filter(|m| matches!(m, SpecialMaterial::Env(_))).count()
         ),
     );
+    runlog::kv(
+        "uv_anims",
+        &format!(
+            "materials={} drawn_materials={}",
+            loader.uv_anims.len(),
+            loader.uv_anims.iter().map(|e| e.targets.len()).sum::<usize>()
+        ),
+    );
+    commands.insert_resource(crate::world::uv_anim::MapUvAnims::new(std::mem::take(&mut loader.uv_anims)));
 
     // --- Lighting: no baked lightmaps yet, so a sun plus ambient light ---
     commands.insert_resource(GlobalAmbientLight {

@@ -52,6 +52,85 @@ pub struct SimpleMaterial {
     /// other input's texture; loaders that do not draw reflections ignore
     /// this and draw `texture` alone, as before.
     pub env: Option<EnvBlend>,
+    /// Texture-coordinate animations on the way to `texture` (innermost
+    /// first): the TexPanner and TexOscillator (OT_Pan) modifiers the
+    /// chosen texture is reached through. Other movements (TexRotator,
+    /// TexScaler, stretching oscillators) are not recorded.
+    pub uv_anim: Vec<UvAnim>,
+}
+
+/// A texture-coordinate movement over time, in texture widths / heights:
+/// the texture is sampled at (u, v) + `offset(t)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UvAnim {
+    /// TexPanner: offset = (PanDirection as a unit vector, its X and Y) x
+    /// PanRate x time, each part wrapped to (-8, 8) (as KF does, keeping
+    /// the numbers small; a texture repeats every 1, so it does not show).
+    Pan { dir: [f32; 2], rate: f32 },
+    /// TexOscillator with OT_Pan on an axis (`pan` true): offset =
+    /// Amplitude x sin(2 pi x (fraction of Rate x time + Phase)). An axis
+    /// with another oscillation type does not move.
+    Oscillate { rate: [f32; 2], phase: [f32; 2], amplitude: [f32; 2], pan: [bool; 2] },
+}
+
+impl UvAnim {
+    /// The texture-coordinate offset at `t` seconds.
+    pub fn offset(&self, t: f32) -> [f32; 2] {
+        match *self {
+            UvAnim::Pan { dir, rate } => dir.map(|d| (d * t * rate) % 8.0),
+            UvAnim::Oscillate { rate, phase, amplitude, pan } => std::array::from_fn(|i| {
+                if !pan[i] {
+                    return 0.0;
+                }
+                let x = rate[i] * t;
+                amplitude[i] * ((x - x.floor() + phase[i]) * std::f32::consts::TAU).sin()
+            }),
+        }
+    }
+
+    /// For logs.
+    pub fn describe(&self) -> String {
+        match self {
+            UvAnim::Pan { dir, rate } => format!("pan(dir=({:.3},{:.3}) rate={rate})", dir[0], dir[1]),
+            UvAnim::Oscillate { rate, phase, amplitude, pan } => format!(
+                "oscillate(rate=({},{}) phase=({},{}) amplitude=({},{}) pan=({},{}))",
+                rate[0], rate[1], phase[0], phase[1], amplitude[0], amplitude[1], pan[0], pan[1]
+            ),
+        }
+    }
+}
+
+/// The movement a TexPanner or TexOscillator makes, from its properties
+/// (unset ones take the class defaults: TexPanner PanRate 0.1;
+/// TexOscillator rates 1, amplitudes 0.1, phases 0, types OT_Pan).
+fn uv_anim_of(class: &str, pkg: &crate::package::Package, props: &crate::properties::PropertyList) -> Option<UvAnim> {
+    let float = |name: &str, default: f32| match props.get(pkg, name) {
+        Some(Value::Float(f)) => *f,
+        _ => default,
+    };
+    match class {
+        "TexPanner" => {
+            let rot = match props.get(pkg, "PanDirection") {
+                Some(Value::Rotator(r)) => *r,
+                _ => crate::properties::Rotator::default(),
+            };
+            let to_rad = |u: i32| u as f32 * std::f32::consts::TAU / 65536.0;
+            let (pitch, yaw) = (to_rad(rot.pitch), to_rad(rot.yaw));
+            Some(UvAnim::Pan { dir: [pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin()], rate: float("PanRate", 0.1) })
+        }
+        "TexOscillator" => {
+            let pan = |name: &str| !matches!(props.get(pkg, name), Some(Value::Byte(b)) if *b != 0);
+            let anim = UvAnim::Oscillate {
+                rate: [float("UOscillationRate", 1.0), float("VOscillationRate", 1.0)],
+                phase: [float("UOscillationPhase", 0.0), float("VOscillationPhase", 0.0)],
+                amplitude: [float("UOscillationAmplitude", 0.1), float("VOscillationAmplitude", 0.1)],
+                pan: [pan("UOscillationType"), pan("VOscillationType")],
+            };
+            // Neither axis pans: nothing we draw moves.
+            if matches!(anim, UvAnim::Oscillate { pan: [false, false], .. }) { None } else { Some(anim) }
+        }
+        _ => None,
+    }
 }
 
 /// A reflection blended into a material (Combiner CO_AlphaBlend_With_Mask
@@ -415,7 +494,15 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             if class == "ColorModifier" {
                 out.two_sided |= get_bool("RenderTwoSided");
             }
+            let had_texture = out.texture.is_some();
             follow("Material", out);
+            // On the way to the chosen texture: its movement applies.
+            if !had_texture
+                && out.texture.is_some()
+                && let Some(anim) = uv_anim_of(&class, pkg, &props)
+            {
+                out.uv_anim.push(anim);
+            }
         }
     }
 }
@@ -439,6 +526,26 @@ pub fn surface_type(set: &PackageSet, from: &ObjectHandle, rf: ObjectRef) -> u8 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panner_offset_wraps_at_8() {
+        // KF-Offices' rain: PanDirection yaw -16500 (just past straight
+        // down in V), PanRate 0.3.
+        let yaw = -16500.0 * std::f32::consts::TAU / 65536.0;
+        let rain = UvAnim::Pan { dir: [yaw.cos(), yaw.sin()], rate: 0.3 };
+        let [u, v] = rain.offset(10.0);
+        assert!((v - (-2.9998)).abs() < 1e-3 && (u - (-0.0334)).abs() < 1e-3, "{u} {v}");
+        // 0.3 x 30 = 9 texture heights: wrapped to -1.
+        assert!((rain.offset(30.0)[1] - (-0.9994)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn oscillator_pans_only_pan_axes() {
+        let osc = UvAnim::Oscillate { rate: [0.25, 1.0], phase: [0.0, 0.0], amplitude: [0.1, 0.2], pan: [true, false] };
+        let [u, v] = osc.offset(1.0);
+        assert!((u - 0.1).abs() < 1e-5 && v == 0.0, "{u} {v}");
+        assert!(osc.offset(2.0)[0].abs() < 1e-5);
+    }
 
     #[test]
     fn multiply_tint_scales() {

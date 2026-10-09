@@ -243,6 +243,11 @@ pub struct BlendMaterial {
     pub texture: Handle<Image>,
     /// EParticleDrawStyle: 3, 4, 5 or 6.
     pub draw_style: u8,
+    /// Added to the texture coordinates (X, Y; Z and W unused): a map
+    /// material's TexPanner / TexOscillator movement (world/uv_anim.rs).
+    /// Zero for particles.
+    #[uniform(2)]
+    pub uv_offset: Vec4,
 }
 
 /// Picks the blend when the pipeline is built.
@@ -268,14 +273,16 @@ const BLEND_WGSL: &str = r#"
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var particle_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var particle_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> uv_offset: vec4<f32>;
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    let uv = in.uv + uv_offset.xy;
 #ifdef VERTEX_COLORS
-    var c = textureSample(particle_texture, particle_sampler, in.uv) * in.color;
+    var c = textureSample(particle_texture, particle_sampler, uv) * in.color;
 #else
     // Map meshes (additive materials) have no vertex colours.
-    var c = textureSample(particle_texture, particle_sampler, in.uv);
+    var c = textureSample(particle_texture, particle_sampler, uv);
 #endif
 #ifdef DISTANCE_FOG
     // Fog toward black: a black particle changes nothing in these blends.
@@ -736,7 +743,7 @@ fn load_effect(
                 // from KF: drawn untextured they are grey squares.
                 loaded.material = image.map(|image| match d.draw_style {
                     2 => SpriteMaterial::Modulate(modulate.add(ModulateMaterial { texture: image })),
-                    3..=6 => SpriteMaterial::Blend(blend.add(BlendMaterial { texture: image, draw_style: d.draw_style })),
+                    3..=6 => SpriteMaterial::Blend(blend.add(BlendMaterial { texture: image, draw_style: d.draw_style, uv_offset: Vec4::ZERO })),
                     _ => SpriteMaterial::Standard(materials.add(StandardMaterial {
                         base_color_texture: Some(image),
                         unlit: true,

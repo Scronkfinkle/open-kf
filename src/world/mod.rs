@@ -9,3 +9,4 @@ pub mod zvolume;
 pub mod physvol;
 pub mod door;
 pub mod glass;
+pub mod uv_anim;

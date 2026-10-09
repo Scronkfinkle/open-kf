@@ -8174,3 +8174,51 @@ s on a brick whose face is truly steep (normal 0.39 up), then continues.
 Whether individual links switched from walkable to not walkable is not
 checked (only totals). Not compared with the real game; not played by you.
 **Next:** your walk over the bricks (test-views.md row).
+
+## 2026-10-09 Moving map textures: KF-Offices rain (TexPanner, TexOscillator)
+
+**Changed:** `crates/ue-assets/src/material.rs` (`UvAnim`, recorded on the
+way to the drawn texture; 2 unit tests), new `src/world/uv_anim.rs` (moves
+the materials each frame), `src/world/map.rs` (lists each moving material
+and its copies; additive map textures wrap instead of clamp),
+`src/render/particles.rs` (`BlendMaterial.uv_offset`, 0 for particles),
+`src/main.rs`, `src/world/mod.rs`; docs/DESIGN.md, docs/test-views.md.
+**Why:** "the rain animation isn't moving".
+**What the rain is:** 30 StaticMeshActors with the map's own mesh
+`RainPLanes` (DrawScale 3, Z x3, no collision), material
+`myLevel.HarborRain_fb`: FinalBlend FB_Brighten > Shader (Opacity
+HarborRainGradient) > Combiner (CombineOperation 6, two TexPanners) >
+TexPanner `HarborRain_panner_b` (PanDirection yaw -16500, PanRate 0.3) >
+HarborRainSheet. Not an emitter. We drew it, but TexPanner/TexOscillator
+were never animated in map materials.
+**KF's rule (native code; details in the local RE.md):** TexPanner:
+offset = fmod(PanDirection vector x time x PanRate, 8) on U and V.
+TexOscillator OT_Pan: Amplitude x sin(2 pi x (fraction of Rate x time +
+Phase)). Checked: the two rain panners' saved matrices have the same
+direction and offsets in the ratio 0.3 : 0.35. The mesh's V runs from 0 at
+the top to 1 at the bottom, so the falling V offset makes the rain fall.
+**Tested how:** logs; screenshots 0.5 s apart at the rain view
+(test-views.md), old and new binary; default start view of all 39 maps,
+bricks-only build vs this build (brightness, changed pixels); `cargo test`
+(354 + 42 pass); clippy: only the old boss.rs warning.
+**Result:** `material_uv_anim material=myLevel.HarborRain_fb
+anims=[pan(dir=(-0.011,-1.000) rate=0.3)] drawn=additive moved=true`;
+`uv_anim_offset` V offset -0.198 at 0.66 s, -0.354 at 1.18 s, -0.822 at
+2.74 s (0.3 per second). Rain view, frames 150 vs 180: rain area mean
+difference 0 before, 2.4% after (work/screenshots/KF-Offices-rain_new2-*);
+mean brightness 30.43 before, 30.50 after. 0-14 moving materials per map
+(`uv_anims`, e.g. KF-Wyre 14, KF-HillbillyHorror 13, KF-Offices 4: rain,
+sky, clouds, fog); start views change by under 0.4% of pixels, brightness
+within 1.6 of 255 (moving rain/water/particles; no map darker or broken).
+**Dead ends:** first version left the additive textures clamped (the
+particle decoder's default): the panned rain smeared its top row (rain
+area changed by only 0.1% and the start view got 2 of 255 darker). Wrapping
+fixed it.
+**Still broken / not tested:** the Combiner's second rain sheet (PanRate
+0.35, added with mask modulation) is not drawn; TexOscillator stretch /
+jitter, TexRotator and TexScaler are not done; modulated and reflective
+materials (e.g. the KF-Manor ripples) do not move (`moved=false`, 4
+materials over all maps); which clock KF uses (game time assumed); the
+rain falling downward on screen is reasoned from the UVs, not measured
+from pictures; not compared with the real game; not played by you.
+**Next:** your look at the rain (test-views.md row).

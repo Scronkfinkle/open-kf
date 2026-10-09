@@ -235,10 +235,32 @@ zone/portal visibility culling, emitters.
   keep the plain texture (`bsp_env_polys` counts them). Assumed, not read
   from KF: the reflection vector is in Unreal's world axes and Faces[0..5]
   are +X, -X, +Y, -Y, +Z, -Z. Not done: the TexOscillator / TexPanner
-  movement of the textures (the ripples stand still), Combiners that add a
+  movement of these reflective textures (the ripples stand still; moving
+  textures below cover plain and additive materials only), Combiners that add a
   reflection (CO_Add_With_Mask_Modulation: shiny metal, ivy) and Shader
   Specular reflections. Log: `material_env`, `cubemap_uploaded`,
   `mesh_special kind=env`.
+- **Moving textures (2026-10-09, branch fix/offices-bricks-rain).** A
+  TexPanner or TexOscillator between a map material and the texture it
+  draws moves the texture coordinates over time (KF-Offices' rain: 30
+  RainPLanes meshes, FinalBlend FB_Brighten > Shader > Combiner >
+  TexPanner > HarborRainSheet, PanDirection yaw -16500, PanRate 0.3; also
+  scrolling clouds, fog and signs: 0-14 such materials per map). What KF
+  does (native code; details in the local RE.md): TexPanner adds
+  (PanDirection as a unit vector, X and Y) x PanRate x time to (U, V), each
+  part wrapped to (-8, 8); TexOscillator OT_Pan adds Amplitude x
+  sin(2 pi x (fraction of Rate x time + Phase)) per axis. `SimpleMaterial`
+  records the movements on the way to the chosen texture
+  (`uv_anim`); the loader lists every Bevy material drawn with one (plain,
+  unlit, baked, lightmapped and sky-sorted copies, the additive material)
+  and `world/uv_anim.rs` writes the offset into them every frame (Bevy's
+  uv_transform, or the additive shader's `uv_offset`). Additive map
+  textures now wrap (they were clamped, which smeared the moving rain).
+  Assumed: the time is the game time. Not done: TexOscillator stretching
+  and jitter, TexRotator, TexScaler, moving modulated and reflective
+  materials (logged `moved=false`), the Combiner's second input (the rain
+  adds a second sheet panning at 0.35; we draw the first only). Logs:
+  `material_uv_anim`, `uv_anims`, `uv_anim_offset` (first 3 s).
 
 **Rotation convention (partly verified).** Unreal rotators: 65536 units = 360°.
 The formula used is the standard Unreal one. Its forward axis (cos P cos Y,
