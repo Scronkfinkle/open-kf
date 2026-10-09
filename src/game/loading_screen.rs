@@ -1,19 +1,29 @@
-//! The loading screen shown while a map loads: KF's LoadingClass,
-//! ROInterface.ROServerLoading ("Deploying to <map>" over a random
-//! picture). See DESIGN.md, "Loading screen".
+//! The loading screen shown while a map loads (map rotation plan, step 5).
 //!
-//! What KF draws (ROServerLoading and its parents UT2K4ServerLoading,
-//! UT2K4LoadingPageBase; positions are fractions of the screen):
-//! - a background picked at random from `Backgrounds`
-//!   (MenuBackground.LoadingScreen1..5), its top-left 1024 x 768 texels
-//!   (SubXL / SubYL) stretched over the whole screen;
-//! - "Deploying to <map>" (loadingMapPrefix, then the map name run
-//!   through StripMap, StripPrefix and AddSpaces), white with a black
-//!   shadow 1 pixel right and down (RODrawOpShadowedText), font
-//!   fntROMainMenu (ROFonts.ROMain18), left-aligned, top at 0.91 of the
-//!   height, 0.05 in from the left;
-//! - nothing else: SetText empties ". . . LOADING" and the hint, and the
-//!   VAC lines only appear on a VAC-secured server (never ours).
+//! KF has two loading screens (GameEngine's ConnectingMenuClass and
+//! LoadingClass). The engine draws LoadingClass (ROServerLoading,
+//! "Deploying to <map>") only in a single-player ladder game with
+//! TeamScreen=true, which KF never plays; every other map load, map
+//! changes included, draws ConnectingMenuClass,
+//! GUI2K4.UT2K4ServerLoading, with KF's hint and map picture added by
+//! KFGameType.GetLoadingHint. That one is drawn here (details in the local
+//! RE.md). Positions are fractions of the screen:
+//! - a background picked at random from UT2K4ServerLoading.Backgrounds
+//!   (defuser.ini: 2k4Menus.Loading.loadingscreen1, 2, 2, 4), its top-left
+//!   1024 x 768 texels (OpBackground SubXL / SubYL) over the whole screen;
+//! - ". . . LOADING" (OpLoading, GUI2K4.int) right-aligned in the box
+//!   from 0.5 to 0.99 across, top at 0.48, font UT2LargeFont;
+//! - the map name as the engine gives it (StripMap: no folder, no
+//!   extension, e.g. "KF-WestLondon") the same way at 0.6 (OpMapname);
+//! - a random KFGameType.KFHints line (OpHint, fntUT2k4SmallHeader),
+//!   wrapped to 0.93 of the width from 0.05, each line right-aligned,
+//!   top at 0.8;
+//! - the map's preview (its LevelSummary ScreenShot, a random picture of
+//!   a MaterialSequence), 3/7 of the screen wide and tall, right of the
+//!   centre near the top, with the map title and "By <author>" on it
+//!   (KFMod.LoadingInfoImage).
+//!
+//! All text is white (DrawOpBase.DrawColor) at the canvas font scale 0.9.
 //!
 //! **Handshake** (the map change wires it; this module only draws):
 //! 1. send [`ShowLoadingScreen`]: the screen appears the same frame;
@@ -29,40 +39,39 @@ use std::collections::HashMap;
 use bevy::diagnostic::FrameCount;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use ue_assets::package::ObjectRef;
 use ue_assets::package_set::PackageSet;
+use ue_assets::properties::Value;
 
 use crate::engine::runlog;
-use crate::game::hud::{Canvas, HudFont, HudTexture, Loader};
+use crate::game::hud::{Canvas, HudFont, HudTexture, Loader, Quad};
+use crate::game::menus::gui;
 use crate::world::map::MapRequest;
 
-/// ROServerLoading.loadingMapPrefix (its default; no System/*.int file
-/// changes it).
-pub const LOADING_MAP_PREFIX: &str = "Deploying to";
+/// UT2K4ServerLoading.Backgrounds when defuser.ini cannot be read (the
+/// same list; KF's fresh-install User.ini is made from defuser.ini).
+pub const DEFAULT_BACKGROUNDS: [&str; 4] =
+    ["2k4Menus.Loading.loadingscreen1", "2k4Menus.Loading.loadingscreen2", "2k4Menus.Loading.loadingscreen2", "2k4Menus.Loading.loadingscreen4"];
 
-/// ROServerLoading.Backgrounds (its own defaults: User.ini only has a
-/// section for the parent class, GUI2K4.UT2K4ServerLoading).
-pub const BACKGROUNDS: [&str; 5] = [
-    "MenuBackground.LoadingScreen1",
-    "MenuBackground.LoadingScreen2",
-    "MenuBackground.LoadingScreen3",
-    "MenuBackground.LoadingScreen4",
-    "MenuBackground.LoadingScreen5",
-];
-
-/// fntROMainMenu.FontArrayNames: the same font for both entries.
-const FONT: &str = "ROFonts.ROMain18";
-/// fntROMainMenu: bScaled, NormalXRes 800, FallBackRes 512.
-const FONT_NORMAL_X_RES: f32 = 800.0;
-const FONT_FALLBACK_RES: f32 = 512.0;
-/// DrawOpText.Draw / RODrawOpShadowedText.Draw: Canvas.FontScaleX = 0.9.
-const CANVAS_FONT_SCALE: f32 = 0.9;
+/// GUI2K4.int [UT2K4ServerLoading] OpLoading.Text.
+const LOADING_TEXT: &str = ". . . LOADING";
+/// fntUT2k4Large (UT2LargeFont) and fntUT2k4SmallHeader FontArrayNames
+/// (GUI2K4.int).
+const LARGE_FONTS: [&str; 5] = ["ROFonts.ROBtsrmVr14", "ROFonts.ROBtsrmVr16", "ROFonts.ROBtsrmVr18", "ROFonts.ROBtsrmVr20", "ROFonts.ROBtsrmVr22"];
+const SMALL_HEADER_FONTS: [&str; 5] = ["ROFontsTwo.ROArial12DS", "ROFontsTwo.ROArial14DS", "ROFontsTwo.ROArial18DS", "ROFontsTwo.ROArial18DS", "ROFontsTwo.ROArial22DS"];
+/// LoadingInfoImage: HUDKillingFloor.LoadFontStatic(3) above 580 pixels
+/// tall, else (2): HUD.FontArrayNames[3] / [2].
+const TITLE_FONT_TALL: &str = "ROFontsTwo.ROArial18DS";
+const TITLE_FONT_SHORT: &str = "ROFontsTwo.ROArial22DS";
+/// DrawOpText.Draw: Canvas.FontScaleX / Y = 0.9 (and the fonts here are
+/// not scaled GUIFonts, so their own scale is 1).
+const FONT_SCALE: f32 = 0.9;
 /// UT2K4ServerLoading.OpBackground: SubXL 1024, SubYL 768.
 const BACKGROUND_TEXELS: Vec2 = Vec2::new(1024.0, 768.0);
-/// ROServerLoading.OpMapname: Top 0.91, Lft 0.05.
-const TEXT_TOP: f32 = 0.91;
-const TEXT_LEFT: f32 = 0.05;
-/// RODrawOpShadowedText: ShadowColor black, shadowXOffset / YOffset 1.
-const SHADOW_OFFSET: Vec2 = Vec2::new(1.0, 1.0);
+/// LevelInfo's default Title and Author: LoadingInfoImage draws neither
+/// when the map kept them.
+const DEFAULT_TITLE: &str = "Untitled";
+const DEFAULT_AUTHOR: &str = "Anonymous";
 /// UT2K4ServerLoading.SetImage: at most 10 picks before giving up.
 const MAX_PICKS: u32 = 10;
 
@@ -75,11 +84,11 @@ pub const SHOWN_AFTER_FRAMES: u32 = 3;
 
 /// Above everything else on screen (the menus use 1000 + up to 3000).
 const Z_BACKGROUND: i32 = 10_000;
-/// Glyph nodes: shadow and white text, one per character.
-const GLYPH_SLOTS: usize = 256;
+/// Nodes over the background: the preview and one per character.
+const SLOTS: usize = 1024;
 
 /// Shows the loading screen for `map` (e.g. "KF-WestLondon"). A second
-/// one while it is up starts over (new picture, new text, the frame count
+/// one while it is up starts over (new picture and hint, the frame count
 /// from zero; [`LoadingScreenShown`] is sent again).
 #[derive(Message, Clone, Debug)]
 pub struct ShowLoadingScreen {
@@ -93,7 +102,8 @@ pub struct LoadingScreenShown {
     pub map: String,
 }
 
-/// Hides the loading screen (send it when the new map is ready).
+/// Hides the loading screen (send it when the new map is ready). A hide
+/// in the same frame as a show wins.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct HideLoadingScreen;
 
@@ -128,62 +138,11 @@ pub fn strip_map(s: &str) -> String {
     s.into_iter().collect()
 }
 
-/// ROServerLoading.StripPrefix: drops a leading "RO-" (Red Orchestra's
-/// prefix; KF's "KF-" is left alone).
-pub fn strip_prefix(s: &str) -> String {
-    match s.strip_prefix("RO-") {
-        Some(rest) if !rest.is_empty() => rest.to_string(),
-        _ => s.to_string(),
-    }
-}
-
-/// ROServerLoading.AddSpaces: '_' becomes ' ', then a space goes before
-/// every capital letter (a character whose Caps is itself and whose Locs
-/// is not), except at the start. Digits, '-' and spaces are not capitals,
-/// so "KF-WestLondon" becomes "K F- West London" as in KF.
-pub fn add_spaces(s: &str) -> String {
-    let temp: Vec<char> = s.replace('_', " ").chars().collect();
-    if temp.len() <= 1 {
-        return temp.into_iter().collect();
-    }
-    let is_capital = |c: char| c.to_uppercase().eq(std::iter::once(c)) && !c.to_lowercase().eq(std::iter::once(c));
-    let mut result = String::new();
-    let mut lastpos = 0;
-    for (pos, &c) in temp.iter().enumerate() {
-        if is_capital(c) {
-            if !result.is_empty() {
-                result.push(' ');
-            }
-            result.extend(&temp[lastpos..pos]);
-            lastpos = pos;
-        }
-    }
-    if lastpos != temp.len() {
-        if !result.is_empty() {
-            result.push(' ');
-        }
-        result.extend(&temp[lastpos..]);
-    }
-    result
-}
-
-/// ROServerLoading.SetText's map name: StripMap, StripPrefix, AddSpaces,
-/// and its one exception ("HEDGE HOG" -> "Hedgehog").
-pub fn map_title(map: &str) -> String {
-    let m = add_spaces(&strip_prefix(&strip_map(map)));
-    if m.to_uppercase() == "HEDGE HOG" { "Hedgehog".to_string() } else { m }
-}
-
-/// The text KF shows: `loadingMapPrefix @ Map` ('@' joins with a space).
-pub fn loading_text(map: &str) -> String {
-    format!("{LOADING_MAP_PREFIX} {}", map_title(map))
-}
-
 /// UT2K4ServerLoading.SetImage: Rand(Backgrounds.Length) until a picture
 /// loads, at most [`MAX_PICKS`] times. `rand(n)` is Rand(n) (0 to n - 1),
 /// `load` tries one path. Returns the index that loaded, or None (KF then
-/// draws nothing behind the text; ours: black).
-pub fn pick_background(list: &[&str], mut rand: impl FnMut(usize) -> usize, mut load: impl FnMut(&str) -> bool) -> Option<usize> {
+/// draws no background; ours: black).
+pub fn pick_background(list: &[String], mut rand: impl FnMut(usize) -> usize, mut load: impl FnMut(&str) -> bool) -> Option<usize> {
     if list.is_empty() {
         return None;
     }
@@ -193,26 +152,120 @@ pub fn pick_background(list: &[&str], mut rand: impl FnMut(usize) -> usize, mut 
         if list[i].is_empty() {
             return None;
         }
-        if load(list[i]) {
+        if load(&list[i]) {
             return Some(i);
         }
     }
     None
 }
 
-/// Where KF draws the text and how big, for a screen of `screen` physical
-/// pixels: the top-left of the text and the glyph scale. GUIFont.GetFont
-/// (native) for a scaled font: at widths up to FallBackRes the fallback
-/// entry at scale 1, else the first entry at width / NormalXRes; the
-/// canvas then multiplies by its FontScaleX (0.9). Details in the local
-/// RE.md.
-pub fn text_layout(screen: Vec2) -> (Vec2, f32) {
-    let font_scale = if screen.x <= FONT_FALLBACK_RES { 1.0 } else { screen.x / FONT_NORMAL_X_RES };
-    (Vec2::new(TEXT_LEFT * screen.x, TEXT_TOP * screen.y), font_scale * CANVAS_FONT_SCALE)
+/// The quoted strings of an .int / .ini array value: `("a","b")`.
+pub fn quoted_list(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut s = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => s.extend(chars.next()),
+                '"' => break,
+                c => s.push(c),
+            }
+        }
+        out.push(s);
+    }
+    out
 }
 
-/// Rand() for the picture (xorshift); seeded from the clock at startup,
-/// so the picture changes from run to run as in KF.
+/// GUIFont.GetFont for a font that is not scaled (native): which of the
+/// five sizes a canvas this wide uses. Details in the local RE.md.
+pub fn font_size_index(width: f32) -> usize {
+    if width < 800.0 {
+        0
+    } else if width < 1024.0 {
+        1
+    } else if width < 1280.0 {
+        2
+    } else if width < 1600.0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Where KF draws each part on a screen of `screen` physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    /// OpLoading and OpMapname: right edge (0.99 of the width) and tops.
+    pub right: f32,
+    pub loading_top: f32,
+    pub map_top: f32,
+    /// OpHint: left, width (lines wrap to it and are right-aligned in it), top.
+    pub hint_left: f32,
+    pub hint_width: f32,
+    pub hint_top: f32,
+    /// LoadingInfoImage: the preview box, the title's and author's spots.
+    pub preview: Rect,
+    pub title_at: Vec2,
+    pub author_at: Vec2,
+    pub large_font: &'static str,
+    pub hint_font: &'static str,
+    pub title_font: &'static str,
+}
+
+/// The positions of UT2K4ServerLoading's draw ops (Lft + Width, Top) and
+/// LoadingInfoImage.Draw (integer X, Y; XS = ClipX / 7 * 3).
+pub fn layout(screen: Vec2) -> Layout {
+    let (w, h) = (screen.x, screen.y);
+    let xs = w / 7.0 * 3.0;
+    let ys = h / 7.0 * 3.0;
+    let half = (w / 2.0).trunc();
+    let x = (half + (half - xs) / 2.0).trunc();
+    let y = ((h / 2.0 - ys) / 5.0 * 3.0).trunc();
+    let tall = h > 580.0;
+    let size = font_size_index(w);
+    Layout {
+        right: (0.5 + 0.49) * w,
+        loading_top: 0.48 * h,
+        map_top: 0.6 * h,
+        hint_left: 0.05 * w,
+        hint_width: 0.93 * w,
+        hint_top: 0.8 * h,
+        preview: Rect::new(x, y, x + xs, y + ys),
+        title_at: Vec2::new(x + 4.0, y + 3.0),
+        author_at: Vec2::new(x + 14.0, y + 3.0 + if tall { 22.0 } else { 18.0 }),
+        large_font: LARGE_FONTS[size],
+        hint_font: SMALL_HEADER_FONTS[size],
+        title_font: if tall { TITLE_FONT_TALL } else { TITLE_FONT_SHORT },
+    }
+}
+
+/// Canvas.WrapStringToArray (native; assumed): words onto lines no wider
+/// than `width`, '|' starts a new line, a word wider than a line stays
+/// whole. `measure` gives a string's width.
+pub fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('|') {
+        let mut line = String::new();
+        for word in para.split(' ').filter(|w| !w.is_empty()) {
+            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if !line.is_empty() && measure(&candidate) > width {
+                out.push(std::mem::take(&mut line));
+                line = word.to_string();
+            } else {
+                line = candidate;
+            }
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// Rand() for the picks (xorshift); seeded from the clock at startup, so
+/// the picture and hint change from run to run as in KF.
 struct Rng(u32);
 
 impl Rng {
@@ -225,31 +278,48 @@ impl Rng {
     }
 }
 
+/// What one showing draws (fixed when it is shown).
 struct Showing {
     map: String,
-    text: String,
-    /// Index into `LoadingScreen::textures`, None: black.
+    map_name: String,
+    hint: String,
+    /// Indices into `LoadingScreen::textures`; None: black / none.
     background: Option<usize>,
+    preview: Option<usize>,
+    title: String,
+    author: String,
     frames_shown: u32,
     shown_sent: bool,
 }
 
-/// The loading screen's state and the pictures and font it has loaded
-/// (loaded the first time they are needed, then kept).
+/// The loading screen's state and what it has loaded (pictures and fonts
+/// are loaded the first time they are needed, then kept).
 #[derive(Resource)]
 pub struct LoadingScreen {
     showing: Option<Showing>,
     rng: Rng,
     textures: Vec<HudTexture>,
     by_path: HashMap<String, Option<usize>>,
-    font: Option<HudFont>,
-    font_tried: bool,
+    fonts: HashMap<&'static str, Option<HudFont>>,
+    /// Backgrounds and KFHints, read once from the install.
+    backgrounds: Vec<String>,
+    hints: Vec<String>,
+    texts_read: bool,
 }
 
 impl Default for LoadingScreen {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos() ^ d.as_secs() as u32) | 1;
-        LoadingScreen { showing: None, rng: Rng(seed), textures: Vec::new(), by_path: HashMap::new(), font: None, font_tried: false }
+        LoadingScreen {
+            showing: None,
+            rng: Rng(seed),
+            textures: Vec::new(),
+            by_path: HashMap::new(),
+            fonts: HashMap::new(),
+            backgrounds: Vec::new(),
+            hints: Vec::new(),
+            texts_read: false,
+        }
     }
 }
 
@@ -257,7 +327,7 @@ impl Default for LoadingScreen {
 struct LoadingBackground;
 
 #[derive(Component)]
-struct LoadingGlyph(usize);
+struct LoadingSlot(usize);
 
 pub struct LoadingScreenPlugin;
 
@@ -282,24 +352,121 @@ fn spawn_nodes(mut commands: Commands) {
         GlobalZIndex(Z_BACKGROUND),
         LoadingBackground,
     ));
-    for i in 0..GLYPH_SLOTS {
+    for i in 0..SLOTS {
         commands.spawn((
             Node { position_type: PositionType::Absolute, ..default() },
             ImageNode { image_mode: bevy::ui::widget::NodeImageMode::Stretch, ..default() },
             Visibility::Hidden,
             GlobalZIndex(Z_BACKGROUND + 1 + i as i32),
-            LoadingGlyph(i),
+            LoadingSlot(i),
         ));
     }
 }
 
-/// Loads one picture or font page set into the screen's own texture list.
+/// Runs `f` with a texture loader over the screen's own texture list.
 fn with_loader<T>(screen: &mut LoadingScreen, set: &PackageSet, images: &mut Assets<Image>, f: impl FnOnce(&mut Loader) -> T) -> T {
     let mut loader = Loader { set, images, textures: std::mem::take(&mut screen.textures), by_path: std::mem::take(&mut screen.by_path), missing: Vec::new() };
     let out = f(&mut loader);
     screen.textures = loader.textures;
     screen.by_path = loader.by_path;
     out
+}
+
+/// Reads Backgrounds (defuser.ini) and KFHints (KFMod.int) once.
+fn read_texts(screen: &mut LoadingScreen, root: &std::path::Path) {
+    if screen.texts_read {
+        return;
+    }
+    screen.texts_read = true;
+    let defuser = gui::read_latin1(&root.join("System").join("defuser.ini"));
+    screen.backgrounds = crate::audio::music::int_section(&defuser, "GUI2K4.UT2K4ServerLoading")
+        .into_iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("Backgrounds"))
+        .map(|(_, v)| v.trim().to_string())
+        .collect();
+    if screen.backgrounds.is_empty() {
+        screen.backgrounds = DEFAULT_BACKGROUNDS.iter().map(|s| s.to_string()).collect();
+    }
+    let kfmod = gui::read_latin1(&root.join("System").join("KFMod.int"));
+    screen.hints = crate::audio::music::int_section(&kfmod, "KFGameType")
+        .into_iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("KFHints"))
+        .map(|(_, v)| quoted_list(&v))
+        .unwrap_or_default();
+    runlog::kv("loading_screen_texts", &format!("backgrounds=[{}] hints={} rng_seed={}", screen.backgrounds.join(" "), screen.hints.len(), screen.rng.0));
+}
+
+/// Loads the fonts a layout uses that are not loaded yet (the first
+/// frame, and after the window changes size class).
+fn ensure_fonts(screen: &mut LoadingScreen, root: &std::path::Path, images: &mut Assets<Image>, lay: &Layout) {
+    let names = [lay.large_font, lay.hint_font, lay.title_font];
+    if names.iter().all(|n| screen.fonts.contains_key(n)) {
+        return;
+    }
+    let set = PackageSet::new(root);
+    for name in names {
+        if screen.fonts.contains_key(name) {
+            continue;
+        }
+        let loaded = set.find_object(name, Some("Font")).and_then(|h| {
+            let font = ue_assets::font::read_font(&h.package.pkg, h.export).ok()?;
+            let pages = with_loader(screen, &set, images, |l| font.textures.iter().map(|&t| l.texture(&h.package, t)).collect());
+            Some(HudFont { name: name.to_string(), font, pages })
+        });
+        if loaded.is_none() {
+            runlog::kv("loading_screen_font", &format!("font={name} missing=true"));
+        }
+        screen.fonts.insert(name, loaded);
+    }
+}
+
+/// KFGameType.GetLoadingHint's picture: the map's LevelSummary
+/// ScreenShot (a MaterialSequence: one of its items at random), its Title
+/// (System/<map>.int [LevelSummary] first, as a localized value) and
+/// Author. None when the map has no picture.
+fn read_preview(screen: &mut LoadingScreen, set: &PackageSet, images: &mut Assets<Image>, root: &std::path::Path, map: &str) -> (Option<usize>, String, String, String) {
+    let Some(ls) = set.find_object(&format!("{map}.LevelSummary"), Some("LevelSummary")) else {
+        return (None, String::new(), String::new(), "no_level_summary".into());
+    };
+    let pkg = &ls.package;
+    let Ok(props) = ue_assets::properties::read_export_properties(&pkg.pkg, ls.export) else {
+        return (None, String::new(), String::new(), "unreadable_level_summary".into());
+    };
+    let text = |name: &str| match props.get(&pkg.pkg, name) {
+        Some(Value::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let map_int = gui::read_latin1(&root.join("System").join(format!("{map}.int")));
+    let title = gui::ini_value(&map_int, "LevelSummary", "Title").unwrap_or_else(|| text("Title"));
+    let author = text("Author");
+    let Some(Value::Object(shot)) = props.get(&pkg.pkg, "ScreenShot").cloned() else {
+        return (None, title, author, "no_screenshot".into());
+    };
+    let Some(h) = set.resolve(pkg, shot) else {
+        return (None, title, author, "screenshot_not_found".into());
+    };
+    // A MaterialSequence: TexToUse[Rand(j)] over its SequenceItems.
+    let mut chosen = (h.package.clone(), ObjectRef::Export(h.export), h.path());
+    if h.class_name().eq_ignore_ascii_case("MaterialSequence")
+        && let Ok(seq) = ue_assets::properties::read_export_properties_ext(&h.package.pkg, h.export, &["SequenceItems"])
+        && let Some(Value::StructArray(items)) = seq.get(&h.package.pkg, "SequenceItems")
+    {
+        let mats: Vec<ObjectRef> = items
+            .iter()
+            .filter_map(|it| match it.get(&h.package.pkg, "Material") {
+                Some(Value::Object(rf)) if *rf != ObjectRef::Null => Some(*rf),
+                _ => None,
+            })
+            .collect();
+        if !mats.is_empty() {
+            let i = screen.rng.rand(mats.len());
+            let path = set.resolve(&h.package, mats[i]).map_or_else(|| format!("{:?}", mats[i]), |x| x.path());
+            chosen = (h.package.clone(), mats[i], format!("{}[{i}_of_{}]={path}", h.path(), mats.len()));
+        }
+    }
+    let (p, rf, what) = chosen;
+    let tex = with_loader(screen, set, images, |l| l.texture(&p, rf));
+    (tex, title, author, what)
 }
 
 fn receive(
@@ -311,9 +478,7 @@ fn receive(
     frames: Res<FrameCount>,
 ) {
     let shows: Vec<ShowLoadingScreen> = show.read().cloned().collect();
-    let hides = hide.read().count();
-    // A hide sent with (after) a show in the same frame: the show is dropped.
-    if hides > 0 {
+    if hide.read().count() > 0 {
         match screen.showing.take() {
             Some(s) => runlog::kv("loading_screen_hide", &format!("map={} frames_shown={} frame={}", s.map, s.frames_shown, frames.0)),
             None => runlog::kv("loading_screen_hide", &format!("ignored=not_shown frame={}", frames.0)),
@@ -322,58 +487,86 @@ fn receive(
     }
     let Some(ShowLoadingScreen { map }) = shows.into_iter().last() else { return };
     let started = std::time::Instant::now();
-    let set = PackageSet::new(&request.install_root);
+    let root = &request.install_root;
+    let set = PackageSet::new(root);
     let screen = &mut *screen;
-    if !screen.font_tried {
-        screen.font_tried = true;
-        screen.font = load_font(screen, &set, &mut images);
-    }
-    // Rand() and the loads share the screen: the generator is taken out
-    // while the loader holds the texture list.
+    read_texts(screen, root);
+    // Rand() and the loads share the screen: the generator and the list
+    // are taken out while the loader holds the texture list.
     let mut rng = std::mem::replace(&mut screen.rng, Rng(1));
+    let list = std::mem::take(&mut screen.backgrounds);
     let mut tried = 0;
     let mut loaded = None;
     let pick = with_loader(screen, &set, &mut images, |loader| {
-        pick_background(&BACKGROUNDS, |n| rng.rand(n), |path| {
+        pick_background(&list, |n| rng.rand(n), |path| {
             tried += 1;
             loaded = loader.texture_path(path);
             loaded.is_some()
         })
     });
+    screen.backgrounds = list;
+    let hint = if screen.hints.is_empty() { String::new() } else { screen.hints[rng.rand(screen.hints.len())].clone() };
     screen.rng = rng;
     let background = pick.and(loaded);
-    let text = loading_text(&map);
-    let size = background.map_or(Vec2::ZERO, |t| screen.textures[t].size);
+    let map_name = strip_map(&map);
+    let (preview, title, author, preview_what) = read_preview(screen, &set, &mut images, root, &map_name);
+    let bg_size = background.map_or(Vec2::ZERO, |t| screen.textures[t].size);
+    let pv_size = preview.map_or(Vec2::ZERO, |t| screen.textures[t].size);
     runlog::kv(
         "loading_screen_show",
         &format!(
-            "map={map} background={} texels={}x{} picks={} text=\"{text}\" font={} frame={} load_ms={:.1}",
-            pick.map_or("none(black)", |i| BACKGROUNDS[i]),
-            size.x,
-            size.y,
-            tried,
-            if screen.font.is_some() { FONT } else { "missing" },
+            "map={map} background={} texels={}x{} picks={tried} text=\"{LOADING_TEXT}\" map_name=\"{map_name}\" preview={preview_what} preview_texels={}x{} title=\"{title}\" author=\"{author}\" hint=\"{}\" frame={} load_ms={:.1}",
+            pick.map_or("none(black)", |i| screen.backgrounds[i].as_str()),
+            bg_size.x,
+            bg_size.y,
+            pv_size.x,
+            pv_size.y,
+            hint.chars().take(60).collect::<String>(),
             frames.0,
             started.elapsed().as_secs_f64() * 1000.0
         ),
     );
-    screen.showing = Some(Showing { map, text, background, frames_shown: 0, shown_sent: false });
+    screen.showing = Some(Showing { map, map_name, hint, background, preview, title, author, frames_shown: 0, shown_sent: false });
 }
 
-fn load_font(screen: &mut LoadingScreen, set: &PackageSet, images: &mut Assets<Image>) -> Option<HudFont> {
-    let Some(h) = set.find_object(FONT, Some("Font")) else {
-        runlog::kv("loading_screen_font", &format!("font={FONT} missing=not_found"));
-        return None;
-    };
-    let font = match ue_assets::font::read_font(&h.package.pkg, h.export) {
-        Ok(f) => f,
-        Err(e) => {
-            runlog::kv("loading_screen_font", &format!("font={FONT} missing=\"{e}\""));
-            return None;
+/// One frame of the screen's quads (over the background), in draw order.
+fn build_quads(screen: &LoadingScreen, lay: &Layout, logical: Vec2, scale_factor: f32) -> Vec<Quad> {
+    let mut canvas = Canvas::new(logical, 255);
+    canvas.scale_factor = scale_factor;
+    let white = [255, 255, 255, 255];
+    let Some(s) = screen.showing.as_ref() else { return Vec::new() };
+    let font = |name: &str| screen.fonts.get(name).and_then(|f| f.as_ref());
+    if let Some(f) = font(lay.large_font) {
+        for (text, top, what) in [(LOADING_TEXT, lay.loading_top, "loading"), (s.map_name.as_str(), lay.map_top, "map_name")] {
+            let w = Canvas::text_size(f, text, FONT_SCALE).x;
+            canvas.text(f, text, Vec2::new((lay.right - w).round(), top.round()), FONT_SCALE, white, what);
         }
-    };
-    let pages = with_loader(screen, set, images, |l| font.textures.iter().map(|&t| l.texture(&h.package, t)).collect());
-    Some(HudFont { name: FONT.to_string(), font, pages })
+    }
+    if let Some(f) = font(lay.hint_font) {
+        let line_h = Canvas::text_size(f, "Wqg|", FONT_SCALE).y;
+        for (i, line) in wrap(&s.hint, lay.hint_width, |t| Canvas::text_size(f, t, FONT_SCALE).x).iter().enumerate() {
+            let w = Canvas::text_size(f, line, FONT_SCALE).x;
+            canvas.text(f, line, Vec2::new((lay.hint_left + lay.hint_width - w).round(), (lay.hint_top + i as f32 * line_h).round()), FONT_SCALE, white, "hint");
+        }
+    }
+    if let Some(t) = s.preview {
+        let size = screen.textures[t].size;
+        canvas.quads.push(Quad {
+            texture: t,
+            uv: Rect::from_corners(Vec2::ZERO, size),
+            screen: Rect::from_corners(lay.preview.min / scale_factor, lay.preview.max / scale_factor),
+            tint: white,
+            what: "preview".into(),
+        });
+        let show_title = !s.title.is_empty() && !s.title.eq_ignore_ascii_case(DEFAULT_TITLE);
+        if show_title && let Some(f) = font(lay.title_font) {
+            canvas.text(f, &s.title, lay.title_at, FONT_SCALE, white, "title");
+            if !s.author.is_empty() && s.author != DEFAULT_AUTHOR {
+                canvas.text(f, &format!("By {}", s.author), lay.author_at, FONT_SCALE, white, "author");
+            }
+        }
+    }
+    canvas.quads
 }
 
 type BackgroundNode = (&'static mut ImageNode, &'static mut Visibility);
@@ -382,28 +575,30 @@ type BackgroundNode = (&'static mut ImageNode, &'static mut Visibility);
 fn draw(
     mut screen: ResMut<LoadingScreen>,
     window: Query<&Window, With<PrimaryWindow>>,
-    mut background: Query<BackgroundNode, (With<LoadingBackground>, Without<LoadingGlyph>)>,
-    mut glyphs: Query<(&LoadingGlyph, &mut Node, &mut ImageNode, &mut Visibility), Without<LoadingBackground>>,
+    mut background: Query<BackgroundNode, (With<LoadingBackground>, Without<LoadingSlot>)>,
+    mut slots: Query<(&LoadingSlot, &mut Node, &mut ImageNode, &mut Visibility), Without<LoadingBackground>>,
     mut shown: MessageWriter<LoadingScreenShown>,
     frames: Res<FrameCount>,
-    mut glyphs_up: Local<usize>,
+    request: Res<MapRequest>,
+    mut images: ResMut<Assets<Image>>,
+    mut slots_up: Local<usize>,
 ) {
-    let screen = &mut *screen;
     let Ok((mut bg_image, mut bg_vis)) = background.single_mut() else { return };
-    let (Some(s), Ok(win)) = (screen.showing.as_mut(), window.single()) else {
+    let (true, Ok(win)) = (screen.showing.is_some(), window.single()) else {
         if *bg_vis != Visibility::Hidden {
             *bg_vis = Visibility::Hidden;
         }
-        if *glyphs_up > 0 {
-            for (_, _, _, mut vis) in glyphs.iter_mut() {
+        if *slots_up > 0 {
+            for (_, _, _, mut vis) in slots.iter_mut() {
                 *vis = Visibility::Hidden;
             }
-            *glyphs_up = 0;
+            *slots_up = 0;
         }
         return;
     };
+    let screen = &mut *screen;
     // Background: the texture's top-left 1024 x 768 over the whole screen.
-    match s.background {
+    match screen.showing.as_ref().and_then(|s| s.background) {
         Some(t) => {
             let tex = &screen.textures[t];
             if bg_image.image != tex.image {
@@ -419,20 +614,16 @@ fn draw(
     }
     *bg_vis = Visibility::Inherited;
 
-    // Text: the shadow pass, then the white pass (RODrawOpShadowedText).
     let physical = Vec2::new(win.physical_width() as f32, win.physical_height() as f32);
-    let mut canvas = Canvas::new(Vec2::new(win.width(), win.height()), 255);
-    canvas.scale_factor = win.scale_factor();
-    let (at, scale) = text_layout(physical);
-    if let Some(font) = screen.font.as_ref() {
-        canvas.text(font, &s.text, at + SHADOW_OFFSET, scale, [0, 0, 0, 255], "loading_shadow");
-        canvas.text(font, &s.text, at, scale, [255, 255, 255, 255], "loading_text");
-    }
-    let quads = &canvas.quads;
-    let n = quads.len().min(GLYPH_SLOTS);
-    for (slot, mut node, mut image, mut vis) in glyphs.iter_mut() {
+    let lay = layout(physical);
+    ensure_fonts(screen, &request.install_root, &mut images, &lay);
+    let quads = build_quads(screen, &lay, Vec2::new(win.width(), win.height()), win.scale_factor());
+    let n = quads.len().min(SLOTS);
+    for (slot, mut node, mut image, mut vis) in slots.iter_mut() {
         let Some(q) = quads.get(slot.0).filter(|_| slot.0 < n) else {
-            *vis = Visibility::Hidden;
+            if slot.0 < *slots_up {
+                *vis = Visibility::Hidden;
+            }
             continue;
         };
         node.left = Val::Px(q.screen.min.x);
@@ -447,20 +638,31 @@ fn draw(
         image.color = Color::srgba_u8(q.tint[0], q.tint[1], q.tint[2], q.tint[3]);
         *vis = Visibility::Inherited;
     }
-    *glyphs_up = n;
+    *slots_up = n;
 
+    let Some(s) = screen.showing.as_mut() else { return };
     s.frames_shown += 1;
     if s.frames_shown == 1 {
         runlog::kv(
             "loading_screen_layout",
             &format!(
-                "screen={}x{} text_at=({:.0},{:.0}) font_scale={scale:.3} glyph_quads={} text_width={:.0}",
+                "screen={}x{} right={:.0} loading_top={:.0} map_top={:.0} hint=({:.0},{:.0},w={:.0}) preview=({:.0},{:.0})-({:.0},{:.0}) fonts=[{} {} {}] quads={}",
                 physical.x,
                 physical.y,
-                at.x,
-                at.y,
-                quads.len(),
-                screen.font.as_ref().map_or(0.0, |f| Canvas::text_size(f, &s.text, scale).x)
+                lay.right,
+                lay.loading_top,
+                lay.map_top,
+                lay.hint_left,
+                lay.hint_top,
+                lay.hint_width,
+                lay.preview.min.x,
+                lay.preview.min.y,
+                lay.preview.max.x,
+                lay.preview.max.y,
+                lay.large_font,
+                lay.hint_font,
+                lay.title_font,
+                quads.len()
             ),
         );
     }
@@ -503,49 +705,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn map_names_follow_rose_set_text() {
-        // KF keeps "KF-": StripPrefix only drops "RO-".
-        assert_eq!(map_title("KF-WestLondon"), "K F- West London");
-        assert_eq!(map_title("KF-BioticsLab"), "K F- Biotics Lab");
-        assert_eq!(map_title("KF-Farm.rom"), "K F- Farm");
-        assert_eq!(loading_text("KF-Manor"), "Deploying to K F- Manor");
-        assert_eq!(map_title("RO-Arad"), "Arad");
-        assert_eq!(map_title("RO-HedgeHog"), "Hedgehog");
-        // Digits and lower case are not capitals; '_' becomes a space.
-        assert_eq!(map_title("KF-Map2Test"), "K F- Map2 Test");
-        assert_eq!(map_title("KF-Foo_bar"), "K F- Foo bar");
-        assert_eq!(map_title("Hospital_Horrors"), "Hospital  Horrors");
-        assert_eq!(map_title("lowerCase"), "lower Case");
-        assert_eq!(map_title("X"), "X");
-        assert_eq!(map_title(""), "");
-    }
-
-    #[test]
     fn strip_map_drops_folder_and_extension() {
         assert_eq!(strip_map("KF-Farm.rom"), "KF-Farm");
         assert_eq!(strip_map("Maps/KF-Farm.rom"), "KF-Farm");
         assert_eq!(strip_map("C:\\KF\\Maps\\KF-Offices.rom"), "KF-Offices");
-        assert_eq!(strip_map("KF-Farm"), "KF-Farm");
+        assert_eq!(strip_map("KF-WestLondon"), "KF-WestLondon");
         // The first character is never looked at.
         assert_eq!(strip_map(".rom"), ".rom");
     }
 
     #[test]
-    fn strip_prefix_needs_something_after() {
-        assert_eq!(strip_prefix("RO-"), "RO-");
-        assert_eq!(strip_prefix("RO-Odessa"), "Odessa");
-        assert_eq!(strip_prefix("KF-Manor"), "KF-Manor");
-    }
-
-    #[test]
     fn background_pick_retries_up_to_ten_times() {
+        let list: Vec<String> = DEFAULT_BACKGROUNDS.iter().map(|s| s.to_string()).collect();
         // Seeded draws: picks 3 first; it loads.
         let mut draws = [3usize, 1].into_iter();
-        assert_eq!(pick_background(&BACKGROUNDS, |_| draws.next().unwrap(), |_| true), Some(3));
+        assert_eq!(pick_background(&list, |_| draws.next().unwrap(), |_| true), Some(3));
         // Nothing loads: ten tries, then none.
         let mut tries = 0;
         assert_eq!(
-            pick_background(&BACKGROUNDS, |n| n - 1, |_| {
+            pick_background(&list, |n| n - 1, |_| {
                 tries += 1;
                 false
             }),
@@ -554,29 +732,62 @@ mod tests {
         assert_eq!(tries, 10);
         // The second pick loads.
         let mut seen = Vec::new();
-        let mut draws = [0usize, 4].into_iter();
-        let got = pick_background(&BACKGROUNDS, |_| draws.next().unwrap(), |p| {
+        let mut draws = [0usize, 3].into_iter();
+        let got = pick_background(&list, |_| draws.next().unwrap(), |p| {
             seen.push(p.to_string());
-            p.ends_with('5')
+            p.ends_with('4')
         });
-        assert_eq!(got, Some(4));
-        assert_eq!(seen, ["MenuBackground.LoadingScreen1", "MenuBackground.LoadingScreen5"]);
+        assert_eq!(got, Some(3));
+        assert_eq!(seen, ["2k4Menus.Loading.loadingscreen1", "2k4Menus.Loading.loadingscreen4"]);
+        // An empty entry ends the picks (KF keeps MenuBlack).
+        assert_eq!(pick_background(&[String::new()], |_| 0, |_| true), None);
         // The seeded generator spreads over the list.
         let mut rng = Rng(0x1234_5678);
-        let mut hit = [false; 5];
+        let mut hit = [false; 4];
         for _ in 0..200 {
-            hit[rng.rand(5)] = true;
+            hit[rng.rand(4)] = true;
         }
         assert!(hit.iter().all(|&h| h));
     }
 
     #[test]
-    fn text_sits_at_kf_fractions_and_scales_with_width() {
-        let (at, scale) = text_layout(Vec2::new(1920.0, 1080.0));
-        assert!((at - Vec2::new(96.0, 982.8)).length() < 1e-3);
-        assert!((scale - 0.9 * 1920.0 / 800.0).abs() < 1e-5);
-        // At 512 wide and below: the fallback entry at its own size.
-        assert_eq!(text_layout(Vec2::new(512.0, 384.0)).1, 0.9);
-        assert!((text_layout(Vec2::new(800.0, 600.0)).1 - 0.9).abs() < 1e-6);
+    fn hints_parse_from_the_int_array() {
+        assert_eq!(quoted_list(r#"("Aim for the head.","Say \"hi\", then run")"#), ["Aim for the head.", "Say \"hi\", then run"]);
+        assert!(quoted_list("").is_empty());
+    }
+
+    #[test]
+    fn layout_follows_the_draw_ops_at_1920_by_1080() {
+        let l = layout(Vec2::new(1920.0, 1080.0));
+        assert!((l.right - 1900.8).abs() < 1e-3);
+        assert!((l.loading_top - 518.4).abs() < 1e-3);
+        assert!((l.map_top - 648.0).abs() < 1e-3);
+        assert!((l.hint_top - 864.0).abs() < 1e-3);
+        // LoadingInfoImage: XS = 1920 / 7 * 3 = 822.86; X = int(960 +
+        // (960 - 822.86) / 2) = 1028; Y = int((540 - 462.86) / 5 * 3) = 46.
+        assert_eq!((l.preview.min.x, l.preview.min.y), (1028.0, 46.0));
+        assert!((l.preview.width() - 822.857).abs() < 1e-2);
+        assert!((l.preview.height() - 462.857).abs() < 1e-2);
+        assert_eq!(l.title_at, Vec2::new(1032.0, 49.0));
+        assert_eq!(l.author_at, Vec2::new(1042.0, 71.0));
+        assert_eq!((l.large_font, l.hint_font, l.title_font), ("ROFonts.ROBtsrmVr22", "ROFontsTwo.ROArial22DS", "ROFontsTwo.ROArial18DS"));
+        // 800 x 560: sizes [1], the short title font, author 18 below.
+        let s = layout(Vec2::new(800.0, 560.0));
+        assert_eq!((s.large_font, s.hint_font, s.title_font), ("ROFonts.ROBtsrmVr16", "ROFontsTwo.ROArial14DS", "ROFontsTwo.ROArial22DS"));
+        assert_eq!(s.author_at.y - s.title_at.y, 18.0);
+    }
+
+    #[test]
+    fn font_sizes_step_at_800_1024_1280_1600() {
+        let got: Vec<usize> = [640.0, 799.0, 800.0, 1023.0, 1024.0, 1279.0, 1280.0, 1599.0, 1600.0, 2560.0].iter().map(|&w| font_size_index(w)).collect();
+        assert_eq!(got, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]);
+    }
+
+    #[test]
+    fn hint_lines_wrap_on_words_and_bars() {
+        let measure = |s: &str| s.len() as f32;
+        assert_eq!(wrap("aaa bbb ccc", 7.0, measure), ["aaa bbb", "ccc"]);
+        assert_eq!(wrap("one|two", 100.0, measure), ["one", "two"]);
+        assert_eq!(wrap("toolongword x", 3.0, measure), ["toolongword", "x"]);
     }
 }
