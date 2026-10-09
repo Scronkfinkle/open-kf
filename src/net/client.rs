@@ -148,10 +148,20 @@ fn check_game(
     mut begin: MessageWriter<crate::game::travel::BeginTravel>,
 ) {
     let Ok(g) = game.single() else { return };
+    let installed = || crate::game::map_rotation::installed_name(&g.map, &crate::game::map_rotation::list_installed_maps(&map.install_root));
     if link.game_checked {
         if g.travel != travel.seen {
             runlog::kv("net_travel_received", &format!("travel={} was={} map={} my_map={} my_peer={:?}", g.travel, travel.seen, g.map, map.map, lobby.my_peer));
             travel.seen = g.travel;
+            if installed().is_none() {
+                // As at the join: the host's map is not here; staying would
+                // leave this game on the old map with every state dropped.
+                runlog::kv("net_map_missing", &format!("host_map={} my_map={} when=travel action=quit", g.map, map.map));
+                eprintln!("error: the host went to {}, which is not installed here (this game is on {}).", g.map, map.map);
+                lobby.quit_requested = true;
+                exit.write(AppExit::error());
+                return;
+            }
             // `pending` is set when the travel really starts (`take_travel_number`):
             // one asked for during a load waits for it.
             begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "host".into(), net_travel: Some(g.travel) });
@@ -174,7 +184,7 @@ fn check_game(
         travel.loaded = g.travel;
         return;
     }
-    let installed = map.install_root.join("Maps").join(format!("{}.rom", g.map)).is_file();
+    let installed = installed().is_some();
     runlog::kv("net_map_mismatch", &format!("host_map={} my_map={} installed={installed} action={}", g.map, map.map, if installed { "travel" } else { "quit" }));
     if installed {
         begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "join".into(), net_travel: Some(g.travel) });
