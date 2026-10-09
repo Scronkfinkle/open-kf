@@ -359,7 +359,7 @@ pub(super) fn load_class(
             _ => 0.0,
         },
         scream_shake: (kind == ZedKind::Siren).then(|| crate::player::hit_cam::ScreamShake::load(defaults, &class)),
-        scream: (kind == ZedKind::Siren).then(|| (solo_damage(float("ScreamDamage", 8.0)), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
+        scream: (kind == ZedKind::Siren).then(|| (difficulty_damage(float("ScreamDamage", 8.0)), float("ScreamRadius", 700.0), float("ScreamForce", -150000.0))),
         boss: if kind == ZedKind::Patriarch {
             match crate::zeds::boss::BossClass::load(&model, name_of("ChargingAnim").as_deref()) {
                 Ok(b) => {
@@ -422,7 +422,7 @@ pub(super) fn load_class(
         head_radius: float("HeadRadius", 7.0) * head_scale,
         head_offset: float("HeadHeight", 2.0) * head_scale,
         head_bone,
-        melee_damage: solo_damage(float("MeleeDamage", 6.0)),
+        melee_damage: difficulty_damage(float("MeleeDamage", 6.0)),
         melee_dam_type: match get("ZombieDamType") {
             Some((Value::Object(r), p)) if p.pkg.object_name(r).eq_ignore_ascii_case("DamTypeSlashingAttack") => crate::game::combat::DamType::Slashing,
             _ => crate::game::combat::DamType::ZombieMelee,

@@ -58,10 +58,14 @@ const DESIRE_CHAINGUN_CHANCE: f32 = 0.15;
 /// RangedAttack: FRand() > 0.85 puts the chaingun off for FRand() x 4 s.
 const CHAINGUN_SKIP_CHANCE: f32 = 0.15;
 /// FireMGShot: VRand() x 0.06 spread, a 10000-unit trace, MGDamage
-/// 6 x 0.75 (one player, Normal) + Rand(3) in whole points, momentum 500.
+/// (`mg_damage`) + Rand(3) in whole points, momentum 500.
 pub const MG_SPREAD: f32 = 0.06;
 pub const MG_RANGE: f32 = 10000.0;
-pub const MG_DAMAGE: f32 = 6.0 * 0.75;
+/// ZombieBoss.PostBeginPlay: MGDamage = default.MGDamage 6 x the
+/// difficulty's scale, one player (Normal 0.75).
+pub fn mg_damage() -> f32 {
+    6.0 * crate::game::difficulty::current().boss_mg_scale(true)
+}
 pub const MG_MOMENTUM: f32 = 500.0;
 /// AddTraceHitFX: the tracer's speed (SpawnDir x 10000).
 pub const MG_TRACER_SPEED: f32 = 10000.0;

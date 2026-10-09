@@ -49,7 +49,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0008;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_0009;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -167,7 +167,7 @@ fn start_query(app: &mut App, port: u16, info: &query::HostInfo) {
     let bind = SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), qport);
     match query::start_responder(bind, info.clone()) {
         Ok((shared, local)) => {
-            crate::engine::runlog::kv("net_query_listening", &format!("addr={local} map={} mode={} length={}", info.map, info.mode, info.length));
+            crate::engine::runlog::kv("net_query_listening", &format!("addr={local} map={} mode={} length={} difficulty={}", info.map, info.mode, info.length, info.difficulty));
             app.insert_resource(QueryInfo(shared)).add_systems(Update, update_query_info);
         }
         Err(e) => {

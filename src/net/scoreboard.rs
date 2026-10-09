@@ -95,7 +95,7 @@ fn collect_scores(
                 (true, _) => Row { peer: p.peer, name: p.name.clone(), kills: kills.0, assists: 0, dosh: dosh.score as i32, deaths: health.deaths, health: health.health.max(0.0).round() as i32, dead: health.dead, me },
                 (false, Some(n)) => Row { peer: p.peer, name: p.name.clone(), kills: n.state.kills, assists: 0, dosh: n.state.dosh, deaths: n.state.deaths, health: n.state.health, dead: n.state.dead, me },
                 // No pawn yet (still in the lobby): KF shows the PRI's starting values.
-                (false, None) => Row { peer: p.peer, name: p.name.clone(), kills: 0, assists: 0, dosh: crate::game::dosh::STARTING_CASH as i32, deaths: 0, health: 100, dead: false, me },
+                (false, None) => Row { peer: p.peer, name: p.name.clone(), kills: 0, assists: 0, dosh: crate::game::dosh::starting_cash() as i32, deaths: 0, health: 100, dead: false, me },
             }
         })
         .collect();
@@ -176,7 +176,7 @@ fn draw_scoreboard(
     let elapsed = board.started_at.map_or(0.0, |s| time.elapsed_secs() - s);
     // DrawTitle: SkillLevel[BaseDifficulty] | Wave N | Level.Title; then
     // "Elapsed Time:" or, dead, OutFireText (bOutOfLives).
-    let title_line = format!("Normal | Wave {} | {}", game.wave_num + 1, title.map_or(String::new(), |t| t.0.clone()));
+    let title_line = format!("{} | Wave {} | {}", crate::game::difficulty::current().name(), game.wave_num + 1, title.map_or(String::new(), |t| t.0.clone()));
     let info_line = if health.dead { "   You are dead. Fire to view other players.".to_string() } else { format!("Elapsed Time: {}", format_time(elapsed)) };
     if board.shown {
         let (cx, cy) = (p.width(), p.screen.height());

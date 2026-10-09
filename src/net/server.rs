@@ -78,7 +78,7 @@ fn start_server(mut commands: Commands, mode: Res<super::NetMode>, map: Res<crat
     // KF's GameReplicationInfo.
     commands.spawn((
         Name::new("NetGame"),
-        NetGame { map: map.map.clone(), mode: format!("{:?}", options.mode), length: format!("{:?}", options.length), match_started: false, lobby_timeout: -1 },
+        NetGame { map: map.map.clone(), mode: format!("{:?}", options.mode), length: format!("{:?}", options.length), difficulty: format!("{:?}", options.difficulty), match_started: false, lobby_timeout: -1 },
         Replicate::to_clients(NetworkTarget::All),
     ));
     runlog::kv("net_server_starting", &format!("addr={addr} map={} max_players={MAX_PLAYERS} protocol={PROTOCOL_ID:#x}", map.map));

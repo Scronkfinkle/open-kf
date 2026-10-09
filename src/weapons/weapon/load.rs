@@ -785,7 +785,7 @@ pub(super) fn load_weapons(
     // (AddDefaultInventory -> CreateInventoryVeterancy, with its SellValue;
     // skipped if already carried), then any given with --give.
     let mut classes: Vec<String> = STARTING_WEAPONS.iter().map(|c| c.to_string()).collect();
-    let (perk_items, _) = vet.vet.default_inventory(crate::game::dosh::GAME_DIFFICULTY);
+    let (perk_items, _) = vet.vet.default_inventory(crate::game::difficulty::game_difficulty());
     for (c, _) in &perk_items {
         if !classes.iter().any(|have| have.eq_ignore_ascii_case(c)) {
             classes.push(c.to_string());
@@ -961,7 +961,7 @@ pub(super) fn load_weapons(
     commands.insert_resource(w);
     // KFHumanPawn.ModifyVelocity: the weight counts up to MaxCarryWeight;
     // the perk's GetMovementSpeedModifier.
-    let perk_speed_mult = vet.vet.movement_speed(crate::game::dosh::GAME_DIFFICULTY);
+    let perk_speed_mult = vet.vet.movement_speed(crate::game::difficulty::game_difficulty());
     if perk_speed_mult != 1.0 {
         runlog::kv("perk_mod", &format!("kind=move_speed perk={} ground_speed_mult={perk_speed_mult}", vet.vet.label()));
     }

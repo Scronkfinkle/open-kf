@@ -404,7 +404,7 @@ pub(super) fn new_pawn_inventory(
     let Some(mut w) = weapons else { return };
     let w = &mut *w;
     let now = vet.vet;
-    let difficulty = crate::game::dosh::GAME_DIFFICULTY;
+    let difficulty = crate::game::difficulty::game_difficulty();
     let (old_items, old_armour) = had.default_inventory(difficulty);
     let (new_items, new_armour) = now.default_inventory(difficulty);
     let mut removed = Vec::new();
@@ -473,7 +473,7 @@ pub(super) fn respawn_inventory(
         d.gone = true;
     }
     w.firing = [false; 2];
-    let (perk_items, start_armour) = vet.vet.default_inventory(crate::game::dosh::GAME_DIFFICULTY);
+    let (perk_items, start_armour) = vet.vet.default_inventory(crate::game::difficulty::game_difficulty());
     let mut classes: Vec<(&str, Option<f32>)> = STARTING_WEAPONS.iter().map(|c| (*c, None)).collect();
     for (c, sell) in &perk_items {
         if !classes.iter().any(|(have, _)| have.eq_ignore_ascii_case(c)) {

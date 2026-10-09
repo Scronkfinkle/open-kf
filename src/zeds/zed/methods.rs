@@ -343,6 +343,7 @@ impl Zed {
             since_pain_anim: f32::MAX,
             stunned: 0.0,
             default_health: 130.0,
+            speed_scale: 1.0,
             melee_range: 20.0,
             melee_damage: 6.0,
             headless_claws: true,

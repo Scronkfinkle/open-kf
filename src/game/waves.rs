@@ -5,8 +5,8 @@
 //! Rules from KFMod.KFGameType state MatchInProgress (Timer once a
 //! second), SetupWave, BuildNextSquad, AddSquad, CalcNextSquadSpawnTime and
 //! DoWaveEnd; squads and waves from the KFGameType / KFMonstersCollection
-//! class defaults (see DESIGN.md, "Game loop"). One player, Normal
-//! difficulty.
+//! class defaults (see DESIGN.md, "Game loop"). One player; the
+//! difficulty's rules from difficulty.rs.
 
 use std::rc::Rc;
 
@@ -74,6 +74,8 @@ impl GameLength {
 pub struct GameOptions {
     pub mode: GameMode,
     pub length: GameLength,
+    /// `--difficulty` (also difficulty::current(), set at startup).
+    pub difficulty: crate::game::difficulty::Difficulty,
     /// Test: start at this wave (1-based; one past the last = the boss).
     pub start_wave: Option<usize>,
 }
@@ -105,8 +107,7 @@ pub struct GameData {
     pub points_ready: bool,
 }
 
-/// KFGameType defaults for Normal difficulty.
-const TIME_BETWEEN_WAVES: i32 = 60; // TimeBetweenWavesNormal
+/// KFGameType defaults (TimeBetweenWaves: difficulty.rs).
 const FIRST_COUNTDOWN: i32 = 10; // MatchInProgress.BeginState
 const MAX_ZOMBIES_ONCE: i32 = 32; // StandardMaxZombiesOnce
 const SINE_WAVE_FREQ: f32 = 0.04; // SineWaveFreq
@@ -406,12 +407,12 @@ impl WaveGame {
         list
     }
 
-    /// SetupWave: zeds this wave (WaveMaxMonsters x DifficultyMod 1.0
-    /// (Normal) x NumPlayersMod 1 (one player), clamped 5..800), at most
-    /// MaxZombiesOnce alive, the squad list, the first squad.
+    /// SetupWave: zeds this wave (`wave_total`), at most MaxZombiesOnce
+    /// alive, the squad list, the first squad.
     fn setup_wave(&mut self, data: &GameData) {
         let max = data.waves.get(self.wave_num).map_or(5, |w| w.max_monsters);
-        self.total_max_monsters = max.clamp(5, 800);
+        let difficulty = crate::game::difficulty::current();
+        self.total_max_monsters = wave_total(max, difficulty);
         self.max_monsters = self.total_max_monsters.clamp(5, MAX_ZOMBIES_ONCE);
         self.squads_to_use = self.masked_squads(data);
         self.used_special = false;
@@ -420,9 +421,11 @@ impl WaveGame {
         runlog::kv(
             "wave_start",
             &format!(
-                "wave={} of={} zeds={} max_at_once={} squads={:?}",
+                "wave={} of={} wave_max_monsters={max} difficulty={} difficulty_mod={} zeds={} max_at_once={} squads={:?}",
                 self.wave_num + 1,
                 self.final_wave,
+                difficulty.word(),
+                difficulty.wave_size_scale(),
                 self.total_max_monsters,
                 self.max_monsters,
                 self.squads_to_use
@@ -447,17 +450,28 @@ impl WaveGame {
         self.next_squad = data.squads[squad].clone();
     }
 
-    /// CalcNextSquadSpawnTime for one player at Normal difficulty.
+    /// CalcNextSquadSpawnTime for one player (x 0.85 at Hard and up).
     fn next_squad_time(&self, data: &GameData, length: GameLength) -> f32 {
+        self.next_squad_time_at(data, length, crate::game::difficulty::current())
+    }
+
+    fn next_squad_time_at(&self, data: &GameData, length: GameLength, difficulty: crate::game::difficulty::Difficulty) -> f32 {
         let sine = 1.0 - (self.wave_time_elapsed * SINE_WAVE_FREQ).sin().abs();
         let late = match length {
             GameLength::Short => self.wave_num >= 2,
             GameLength::Normal => self.wave_num >= 4,
             GameLength::Long => self.wave_num >= 7,
         };
-        let t = data.spawn_period * if late { 1.1 } else { 1.0 };
+        let t = data.spawn_period * if late { 1.1 } else { 1.0 } * difficulty.squad_time_scale();
         t + sine * t * 2.0
     }
+}
+
+/// KFGameType.SetupWave: TotalMaxMonsters = Clamp(WaveMaxMonsters x
+/// DifficultyMod x NumPlayersMod (1: one player), 5, 800); Clamp takes
+/// ints, so the product is cut to a whole number.
+pub fn wave_total(wave_max_monsters: i32, difficulty: crate::game::difficulty::Difficulty) -> i32 {
+    ((wave_max_monsters as f32 * difficulty.wave_size_scale()) as i32).clamp(5, 800)
 }
 
 /// A zed for `zed.rs` to spawn: class path, its cylinder centre (Unreal
@@ -651,7 +665,7 @@ pub fn wave_timer(
         };
         clear.write(ClearZeds);
         view_target.set(None, "restart");
-        runlog::kv("game_start", &format!("mode=waves length={:?} final_wave={} countdown={} restart=true", options.length, g.final_wave, g.countdown));
+        runlog::kv("game_start", &format!("mode=waves length={:?} difficulty={:?} final_wave={} countdown={} restart=true", options.length, options.difficulty, g.final_wave, g.countdown));
     }
     if skip && g.phase == Phase::Countdown {
         g.countdown = 1;
@@ -672,7 +686,7 @@ pub fn wave_timer(
         if let Some(w) = options.start_wave {
             g.wave_num = w.saturating_sub(1).min(g.final_wave);
         }
-        runlog::kv("game_start", &format!("mode=waves length={:?} final_wave={} countdown={}", options.length, g.final_wave, g.countdown));
+        runlog::kv("game_start", &format!("mode=waves length={:?} difficulty={:?} final_wave={} countdown={}", options.length, options.difficulty, g.final_wave, g.countdown));
     }
     // UpdateMonsterCount counts pawns that still have a controller.
     g.living = zeds.iter().filter(|z| !z.is_dead() && !z.braindead).count();
@@ -1326,7 +1340,8 @@ fn do_wave_end(g: &mut WaveGame, respawn: &mut MessageWriter<crate::world::door:
     }
     runlog::kv("wave_end", &format!("wave={}", if g.phase == Phase::BossWave { "boss".to_string() } else { (g.wave_num + 1).to_string() }));
     g.phase = Phase::Countdown;
-    g.countdown = TIME_BETWEEN_WAVES;
+    // KFGameType.InitGame: TimeBetweenWaves by difficulty (Beginner 90, else 60).
+    g.countdown = crate::game::difficulty::current().time_between_waves();
     g.wave_num += 1;
     // RewardSurvivingPlayers (dosh.rs).
     g.waves_ended += 1;
@@ -1357,10 +1372,24 @@ mod tests {
         let data = GameData { spawn_period: 2.5, ..default() };
         let mut g = WaveGame::default();
         // sin(0) = 0: the longest wait, 3 x the period.
-        assert!((g.next_squad_time(&data, GameLength::Short) - 7.5).abs() < 1e-4);
+        let n = crate::game::difficulty::Difficulty::Normal;
+        assert!((g.next_squad_time_at(&data, GameLength::Short, n) - 7.5).abs() < 1e-4);
+        // Hard and up: x 0.85 before the sine term: 2.125 x 3.
+        assert!((g.next_squad_time_at(&data, GameLength::Short, crate::game::difficulty::Difficulty::Hard) - 6.375).abs() < 1e-4);
         // |sin| = 1 at elapsed pi / 2 / 0.04: just the period.
         g.wave_time_elapsed = std::f32::consts::FRAC_PI_2 / SINE_WAVE_FREQ;
-        assert!((g.next_squad_time(&data, GameLength::Short) - 2.5).abs() < 1e-3);
+        assert!((g.next_squad_time_at(&data, GameLength::Short, n) - 2.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn wave_sizes_by_difficulty() {
+        use crate::game::difficulty::Difficulty::*;
+        // Short wave 1 (WaveMaxMonsters 20): 14, 20, 26, 30, 34.
+        assert_eq!([Beginner, Normal, Hard, Suicidal, HellOnEarth].map(|d| wave_total(20, d)), [14, 20, 26, 30, 34]);
+        // Short wave 2 (32): Beginner int(22.4) = 22, Hard int(41.6) = 41, HoE int(54.4) = 54.
+        assert_eq!([Beginner, Hard, HellOnEarth].map(|d| wave_total(32, d)), [22, 41, 54]);
+        // At least 5.
+        assert_eq!(wave_total(6, Beginner), 5);
     }
 
     #[test]

@@ -624,7 +624,7 @@ pub(super) fn think_and_move(
                     seed ^= seed << 5;
                     (seed % 10000) as f32 / 10000.0
                 };
-                let speed = if z.running { c.ground_speed * GOREFAST_RUN_SPEED } else { c.ground_speed };
+                let speed = c.ground_speed * z.speed_scale * if z.running { GOREFAST_RUN_SPEED } else { 1.0 };
                 let hunt = crate::world::nav::hunt_size(c.collision_radius, c.collision_height);
                 let input = crate::world::nav::RouteInput {
                     id: z.id,
@@ -1312,42 +1312,46 @@ pub(super) fn think_and_move(
                 if !any_run {
                     z.run_speed_lost = false;
                 }
+                // OriginalGroundSpeed: the class's x the difficulty's
+                // MovementSpeedDifficultyScale (KFMonster.PostBeginPlay);
+                // HiddenGroundSpeed is not scaled.
+                let ground = c.ground_speed * z.speed_scale;
                 let speed = if z.zapped() && z.boss.is_some_and(|b| b.charge.is_some() || b.escaping()) {
                     // ZombieBoss Charging / Escaping: "Zapping slows him
                     // down, but doesn't stop him": x 1.5.
-                    c.ground_speed * 1.5
+                    ground * 1.5
                 } else if z.zapped() {
                     // SetZappedBehavior: OriginalGroundSpeed x ZappedSpeedMod.
-                    c.ground_speed * z.zap.speed_mod
+                    ground * z.zap.speed_mod
                 } else if z.decapitated {
-                    c.ground_speed * 0.8
+                    ground * 0.8
                 } else if z.run_speed_lost && any_run {
-                    c.ground_speed
+                    ground
                 } else if z.running {
-                    c.ground_speed * GOREFAST_RUN_SPEED
+                    ground * GOREFAST_RUN_SPEED
                 } else if z.fp_rage.is_some() {
-                    c.ground_speed * FLESHPOUND_RAGE_SPEED
+                    ground * FLESHPOUND_RAGE_SPEED
                 } else if z.raging {
-                    c.ground_speed * SCRAKE_RAGE_SPEED
+                    ground * SCRAKE_RAGE_SPEED
                 } else if z.saw_charging {
-                    c.ground_speed * SCRAKE_ATTACK_CHARGE_RATE
+                    ground * SCRAKE_ATTACK_CHARGE_RATE
                 } else if c.scream.is_some() && z.attack.is_some() {
                     // ZombieSiren.Tick: GroundSpeed x 0.65 while attacking.
-                    c.ground_speed * 0.65
+                    ground * 0.65
                 } else if z.boss.is_some_and(|b| b.escaping()) {
                     // Escaping.Tick (and the sneak states): x 2.5, normal speed
                     // while attacking.
                     let scale = if z.attack.is_some() { 1.0 } else { crate::zeds::boss::CHARGE_SPEED };
-                    c.ground_speed * scale
+                    ground * scale
                 } else if z.boss.is_some_and(|b| b.charge.is_some()) {
                     // ZombieBoss Charging.Tick: x 2.5, x 1.25 while attacking.
                     let scale = if z.attack.is_some() { crate::zeds::boss::CHARGE_ATTACK_SPEED } else { crate::zeds::boss::CHARGE_SPEED };
-                    c.ground_speed * scale
+                    ground * scale
                 } else if z.hidden {
                     // KFMonster.Tick: unseen, SetGroundSpeed(HiddenGroundSpeed).
                     c.hidden_speed
                 } else {
-                    c.ground_speed
+                    ground
                 };
                 // KFMonster.TakeDamage on catching fire: GroundSpeed x 0.8
                 // (of the current speed, so headless zeds slow down more).

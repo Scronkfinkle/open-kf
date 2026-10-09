@@ -120,7 +120,7 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
             p.button("paste:address", Rect::new(ctl.max.x - pw, ctl.min.y, ctl.max.x, ctl.max.y), "Paste", State::Blurry);
             let (lab, ctl) = rows.next();
             let full = Rect::new(lab.min.x, lab.min.y, ctl.max.x, ctl.max.y);
-            note(p, full, "The map, mode and length come from the host.", small, DIM, "JoinNote");
+            note(p, full, "The map, mode, length and difficulty come from the host.", small, DIM, "JoinNote");
             // CHECK HOST and its answer.
             let (lab, ctl) = rows.next();
             let bw = (p.text_size(menu, "Check host").x + rh).min(lab.width() + ctl.width() * 0.5);
@@ -194,14 +194,14 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
     // Column 3: Game, Sound, menus, Audio, then Controls (3 + 2 + 3 + 3
     // rows). On a short window its rows get a little smaller so all fit
     // above the bottom row.
-    let need = |h: f32, g: f32| section_height(3, h, g) + g + section_height(2, h, g) + g + section_height(SLIDERS.len(), h, g) + g + section_height(CONTROL_ROWS, h, g);
+    let need = |h: f32, g: f32| section_height(4, h, g) + g + section_height(2, h, g) + g + section_height(SLIDERS.len(), h, g) + g + section_height(CONTROL_ROWS, h, g);
     let (rh3, gap3) = if need(rh, gap) <= c.height() {
         (rh, gap)
     } else {
-        let s = ((c.height() - 180.0 - 3.0 * gap) / ((5 + SLIDERS.len() + CONTROL_ROWS) as f32 * (rh + gap))).max(0.5);
+        let s = ((c.height() - 180.0 - 3.0 * gap) / ((6 + SLIDERS.len() + CONTROL_ROWS) as f32 * (rh + gap))).max(0.5);
         ((rh * s).floor(), (gap * s).floor())
     };
-    let game_h = section_height(3, rh3, gap3);
+    let game_h = section_height(4, rh3, gap3);
     let game = Rect::new(c.min.x, c.min.y, c.max.x, c.min.y + game_h);
     p.section(game, "Game", false, "Game");
     let mut rows = Rows::new(Painter::section_client(game, [0.0; 4]), rh3, gap3, 0.4);
@@ -216,6 +216,9 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
         label(p, lab, "Length", menu);
         let len = LENGTHS[c_.length.min(2)];
         spinner(p, "length", ctl, &format!("{}{}", len[..1].to_uppercase(), &len[1..]), c_.waves, menu);
+        let (lab, ctl) = rows.next();
+        label(p, lab, "Difficulty", menu);
+        spinner(p, "difficulty", ctl, c_.difficulty.name(), c_.waves, menu);
         let (lab, ctl) = rows.next();
         label(p, lab, "Start at wave", menu);
         spinner(p, "wave", ctl, &c_.start_wave.map_or("First".into(), |w| w.to_string()), c_.waves, menu);

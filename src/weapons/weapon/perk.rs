@@ -147,7 +147,7 @@ pub(super) fn sync_perk(
     }
     if let Some(mut fx) = effects {
         fx.weight_speed_mult = weight_speed_mult(weight, &v);
-        fx.perk_speed_mult = v.movement_speed(crate::game::dosh::GAME_DIFFICULTY);
+        fx.perk_speed_mult = v.movement_speed(crate::game::difficulty::game_difficulty());
     }
     inv.max_weight = max;
     runlog::kv("perk_weapons", &format!("perk={} max_carry_weight={max} weight={weight}", v.label()));

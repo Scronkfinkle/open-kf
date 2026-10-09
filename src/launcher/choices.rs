@@ -4,6 +4,7 @@
 
 use crate::engine::graphics::{self, DisplayMode};
 use crate::game::buy_menu::MenuKind;
+use crate::game::difficulty::Difficulty;
 use crate::game::perks::Perk;
 use crate::player::character::DEFAULT_CHARACTER;
 
@@ -51,8 +52,8 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 28] = [
-    "play", "port", "address", "map", "mode", "length", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "display", "fov", "brightness", "msaa", "anisotropy", "sound", "trader", "extra",
+pub const FIELDS: [&str; 29] = [
+    "play", "port", "address", "map", "mode", "length", "difficulty", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "display", "fov", "brightness", "msaa", "anisotropy", "sound", "trader", "extra",
     "volume", "effects_volume", "music_volume", "aim", "mouse_sensitivity", "invert_mouse",
 ];
 
@@ -156,6 +157,8 @@ pub struct Choices {
     pub waves: bool,
     /// Index into `LENGTHS`.
     pub length: usize,
+    /// `--difficulty` (default Normal, KF's).
+    pub difficulty: Difficulty,
     /// None: from the first wave.
     pub start_wave: Option<u32>,
     /// Empty: the game's default (KF's defuser.ini name).
@@ -201,6 +204,7 @@ impl Default for Choices {
             map: crate::DEFAULT_MAP.to_string(),
             waves: true,
             length: 0,
+            difficulty: Difficulty::Normal,
             start_wave: None,
             name: String::new(),
             perk: None,
@@ -311,6 +315,7 @@ impl Choices {
             "map" => self.map.clone(),
             "mode" => if self.waves { "waves" } else { "debug" }.into(),
             "length" => LENGTHS[self.length.min(2)].into(),
+            "difficulty" => self.difficulty.word().into(),
             "wave" => self.start_wave.map_or("start".into(), |w| w.to_string()),
             "name" => self.name.clone(),
             "perk" => self.perk.map_or("none", perk_word).into(),
@@ -354,6 +359,7 @@ impl Choices {
             "map" => self.map = v.trim().trim_end_matches(".rom").into(),
             "mode" => self.waves = crate::game::waves::GameMode::parse(v).ok_or(format!("not waves/debug: {v}"))? == crate::game::waves::GameMode::Waves,
             "length" => self.length = LENGTHS.iter().position(|l| l.eq_ignore_ascii_case(v.trim())).ok_or(format!("not short/normal/long: {v}"))?,
+            "difficulty" => self.difficulty = Difficulty::parse(v).ok_or(format!("not beginner/normal/hard/suicidal/hoe: {v}"))?,
             "wave" => {
                 self.start_wave = if v.eq_ignore_ascii_case("start") || v.trim().is_empty() {
                     None
@@ -419,6 +425,10 @@ impl Choices {
         match field {
             "mode" => self.waves = !self.waves,
             "length" => self.length = cycle(self.length, LENGTHS.len(), d),
+            "difficulty" => {
+                let i = Difficulty::ALL.iter().position(|x| *x == self.difficulty).unwrap_or(1);
+                self.difficulty = Difficulty::ALL[cycle(i, Difficulty::ALL.len(), d)];
+            }
             "wave" => {
                 // 0 = from the start.
                 let i = self.start_wave.unwrap_or(0) as usize;
@@ -508,11 +518,11 @@ impl Choices {
             PlayType::Host => push(&["--host", self.port.trim()]),
             PlayType::Join => push(&["--join", self.address.trim()]),
         }
-        // A joiner takes the map, mode and length from the host.
+        // A joiner takes the map, mode, length and difficulty from the host.
         if self.play != PlayType::Join {
             push(&["--map", self.map.trim()]);
             if self.waves {
-                push(&["--mode", "waves", "--length", LENGTHS[self.length.min(2)]]);
+                push(&["--mode", "waves", "--length", LENGTHS[self.length.min(2)], "--difficulty", self.difficulty.word()]);
                 if let Some(w) = self.start_wave {
                     push(&["--wave", &w.to_string()]);
                 }
@@ -694,21 +704,21 @@ mod tests {
     #[test]
     fn solo_default_args() {
         let c = Choices::default();
-        assert_eq!(c.to_args(false).unwrap(), s(&["--map", "KF-WestLondon", "--mode", "waves", "--length", "short", "--character", "Corporal_Lewis"]));
+        assert_eq!(c.to_args(false).unwrap(), s(&["--map", "KF-WestLondon", "--mode", "waves", "--length", "short", "--difficulty", "normal", "--character", "Corporal_Lewis"]));
     }
 
     #[test]
     fn host_and_join_args() {
-        let mut c = Choices { play: PlayType::Host, port: "7800".into(), map: "KF-Farm".into(), length: 2, start_wave: Some(3), ..Default::default() };
+        let mut c = Choices { play: PlayType::Host, port: "7800".into(), map: "KF-Farm".into(), length: 2, difficulty: Difficulty::HellOnEarth, start_wave: Some(3), ..Default::default() };
         c.name = "Big Al".into();
         c.perk = Some(Perk::Support);
         c.perk_level = 6;
         c.sound = false;
         assert_eq!(
             c.to_args(false).unwrap(),
-            s(&["--host", "7800", "--map", "KF-Farm", "--mode", "waves", "--length", "long", "--wave", "3", "--name", "Big Al", "--perk", "support", "--perk-level", "6", "--character", "Corporal_Lewis", "--mute"])
+            s(&["--host", "7800", "--map", "KF-Farm", "--mode", "waves", "--length", "long", "--difficulty", "hoe", "--wave", "3", "--name", "Big Al", "--perk", "support", "--perk-level", "6", "--character", "Corporal_Lewis", "--mute"])
         );
-        // Joining: no map, mode, length or wave (the host decides).
+        // Joining: no map, mode, length, difficulty or wave (the host decides).
         c.play = PlayType::Join;
         c.address = " 192.168.1.20:7707 ".into();
         c.window = Some((1280, 720));
@@ -726,7 +736,7 @@ mod tests {
         let c = Choices { waves: false, start_wave: Some(4), ..Default::default() };
         let a = c.to_args(false).unwrap();
         assert!(a.windows(2).any(|w| w == ["--mode", "debug"]));
-        assert!(!a.contains(&"--length".to_string()) && !a.contains(&"--wave".to_string()));
+        assert!(!a.contains(&"--length".to_string()) && !a.contains(&"--wave".to_string()) && !a.contains(&"--difficulty".to_string()));
     }
 
     #[test]
@@ -741,7 +751,7 @@ mod tests {
 
     #[test]
     fn saved_text_round_trips() {
-        let mut c = Choices { play: PlayType::Join, address: "10.0.0.5".into(), map: "KF-Farm".into(), waves: false, length: 1, start_wave: Some(11), ..Default::default() };
+        let mut c = Choices { play: PlayType::Join, address: "10.0.0.5".into(), map: "KF-Farm".into(), waves: false, length: 1, difficulty: Difficulty::Suicidal, start_wave: Some(11), ..Default::default() };
         c.name = "Jesse R".into();
         c.perk = Some(Perk::Demolitions);
         c.perk_level = 5;
@@ -779,6 +789,11 @@ mod tests {
         assert_eq!(c.start_wave, Some(MAX_START_WAVE));
         c.step("wave", 1, &[]);
         assert_eq!(c.start_wave, None);
+        // Normal, back to Beginner, back round to Hell on Earth.
+        c.step("difficulty", -1, &[]);
+        assert_eq!(c.difficulty, Difficulty::Beginner);
+        c.step("difficulty", -1, &[]);
+        assert_eq!(c.difficulty, Difficulty::HellOnEarth);
         let chars = s(&["A", "Corporal_Lewis", "Z"]);
         c.step("character", 1, &chars);
         assert_eq!(c.character, "Z");

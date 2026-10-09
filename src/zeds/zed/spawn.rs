@@ -39,6 +39,15 @@ pub(super) fn spawn_in_front(
 pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, classes: &ZedClasses, class: usize, id: usize, centre: Vec3, yaw: f32, puppet: bool) {
     let c = &classes.0[class];
     let handles = c.model.new_instance(meshes);
+    // KFMonster.PostBeginPlay difficulty scaling: Health (an int, cut) and
+    // HealthMax x DifficultyHealthModifer, HeadHealth x
+    // DifficultyHeadHealthModifer (one player: no player-count factor);
+    // GroundSpeed x MovementSpeedDifficultyScale.
+    let difficulty = crate::game::difficulty::current();
+    let health = crate::game::difficulty::zed_health(c.health, difficulty).0;
+    let health_max = c.health_max * difficulty.zed_health_scale();
+    let head_health = c.head_health * difficulty.zed_health_scale();
+    let speed_scale = difficulty.zed_speed_scale();
     let parent = commands
         .spawn((
             Transform {
@@ -53,9 +62,9 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 centre,
                 radius: c.collision_radius,
                 half_height: c.collision_height,
-                health: c.health,
-                health_max: c.health_max,
-                head_health: c.head_health,
+                health,
+                health_max,
+                head_health,
                 decapitated: false,
                 bleed_out: None,
                 bleed_out_duration: c.bleed_out_duration,
@@ -66,6 +75,7 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 since_pain_anim: f32::MAX,
                 stunned: 0.0,
                 default_health: c.health,
+                speed_scale,
                 melee_range: c.melee_range,
                 melee_damage: c.melee_damage,
                 headless_claws: !c.headless_melee.is_empty(),
@@ -141,7 +151,7 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
                 run_speed_lost: false,
                 keeps_head: c.boss.is_some(),
                 no_hit_reactions: c.boss.is_some(),
-                boss: c.boss.is_some().then(|| crate::zeds::boss::BossState::new(c.health)),
+                boss: c.boss.is_some().then(|| crate::zeds::boss::BossState::new(health)),
                 braindead: false,
                 scoring_value: c.scoring_value,
                 killed_by_player: false,
@@ -206,7 +216,16 @@ pub(super) fn spawn_zed(commands: &mut Commands, meshes: &mut Assets<Mesh>, clas
     let u = centre / SCALE;
     runlog::kv(
         "zed_spawned",
-        &format!("id={id} class={} centre_unreal=({:.0}, {:.0}, {:.0}) yaw={yaw:.0} puppet={puppet}", c.name, -u.z, u.x, u.y),
+        &format!(
+            "id={id} class={} centre_unreal=({:.0}, {:.0}, {:.0}) yaw={yaw:.0} puppet={puppet} difficulty={} health={health} health_max={health_max} head_health={head_health} melee_damage={} speed_scale={speed_scale} ground_speed={}",
+            c.name,
+            -u.z,
+            u.x,
+            u.y,
+            difficulty.word(),
+            c.melee_damage,
+            c.ground_speed * speed_scale
+        ),
     );
 }
 

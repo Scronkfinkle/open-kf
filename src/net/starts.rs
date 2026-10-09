@@ -29,8 +29,11 @@ use crate::game::waves::{Phase, WaveGame};
 use crate::player::walk::Walker;
 use crate::world::map::{PlayerStarts, SpawnPoint, StartSpot};
 
-/// KFGameType MinRespawnCashNormal (InitGame, GameDifficulty 2 = Normal).
-pub const MIN_RESPAWN_CASH: f32 = 200.0;
+/// KFGameType.InitGame MinRespawnCash for the game's difficulty (Normal 200).
+fn min_respawn_cash() -> f32 {
+    crate::game::difficulty::current().min_respawn_cash()
+}
+
 /// The player's collision cylinder (KFPawn CollisionRadius, KFHumanPawn
 /// CollisionHeight), Unreal units: RatePlayerStart's "inside a pawn" test.
 const PAWN_RADIUS: f32 = crate::player::walk::kf::RADIUS;
@@ -324,7 +327,7 @@ fn move_to_start(
         health.to_give = 0.0;
         *armour = crate::player::armour::Armour::default();
         let before = dosh.score;
-        dosh.score = dosh.score.max(MIN_RESPAWN_CASH);
+        dosh.score = dosh.score.max(min_respawn_cash());
         respawned.write(crate::game::perks::RespawnPawn);
         view.set_behind_self(false);
         revived = true;
