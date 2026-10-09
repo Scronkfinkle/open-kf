@@ -27,9 +27,15 @@ pub struct MapVoteRequest {
     pub map: String,
 }
 
-/// The host's vote as every window shows it (None: no vote).
+/// The host's vote as every window shows it (None: no vote), and the
+/// `NetGame::travel` of the map it was voted on: a client that has loaded
+/// the next map before the host drops the old map's (finished) vote, which
+/// would open the window again over its new lobby.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct MapVoteState(pub Option<VoteView>);
+pub struct MapVoteState {
+    pub travel: u32,
+    pub view: Option<VoteView>,
+}
 
 /// Resend the state this often while a vote is on (seconds).
 const RESEND: f32 = 2.0;
@@ -66,7 +72,13 @@ fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<MapVoteReques
     }
 }
 
-fn send_state(time: Res<Time<Real>>, mut vote: ResMut<MapVote>, mut senders: Query<&mut MessageSender<MapVoteState>, RemoteLinks>, mut last: Local<(Option<VoteView>, f32, usize)>) {
+fn send_state(
+    time: Res<Time<Real>>,
+    mut vote: ResMut<MapVote>,
+    mut senders: Query<&mut MessageSender<MapVoteState>, RemoteLinks>,
+    mut last: Local<(Option<VoteView>, f32, usize)>,
+    travel: Res<super::NetTravel>,
+) {
     let now = time.elapsed_secs();
     let clients = senders.iter().count();
     let changed = vote.view != last.0;
@@ -77,7 +89,7 @@ fn send_state(time: Res<Time<Real>>, mut vote: ResMut<MapVote>, mut senders: Que
         return;
     }
     for mut tx in &mut senders {
-        tx.send::<GameChannel>(MapVoteState(vote.view.clone()));
+        tx.send::<GameChannel>(MapVoteState { travel: travel.loaded, view: vote.view.clone() });
     }
     // Log the changes that matter (not every second's countdown).
     let key = |v: Option<&VoteView>| v.map(|v| (v.window_open, v.voters.clone(), v.result.clone(), v.maps.len()));
@@ -100,13 +112,22 @@ fn send_state(time: Res<Time<Real>>, mut vote: ResMut<MapVote>, mut senders: Que
 
 // -------------------------------------------------------------- client
 
-fn receive_state(mut rx: Query<&mut MessageReceiver<MapVoteState>, (With<Client>, Without<LinkOf>)>, mut vote: ResMut<MapVote>) {
+fn receive_state(mut rx: Query<&mut MessageReceiver<MapVoteState>, (With<Client>, Without<LinkOf>)>, mut vote: ResMut<MapVote>, travel: Res<super::NetTravel>, mut dropped: Local<u32>) {
     for mut r in &mut rx {
         for s in r.receive() {
-            if vote.view == s.0 {
+            // Voted on another map than the one loaded here (the old map's
+            // vote, still sent by a host that is loading more slowly).
+            if !(travel.known && s.travel == travel.loaded) {
+                *dropped += 1;
+                if s.view.is_some() {
+                    runlog::kv("net_map_vote_dropped", &format!("travel={} loaded={} dropped={}", s.travel, travel.loaded, *dropped));
+                }
                 continue;
             }
-            let v = s.0.as_ref();
+            if vote.view == s.view {
+                continue;
+            }
+            let v = s.view.as_ref();
             // Log the changes that matter (not every second's countdown).
             let key = |v: Option<&VoteView>| v.map(|v| (v.window_open, v.voters.clone(), v.result.clone(), v.maps.len()));
             if key(vote.view.as_ref()) != key(v) {
@@ -126,7 +147,7 @@ fn receive_state(mut rx: Query<&mut MessageReceiver<MapVoteState>, (With<Client>
             if vote.view.is_none() || (vote.view.as_ref().is_some_and(|o| o.result.is_some()) && v.is_some_and(|n| n.result.is_none())) {
                 vote.clear();
             }
-            vote.view = s.0;
+            vote.view = s.view;
         }
     }
 }
