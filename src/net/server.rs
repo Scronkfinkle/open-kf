@@ -290,15 +290,16 @@ fn pending_match(time: Res<Time<Real>>, mut timer: ResMut<PendingMatchTimer>, mu
     }
 }
 
-/// The host goes to another map (game/travel.rs `BeginTravel`, from the
-/// map list or the vote): every client is told through `NetGame` (the
+/// The host goes to another map (game/travel.rs `TravelStarted`: the
+/// travel from the map list or the vote has started, once per travel):
+/// every client is told through `NetGame` (the
 /// map and a new travel number) and loads it while staying connected.
 /// The lobby starts again, as on KF's new map: the match has not begun,
 /// nobody is ready (each player's record keeps the name, perk, level and
 /// character), KF's PendingMatch timer from the start (NetWait, then the
 /// lobby countdown).
 fn announce_travel(
-    mut begins: MessageReader<crate::game::travel::BeginTravel>,
+    mut begins: MessageReader<crate::game::travel::TravelStarted>,
     mut game: Query<&mut NetGame>,
     mut players: Query<&mut NetPlayer>,
     mut timer: ResMut<PendingMatchTimer>,

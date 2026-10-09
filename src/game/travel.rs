@@ -59,6 +59,26 @@ pub struct BeginTravel {
     pub map: String,
     /// For the log: "rotation", "vote", "host", "join".
     pub reason: String,
+    /// A network client: the host's travel number for this map
+    /// (`NetGame::travel`), which becomes this game's once the travel
+    /// really starts (a travel asked for during a load waits).
+    pub net_travel: Option<u32>,
+}
+
+impl BeginTravel {
+    pub fn new(map: String, reason: &str) -> Self {
+        BeginTravel { map, reason: reason.into(), net_travel: None }
+    }
+}
+
+/// A travel has really started (the loading screen is going up), sent
+/// once per travel: the host announces it to the clients then
+/// (net/server.rs), a client takes its travel number (net/client.rs).
+#[derive(Message, Clone, Debug)]
+pub struct TravelStarted {
+    pub map: String,
+    pub reason: String,
+    pub net_travel: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -104,8 +124,9 @@ impl Plugin for TravelPlugin {
         app.init_resource::<Travel>()
             .init_resource::<RotationSave>()
             .add_message::<BeginTravel>()
+            .add_message::<TravelStarted>()
             .add_systems(crate::world::map_change::PostMapLoad, fresh_player_on_new_map)
-            .add_systems(Update, (decide, follow_vote, begin, start_load, finish).chain().in_set(TravelSystems).after(MapVoteSystems));
+            .add_systems(Update, (test_travel, decide, follow_vote, begin, start_load, finish).chain().in_set(TravelSystems).after(MapVoteSystems));
     }
 }
 
@@ -132,6 +153,20 @@ fn is_client(mode: &Option<Res<NetMode>>) -> bool {
 
 fn is_host(mode: &Option<Res<NetMode>>) -> bool {
     mode.as_deref().is_some_and(|m| matches!(m, NetMode::Host { .. }))
+}
+
+/// Test action "travel:MAP" (ours; single player and host): travel to
+/// MAP now, as after a match (tests of back-to-back travels).
+fn test_travel(script: Res<crate::weapons::weapon::ScriptedInput>, frames: Res<FrameCount>, mode: Option<Res<NetMode>>, mut begin: MessageWriter<BeginTravel>) {
+    for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+        let Some(map) = a.strip_prefix("travel:") else { continue };
+        if is_client(&mode) {
+            runlog::kv("travel_test", &format!("map={map} refused=client"));
+            continue;
+        }
+        runlog::kv("travel_test", &format!("map={map} frame={}", frames.0));
+        begin.write(BeginTravel::new(map.to_string(), "test"));
+    }
 }
 
 /// GameInfo.RestartGame: vote or map list (single player and host).
@@ -170,7 +205,7 @@ fn decide(
         return;
     }
     let map = next_from_rotation(&mut rotation, &request, &save);
-    begin.write(BeginTravel { map, reason: "rotation".into() });
+    begin.write(BeginTravel::new(map, "rotation"));
 }
 
 /// The vote's winner, or the map list when the vote did not start.
@@ -194,7 +229,7 @@ fn follow_vote(
     };
     if let Some(f) = winner {
         runlog::kv("map_vote_travel", &format!("map={} reason={} travel=wired", f.map, f.reason.word()));
-        begin.write(BeginTravel { map: f.map, reason: "vote".into() });
+        begin.write(BeginTravel::new(f.map, "vote"));
         travel.state = TravelState::Idle;
         return;
     }
@@ -203,7 +238,7 @@ fn follow_vote(
     if frames.0 > since + 1 && !vote.holds_travel() {
         runlog::kv("travel_vote_skipped", "fallback=map_list");
         let map = next_from_rotation(&mut rotation, &request, &save);
-        begin.write(BeginTravel { map, reason: "rotation".into() });
+        begin.write(BeginTravel::new(map, "rotation"));
         travel.state = TravelState::Idle;
     }
 }
@@ -218,6 +253,7 @@ fn begin(
     request: Res<MapRequest>,
     frames: Res<FrameCount>,
     mut buy_menu: ResMut<crate::game::buy_menu::BuyMenu>,
+    mut started: MessageWriter<TravelStarted>,
 ) {
     let Some(b) = begins.read().last().cloned() else { return };
     if matches!(travel.state, TravelState::Loading { .. }) {
@@ -235,6 +271,7 @@ fn begin(
     runlog::kv("travel_begin", &format!("from={} to={} reason={} frame={}", request.map, b.map, b.reason, frames.0));
     travel.began = Some((std::time::Instant::now(), request.map.clone(), b.reason.clone()));
     travel.state = TravelState::Showing { map: b.map.clone() };
+    started.write(TravelStarted { map: b.map.clone(), reason: b.reason.clone(), net_travel: b.net_travel });
     show.write(ShowLoadingScreen { map: b.map });
 }
 
