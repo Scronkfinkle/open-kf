@@ -94,6 +94,14 @@ pub const GUI2K4_COMPONENTS: &[&str] = &[
     "LockedFloatingWindow.LockedCancelButton",
 ];
 
+/// Component paths read from XVoting.u and ROInterface.u (the map vote
+/// window: KFMapVotingPage extends ROMapVotingPage extends MapVotingPage).
+pub const XVOTING_COMPONENTS: &[&str] = &[
+    "MapVotingPage.MapListBox", "MapVotingPage.VoteCountListBox", "MapVotingPage.MapCountListBackground", "VotingPage.MatchSetupFooter",
+    "MapVoteFooter.MapvoteFooterBackground", "MapVoteFooter.ChatScrollBox", "MapVoteFooter.SubmitButton", "MapVoteFooter.CloseButton",
+];
+pub const RO_COMPONENTS: &[&str] = &["ROMapVotingPage.VoteCountListBox"];
+
 /// Class default values the pages use (numbers; vectors as `.X`, `.Y`,
 /// `.Z`, arrays as `[i]`), read from the classes and their parents.
 pub const CLASS_VALUES: &[(&str, &[&str])] = &[
@@ -255,7 +263,7 @@ pub fn load(gui: &mut Gui, root: &std::path::Path, extra: &[String], images: &mu
     let mut missing_comps = Vec::new();
     // System/KFGui.u by its file (the name "KFGui" also fits
     // Textures/KFGui.utx), its exports by path; GUI2K4.u the same way.
-    for (file, list) in [("KFGui.u", COMPONENTS), ("GUI2K4.u", GUI2K4_COMPONENTS)] {
+    for (file, list) in [("KFGui.u", COMPONENTS), ("GUI2K4.u", GUI2K4_COMPONENTS), ("XVoting.u", XVOTING_COMPONENTS), ("ROInterface.u", RO_COMPONENTS)] {
         read_components(gui, &set, &defaults, &root.join("System").join(file), list, &mut missing_comps);
     }
     for (class, props) in CLASS_VALUES {

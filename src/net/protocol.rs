@@ -228,6 +228,8 @@ pub fn register(app: &mut App) {
     app.register_message::<crate::game::pickups::PickupNotice>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<crate::game::pickups::DropRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<HealRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<super::map_vote::MapVoteRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<super::map_vote::MapVoteState>().add_direction(NetworkDirection::ServerToClient);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })
         .add_direction(NetworkDirection::ClientToServer);
     app.add_channel::<PawnChannel>(ChannelSettings { mode: ChannelMode::SequencedUnreliable, ..default() })

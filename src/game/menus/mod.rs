@@ -6,6 +6,7 @@
 mod audio_page;
 pub mod gui;
 mod lobby;
+mod map_vote_page;
 mod model_select;
 mod pause;
 mod perk_panel;
@@ -32,6 +33,9 @@ pub enum Page {
     ModelSelect,
     /// The volume sliders (the pause menu's Settings button), above it.
     Audio,
+    /// KFMapVotingPage (map_vote_page.rs), above everything while a map
+    /// vote's windows are open.
+    MapVote,
 }
 
 /// What the mouse is dragging (a drag that started on its box): a
@@ -80,6 +84,12 @@ pub struct MenuState {
     pub audio_row: usize,
     /// The cursor was captured when the pause menu opened.
     cursor_was_grabbed: bool,
+    /// The map vote window: the picked row (map index) and the map
+    /// list's first shown row.
+    pub vote_row: Option<usize>,
+    pub vote_top: usize,
+    /// The cursor was captured when the vote window opened.
+    vote_cursor_was_grabbed: bool,
 }
 
 impl MenuState {
@@ -150,7 +160,7 @@ impl Plugin for MenusPlugin {
             .add_systems(PostStartup, load_menus)
             .add_systems(
                 PreUpdate,
-                menu_input.after(bevy::input::InputSystems).before(crate::game::buy_menu::menu_input),
+                (map_vote_page::sync_page, menu_input).chain().after(bevy::input::InputSystems).before(crate::game::buy_menu::menu_input),
             )
             .add_systems(Update, request_previews)
             .add_systems(PostUpdate, (sync_previews, draw_menus).chain().after(crate::player::body::PreviewSystems));
@@ -324,7 +334,12 @@ fn menu_input(
     data: Res<MenuData>,
     mut exit: MessageWriter<AppExit>,
     mut start_vet: Local<Option<crate::game::perks::Vet>>,
-    (mut net, mut net_start): (ResMut<crate::net::lobby::NetLobby>, MessageReader<crate::net::lobby::StartLocalMatch>),
+    (mut net, mut net_start, mut vote, mut cast_vote): (
+        ResMut<crate::net::lobby::NetLobby>,
+        MessageReader<crate::net::lobby::StartLocalMatch>,
+        ResMut<crate::game::map_vote::MapVote>,
+        MessageWriter<crate::game::map_vote::CastMapVote>,
+    ),
     mut audio: Option<ResMut<crate::audio::mixer::Audio>>,
     (mut aim, mut mouse_set, mut weapon_bar): (
         ResMut<crate::weapons::weapon::AimSetting>,
@@ -355,6 +370,8 @@ fn menu_input(
             Some(Page::Audio) => ids.push("audio.back".into()),
             // A popup page closes on Escape, cancelled (as Cancel).
             Some(Page::ModelSelect) => ids.push("select.cancel".into()),
+            // LargeWindow: Escape closes it (as its Close button).
+            Some(Page::MapVote) => ids.push("vote.close".into()),
             // KFPlayerController.ShowMidGameMenu: while the weapon bar is
             // shown, Escape only hides it.
             None if !buy.open && weapon_bar.shown => weapon_bar.hide(virt.elapsed_secs(), "escape"),
@@ -364,6 +381,7 @@ fn menu_input(
     }
     for a in &actions {
         ids.extend(scripted_to_ids(a, state.top()));
+        ids.extend(map_vote_page::scripted_ids(a));
     }
     let Ok((win, mut cursor)) = window.single_mut() else { return };
     if mouse.just_pressed(MouseButton::Left)
@@ -579,9 +597,16 @@ fn menu_input(
     if state.top() == Some(Page::ModelSelect) && scroll.delta.y != 0.0 {
         ids.push(format!("select.scroll:{}", if scroll.delta.y > 0.0 { -1 } else { 1 }));
     }
+    // The vote window's map list: 3 rows a notch (a guess).
+    if state.top() == Some(Page::MapVote) && scroll.delta.y != 0.0 {
+        ids.push(format!("vote.scroll:{}", if scroll.delta.y > 0.0 { -3 } else { 3 }));
+    }
     let was_open = !state.stack.is_empty();
     let sens_drag = state.drag == Some(Drag::Sensitivity);
     for id in ids {
+        if map_vote_page::apply(&id, &mut state, &mut vote, &mut cast_vote) {
+            continue;
+        }
         apply(&id, &mut state, &vet, &data, had, &mut perk_requests, &mut new_pawn, &mut change_char, &mut exit, &mut cursor, &mut net);
     }
     // Escape during a sensitivity drag closes the window: keep and save it.
@@ -970,6 +995,7 @@ fn draw_menus(
     (mut nu, mut classic): (crate::game::numenu::NuDraw, crate::game::classic_menu::ClassicDraw),
     audio: Option<Res<crate::audio::mixer::Audio>>,
     (aim, mouse_set): (Res<crate::weapons::weapon::AimSetting>, Res<crate::engine::mouse::MouseSettings>),
+    (vote, net_players): (Res<crate::game::map_vote::MapVote>, Query<&crate::net::protocol::NetPlayer>),
 ) {
     if !gui.loaded {
         return;
@@ -1030,6 +1056,16 @@ fn draw_menus(
             };
             let controls = audio_page::ControlsView { aim_hold: aim.hold, sensitivity: mouse_set.sensitivity, invert: mouse_set.invert, sens_drag: state.drag == Some(Drag::Sensitivity) };
             audio_page::draw(&mut p, view.as_ref(), state.audio_row, drag, &controls);
+        }
+        Some(Page::MapVote) => {
+            // The window over whatever is under it (the lobby, the game);
+            // the pages under it are not drawn (a LargeWindow covers
+            // most of the screen).
+            if let Some(view) = vote.view.as_ref() {
+                let me = net.my_peer.unwrap_or(0);
+                let names = if net.active { net_players.iter().map(|p| (p.peer, p.name.clone())).collect() } else { vec![(0, data.player_name.clone())] };
+                map_vote_page::draw(&mut p, &state, &map_vote_page::VoteDraw { view, me, names });
+            }
         }
         // The trader's NuMenu (game/numenu.rs) uses the same painter.
         None if nu.showing() => crate::game::numenu::draw(&mut p, &mut nu),

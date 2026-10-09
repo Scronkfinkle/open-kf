@@ -114,6 +114,10 @@ struct Args {
     /// `--invert-mouse` / `--no-invert-mouse` for this run (else the
     /// settings file's, else off).
     invert_mouse: Option<bool>,
+    /// `--vote-test N`: start a map vote at frame N with the installed
+    /// maps (map voting on, single player allowed), to test the vote
+    /// window headless (game/map_vote).
+    vote_test: Option<u32>,
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -238,6 +242,10 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--log" => args.log = Some(it.next().ok_or("--log needs a file name")?),
             "--settings" => args.settings = Some(it.next().ok_or("--settings needs a file name")?),
             "--mute" => args.mute = true,
+            "--vote-test" => {
+                let n = it.next().ok_or("--vote-test needs a frame number")?;
+                args.vote_test = Some(n.parse().map_err(|_| format!("bad --vote-test frame: {n}"))?);
+            }
             "--sensitivity" => {
                 let n = it.next().ok_or("--sensitivity needs a number from 0.25 to 25")?;
                 args.sensitivity = Some(launcher::choices::parse_sensitivity(&n).map_err(|e| format!("bad --sensitivity value: {e}"))?);
@@ -307,7 +315,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--log FILE] [--settings FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--log FILE] [--settings FILE] [--vote-test FRAME]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -355,6 +363,7 @@ fn main() -> AppExit {
         at_frames: args.screenshot.clone(),
     };
     let scripted = weapon::ScriptedInput(args.input.clone());
+    let vote_test = game::map_vote::MapVoteTest(args.vote_test);
     let loadout = args.give.as_deref().map(weapon::WeaponLoadout::parse).unwrap_or_default();
     let character = player::character::CharacterChoice(args.character.clone());
     let zed_settings = zed::ZedSettings {
@@ -439,7 +448,8 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin, render::actor_light::ActorLightPlugin, render::baked::BakedPlugin))
-        .add_plugins((perks::PerksPlugin, game::healing::HealingPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, game::pickups::PickupPlugin, net_plugin))
+        .add_plugins((perks::PerksPlugin, game::healing::HealingPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, game::pickups::PickupPlugin, net_plugin, game::map_vote::MapVotePlugin))
+        .insert_resource(vote_test)
         .insert_resource(view_target::ViewTarget::starting_behind(behind_view, behind_yaw))
         .insert_resource(lobby)
         .insert_resource(auto_shot)

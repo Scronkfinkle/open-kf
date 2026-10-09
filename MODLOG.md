@@ -7437,3 +7437,60 @@ light's pulse is drawn steady, the 3rd-person light sits at the tip not
 the hand, and the first-person weapon is lit by its own light. Not
 checked against a real KF screenshot.
 **Next:** compare with a KF screenshot of firing in a dark spot.
+
+## 2026-10-09 Map voting: rules, window, network messages (map change plan step 4)
+
+**Changed:** new `src/game/map_vote/rules.rs` (KF's vote rules, no Bevy,
+random numbers passed in; 20 unit tests), `src/game/map_vote/mod.rs`
+(`MapVotePlugin`: `MapVoteSettings`, `MapVote` resource, the 1 s timer,
+messages `StartMapVote` in, `CastMapVote` in, `MapVoteFinished` out,
+`--vote-test N`), `src/game/menus/map_vote_page.rs` (the window),
+`src/net/map_vote.rs` (`MapVoteRequest` client -> host, `MapVoteState`
+host -> clients); `net/protocol.rs` registers them, `PROTOCOL_ID` 9 ->
+0x...000A; `menus/mod.rs` (`Page::MapVote`, clicks, Escape, wheel),
+`menus/gui.rs` (window boxes from XVoting.u / ROInterface.u), `main.rs`
+(`--vote-test`, plugin). Nothing travels yet: the winner is logged
+(`map_vote_travel ... travel=not_wired`); step 3 wires it.
+**Why:** KF's map voting, built on its own so the map change can use it.
+**KF's rules (xVotingHandler.uc, KillingFloor.ini, XVoting.int):**
+bMapVote=False, VoteTimeLimit=30 (class default 70), ScoreBoardDelay=5,
+RepeatLimit=1 (class default 4), MidGameVotePercent=50, MinMapCount=2
+(elimination mode only). No voting in standalone (PostBeginPlay /
+HandleRestartGame return early). The vote starts in HandleRestartGame,
+i.e. when the game would travel (14 s after the end, or the host's Fire),
+not at the match end; the windows open 6 timer ticks later (ScoreBoardTime
+5 counts down to 0, the next tick opens), then TimeLeft counts 30 -> 0;
+announcer at 60/30/20/10. Ends early when every player voted, or (more
+than 2 players, game ended) when one map has more than half the players.
+At 0: the leader; nobody voted: GetDefaultMap (random enabled map with
+prefix "KF", 102 tries, then the first match; KF's own fallback loop runs
+past the list and never ends the vote, ours takes the first match). Ties
+(only with 2+ voters): random among the tied, rerolled up to 102 times
+while it is the current map. Message "%mapname% has won !" with the
+acronym: "KF-Farm(KF) has won !". History: the winner gets sequence 1,
+others +1; sequence 1..RepeatLimit is disabled. Only voted maps enter the
+history in KF.
+**Tested how:** `cargo test --release` (326 pass, 21 new); clippy (one
+old warning in zeds/boss.rs, none new); headless runs with `--vote-test`
+(single player) and a host + client on port 7790; screenshots.
+**Result:** single player: `map_vote_start maps=37
+disabled=[KF-WestLondon]` t=6.40, `map_vote_open` t=12.37 (6.0 s),
+countdown 20 / 10, `map_vote_end winner=KF-Aperture
+reason=no_votes_random` t=42.38 (30.0 s), `menu_close page=MapVote
+reason=map_won` 3.0 s later. Voting for the disabled current map:
+`refused="The selected Map is disabled."`; a vote: `map_vote_end
+winner=KF-Farm reason=all_voted`. Network: client `net_map_vote_request_sent
+map=KF-Farm`, host `map_vote_cast peer=2001988872257187924 map=KF-Farm
+voted=1/2`, host votes KF-Manor: `map_vote_end winner=KF-Farm
+reason=all_voted tie=true`; the client's window showed both votes and
+"KF-Farm(KF) has won !".
+**Still broken / not tested:** not wired to the match end or the map
+change (step 3). Mid-game voting only in the rules (nothing opens the
+window mid-match). No admin votes, no chat, no announcer voice (logged
+only), no history saved to disk. List row height, column widths,
+highlight colours are guesses; "Voting ends in N seconds" is ours (KF
+shows no timer). The vote lines are in player-id order, not time order.
+Not played by you.
+**Next:** step 3: send `StartMapVote` where the game would travel, travel
+on `MapVoteFinished`, then `MapVote::clear()`; `--map-vote` sets
+`MapVoteSettings.enabled`.
