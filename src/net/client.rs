@@ -153,6 +153,9 @@ fn check_game(
         if g.travel != travel.seen {
             runlog::kv("net_travel_received", &format!("travel={} was={} map={} my_map={} my_peer={:?}", g.travel, travel.seen, g.map, map.map, lobby.my_peer));
             travel.seen = g.travel;
+            // Not ready for the new map (the host has made everyone not
+            // ready); my next request says so at once.
+            lobby.reset_for_new_map();
             if installed().is_none() {
                 // As at the join: the host's map is not here; staying would
                 // leave this game on the old map with every state dropped.

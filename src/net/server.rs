@@ -47,7 +47,20 @@ pub(super) fn build(app: &mut App, port: u16) {
         .add_observer(on_connected)
         .add_observer(on_server_started)
         .add_systems(Update, (receive_requests, apply_host_request, drop_left_players, pending_match).chain().before(super::lobby::LobbySystems))
-        .add_systems(Update, announce_travel.after(crate::game::travel::TravelSystems).after(pending_match).before(super::lobby::LobbySystems));
+        .add_systems(Update, announce_travel.after(crate::game::travel::TravelSystems).after(pending_match).before(super::lobby::LobbySystems))
+        .add_systems(Update, share_match_over.after(announce_travel).before(super::lobby::LobbySystems));
+}
+
+/// GRI.EndGameType for everyone: the match has ended on this map (from the
+/// end screen until the next map is loaded).
+fn share_match_over(over: Res<crate::game::end_game::MatchOver>, mut game: Query<&mut NetGame>, travel: Res<super::NetTravel>) {
+    let Ok(mut g) = game.single_mut() else { return };
+    // Announced but not loaded yet: the new map's match is not over.
+    let over = over.active() && travel.pending.is_none();
+    if g.match_over != over {
+        g.match_over = over;
+        runlog::kv("net_match_over", &format!("match_over={over} travel={}", g.travel));
+    }
 }
 
 fn start_server(mut commands: Commands, mode: Res<super::NetMode>, map: Res<crate::world::map::MapRequest>, options: Res<crate::game::waves::GameOptions>) {
@@ -79,7 +92,7 @@ fn start_server(mut commands: Commands, mode: Res<super::NetMode>, map: Res<crat
     // KF's GameReplicationInfo.
     commands.spawn((
         Name::new("NetGame"),
-        NetGame { map: map.map.clone(), mode: format!("{:?}", options.mode), length: format!("{:?}", options.length), difficulty: format!("{:?}", options.difficulty), match_started: false, lobby_timeout: -1, travel: 0 },
+        NetGame { map: map.map.clone(), mode: format!("{:?}", options.mode), length: format!("{:?}", options.length), difficulty: format!("{:?}", options.difficulty), match_started: false, match_over: false, lobby_timeout: -1, travel: 0 },
         Replicate::to_clients(NetworkTarget::All),
     ));
     runlog::kv("net_server_starting", &format!("addr={addr} map={} max_players={MAX_PLAYERS} protocol={PROTOCOL_ID:#x}", map.map));
@@ -121,21 +134,25 @@ fn on_connected(trigger: On<Add, Connected>, links: Query<(&RemoteId, Has<HostCl
 /// SendSelectedVeterancyToServer, ServerRestartPlayer, ServerUnreadyPlayer).
 fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<LobbyRequest>), With<ClientOf>>, mut players: Query<(&mut NetPlayer, &PlayerSlot)>, game: Query<&NetGame>) {
     let started = game.iter().any(|g| g.match_started);
+    let travel = game.iter().next().map_or(0, |g| g.travel);
     for (link, mut rx) in &mut links {
         for req in rx.receive() {
             let Some((mut p, _)) = players.iter_mut().find(|(_, s)| s.link == link) else {
                 runlog::kv("net_request_dropped", &format!("link={link:?} reason=no_player"));
                 continue;
             };
-            apply_logged(&mut p, &req, started, "client");
+            apply_logged(&mut p, &req, travel, started, "client");
         }
     }
 }
 
-fn apply_logged(p: &mut Mut<NetPlayer>, req: &LobbyRequest, started: bool, from: &str) {
+fn apply_logged(p: &mut Mut<NetPlayer>, req: &LobbyRequest, travel: u32, started: bool, from: &str) {
     // Only touch the record when something changed (a write would send it again).
     let mut copy = (**p).clone();
-    let changed = copy.apply(req, started);
+    let changed = copy.apply(req, travel, started);
+    if req.ready && req.travel != travel && !p.ready {
+        runlog::kv("net_ready_ignored", &format!("peer={} from={from} request_travel={} host_travel={travel}", p.peer, req.travel));
+    }
     if !changed.is_empty() {
         **p = copy;
         runlog::kv("net_lobby_update", &format!("peer={} from={from} {}", p.peer, changed.join(" ")));
@@ -147,8 +164,9 @@ fn apply_logged(p: &mut Mut<NetPlayer>, req: &LobbyRequest, started: bool, from:
 fn apply_host_request(lobby: Res<NetLobby>, mut players: Query<(&mut NetPlayer, &PlayerSlot)>, game: Query<&NetGame>) {
     let Some(req) = lobby.local.as_ref() else { return };
     let started = game.iter().any(|g| g.match_started);
+    let travel = game.iter().next().map_or(0, |g| g.travel);
     if let Some((mut p, _)) = players.iter_mut().find(|(_, s)| s.host) {
-        apply_logged(&mut p, req, started, "host");
+        apply_logged(&mut p, req, travel, started, "host");
     }
 }
 
@@ -311,6 +329,7 @@ fn announce_travel(
     g.travel += 1;
     g.map = b.map.clone();
     g.match_started = false;
+    g.match_over = false;
     g.lobby_timeout = -1;
     let mut unready = Vec::new();
     for mut p in &mut players {

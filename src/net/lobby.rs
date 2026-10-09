@@ -23,6 +23,8 @@ pub struct NetLobby {
     pub local_ready: bool,
     /// GRI.bMatchHasBegun.
     pub match_started: bool,
+    /// The host's match has ended (it waits for the next map).
+    pub match_over: bool,
     /// GRI.LobbyTimeout (above 0: "Game will auto-commence in: N").
     pub lobby_timeout: i32,
     /// My peer id (0 for the host), once known.
@@ -64,7 +66,7 @@ pub(super) fn build(app: &mut App) {
 }
 
 /// My choices: the name (--name), the perk and level, the character, ready.
-fn local_request(mut lobby: ResMut<NetLobby>, data: Res<MenuData>, vet: Res<Veterancy>, character: Res<crate::player::character::CharacterChoice>) {
+fn local_request(mut lobby: ResMut<NetLobby>, data: Res<MenuData>, vet: Res<Veterancy>, character: Res<crate::player::character::CharacterChoice>, travel: Res<super::NetTravel>) {
     if data.player_name.is_empty() {
         return; // the menus are not loaded yet
     }
@@ -74,6 +76,7 @@ fn local_request(mut lobby: ResMut<NetLobby>, data: Res<MenuData>, vet: Res<Vete
         level: vet.level,
         ready: lobby.want_ready,
         character: character.0.clone().unwrap_or_else(|| crate::player::character::DEFAULT_CHARACTER.to_string()),
+        travel: travel.loaded,
     };
     if lobby.local.as_ref() != Some(&req) {
         lobby.local = Some(req);
@@ -93,13 +96,15 @@ fn read_records(players: Query<&NetPlayer>, game: Query<&NetGame>, mut lobby: Re
     lobby.local_ready = me.is_some_and(|p| p.ready);
     if let Ok(g) = game.single() {
         lobby.match_started = g.match_started;
+        lobby.match_over = g.match_over;
         lobby.lobby_timeout = g.lobby_timeout;
     }
     // One log line whenever what the lobby shows changes.
     let line = format!(
-        "players={} match_started={} lobby_timeout={} my_peer={:?} rows=[{}]",
+        "players={} match_started={} match_over={} lobby_timeout={} my_peer={:?} rows=[{}]",
         recs.len(),
         lobby.match_started,
+        lobby.match_over,
         lobby.lobby_timeout,
         lobby.my_peer,
         recs.iter()
@@ -111,7 +116,9 @@ fn read_records(players: Query<&NetPlayer>, game: Query<&NetGame>, mut lobby: Re
         runlog::kv("net_lobby", &line);
         *last_log = line;
     }
-    if lobby.match_started && lobby.local_ready && !lobby.start_sent {
+    // A finished match is not joined (KF's MatchOver restarts nobody): the
+    // player waits in the lobby for the next map.
+    if lobby.match_started && !lobby.match_over && lobby.local_ready && !lobby.start_sent {
         lobby.start_sent = true;
         start.write(StartLocalMatch);
         runlog::kv("net_local_match_start", &format!("my_peer={:?}", lobby.my_peer));

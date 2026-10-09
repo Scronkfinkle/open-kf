@@ -44,6 +44,10 @@ pub struct NetGame {
     pub difficulty: String,
     /// GRI.bMatchHasBegun.
     pub match_started: bool,
+    /// The match has ended (KFGRI.EndGameType > 0) and the host waits for
+    /// the next map: a player who joins now stays in the lobby (KF's
+    /// MatchOver state does not restart players).
+    pub match_over: bool,
     /// KFGRI.LobbyTimeout: seconds left of the auto-start countdown,
     /// -1 or 0: none ("Waiting for players to be ready...").
     pub lobby_timeout: i32,
@@ -60,6 +64,10 @@ pub struct LobbyRequest {
     pub level: u8,
     pub ready: bool,
     pub character: String,
+    /// The `NetGame::travel` of the map this game has loaded: Ready only
+    /// counts for that map (a request sent before the client loaded the
+    /// host's new map must not make it ready there).
+    pub travel: u32,
 }
 
 /// One player's pawn as its owner sees it (step 2, client-authoritative):
@@ -278,8 +286,10 @@ pub fn clean_name(name: &str) -> String {
 }
 
 impl NetPlayer {
-    /// Applies a request; returns what changed (for the log), empty if nothing.
-    pub fn apply(&mut self, req: &LobbyRequest, match_started: bool) -> Vec<String> {
+    /// Applies a request; returns what changed (for the log), empty if
+    /// nothing. `travel`: the host's `NetGame::travel` (a Ready for another
+    /// map is taken as not ready).
+    pub fn apply(&mut self, req: &LobbyRequest, travel: u32, match_started: bool) -> Vec<String> {
         let mut changed = Vec::new();
         let name = clean_name(&req.name);
         if self.name != name {
@@ -298,7 +308,7 @@ impl NetPlayer {
         }
         // After the start a ready player is in the game: there is no
         // lobby to un-ready from (KF closes the menu).
-        let ready = req.ready || (match_started && self.ready);
+        let ready = (req.ready && req.travel == travel) || (match_started && self.ready);
         if self.ready != ready {
             changed.push(format!("ready={ready}"));
             self.ready = ready;
@@ -322,21 +332,31 @@ mod tests {
     #[test]
     fn apply_reports_changes_and_clamps() {
         let mut p = player();
-        let req = LobbyRequest { name: "  A very long player name indeed  ".into(), perk: Some(9), level: 9, ready: true, character: "Mr_Foster".into() };
-        let changed = p.apply(&req, false);
+        let req = LobbyRequest { name: "  A very long player name indeed  ".into(), perk: Some(9), level: 9, ready: true, character: "Mr_Foster".into(), travel: 0 };
+        let changed = p.apply(&req, 0, false);
         assert_eq!(p.name, "A very long player n");
         assert_eq!((p.perk, p.level, p.ready), (None, 6, true));
         assert_eq!(changed.len(), 4);
-        assert!(p.apply(&req, false).is_empty());
+        assert!(p.apply(&req, 0, false).is_empty());
     }
 
     #[test]
     fn no_unready_after_the_start() {
         let mut p = player();
         p.ready = true;
-        p.apply(&LobbyRequest { ready: false, ..default() }, true);
+        p.apply(&LobbyRequest { ready: false, ..default() }, 0, true);
         assert!(p.ready);
-        p.apply(&LobbyRequest { ready: false, ..default() }, false);
+        p.apply(&LobbyRequest { ready: false, ..default() }, 0, false);
         assert!(!p.ready);
+    }
+
+    #[test]
+    fn ready_only_counts_for_the_hosts_current_map() {
+        let mut p = player();
+        // Sent while the client was still on map 1; the host is on map 2.
+        p.apply(&LobbyRequest { ready: true, travel: 1, ..default() }, 2, false);
+        assert!(!p.ready);
+        p.apply(&LobbyRequest { ready: true, travel: 2, ..default() }, 2, false);
+        assert!(p.ready);
     }
 }
