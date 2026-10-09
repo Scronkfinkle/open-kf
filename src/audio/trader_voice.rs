@@ -76,7 +76,7 @@ fn trader_voice(
         *preloaded = true;
         let mut sounds: Vec<String> = LINES.iter().map(|s| s.to_string()).collect();
         sounds.extend(["KF_Trader.Walkie_Beep", "KFWeaponSound.bullethitflesh2", "KF_Trader.TooExpensive", "KF_Trader.TooHeavy", "KF_InventorySnd.Vest_Pickup"].map(String::from));
-        preload.write(crate::audio::mixer::PreloadSounds { what: "trader".into(), sounds });
+        preload.write(crate::audio::mixer::PreloadSounds { what: "trader".into(), sounds, per_map: false });
     }
     let now = time.elapsed_secs();
     // Pitch 1.1 / TimeDilation: normal pitch once the mixer scales it by

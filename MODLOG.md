@@ -7884,3 +7884,73 @@ the same handle drop the song switch uses).
 **Still broken / not tested:** no fade-out (KF's level change cuts the
 music too, as far as known: not checked against the game).
 **Next:** DESIGN.md.
+
+## 2026-10-09 Map change memory: sound bank releases map sounds; memory logs
+
+**Changed:** `src/audio/mixer.rs`: `PreloadSounds` has `per_map` (true
+only for the map's own sounds, `audio/map_sound.rs`); at `MapUnload` the
+sound bank drops the map's sounds that no shared preload (weapons, zeds,
+trader, fireballs) asked for, and closes the packages no cached sound
+reads from (`PackageSet::forget`, `crates/ue-assets`). Sounds still
+playing keep their decoded clip until they end (shared pointer), so
+nothing is cut; the map's looping ambients stop when their entities go,
+as before. New log line `sound_bank_release`. `src/world/map_change.rs`:
+the `map_unload` / `map_lifecycle_loaded` / `map_settled` lines now also
+carry `swap_mb`, `heap_used_mb` / `heap_free_mb` (the C allocator's own
+count: memory we hold vs memory freed but kept), `gpu_used_mb` /
+`gpu_reserved_mb` / `gpu_allocations` / `gpu_blocks` (the graphics
+library's allocator report) and `sound_bank` / `sound_bank_mb` /
+`sound_packages`. DESIGN.md S2: one sentence.
+**Why:** the lifecycle step reported about 30 MB lost per map change and
+a sound bank that kept every map's sounds.
+**Tested how:** headless release runs with `--map-hop`, `rss_mb` +
+`swap_mb` and `heap_used_mb` read at each `map_unload` (the old map gone,
+the new one not loaded yet). A/B with one binary: the release switched
+off by a temporary environment switch (not committed). Single map
+KF-Farm 600 frames with two shots, old vs new binary: the counted
+`sound_play` / `sound_ambient` / `sound_preload` lines are identical (9
+plays, 119 ambients, 0 missing). cargo test (350 + 39 pass, 1 new test:
+map sounds leave the bank, shared ones stay, a playing clip survives),
+clippy (0 new warnings; the 2 old ones in test code: `zeds/boss.rs`,
+`launcher/choices.rs`).
+**Result:** the "30 MB per change" was mostly warm-up: the first ~5
+changes fill shared caches (shared effects, zed and weapon data, the
+GPU allocator's blocks), then growth almost stops. Measured, 5-map
+rotation Farm/Manor/WestLondon/BioticsLab/Offices, 51 changes, memory
+after each unload (rss+swap):
+- before: 1782 -> 2136 MB; 2.6 MB per change after change 10; live heap
+  1202 -> 1346 MB (0.49 MB per change after change 10); sound bank grows
+  to 220 sounds / 208 MB decoded / 36 packages and stays.
+- after: 1757 -> 1920 MB; -0.8 MB per change after change 10 (flat);
+  live heap 1117 -> 1168 MB (0.38 MB per change); sound bank back to 179
+  sounds / 165 MB / 26 packages after every unload (Farm releases 15
+  sounds and 7 packages, Manor 17 and 8, WestLondon 10 and 5, BioticsLab
+  6 and 1, Offices 7 and 4). About 180 MB less live heap after an unload
+  (most of it the map sound packages' raw bytes).
+- Farm <-> Manor x22 before: rss after unload 1832 -> 2116 MB. All 34
+  maps twice (68 changes) after: rss after unload 1673 -> 1920 at the end
+  of pass 1 and 1934 at the end of pass 2.
+- GPU (wgpu allocator report, real GPU): used memory per map the same at
+  every load (KF-Farm settled 1485 MB each time); reserved grows in 256 MB
+  blocks during warm-up (1920 -> 2240) and then stays.
+- Same map over and over (KF-BioticsLab x40): live heap +0.25 MB per
+  change.
+**Dead ends:** (1) a temporary probe of the render world (entities 411,
+material instances 1486, pipeline cache 1491 entries, 63 pipelines) and
+the main world (717 archetypes, 175 tables, entity slots 8192): all flat
+over 40 changes, so no render-world or ECS leak. (2) Our `Local` maps keyed
+by entity (ragdoll impacts, remote weapon effects) already drop dead
+entities. (3) Software drawing (`HEADLESS_SOFTWARE=1`, lavapipe puts the
+"GPU" in our process): memory outside the C allocator grew about 5 MB per
+change over 17 changes while the real GPU's allocator report stays
+flat; this points at the software driver, not at us (not proven). (4)
+`rss_mb` alone misleads on a busy machine: the system swapped part of a
+run out and `rss_mb` fell (now `swap_mb` is logged).
+**Still broken / not tested:** about 0.4 MB of live heap per change
+remains (cause not found; ~40 MB per 100 changes). The gap between
+`rss_mb` and `heap_used_mb` is the C allocator's leftovers, now flat
+after warm-up. Waves mode, network play, music, Windows and other
+allocators not tested with this change. A map sound that is also played
+by something that never preloads it is just loaded again when needed.
+**Next:** if the 0.4 MB per change matters later: a counting allocator
+by size class to see what kind of allocation stays.

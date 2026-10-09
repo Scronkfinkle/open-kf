@@ -214,7 +214,7 @@ fn load_map_sounds(mut commands: Commands, request: Res<crate::world::map::MapRe
     sounds.sort();
     sounds.dedup();
     runlog::kv("map_sounds", &format!("loops={loops} random={randoms} silent_ambient_actors={silent} ambient_volume={scale} distinct_sounds={}", sounds.len()));
-    commands.write_message(crate::audio::mixer::PreloadSounds { what: format!("map {}", request.map), sounds });
+    commands.write_message(crate::audio::mixer::PreloadSounds { what: format!("map {}", request.map), sounds, per_map: true });
 }
 
 /// [Engine.AmbientSound] AmbientVolume from the install's KillingFloor.ini.

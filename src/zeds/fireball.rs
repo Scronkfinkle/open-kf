@@ -172,6 +172,7 @@ fn load_model(
     let defaults = ClassDefaults::new(&set);
     preload.write(crate::audio::mixer::PreloadSounds {
         what: "fireballs".into(),
+        per_map: false,
         sounds: Projectile::ALL.iter().flat_map(|k| [k.spec().flight_sound.to_string(), k.spec().explosion_sound.to_string()]).collect(),
     });
     for kind in Projectile::ALL {
