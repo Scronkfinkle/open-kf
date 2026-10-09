@@ -90,6 +90,10 @@ pub struct MenuState {
     pub vote_top: usize,
     /// The cursor was captured when the vote window opened.
     vote_cursor_was_grabbed: bool,
+    /// The perk whose start items the pawn has (the lobby's Ready swaps
+    /// them for the chosen perk's). Taken at the first frame, and again
+    /// after a map change gave a new pawn (game/travel.rs sets None).
+    pub pawn_vet: Option<crate::game::perks::Vet>,
 }
 
 impl MenuState {
@@ -345,7 +349,6 @@ fn menu_input(
     ),
     data: Res<MenuData>,
     mut exit: MessageWriter<AppExit>,
-    mut start_vet: Local<Option<crate::game::perks::Vet>>,
     (mut net, mut net_start, mut vote, mut cast_vote): (
         ResMut<crate::net::lobby::NetLobby>,
         MessageReader<crate::net::lobby::StartLocalMatch>,
@@ -370,7 +373,7 @@ fn menu_input(
         }
     }
     // The perk the weapons were loaded with (start items), for Ready.
-    let had = *start_vet.get_or_insert(vet.vet);
+    let had = *state.pawn_vet.get_or_insert(vet.vet);
     let actions: Vec<&str> = script.0.iter().filter(|(f, _)| *f == frames.0).map(|(_, a)| a.as_str()).collect();
     let mut ids: Vec<String> = Vec::new();
     // KFPlayerController.ShowMidGameMenu (Escape): the buy menu, a GUI

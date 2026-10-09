@@ -118,7 +118,6 @@ pub fn read_map_rotation(path: &std::path::Path) -> (crate::game::map_rotation::
 
 /// The game's save after a map change (KF's MapList SaveConfig): rewrites
 /// only the `map_list=` and `map_position=` lines of the settings file.
-#[allow(dead_code)] // called by the map-change step (not wired yet)
 pub fn save_map_rotation(path: &std::path::Path, r: &crate::game::map_rotation::MapRotation) -> Result<(), String> {
     let old = std::fs::read_to_string(path).unwrap_or_default();
     let c = Choices { rotation: r.clone(), ..Default::default() };

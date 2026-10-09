@@ -500,6 +500,7 @@ fn main() -> AppExit {
         .insert_resource(request)
         .insert_resource(map_rotation)
         .insert_resource(map_vote.settings())
+        .insert_resource(game::travel::RotationSave { path: settings_path.clone(), save: rotation_source != "command_line" })
         .insert_resource(ClearColor(Color::BLACK)) // KF: black unless the zone clears to its fog colour (world/zones.rs)
         .add_plugins((
             map::MapPlugin,
@@ -521,7 +522,7 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin, render::actor_light::ActorLightPlugin, render::baked::BakedPlugin))
-        .add_plugins((perks::PerksPlugin, game::healing::HealingPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, game::pickups::PickupPlugin, net_plugin, game::map_vote::MapVotePlugin, game::loading_screen::LoadingScreenPlugin))
+        .add_plugins((perks::PerksPlugin, game::healing::HealingPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, game::pickups::PickupPlugin, net_plugin, game::map_vote::MapVotePlugin, game::loading_screen::LoadingScreenPlugin, game::travel::TravelPlugin))
         .insert_resource(vote_test)
         .insert_resource(view_target::ViewTarget::starting_behind(behind_view, behind_yaw))
         .insert_resource(lobby)

@@ -21,11 +21,8 @@
 //!   with "KF" (native code, behaviour recalled, not checked). Nothing at
 //!   all: the same map again ("?Restart").
 //!
-//! Step 2/3 (map change at the end of a match) call [`MapRotation::next_map`]
-//! and then save the position with `launcher::save_map_rotation`.
-
-// next_map and its helpers are called by the map-change step (not wired yet).
-#![allow(dead_code)]
+//! game/travel.rs (the end of a match) calls [`MapRotation::next_map`] and
+//! then saves the position with `launcher::save_map_rotation`.
 
 use bevy::prelude::Resource;
 
@@ -43,9 +40,8 @@ pub const VOTE_TIME_MIN: u32 = 5;
 pub const VOTE_TIME_MAX: u32 = 600;
 
 /// The map list and where in it the game is (KF's `Maps` and `MapNum`).
-/// Inserted at startup from `--map-list` / the settings file. Not used by
-/// anything yet: step 2 (single-player map change) and step 3 (multiplayer
-/// map change) call [`MapRotation::next_map`] at the end of a match.
+/// Inserted at startup from `--map-list` / the settings file; game/travel.rs
+/// calls [`MapRotation::next_map`] at the end of a match.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct MapRotation {
     /// Map names, e.g. "KF-Farm" (no `.rom`, no options).
@@ -134,6 +130,7 @@ pub fn prefix_map(prefix: &str, after: &str, installed: &[String]) -> Option<Str
 }
 
 impl MapRotation {
+    #[cfg_attr(not(test), allow(dead_code))] // tests and the launcher's tests
     pub fn new(maps: Vec<String>, position: usize) -> Self {
         MapRotation { maps, position }
     }

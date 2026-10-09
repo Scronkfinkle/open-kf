@@ -106,6 +106,8 @@ fn update_dosh(
     if game.restarts != *restarts {
         *restarts = game.restarts;
         *waves_ended = game.waves_ended;
+        // A new map resets the deaths to 0 (game/travel.rs): not a death.
+        *deaths = health.deaths;
         *dosh = Dosh::default();
         runlog::kv("dosh", &format!("reason=new_game total={:.0}", dosh.score));
     }

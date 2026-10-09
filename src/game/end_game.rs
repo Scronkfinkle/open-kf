@@ -53,7 +53,8 @@ impl MatchOver {
     }
 }
 
-/// Asks the wave game to start over (GameInfo.RestartGame).
+/// The match is over and the game should go on (GameInfo.RestartGame):
+/// game/travel.rs starts the map vote or goes to the map list's next map.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct RestartGame;
 

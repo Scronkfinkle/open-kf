@@ -620,7 +620,7 @@ pub fn wave_timer(
         ResMut<crate::engine::view_target::ViewTarget>,
         MessageWriter<crate::zeds::zed::BossAction>,
     ),
-    (mut shops, mut restart_requests, menus): (ResMut<crate::game::trader::Shops>, MessageReader<crate::game::end_game::RestartGame>, Res<crate::game::menus::MenuState>),
+    (mut shops, menus): (ResMut<crate::game::trader::Shops>, Res<crate::game::menus::MenuState>),
     (remote_wave, net_mode, remote_players): (Res<RemoteWave>, Option<Res<crate::net::NetMode>>, Res<crate::game::combat::RemotePlayers>),
 ) {
     // The lobby: KF only enters MatchInProgress once everyone is ready.
@@ -629,7 +629,6 @@ pub fn wave_timer(
     }
     // A network client runs no waves of its own: it follows the host's.
     if net_mode.as_ref().is_some_and(|m| matches!(**m, crate::net::NetMode::Client { .. })) {
-        restart_requests.clear();
         if let Some(w) = remote_wave.0.as_ref() {
             let now = time.elapsed_secs();
             let location = player.single().ok().map(|(cam, walker)| {
@@ -679,12 +678,11 @@ pub fn wave_timer(
         doors: &doors,
         now,
     };
-    // After a win or a loss: GameInfo.RestartGame (end_game.rs: Fire after
-    // 5 s, or the MatchOver timer), or Enter / test action "restart_game"
-    // (ours).
-    let restart = restart_requests.read().count() > 0
-        || keys.just_pressed(KeyCode::Enter)
-        || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
+    // After a win or a loss, Enter / test action "restart_game" (ours, a
+    // shortcut for testing): the same map again, at once. KF's own restart
+    // (end_game.rs: Fire after 5 s, or the MatchOver timer) goes to the
+    // next map instead (game/travel.rs).
+    let restart = keys.just_pressed(KeyCode::Enter) || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
     if restart && matches!(g.phase, Phase::Won | Phase::Lost) {
         *g = WaveGame {
             deaths_at_start: Some(health.deaths),

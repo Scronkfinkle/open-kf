@@ -36,6 +36,18 @@ pub struct NetLobby {
     pub(super) start_sent: bool,
 }
 
+impl NetLobby {
+    /// A new map (game/travel.rs): back in the lobby, not ready, my match
+    /// not started. My request goes out again with ready=false.
+    pub fn reset_for_new_map(&mut self) {
+        self.want_ready = false;
+        self.start_sent = false;
+        if let Some(l) = self.local.as_mut() {
+            l.ready = false;
+        }
+    }
+}
+
 /// Sent once when this player's match begins (the server started the
 /// match and this player is ready): the menus close the lobby, the pawn
 /// gets its start items, the wave timer runs.

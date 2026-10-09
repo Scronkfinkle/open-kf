@@ -7697,3 +7697,68 @@ headless run `--map KF-Farm --map-vote --vote-time 20 --frames 30`.
 tests pass.
 **Still broken / not tested:** nothing travels yet (next commits).
 **Next:** single-player travel at the end of a match.
+## 2026-10-09 Single player goes to the next map at the end of a match (map rotation step 2 wiring)
+
+**Changed:** new `src/game/travel.rs` (`TravelPlugin`): reads
+`end_game::RestartGame` (Fire after 5 s, or 14 s after the end) and does
+KF's RestartGame: map list's next map (`MapRotation::next_map`), position
+saved to the settings file (`launcher::save_map_rotation`; not when the
+list came from `--map-list`), then `BeginTravel` -> `ShowLoadingScreen`
+-> on `LoadingScreenShown` `ChangeMap` -> on `MapLoaded`
+`HideLoadingScreen` (+ `MapVote::clear`). A refused map hides the screen
+and stays (`travel_failed`). The vote branch is in place for the next
+commits (single player only with the `--vote-test` switch, as KF never
+votes standalone). On every map after the first
+(`fresh_player_on_new_map`): full health, not dead, deaths and kills 0,
+armour reset, `RespawnPawn` (KF's starting inventory), pages closed, and
+the lobby opens again when the game started in it (`LobbySettings.open`,
+and always in a network game); name, perk, level, character kept.
+`waves.rs`: no longer reads `RestartGame`; Enter / test action
+`restart_game` stay ours and mean "the same map again, at once".
+`dosh.rs`: a new game also takes the (reset) death count, so the reset is
+not paid as a death. `menus/mod.rs`: the perk the pawn's start items
+belong to is `MenuState::pawn_vet` (was a local), reset by a map change.
+`main.rs`: `RotationSave` resource, plugin. Removed the "not wired yet"
+dead-code allowances. A test's field assignment in launcher/choices.rs
+made clippy-clean.
+**Why:** plan step 2 (DESIGN.md "Map rotation and map voting without
+restarting").
+**KF's rule:** GameInfo.RestartGame: VotingHandler.HandleRestartGame
+(none in standalone) else MapList.GetNextMap, SaveConfig, ServerTravel.
+The new map: the lobby again (PlayerController bPendingLobbyDisplay),
+PRI values new (cash = starting cash, kills, deaths 0, not ready).
+**Tested how:** headless, release build, settings file
+`work/travel/sp.txt` = `map_list=KF-Farm,KF-Manor`, `map_position=0`.
+Fastest reliable match end: test action `kill_player` (single player,
+no `--god`, `--mode waves`): the game ends at once ("wiped_out"), the
+travel 14 s later, or `fire` inputs from 5 s after the end.
+(1) `--map KF-Farm --mode waves --lobby --fps 60 --input
+30:lobby_ready,120:kill_player,<lobby_ready every 50 frames from 700>,<next_wave
+every 100 from 800> --frames 2200`; (2) the same without `--lobby`, with
+`60:kill_player` and `fire` every 10 frames from 100; (3)
+`60:kill_player,200:restart_game`. cargo test, clippy.
+**Result:** (1) `end_game result=wiped_out` t=11.79, `end_game_restart
+reason=timer seconds_after_end=14.03` t=25.81, `map_rotation_next
+current=KF-Farm next=KF-Manor source=list position=1`, `map_rotation_saved
+position=1 saved=true`, `loading_screen_show map=KF-Manor` t=25.87,
+`loading_screen_shown frames_shown=3` t=25.93, `map_change from=KF-Farm
+to=KF-Manor` t=25.99, `new_map_player load=2 health=0->100 dead=true->false
+deaths=1->0 ... lobby=true`, `map_lifecycle_loaded map=KF-Manor
+seconds=1.02`, `dosh reason=new_game total=250`, `travel_done`,
+`respawn_inventory given=[Knife Single Frag Syringe Welder]`,
+`loading_screen_hide` t=27.41; `lobby_ready` t=32.69, `game_start`
+t=32.70, zeds spawn on KF-Manor from t=37.7. The zeds killed the player
+there (second match end, t=52.47): `map_rotation_next current=KF-Manor
+next=KF-Farm position=0` (wrapped), saved, KF-Farm loaded, lobby, game,
+zeds again from t=75. The settings file ends with `map_position=0`.
+(2) `end_game_restart reason=fire seconds_after_end=5.07`, KF-Manor,
+`new_map_player ... lobby=false lobby_reason=test_run`, `game_start` at
+once, `dosh ... total=250`, zeds at t=27.7. (3) `game_start ...
+restart=true` on KF-Farm, no travel. 349 + 39 tests pass; clippy: only
+the old `zeds/boss.rs:1009` test warning.
+**Still broken / not tested:** played by nobody (headless only); a
+trader menu open at the travel moment is not closed; the victory path
+(Patriarch killed) not run, only the loss (same code after
+`RestartGame`); memory grows per map (`rss_mb` 1039 -> 2447 -> 2847; the
+other branch works on it); the old map's music (next commit).
+**Next:** network travel (host announces, clients follow).

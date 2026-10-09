@@ -60,7 +60,6 @@ pub const FIELDS: [&str; 33] = [
 
 /// The map rotation lines of the saved file (game/map_rotation.rs). The
 /// game rewrites only these (after a map change, `save_map_rotation`).
-#[allow(dead_code)] // used by save_map_rotation (not wired yet)
 pub const ROTATION_FIELDS: [&str; 2] = ["map_list", "map_position"];
 
 /// The aim line of the saved file (the game rewrites only it).
@@ -1024,9 +1023,7 @@ mod tests {
         assert_eq!((c.rotation.clone(), c.vote), (MapRotation::default(), MapVoteConfig::default()));
         assert!(!c.to_args(false).unwrap().iter().any(|a| a.starts_with("--map-") || a == "--vote-time"));
         // Round trip.
-        let mut c = Choices::default();
-        c.rotation = MapRotation::new(s(&["KF-Farm", "KF-Manor"]), 1);
-        c.vote = MapVoteConfig { enabled: true, time_limit: 45 };
+        let mut c = Choices { rotation: MapRotation::new(s(&["KF-Farm", "KF-Manor"]), 1), vote: MapVoteConfig { enabled: true, time_limit: 45 }, ..Default::default() };
         let back = Choices::from_text(&c.to_text()).0;
         assert_eq!(back, c);
         assert!(c.to_text().contains("map_list=KF-Farm,KF-Manor\nmap_position=1\nmap_vote=on\nvote_time_limit=45\n"));
