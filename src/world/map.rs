@@ -1890,7 +1890,7 @@ fn spawn_terrains(
         // (flashlight), with the terrain fog rule (see the function note).
         // KF_BAKED_UNLIT=1 (for comparing): plain unlit layers instead.
         let terrain_lit = light.is_some() && !in_sky && black_lightmap.is_some() && std::env::var_os("KF_BAKED_UNLIT").is_none();
-        let (mut layer_tris, mut layers_drawn) = (0usize, 0usize);
+        let (mut layer_tris, mut layers_drawn, mut base_black_tris) = (0usize, 0usize, 0usize);
         for (li, layer) in t.layers.iter().enumerate() {
             let Some(tex_handle) = resolve(set, &handle, layer.texture).texture else {
                 continue;
@@ -1901,8 +1901,17 @@ fn spawn_terrains(
             let mut b = MeshBuilder::default();
             let mut remap: HashMap<usize, u32> = HashMap::new();
             for tri in &tris {
+                // Layer 0 is the opaque base under every visible triangle,
+                // also where the layers above cover it fully (weight 0:
+                // drawn black, the additive layers then give the colour).
+                // Leaving those out let the additive layers add onto the
+                // empty background: pale, blocky patches of fog colour in
+                // KF-Manor's ponds, whose beds are painted with layers 1-2.
                 if tri.iter().all(|&v| weights[li][v] <= 0.002) {
-                    continue;
+                    if li != 0 {
+                        continue;
+                    }
+                    base_black_tris += 1;
                 }
                 for &v in tri {
                     let idx = *remap.entry(v).or_insert_with(|| {
@@ -1957,7 +1966,7 @@ fn spawn_terrains(
             "terrain_loaded",
             &format!(
                 "terrain={ti} heightmap={w}x{h} visible_triangles={} layers={n_layers} layers_drawn={layers_drawn} \
-                 layer_triangles={layer_tris} in_sky={in_sky} lit_by_stored_light={terrain_lit} inverted={} seconds={:.2}",
+                 layer_triangles={layer_tris} base_black_triangles={base_black_tris} in_sky={in_sky} lit_by_stored_light={terrain_lit} inverted={} seconds={:.2}",
                 tris.len(),
                 t.inverted,
                 started.elapsed().as_secs_f64()

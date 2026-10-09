@@ -420,6 +420,16 @@ layer-over-layer blending regardless of draw order. All 21 terrain maps load
 (up to 4 terrains per map, heightmaps from 32x32 to 512x512, including
 non-square ones).
 
+Layer 0 is drawn under every visible triangle, also where its weight is 0
+(the layers above cover it fully): there it is black, and the additive
+layers on top give the colour. KF does the same: its first terrain pass
+takes every visible triangle, later passes only the triangles where their
+layers show (native code; details in the local RE.md). Until 2026-10-09
+such triangles were left out of layer 0, so the additive layers were added
+onto the empty background and showed as pale, blocky patches of fog colour. KF-Manor's pond beds are
+painted that way (2096 triangles, logged as `base_black_triangles` on the
+`terrain_loaded` line).
+
 ### Terrain lighting (L3, planned 2026-10-08)
 
 **What KF does (from its native code; details in the local RE.md).** The
