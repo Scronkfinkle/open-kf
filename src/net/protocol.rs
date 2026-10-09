@@ -26,8 +26,15 @@ pub struct NetPlayer {
 /// by the server, copied to everyone.
 #[derive(Component, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NetGame {
-    /// The host's `--map` (clients must have loaded the same one).
+    /// The map the host plays, or is going to after the end of a match
+    /// (its `--map`, then each map it travels to). Clients load it.
     pub map: String,
+    /// How many times the host has gone to another map (KF's
+    /// ServerTravel; ours keeps everyone connected): a client that sees
+    /// it change loads `map` (game/travel.rs). The map states below are
+    /// stamped with it, so an old map's state is never applied to a new
+    /// map.
+    pub travel: u32,
     /// `--mode` and `--length` of the host, for the log (waves are not
     /// shared yet).
     pub mode: String,
@@ -113,6 +120,8 @@ pub struct NetWave(pub crate::game::waves::WaveShare);
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct ZedSnapshot {
     pub seq: u32,
+    /// `NetGame::travel` of the map these zeds are on.
+    pub travel: u32,
     pub time: f64,
     pub zeds: Vec<crate::zeds::zed::ZedNet>,
 }
@@ -183,14 +192,22 @@ pub enum ProjectileFx {
     Fireball { at: [f32; 3], dir: [f32; 3], zed_id: u32, rocket: bool },
 }
 
-/// Every door's state on the host (step 4, world/door.rs `DoorNet`).
+/// Every door's state on the host (step 4, world/door.rs `DoorNet`), and
+/// the map's `NetGame::travel`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct DoorStates(pub Vec<crate::world::door::DoorNetState>);
+pub struct DoorStates {
+    pub travel: u32,
+    pub doors: Vec<crate::world::door::DoorNetState>,
+}
 
 /// Every pickup shown on the host (game/pickups), sent when the list
 /// changes and every 2 s.
+/// `travel`: the map's `NetGame::travel`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct PickupStates(pub Vec<crate::game::pickups::ShownPickup>);
+pub struct PickupStates {
+    pub travel: u32,
+    pub shown: Vec<crate::game::pickups::ShownPickup>,
+}
 
 /// Reliable, ordered: lobby requests must all arrive, in order.
 pub struct LobbyChannel;

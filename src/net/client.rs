@@ -1,5 +1,6 @@
 //! A joining player's side: connect to the host over UDP, send my lobby
-//! choices, check the host plays the map this game loaded, leave.
+//! choices, load the map the host plays (at the join, and whenever the
+//! host goes to another map: game/travel.rs), leave.
 
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -14,6 +15,9 @@ use crate::engine::runlog;
 
 /// Give up when not connected after this many seconds.
 const CONNECT_TIMEOUT: f32 = 15.0;
+/// netcode's timeout (seconds without a packet, both ways): longer than a
+/// map load (game/travel.rs freezes the game while it loads).
+const CONNECTION_TIMEOUT: i32 = 20;
 
 pub(super) fn build(app: &mut App, server: SocketAddr) {
     app.insert_resource(ClientLink { server, ..default() })
@@ -52,8 +56,11 @@ fn new_client_id() -> u64 {
 fn connect(mut commands: Commands, mut link: ResMut<ClientLink>, mut exit: MessageWriter<AppExit>) {
     link.id = new_client_id();
     let auth = Authentication::Manual { server_addr: link.server, client_id: link.id, private_key: NETCODE_KEY, protocol_id: PROTOCOL_ID };
-    // The server drops a silent client after 3 s; the token never expires.
-    let config = NetcodeConfig { client_timeout_secs: 3, token_expire_secs: -1, ..default() };
+    // Either side drops the other after this many silent seconds; the
+    // token never expires. A map change freezes both games for the load
+    // (KF-Farm: about 1 s here, more on slower machines), so the old 3 s
+    // was too short.
+    let config = NetcodeConfig { client_timeout_secs: CONNECTION_TIMEOUT, token_expire_secs: -1, ..default() };
     let netcode = match NetcodeClient::new(auth, config) {
         Ok(n) => n,
         Err(e) => {
@@ -111,27 +118,56 @@ fn watch_connection(time: Res<Time<Real>>, mut link: ResMut<ClientLink>, client:
     }
 }
 
-/// The first time the host's game record arrives: is it the map this game
-/// loaded? Each game loads the map from its own install at startup, so a
-/// different map cannot be played: say which `--map` to use and quit.
-fn check_game(mut link: ResMut<ClientLink>, game: Query<&NetGame>, map: Res<crate::world::map::MapRequest>, options: Res<crate::game::waves::GameOptions>, mut lobby: ResMut<NetLobby>, mut exit: MessageWriter<AppExit>) {
+/// The host's game record. The first time: is it the map this game
+/// loaded? If not (the host changed map between the query and the join)
+/// this game loads the host's map in place, or, when it is not installed
+/// here, says which `--map` to use and quits. Afterwards: a new travel
+/// number means the host went to another map: load it too (we stay
+/// connected; KF's clients reconnect).
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn check_game(
+    mut link: ResMut<ClientLink>,
+    game: Query<&NetGame>,
+    map: Res<crate::world::map::MapRequest>,
+    options: Res<crate::game::waves::GameOptions>,
+    mut lobby: ResMut<NetLobby>,
+    mut exit: MessageWriter<AppExit>,
+    mut travel: ResMut<super::NetTravel>,
+    mut begin: MessageWriter<crate::game::travel::BeginTravel>,
+) {
+    let Ok(g) = game.single() else { return };
     if link.game_checked {
+        if g.travel != travel.seen {
+            runlog::kv("net_travel_received", &format!("travel={} was={} map={} my_map={} my_peer={:?}", g.travel, travel.seen, g.map, map.map, lobby.my_peer));
+            travel.seen = g.travel;
+            travel.pending = Some(g.travel);
+            begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "host".into() });
+        }
         return;
     }
-    let Ok(g) = game.single() else { return };
     link.game_checked = true;
     let same_map = g.map.eq_ignore_ascii_case(&map.map);
     let ours = (format!("{:?}", options.mode), format!("{:?}", options.length), format!("{:?}", options.difficulty));
     runlog::kv(
         "net_game_info",
         &format!(
-            "host_map={} my_map={} same_map={same_map} host_mode={} host_length={} host_difficulty={} my_mode={} my_length={} my_difficulty={} match_started={}",
-            g.map, map.map, g.mode, g.length, g.difficulty, ours.0, ours.1, ours.2, g.match_started
+            "host_map={} my_map={} same_map={same_map} host_travel={} host_mode={} host_length={} host_difficulty={} my_mode={} my_length={} my_difficulty={} match_started={}",
+            g.map, map.map, g.travel, g.mode, g.length, g.difficulty, ours.0, ours.1, ours.2, g.match_started
         ),
     );
-    if !same_map {
-        eprintln!("error: the host plays {}; this game loaded {}. Start again with --map {}", g.map, map.map, g.map);
-        runlog::kv("net_map_mismatch", &format!("host_map={} my_map={}", g.map, map.map));
+    travel.known = true;
+    travel.seen = g.travel;
+    if same_map {
+        travel.loaded = g.travel;
+        return;
+    }
+    let installed = map.install_root.join("Maps").join(format!("{}.rom", g.map)).is_file();
+    runlog::kv("net_map_mismatch", &format!("host_map={} my_map={} installed={installed} action={}", g.map, map.map, if installed { "travel" } else { "quit" }));
+    if installed {
+        travel.pending = Some(g.travel);
+        begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "join".into() });
+    } else {
+        eprintln!("error: the host plays {}, which is not installed here (this game loaded {}).", g.map, map.map);
         lobby.quit_requested = true;
         exit.write(AppExit::error());
     }

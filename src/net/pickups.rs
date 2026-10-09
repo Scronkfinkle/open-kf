@@ -98,7 +98,7 @@ fn send_notices(mut net: ResMut<PickupNet>, players: Query<(&NetPlayer, &PlayerS
 }
 
 #[allow(clippy::type_complexity)] // Bevy system parameters
-fn send_states(time: Res<Time<Real>>, pickups: Res<Pickups>, mut senders: Query<&mut MessageSender<PickupStates>, RemoteLinks>, mut last: Local<(Vec<ShownPickup>, f32, usize)>) {
+fn send_states(time: Res<Time<Real>>, pickups: Res<Pickups>, travel: Res<super::NetTravel>, mut senders: Query<&mut MessageSender<PickupStates>, RemoteLinks>, mut last: Local<(Vec<ShownPickup>, f32, usize)>) {
     let now = time.elapsed_secs();
     let list: Vec<ShownPickup> = pickups.shown.values().cloned().collect();
     let clients = senders.iter().count();
@@ -109,11 +109,11 @@ fn send_states(time: Res<Time<Real>>, pickups: Res<Pickups>, mut senders: Query<
         return;
     }
     for mut tx in &mut senders {
-        tx.send::<GameChannel>(PickupStates(list.clone()));
+        tx.send::<GameChannel>(PickupStates { travel: travel.loaded, shown: list.clone() });
     }
     if changed {
         let ids: Vec<String> = list.iter().map(|s| format!("{}:{}", s.id, s.class.rsplit('.').next().unwrap_or(""))).collect();
-        runlog::kv("net_pickups_sent", &format!("clients={clients} shown={} [{}]", list.len(), ids.join(" ")));
+        runlog::kv("net_pickups_sent", &format!("clients={clients} shown={} travel={} [{}]", list.len(), travel.loaded, ids.join(" ")));
     }
     *last = (list, now, clients);
 }
@@ -129,14 +129,20 @@ fn send_requests(mut net: ResMut<PickupNet>, mut tx: Query<&mut MessageSender<Pi
     }
 }
 
-fn receive_states(mut rx: Query<&mut MessageReceiver<PickupStates>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<PickupNet>, mut last: Local<Vec<ShownPickup>>) {
+fn receive_states(mut rx: Query<&mut MessageReceiver<PickupStates>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<PickupNet>, mut last: Local<Vec<ShownPickup>>, travel: Res<super::NetTravel>, mut dropped: Local<u32>) {
     for mut r in &mut rx {
         for s in r.receive() {
-            if *last != s.0 {
-                runlog::kv("net_pickups_received", &format!("shown={}", s.0.len()));
-                *last = s.0.clone();
+            // Another map's pickups (sent before or during a map change).
+            if !travel.current(s.travel) {
+                *dropped += 1;
+                runlog::kv("net_pickups_dropped", &format!("travel={} loaded={} dropped={}", s.travel, travel.loaded, *dropped));
+                continue;
             }
-            net.from_host = Some(s.0);
+            if *last != s.shown {
+                runlog::kv("net_pickups_received", &format!("shown={} travel={}", s.shown.len(), s.travel));
+                *last = s.shown.clone();
+            }
+            net.from_host = Some(s.shown);
         }
     }
 }

@@ -48,10 +48,15 @@ pub struct MoveToStart {
 }
 
 pub(super) fn build(app: &mut App, mode: &NetMode) {
-    app.add_message::<MoveToStart>().init_resource::<PendingStart>().add_systems(Update, dead_view);
+    use crate::world::map_change::MapResourceExt;
+    // Per map (world/map_change.rs): a start not yet applied is the old
+    // map's.
+    app.add_message::<MoveToStart>().init_resource::<PendingStart>().reset_on_map_unload::<PendingStart>().add_systems(Update, dead_view);
     match mode {
         NetMode::Host { .. } => {
-            app.init_resource::<StartState>().add_systems(
+            // Who was placed, and each player's last start spot (an index
+            // into the old map's starts), start again with the map.
+            app.init_resource::<StartState>().reset_on_map_unload::<StartState>().add_systems(
                 Update,
                 (assign_starts.after(crate::game::waves::wave_timer).after(crate::game::dosh::DoshSystems), move_to_start).chain(),
             );

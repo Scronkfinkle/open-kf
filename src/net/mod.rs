@@ -50,7 +50,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_000A;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_000B;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -58,6 +58,35 @@ pub const NETCODE_KEY: [u8; 32] = [0; 32];
 /// lightyear's tick. lightyear sets Bevy's fixed-step clock to it; 1/64 s
 /// is Bevy's own default, so the physics (ragdolls) step as before.
 pub const TICK: Duration = Duration::from_micros(15_625);
+
+/// The host's map changes as this game follows them (`NetGame::travel`).
+#[derive(Resource, Default, Debug)]
+pub struct NetTravel {
+    /// The travel number of the map now loaded (0: the host's first map).
+    pub loaded: u32,
+    /// The one being loaded (set when the travel is announced / seen,
+    /// becomes `loaded` with the map, in `PostMapLoad`).
+    pub pending: Option<u32>,
+    /// Client: the last `NetGame::travel` seen; whether one was seen.
+    pub seen: u32,
+    pub known: bool,
+}
+
+impl NetTravel {
+    /// Does map state stamped `travel` belong to the map loaded here? A
+    /// client accepts nothing before it knows the host's number.
+    pub fn current(&self, travel: u32) -> bool {
+        self.known && travel == self.loaded && self.pending.is_none_or(|p| p == travel)
+    }
+}
+
+/// With a loaded map, the pending travel number becomes the loaded one.
+fn travel_loaded(mut travel: ResMut<NetTravel>, request: Res<crate::world::map::MapRequest>) {
+    if let Some(p) = travel.pending.take() {
+        crate::engine::runlog::kv("net_travel_loaded", &format!("travel={p} was={} map={}", travel.loaded, request.map));
+        travel.loaded = p;
+    }
+}
 
 /// Is this a network game, and which side are we.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
@@ -121,6 +150,8 @@ impl Plugin for NetPlugin {
         let my_peer = matches!(self.mode, NetMode::Host { .. }).then_some(0);
         app.insert_resource(self.mode.clone())
             .insert_resource(lobby::NetLobby { active: self.mode.active(), lobby_timeout: -1, my_peer, ..default() })
+            // The host knows its own numbers from the start.
+            .insert_resource(NetTravel { known: !matches!(self.mode, NetMode::Client { .. }), ..default() })
             .add_message::<lobby::StartLocalMatch>();
         match &self.mode {
             NetMode::Off => return,
@@ -144,6 +175,7 @@ impl Plugin for NetPlugin {
         // system fails with "LastConfirmedInput does not exist".
         app.add_systems(Startup, |mut commands: Commands| commands.insert_resource(lightyear::prelude::PredictionManager::default()));
         app.add_systems(First, keep_zed_time_speed.before(bevy::time::TimeSystems));
+        app.add_systems(crate::world::map_change::PostMapLoad, travel_loaded);
         lobby::build(app);
         pawns::build(app, &self.mode);
         zeds::build(app, &self.mode);
@@ -185,6 +217,7 @@ fn start_query(app: &mut App, port: u16, info: &query::HostInfo) {
 struct QueryInfo(query::SharedInfo);
 
 /// Keeps the player count and "match started" in the query answer current.
+/// The map too: after a map change a joiner loads the new one.
 fn update_query_info(q: Res<QueryInfo>, players: Res<server::NetPlayers>, game: Query<&protocol::NetGame>) {
     let n = players.0.len() as u32;
     let started = game.single().is_ok_and(|g| g.match_started);
@@ -192,6 +225,12 @@ fn update_query_info(q: Res<QueryInfo>, players: Res<server::NetPlayers>, game: 
     if info.players != n || info.match_started != started {
         info.players = n;
         info.match_started = started;
+    }
+    if let Ok(g) = game.single()
+        && info.map != g.map
+    {
+        crate::engine::runlog::kv("net_query_map", &format!("map={} was={}", g.map, info.map));
+        info.map = g.map.clone();
     }
 }
 
@@ -217,5 +256,21 @@ mod tests {
         assert_eq!(NetMode::join("127.0.0.1:9000").unwrap(), NetMode::Client { server: "127.0.0.1:9000".parse().unwrap() });
         assert!(matches!(NetMode::join("localhost").unwrap(), NetMode::Client { server } if server.port() == 7707));
         assert_eq!(NetMode::host(None), NetMode::Host { port: 7707 });
+    }
+
+    #[test]
+    fn map_state_is_only_taken_for_the_loaded_map() {
+        // A client before it has seen the host's record takes nothing.
+        let mut t = NetTravel::default();
+        assert!(!t.current(0));
+        t.known = true;
+        assert!(t.current(0) && !t.current(1));
+        // Travel 1 announced, still on map 0: neither (the old map is
+        // going, the new one is not there yet).
+        t.pending = Some(1);
+        assert!(!t.current(0) && !t.current(1));
+        // Map 1 loaded: only its state.
+        t.loaded = t.pending.take().unwrap();
+        assert!(!t.current(0) && t.current(1));
     }
 }

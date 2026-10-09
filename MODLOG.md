@@ -7762,3 +7762,67 @@ trader menu open at the travel moment is not closed; the victory path
 `RestartGame`); memory grows per map (`rss_mb` 1039 -> 2447 -> 2847; the
 other branch works on it); the old map's music (next commit).
 **Next:** network travel (host announces, clients follow).
+## 2026-10-09 Network games go to the next map together, clients stay connected (map rotation step 3)
+
+**Changed:** `net/protocol.rs`: `NetGame` gains `travel` (how many times
+the host changed map; `map` is now the map it plays or is going to);
+`DoorStates`, `PickupStates`, `ZedSnapshot` carry the `travel` of the map
+they describe. `PROTOCOL_ID` 0x...000A -> 0x...000B. `net/mod.rs`:
+`NetTravel` (loaded / pending / seen travel number; `current(t)`), set
+with the map in `PostMapLoad`; the query answer follows `NetGame.map`
+(a joiner after a map change loads the new map). `net/server.rs`
+`announce_travel`: on the host's `BeginTravel`, `NetGame` gets the map and
+travel + 1, `match_started=false`, `lobby_timeout=-1`, every player's
+`ready=false`, KF's PendingMatch timer from the start, the host's own
+request not ready (`NetLobby::reset_for_new_map`). `net/client.rs`
+`check_game`: a new travel number -> `BeginTravel` (loading screen, map
+change, lobby: game/travel.rs); at the first record a different map is
+loaded in place when installed (before: quit), else the old message and
+quit. netcode timeout 3 -> 20 s (`CONNECTION_TIMEOUT`, both directions:
+the token's value), because a map load freezes both games. Per map:
+the client's zed snapshot buffer and puppet feed (`forget_old_map_zeds`),
+`PendingStart` (every game), the host's `StartState` (placed players,
+last start spot), `PickupNet` (role kept); door/pickup/zed state from
+another map (by `travel`) is dropped and logged. `net/pawns.rs`: back in
+the lobby after a match a game sends its pawn as inactive twice a second
+(others hide the body; the scoreboard gets kills 0 / 250 / deaths 0).
+`net/scoreboard.rs`: the match clock restarts. `menus/mod.rs`: test
+action `lobby_set_ready` (Ready only if not ready, so tests can repeat
+it). Unit test for `NetTravel::current`.
+**Why:** plan step 3: KF's clients reconnect on every map change; ours
+stay connected and load the map in place.
+**Tested how:** two headless games on 127.0.0.1:7751, both `--fps 30`
+(`work/travel/mp.sh`, scratch file, not committed): host `--map KF-Farm
+--mode waves --host 7751 --name Host --settings <scratch with
+map_list=KF-Farm,KF-Manor>`, client `--join 127.0.0.1:7751 --name
+Client` 5 s later; both `lobby_set_ready` every 30 frames, `kill_player`
+once each; host 2400 frames, client 2250. cargo test, clippy.
+**Result:** host `net_travel_announce travel=1 map=KF-Manor
+reason=rotation players=2 unready=[0,15921323153708296311]` t=67.71
+(14.0 s after the end), `map_change` t=68.09, `net_travel_loaded travel=1`,
+`new_map_player ... lobby=true lobby_reason=net_game`, `travel_done
+load_seconds=1.27`. Client: `net_travel_received travel=1 map=KF-Manor`
+(its t=62.83), `map_change` t=63.02, `net_zeds_forgotten`, `travel_done
+load_seconds=1.29`, one old snapshot dropped (`net_zed_snapshot_dropped
+travel=0 loaded=1`), no `net_disconnected`, the same peer id the whole
+run. Lobby on both: `rows=[0:"Host":not_ready,159...:"Client":not_ready]`,
+then both ready, `net_match_start players=2` 6 s after the load (NetWait),
+`net_start_assigned` on KF-Manor starts (3081,-1023,-4562) and
+(2790,-1025,-4556), scoreboard `Client:kills=0:dosh=250:deaths=0 |
+Host(me):kills=0:dosh=250:deaths=0`, the other's body hidden in the lobby
+(`active=false`) and shown at the start. Pickups: host `net_pickups_sent
+shown=7` then `11 travel=1`, client `net_pickups_received shown=7` /
+`11 travel=1`; doors: host's KF-Manor has 8 (`map_lifecycle_loaded
+doors=8`), client `net_doors_received doors=8 travel=1`. Second travel
+(after the zeds won on KF-Manor): `travel=2 map=KF-Farm` on both, wrap of
+the list, client `net_doors_received doors=41 travel=2`, match on KF-Farm
+with both. A third travel with the host alone after the client's frame
+limit. 349 (+1 new) + 39 tests pass; clippy: only the old boss.rs test
+warning.
+**Still broken / not tested:** a client that joins while the host is
+loading, and the "different map at the join -> load it" path (only the
+normal join was run); `PickupNotice`s are not stamped with the map
+(none are sent at the end of a match); a client whose map is missing
+quits as before; a slow machine's load longer than 20 s would drop the
+client; not played by you; Windows not tested.
+**Next:** map voting at the travel moment.

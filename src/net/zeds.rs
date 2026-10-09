@@ -55,6 +55,7 @@ pub(super) fn build(app: &mut App, mode: &NetMode) {
         }
         NetMode::Client { .. } => {
             app.init_resource::<SnapshotBuffer>()
+                .add_systems(crate::world::map_change::MapUnload, forget_old_map_zeds)
                 .add_systems(Update, (follow_wave, receive_snapshots, feed_puppets, send_hits, receive_player_events, receive_kill_credits, receive_projectiles).chain().before(ZedSystems).before(crate::game::waves::wave_timer));
         }
         NetMode::Off => {}
@@ -245,7 +246,7 @@ struct SendStats {
 
 /// `SEND_RATE` times a second: every living zed (and those dead for
 /// under `SEND_DEAD_FOR`) to every client.
-fn send_snapshots(time: Res<Time<Real>>, zeds: Query<&Zed>, mut senders: Query<&mut MessageSender<ZedSnapshot>, RemoteLinks>, mut stats: ResMut<SendStats>) {
+fn send_snapshots(time: Res<Time<Real>>, zeds: Query<&Zed>, mut senders: Query<&mut MessageSender<ZedSnapshot>, RemoteLinks>, mut stats: ResMut<SendStats>, travel: Res<super::NetTravel>) {
     let now = time.elapsed_secs_f64();
     stats.acc += time.delta_secs();
     let interval = 1.0 / SEND_RATE;
@@ -268,7 +269,7 @@ fn send_snapshots(time: Res<Time<Real>>, zeds: Query<&Zed>, mut senders: Query<&
     stats.dead_since.retain(|id, _| alive_ids.contains(id));
     list.sort_by_key(|n| n.id);
     stats.seq += 1;
-    let snap = ZedSnapshot { seq: stats.seq, time: now, zeds: list };
+    let snap = ZedSnapshot { seq: stats.seq, travel: travel.loaded, time: now, zeds: list };
     let bytes = postcard::to_allocvec(&snap).map_or(0, |v| v.len());
     let mut clients = 0;
     for mut tx in &mut senders {
@@ -332,11 +333,20 @@ struct SnapshotBuffer {
     motion_at: f64,
 }
 
-fn receive_snapshots(time: Res<Time<Real>>, mut rx: Query<&mut MessageReceiver<ZedSnapshot>, (With<Client>, Without<LinkOf>)>, mut buf: ResMut<SnapshotBuffer>) {
+fn receive_snapshots(time: Res<Time<Real>>, mut rx: Query<&mut MessageReceiver<ZedSnapshot>, (With<Client>, Without<LinkOf>)>, mut buf: ResMut<SnapshotBuffer>, travel: Res<super::NetTravel>, mut dropped: Local<(u32, u32)>) {
     let now = time.elapsed_secs_f64();
     for mut r in &mut rx {
         for s in r.receive() {
             if s.seq <= buf.last_seq {
+                continue;
+            }
+            // Another map's zeds (sent before or during a map change):
+            // logged once per map.
+            if !travel.current(s.travel) {
+                if dropped.0 != travel.loaded || dropped.1 == 0 {
+                    runlog::kv("net_zed_snapshot_dropped", &format!("travel={} loaded={} seq={}", s.travel, travel.loaded, s.seq));
+                }
+                *dropped = (travel.loaded, dropped.1 + 1);
                 continue;
             }
             buf.last_seq = s.seq;
@@ -360,6 +370,17 @@ fn receive_snapshots(time: Res<Time<Real>>, mut rx: Query<&mut MessageReceiver<Z
         buf.bytes = 0;
         buf.late_frames = 0;
     }
+}
+
+/// A map change: the buffered snapshots and the puppet feed are the old
+/// map's zeds (their puppets are despawned with the map); the sequence
+/// number and the clock offset stay (the host's clock goes on).
+fn forget_old_map_zeds(mut buf: ResMut<SnapshotBuffer>, mut feed: ResMut<PuppetFeed>) {
+    let dropped = buf.snaps.len();
+    buf.snaps.clear();
+    buf.prev.clear();
+    *feed = PuppetFeed::default();
+    runlog::kv("net_zeds_forgotten", &format!("buffered_snapshots={dropped}"));
 }
 
 /// The shortest way between two Unreal yaws.
@@ -567,8 +588,8 @@ mod tests {
     #[test]
     fn puppets_blend_between_snapshots() {
         let snaps = VecDeque::from([
-            ZedSnapshot { seq: 1, time: 1.0, zeds: vec![zed(7, 0, 65000), zed(8, 50, 0)] },
-            ZedSnapshot { seq: 2, time: 1.1, zeds: vec![zed(7, 100, 500)] },
+            ZedSnapshot { seq: 1, travel: 0, time: 1.0, zeds: vec![zed(7, 0, 65000), zed(8, 50, 0)] },
+            ZedSnapshot { seq: 2, travel: 0, time: 1.1, zeds: vec![zed(7, 100, 500)] },
         ]);
         let (s, late) = sample(&snaps, 1.05, 1.0);
         assert!(!late);

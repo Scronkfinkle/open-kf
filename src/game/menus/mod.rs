@@ -286,6 +286,9 @@ fn scripted_to_ids(action: &str, top: Option<Page>) -> Vec<String> {
     let perk_row = |name: &str| Perk::parse(name).map(|p| p.index());
     match action {
         "lobby_ready" => vec!["lobby.ready".into()],
+        // Test action (ours): Ready only if not ready yet (no Unready), so
+        // a test can repeat it until the lobby is there.
+        "lobby_set_ready" => vec!["lobby.set_ready".into()],
         "lobby_select_perk" => vec!["lobby.perks".into()],
         "lobby_options" => vec!["lobby.options".into()],
         "lobby_disconnect" => vec!["lobby.disconnect".into()],
@@ -697,6 +700,13 @@ fn apply(
             net.want_ready = !net.local_ready;
             runlog::kv("lobby_ready", &format!("player=\"{}\" perk={} ready={} net=true", data.player_name, vet.vet.label(), net.want_ready));
         }
+        "lobby.set_ready" if on(Page::Lobby) && net.active => {
+            if !net.want_ready {
+                net.want_ready = true;
+                runlog::kv("lobby_ready", &format!("player=\"{}\" perk={} ready=true net=true test=set_ready", data.player_name, vet.vet.label()));
+            }
+        }
+        "lobby.set_ready" if on(Page::Lobby) => start_match(state, vet, data, had, new_pawn, cursor, "ready"),
         "lobby.ready" if on(Page::Lobby) => {
             // LobbyFooter.OnFooterClick: SendSelectedVeterancyToServer(true),
             // ServerRestartPlayer (the pawn spawns), bReadyToPlay; solo: the

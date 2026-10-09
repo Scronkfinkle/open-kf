@@ -353,6 +353,9 @@ impl Plugin for PickupPlugin {
             .reset_on_map_unload::<Pickups>()
             .reset_on_map_unload::<LocalTouch>()
             .add_systems(crate::world::map_change::MapUnload, |mut models: NonSendMut<PickupModels>| *models = PickupModels::default())
+            // The network messages are about the old map's pickups (the
+            // role stays).
+            .add_systems(crate::world::map_change::MapUnload, |mut net: ResMut<PickupNet>| *net = PickupNet { role: net.role, ..Default::default() })
             .insert_non_send(PickupModels::default())
             .add_message::<PickupUse>()
             .add_message::<PickupUsed>()

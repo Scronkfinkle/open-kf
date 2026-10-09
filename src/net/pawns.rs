@@ -90,13 +90,19 @@ fn send_own_pawn(
     mut outbox: ResMut<HostOutbox>,
     mut acc: Local<f32>,
     mut seq: Local<u32>,
+    mut played: Local<bool>,
 ) {
-    if !lobby.start_sent {
+    // Back in the lobby after a match (a map change): no pawn. Others hide
+    // its body and show the new map's scores (kills 0, starting cash), so
+    // say so twice a second (unreliable channel).
+    let in_lobby = !lobby.start_sent;
+    if in_lobby && !*played {
         return;
     }
+    *played = true;
     let Some(s) = pawns.iter().find(|s| s.local) else { return };
     *acc += time.delta_secs();
-    let interval = 1.0 / SEND_RATE;
+    let interval = if in_lobby { 0.5 } else { 1.0 / SEND_RATE };
     if *acc < interval {
         return;
     }
@@ -105,7 +111,7 @@ fn send_own_pawn(
     let u = PawnUpdate {
         seq: *seq,
         time: time.elapsed_secs_f64(),
-        active: s.active,
+        active: s.active && !in_lobby,
         location: s.location.to_array(),
         velocity: s.velocity.to_array(),
         on_ground: s.on_ground,

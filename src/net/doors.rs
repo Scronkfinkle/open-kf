@@ -45,6 +45,7 @@ fn receive_door_requests(mut links: Query<(Entity, &mut MessageReceiver<DoorRequ
 fn send_door_states(
     time: Res<Time<Real>>,
     net: Res<DoorNet>,
+    travel: Res<super::NetTravel>,
     mut senders: Query<&mut MessageSender<DoorStates>, (With<ClientOf>, With<Connected>, Without<HostClient>)>,
     mut last: Local<(Vec<crate::world::door::DoorNetState>, f32)>,
 ) {
@@ -55,7 +56,7 @@ fn send_door_states(
     }
     let mut clients = 0;
     for mut tx in &mut senders {
-        tx.send::<GameChannel>(DoorStates(net.state.clone()));
+        tx.send::<GameChannel>(DoorStates { travel: travel.loaded, doors: net.state.clone() });
         clients += 1;
     }
     if changed {
@@ -83,13 +84,19 @@ fn send_door_requests(mut net: ResMut<DoorNet>, mut tx: Query<&mut MessageSender
     }
 }
 
-fn receive_door_states(mut rx: Query<&mut MessageReceiver<DoorStates>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<DoorNet>) {
+fn receive_door_states(mut rx: Query<&mut MessageReceiver<DoorStates>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<DoorNet>, travel: Res<super::NetTravel>, mut dropped: Local<u32>) {
     for mut r in &mut rx {
         for s in r.receive() {
-            if net.from_host.as_ref() != Some(&s.0) {
-                runlog::kv("net_doors_received", &format!("doors={}", s.0.len()));
+            // Another map's doors (sent before or during a map change).
+            if !travel.current(s.travel) {
+                *dropped += 1;
+                runlog::kv("net_doors_dropped", &format!("travel={} loaded={} dropped={}", s.travel, travel.loaded, *dropped));
+                continue;
             }
-            net.from_host = Some(s.0);
+            if net.from_host.as_ref() != Some(&s.doors) {
+                runlog::kv("net_doors_received", &format!("doors={} travel={}", s.doors.len(), s.travel));
+            }
+            net.from_host = Some(s.doors);
         }
     }
 }

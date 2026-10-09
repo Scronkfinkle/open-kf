@@ -46,7 +46,8 @@ pub(super) fn build(app: &mut App, port: u16) {
         .add_observer(on_new_link)
         .add_observer(on_connected)
         .add_observer(on_server_started)
-        .add_systems(Update, (receive_requests, apply_host_request, drop_left_players, pending_match).chain().before(super::lobby::LobbySystems));
+        .add_systems(Update, (receive_requests, apply_host_request, drop_left_players, pending_match).chain().before(super::lobby::LobbySystems))
+        .add_systems(Update, announce_travel.after(crate::game::travel::TravelSystems).after(pending_match).before(super::lobby::LobbySystems));
 }
 
 fn start_server(mut commands: Commands, mode: Res<super::NetMode>, map: Res<crate::world::map::MapRequest>, options: Res<crate::game::waves::GameOptions>) {
@@ -78,7 +79,7 @@ fn start_server(mut commands: Commands, mode: Res<super::NetMode>, map: Res<crat
     // KF's GameReplicationInfo.
     commands.spawn((
         Name::new("NetGame"),
-        NetGame { map: map.map.clone(), mode: format!("{:?}", options.mode), length: format!("{:?}", options.length), difficulty: format!("{:?}", options.difficulty), match_started: false, lobby_timeout: -1 },
+        NetGame { map: map.map.clone(), mode: format!("{:?}", options.mode), length: format!("{:?}", options.length), difficulty: format!("{:?}", options.difficulty), match_started: false, lobby_timeout: -1, travel: 0 },
         Replicate::to_clients(NetworkTarget::All),
     ));
     runlog::kv("net_server_starting", &format!("addr={addr} map={} max_players={MAX_PLAYERS} protocol={PROTOCOL_ID:#x}", map.map));
@@ -287,6 +288,45 @@ fn pending_match(time: Res<Time<Real>>, mut timer: ResMut<PendingMatchTimer>, mu
         g.lobby_timeout = -1;
         runlog::kv("net_match_start", &format!("players={} elapsed={}", ready.len(), timer.state.elapsed));
     }
+}
+
+/// The host goes to another map (game/travel.rs `BeginTravel`, from the
+/// map list or the vote): every client is told through `NetGame` (the
+/// map and a new travel number) and loads it while staying connected.
+/// The lobby starts again, as on KF's new map: the match has not begun,
+/// nobody is ready (each player's record keeps the name, perk, level and
+/// character), KF's PendingMatch timer from the start (NetWait, then the
+/// lobby countdown).
+fn announce_travel(
+    mut begins: MessageReader<crate::game::travel::BeginTravel>,
+    mut game: Query<&mut NetGame>,
+    mut players: Query<&mut NetPlayer>,
+    mut timer: ResMut<PendingMatchTimer>,
+    mut lobby: ResMut<NetLobby>,
+    mut travel: ResMut<super::NetTravel>,
+) {
+    let Some(b) = begins.read().last().cloned() else { return };
+    let Ok(mut g) = game.single_mut() else { return };
+    g.travel += 1;
+    g.map = b.map.clone();
+    g.match_started = false;
+    g.lobby_timeout = -1;
+    let mut unready = Vec::new();
+    for mut p in &mut players {
+        if p.ready {
+            p.ready = false;
+            unready.push(p.peer.to_string());
+        }
+    }
+    timer.state = PendingMatch::default();
+    timer.acc = 0.0;
+    // My own request must not make me ready again (apply_host_request).
+    lobby.reset_for_new_map();
+    travel.pending = Some(g.travel);
+    runlog::kv(
+        "net_travel_announce",
+        &format!("travel={} map={} reason={} players={} unready=[{}] clients_stay_connected=true", g.travel, g.map, b.reason, players.iter().count(), unready.join(",")),
+    );
 }
 
 #[cfg(test)]

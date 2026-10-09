@@ -79,8 +79,11 @@ pub struct Travel {
     pub state: TravelState,
     /// Travels finished this run.
     pub done: u32,
-    /// Real seconds when the current travel began, and from which map.
+    /// When the current travel began, from which map, and why.
     began: Option<(std::time::Instant, String, String)>,
+    /// A travel asked for while a map was loading (a network client told
+    /// twice in a row): done after it.
+    queued: Option<BeginTravel>,
 }
 
 impl Travel {
@@ -209,7 +212,8 @@ fn follow_vote(
 fn begin(mut begins: MessageReader<BeginTravel>, mut travel: ResMut<Travel>, mut show: MessageWriter<ShowLoadingScreen>, request: Res<MapRequest>, frames: Res<FrameCount>) {
     let Some(b) = begins.read().last().cloned() else { return };
     if matches!(travel.state, TravelState::Loading { .. }) {
-        runlog::kv("travel_ignored", &format!("reason=loading map={} state={:?}", b.map, travel.state));
+        runlog::kv("travel_queued", &format!("map={} reason={} state={:?}", b.map, b.reason, travel.state));
+        travel.queued = Some(b);
         return;
     }
     runlog::kv("travel_begin", &format!("from={} to={} reason={} frame={}", request.map, b.map, b.reason, frames.0));
@@ -240,6 +244,7 @@ fn finish(
     frames: Res<FrameCount>,
     mut hide: MessageWriter<HideLoadingScreen>,
     mut vote: ResMut<MapVote>,
+    mut again: MessageWriter<BeginTravel>,
 ) {
     let done = loaded.read().last().cloned();
     let TravelState::Loading { map, asked, epoch: before } = travel.state.clone() else { return };
@@ -259,6 +264,12 @@ fn finish(
         hide.write(HideLoadingScreen);
         vote.clear();
         runlog::kv("travel_failed", &format!("map={map} reason=map_change_refused frame={}", frames.0));
+    }
+    if travel.state == TravelState::Idle
+        && let Some(q) = travel.queued.take()
+    {
+        runlog::kv("travel_dequeued", &format!("map={} reason={}", q.map, q.reason));
+        again.write(q);
     }
 }
 

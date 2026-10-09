@@ -87,6 +87,10 @@ fn collect_scores(
     if lobby.start_sent && board.started_at.is_none() {
         board.started_at = Some(now);
     }
+    // Back in the lobby (a new map): the match clock starts again.
+    if !lobby.start_sent {
+        board.started_at = None;
+    }
     let mut rows: Vec<Row> = players
         .iter()
         .map(|p| {
