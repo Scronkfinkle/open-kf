@@ -35,7 +35,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use crate::engine::runlog;
 use crate::game::end_game::RestartGame;
 use crate::game::loading_screen::{HideLoadingScreen, LoadingScreenShown, ShowLoadingScreen};
-use crate::game::map_rotation::{MapRotation, list_installed_maps};
+use crate::game::map_rotation::{MapRotation, installed_name, list_installed_maps};
 use crate::game::map_vote::{MapVote, MapVoteFinished, MapVoteSettings, MapVoteSystems, StartMapVote};
 use crate::net::NetMode;
 use crate::world::map::MapRequest;
@@ -104,7 +104,13 @@ pub struct Travel {
     /// A travel asked for while a map was loading (a network client told
     /// twice in a row): done after it.
     queued: Option<BeginTravel>,
+    /// Travels refused by the map change in a row (the restart is asked
+    /// again a few times, then the game stays on its map).
+    failures: u32,
 }
+
+/// Refused travels in a row before the game stops asking for another.
+const MAX_FAILURES: u32 = 3;
 
 impl Travel {
     /// A vote, a loading screen or a load is in progress.
@@ -243,9 +249,12 @@ fn follow_vote(
     }
 }
 
-/// A travel begins: the loading screen goes up, the trader menu closes
-/// (KF closes the menus on a travel; the other pages close with the load,
-/// `fresh_player_on_new_map`).
+/// A travel begins: the map is checked (and spelt as the install spells
+/// it), the loading screen goes up, the trader menu closes (KF closes the
+/// menus on a travel; the other pages close with the load,
+/// `fresh_player_on_new_map`). Only then is it announced to the clients
+/// (`TravelStarted`), so they are never sent to a map the host cannot load.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn begin(
     mut begins: MessageReader<BeginTravel>,
     mut travel: ResMut<Travel>,
@@ -254,8 +263,27 @@ fn begin(
     frames: Res<FrameCount>,
     mut buy_menu: ResMut<crate::game::buy_menu::BuyMenu>,
     mut started: MessageWriter<TravelStarted>,
+    (mut rotation, save): (ResMut<MapRotation>, Res<RotationSave>),
 ) {
-    let Some(b) = begins.read().last().cloned() else { return };
+    let Some(mut b) = begins.read().last().cloned() else { return };
+    let installed = list_installed_maps(&request.install_root);
+    match installed_name(&b.map, &installed) {
+        Some(m) => b.map = m,
+        None if b.net_travel.is_some() => {
+            // A client: the host's map is not installed here (net/client.rs
+            // quits before this).
+            runlog::kv("travel_refused", &format!("map={} reason=not_installed side=client", b.map));
+            return;
+        }
+        None => {
+            // The single player / host: the map list's next map, else this
+            // map again (KF's "?Restart").
+            let next = next_from_rotation(&mut rotation, &request, &save);
+            let map = installed_name(&next, &installed).unwrap_or_else(|| request.map.clone());
+            runlog::kv("travel_map_missing", &format!("map={} reason={} instead={map}", b.map, b.reason));
+            b.map = map;
+        }
+    }
     if matches!(travel.state, TravelState::Loading { .. }) {
         runlog::kv("travel_queued", &format!("map={} reason={} state={:?}", b.map, b.reason, travel.state));
         travel.queued = Some(b);
@@ -298,6 +326,7 @@ fn finish(
     mut hide: MessageWriter<HideLoadingScreen>,
     mut vote: ResMut<MapVote>,
     mut again: MessageWriter<BeginTravel>,
+    (mut over, mut net_travel): (ResMut<crate::game::end_game::MatchOver>, ResMut<crate::net::NetTravel>),
 ) {
     let done = loaded.read().last().cloned();
     let TravelState::Loading { map, asked, epoch: before } = travel.state.clone() else { return };
@@ -305,6 +334,7 @@ fn finish(
     if let Some(m) = done {
         travel.state = TravelState::Idle;
         travel.done += 1;
+        travel.failures = 0;
         hide.write(HideLoadingScreen);
         vote.clear();
         runlog::kv(
@@ -312,11 +342,19 @@ fn finish(
             &format!("from={from} to={} reason={reason} load={} load_seconds={:.2} total_seconds={:.2} travels={} frame={}", m.map, m.load, m.seconds, since.elapsed().as_secs_f32(), travel.done, frames.0),
         );
     } else if frames.0 > asked + 2 && epoch.load == before {
-        // ChangeMap refused (no such map): stay on this one.
+        // ChangeMap refused (the map went missing since `begin` checked
+        // it): stay on this one, with no travel number waiting, and ask
+        // for the restart again (another map) a few times.
         travel.state = TravelState::Idle;
+        travel.failures += 1;
         hide.write(HideLoadingScreen);
         vote.clear();
-        runlog::kv("travel_failed", &format!("map={map} reason=map_change_refused frame={}", frames.0));
+        net_travel.pending = None;
+        let retry = travel.failures < MAX_FAILURES && over.active();
+        if retry {
+            over.allow_restart();
+        }
+        runlog::kv("travel_failed", &format!("map={map} reason=map_change_refused failures={} restart_again={retry} frame={}", travel.failures, frames.0));
     }
     if travel.state == TravelState::Idle
         && let Some(q) = travel.queued.take()
