@@ -7703,7 +7703,7 @@ the new one not loaded yet). A/B with one binary: the release switched
 off by a temporary environment switch (not committed). Single map
 KF-Farm 600 frames with two shots, old vs new binary: the counted
 `sound_play` / `sound_ambient` / `sound_preload` lines are identical (9
-plays, 119 ambients, 0 missing). cargo test (351 + 39 pass, 1 new test:
+plays, 119 ambients, 0 missing). cargo test (350 + 39 pass, 1 new test:
 map sounds leave the bank, shared ones stay, a playing clip survives),
 clippy (0 new warnings; the 2 old ones in test code: `zeds/boss.rs`,
 `launcher/choices.rs`).
