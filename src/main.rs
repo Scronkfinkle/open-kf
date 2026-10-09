@@ -114,6 +114,9 @@ struct Args {
     /// `--invert-mouse` / `--no-invert-mouse` for this run (else the
     /// settings file's, else off).
     invert_mouse: Option<bool>,
+    /// `--loading-test MAP`: show the loading screen for MAP over the
+    /// running map (game/loading_screen.rs, `LoadingTest`).
+    loading_test: Option<String>,
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -249,6 +252,7 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 args.trader_menu = buy_menu::MenuKind::parse(&n).ok_or(format!("bad --trader-menu value: {n} (nu or kf)"))?;
             }
             "--no-vsync" => args.no_vsync = true,
+            "--loading-test" => args.loading_test = Some(it.next().ok_or("--loading-test needs a map name, e.g. KF-Manor")?),
             "--display" => {
                 let n = it.next().ok_or("--display needs windowed, borderless or fullscreen")?;
                 args.display = graphics::DisplayMode::parse(&n).ok_or(format!("bad --display value: {n} (windowed, borderless or fullscreen)"))?;
@@ -307,7 +311,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--log FILE] [--settings FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--log FILE] [--settings FILE] [--loading-test MAP]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -404,6 +408,9 @@ fn main() -> AppExit {
     if let Some(c) = camera_override {
         app.insert_resource(c);
     }
+    if let Some(map) = args.loading_test.clone() {
+        app.insert_resource(game::loading_screen::LoadingTest { map });
+    }
     let exit = app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(graphics_settings.window()),
@@ -439,7 +446,7 @@ fn main() -> AppExit {
         .add_plugins((bullet_fx::BulletFxPlugin, scope::ScopePlugin, projectile::ProjectilePlugin, zed_beam::ZedBeamPlugin, door::DoorPlugin, waves::GamePlugin, dosh::DoshPlugin, trader::TraderPlugin, buy_menu::BuyMenuPlugin, glass::GlassPlugin, zones::ZonesPlugin, pain::PainPlugin))
         .add_plugins((overlay::OverlayPlugin, armour::ArmourPlugin, trader_path::TraderPathPlugin, trader_arrow::TraderArrowPlugin, hud::HudPlugin, zed_time::ZedTimePlugin, view_target::ViewTargetPlugin, audio::mixer::AudioPlugin, player_sound::PlayerSoundPlugin, music::MusicPlugin, map_sound::MapSoundPlugin, trader_voice::TraderVoicePlugin))
         .add_plugins((player::hit_cam::HitCamPlugin, render::hit_blur::HitBlurPlugin, shopkeeper::ShopkeeperPlugin, end_game::EndGamePlugin, render::actor_light::ActorLightPlugin, render::baked::BakedPlugin))
-        .add_plugins((perks::PerksPlugin, game::healing::HealingPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, game::pickups::PickupPlugin, net_plugin))
+        .add_plugins((perks::PerksPlugin, game::healing::HealingPlugin, player::body::BodyPlugin, game::menus::MenusPlugin, game::pickups::PickupPlugin, net_plugin, game::loading_screen::LoadingScreenPlugin))
         .insert_resource(view_target::ViewTarget::starting_behind(behind_view, behind_yaw))
         .insert_resource(lobby)
         .insert_resource(auto_shot)
