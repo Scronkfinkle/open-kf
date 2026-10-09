@@ -29,7 +29,7 @@ use crate::engine::runlog;
 
 const HUD_CLASS: &str = "KFMod.HUDKillingFloor";
 /// UI image nodes reused every frame (more than the HUD ever draws).
-const POOL: usize = 160;
+const POOL: usize = 320;
 
 /// IntBox: X1, Y1, X2, Y2 in texels.
 #[derive(Clone, Copy, Debug, Default)]
@@ -121,6 +121,7 @@ struct Hud {
     white: Option<usize>,
     enemy_bar: Vec2,
     bar_cutoff: f32,
+    inventory: InventoryLayout,
     loaded: bool,
 }
 
@@ -352,6 +353,26 @@ struct WeaponHud {
     husk: bool,
     /// KFWeapon.bTorchEnabled: the flashlight box.
     torch: bool,
+    /// KFWeapon HudImage / SelectedHudImage: the weapon bar's pictures.
+    hud_image: Option<usize>,
+    selected_image: Option<usize>,
+}
+
+/// HUDKillingFloor's inventory display (the weapon bar) defaults:
+/// InventoryX / InventoryY (fractions of the width / height),
+/// InventoryBoxWidth / InventoryBoxHeight / BorderSize (fractions of the
+/// width), InventoryFadeTime, InventoryBackgroundTexture and
+/// SelectedInventoryBackgroundTexture.
+#[derive(Clone, Copy, Debug, Default)]
+struct InventoryLayout {
+    x: f32,
+    y: f32,
+    box_w: f32,
+    box_h: f32,
+    border: f32,
+    fade: f32,
+    background: Option<usize>,
+    selected_background: Option<usize>,
 }
 
 /// The widgets H1 draws (all SpriteWidgets and NumericWidgets of the
@@ -665,6 +686,8 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
                 medic_gun: is(&c, &["MP7MMedicGun", "MP5MMedicGun"]),
                 husk: is(&c, &["HuskGun"]),
                 torch: matches!(defaults.get(&c, "bTorchEnabled"), Some((Value::Bool(true), _))),
+                hud_image: weapon_image(&mut loader, &defaults, &c, "HudImage"),
+                selected_image: weapon_image(&mut loader, &defaults, &c, "SelectedHudImage"),
             },
         );
     }
@@ -717,9 +740,49 @@ fn load_hud(mut hud: ResMut<Hud>, request: Res<MapRequest>, mut images: ResMut<A
         "hud_health_bar",
         &format!("white={} length={} height={} cutoff={}", hud.white.is_some(), hud.enemy_bar.x, hud.enemy_bar.y, hud.bar_cutoff),
     );
+    hud.inventory = InventoryLayout {
+        x: fdef("InventoryX"),
+        y: fdef("InventoryY"),
+        box_w: fdef("InventoryBoxWidth"),
+        box_h: fdef("InventoryBoxHeight"),
+        border: fdef("BorderSize"),
+        fade: fdef("InventoryFadeTime"),
+        background: obj("InventoryBackgroundTexture").and_then(|(pkg, r)| loader.texture(&pkg, r)),
+        selected_background: obj("SelectedInventoryBackgroundTexture").and_then(|(pkg, r)| loader.texture(&pkg, r)),
+    };
+    let size_of = |t: Option<usize>| t.map(|i| loader.textures[i].size);
+    runlog::kv(
+        "hud_weapon_bar",
+        &format!(
+            "x={} y={} box_w={} box_h={} border={} fade={} background={:?} selected_background={:?} weapons_with_images={}/{}",
+            hud.inventory.x,
+            hud.inventory.y,
+            hud.inventory.box_w,
+            hud.inventory.box_h,
+            hud.inventory.border,
+            hud.inventory.fade,
+            size_of(hud.inventory.background),
+            size_of(hud.inventory.selected_background),
+            weapons.values().filter(|w| w.hud_image.is_some() && w.selected_image.is_some()).count(),
+            weapons.len()
+        ),
+    );
     hud.textures = loader.textures;
     hud.weapons = weapons;
     hud.loaded = true;
+}
+
+/// A weapon's HudImage / SelectedHudImage; the later weapons leave it
+/// empty and name it in HudImageRef / SelectedHudImageRef instead (a
+/// string, loaded by name: KFWeapon.PreloadAssets).
+fn weapon_image(loader: &mut Loader, defaults: &ClassDefaults, c: &ObjectHandle, prop: &str) -> Option<usize> {
+    match defaults.get(c, prop) {
+        Some((Value::Object(r), pkg)) if r != ObjectRef::Null => loader.texture(&pkg, r),
+        _ => match defaults.get(c, &format!("{prop}Ref")) {
+            Some((Value::Str(path), _)) => loader.texture_path(&path),
+            _ => None,
+        },
+    }
 }
 
 /// One textured rectangle to draw, in window pixels.
@@ -888,7 +951,7 @@ fn draw_hud(
     mut spawned: Local<bool>,
     mut messages: ResMut<LocalMessages>,
     hit: Res<HitDisplay>,
-    vet: Res<crate::game::perks::Veterancy>,
+    (vet, weapon_bar, mut bar_logged): (Res<crate::game::perks::Veterancy>, Res<crate::weapons::weapon::weapon_bar::WeaponBar>, Local<String>),
     menus: Res<crate::game::menus::MenuState>,
     mut bars: ZedBarParams,
 ) {
@@ -1138,6 +1201,11 @@ fn draw_hud(
         display_local_messages(&mut c, &hud, &mut messages, time.elapsed_secs());
     }
 
+    // DrawInventory: the last thing DrawHUD draws.
+    if !won {
+        draw_weapon_bar(&mut c, &hud, &weapon_bar, now, &mut bar_logged);
+    }
+
     if script.0.iter().any(|(f, a)| *f == frames.0 && a == "hud_dump") {
         let lines: Vec<String> = c
             .quads
@@ -1162,6 +1230,130 @@ fn draw_hud(
         image.rect = Some(q.uv);
         image.color = Color::srgba_u8(q.tint[0], q.tint[1], q.tint[2], q.tint[3]);
         *vis = Visibility::Inherited;
+    }
+}
+
+/// Canvas.DrawTileStretched (native; the same reading as the menus'
+/// painter): the texture's four quarter corners keep their size (shrunk
+/// when the box is smaller), the middle row and column of texels stretch
+/// along the edges and over the middle.
+fn stretched(c: &mut Canvas, hud: &Hud, texture: Option<usize>, rect: Rect, tint: [u8; 4], what: &str) {
+    let Some(t) = texture else { return };
+    let size = hud.textures[t].size;
+    let mid = (size / 2.0).floor();
+    let corner = Vec2::new(mid.x.min(rect.width() / 2.0), mid.y.min(rect.height() / 2.0));
+    let xs = [
+        (rect.min.x, rect.min.x + corner.x, 0.0, mid.x),
+        (rect.min.x + corner.x, rect.max.x - corner.x, mid.x - 0.5, mid.x + 0.5),
+        (rect.max.x - corner.x, rect.max.x, size.x - mid.x, size.x),
+    ];
+    let ys = [
+        (rect.min.y, rect.min.y + corner.y, 0.0, mid.y),
+        (rect.min.y + corner.y, rect.max.y - corner.y, mid.y - 0.5, mid.y + 0.5),
+        (rect.max.y - corner.y, rect.max.y, size.y - mid.y, size.y),
+    ];
+    for (yi, y) in ys.iter().enumerate() {
+        for (xi, x) in xs.iter().enumerate() {
+            if x.1 - x.0 < 0.01 || y.1 - y.0 < 0.01 {
+                continue;
+            }
+            c.quads.push(Quad { texture: t, uv: Rect::new(x.2, y.2, x.3, y.3), screen: Rect::new(x.0, y.0, x.1, y.1), tint, what: format!("{what}[{yi}{xi}]") });
+        }
+    }
+}
+
+/// One box of the weapon bar: where, which weapon (None: an empty group's
+/// strip), highlighted or not.
+#[derive(Debug, PartialEq)]
+struct BarBox {
+    screen: Rect,
+    class: Option<String>,
+    highlighted: bool,
+}
+
+/// HUDKillingFloor.DrawInventory's layout: column `g` at x = (InventoryX +
+/// g x InventoryBoxWidth) x ClipX, from y = InventoryY x ClipY down, each
+/// box InventoryBoxWidth x InventoryBoxHeight (both x ClipX); an empty
+/// group is one box a quarter as tall.
+fn weapon_bar_boxes(inv: &InventoryLayout, clip: Vec2, items: &[(String, u8)], highlighted: Option<&str>) -> Vec<BarBox> {
+    let (w, h) = (inv.box_w * clip.x, inv.box_h * clip.x);
+    let mut out = Vec::new();
+    for g in 0..crate::weapons::weapon::weapon_bar::GROUPS {
+        let x = (inv.x + inv.box_w * g as f32) * clip.x;
+        let mut y = inv.y * clip.y;
+        let mut any = false;
+        for (class, _) in items.iter().filter(|(_, ig)| usize::from(*ig) == g + 1) {
+            any = true;
+            let hl = highlighted.is_some_and(|hc| hc.eq_ignore_ascii_case(class));
+            out.push(BarBox { screen: Rect::new(x, y, x + w, y + h), class: Some(class.clone()), highlighted: hl });
+            y += h;
+        }
+        if !any {
+            out.push(BarBox { screen: Rect::new(x, y, x + w, y + h * 0.25), class: None, highlighted: false });
+        }
+    }
+    out
+}
+
+/// HUDKillingFloor.DrawInventory: the background (the selected one for the
+/// highlighted weapon, DrawTileStretched), the weapon's HudImage /
+/// SelectedHudImage texels (0,0)-(256,192) inside it, BorderSize x ClipX
+/// in from each side; colour white, alpha fading in / out over
+/// InventoryFadeTime.
+fn draw_weapon_bar(c: &mut Canvas, hud: &Hud, bar: &crate::weapons::weapon::weapon_bar::WeaponBar, now: f32, logged: &mut String) {
+    let inv = hud.inventory;
+    let Some(start) = bar.fade_start else { return };
+    let t = if inv.fade > 0.0 { ((now - start) / inv.fade).clamp(0.0, 1.0) } else { 1.0 };
+    let alpha = if bar.shown {
+        t
+    } else if t < 1.0 {
+        1.0 - t
+    } else {
+        return;
+    };
+    let tint = [255, 255, 255, (alpha * 255.0) as u8];
+    // KF draws in physical pixels (ClipX); our quads are logical pixels.
+    let clip = c.size * c.scale_factor;
+    let boxes = weapon_bar_boxes(&inv, clip, &bar.items, bar.highlighted.as_deref());
+    let border = inv.border * clip.x / c.scale_factor;
+    for b in &boxes {
+        let screen = Rect::from_corners(b.screen.min / c.scale_factor, b.screen.max / c.scale_factor);
+        let short = b.class.as_deref().map_or("empty", |c| c.trim_start_matches("KFMod."));
+        let bg = if b.highlighted { inv.selected_background } else { inv.background };
+        stretched(c, hud, bg, screen, tint, &format!("WeaponBarBG.{short}"));
+        let Some(class) = &b.class else { continue };
+        let w = hud.weapons.get(&class.to_ascii_lowercase());
+        let image = w.and_then(|w| if b.highlighted { w.selected_image } else { w.hud_image });
+        if let Some(image) = image {
+            c.quads.push(Quad {
+                texture: image,
+                uv: Rect::new(0.0, 0.0, 256.0, 192.0),
+                screen: Rect::new(screen.min.x + border, screen.min.y + border, screen.max.x - border, screen.max.y - border),
+                tint,
+                what: format!("WeaponBarIcon.{short}"),
+            });
+        }
+    }
+    if bar.shown {
+        let key = format!("{:.0}x{:.0} {:?} {:?}", clip.x, clip.y, bar.items, bar.highlighted);
+        if *logged != key {
+            *logged = key;
+            let rects: Vec<String> = boxes
+                .iter()
+                .map(|b| {
+                    format!(
+                        "{}{}:({:.0},{:.0})-({:.0},{:.0})",
+                        b.class.as_deref().map_or("empty", |c| c.trim_start_matches("KFMod.")),
+                        if b.highlighted { "*" } else { "" },
+                        b.screen.min.x,
+                        b.screen.min.y,
+                        b.screen.max.x,
+                        b.screen.max.y
+                    )
+                })
+                .collect();
+            runlog::kv("weapon_bar_layout", &format!("window={:.0}x{:.0} boxes={} {}", clip.x, clip.y, boxes.len(), rects.join(" ")));
+        }
     }
 }
 
@@ -1500,6 +1692,24 @@ mod tests {
     }
 
     /// VomOsc: U stretches by up to 3% at 1.5 Hz, V pans by up to 3% at 0.5 Hz.
+    #[test]
+    fn weapon_bar_boxes_match_the_2560_screenshot() {
+        let inv = InventoryLayout { x: 0.22, y: 0.0, box_w: 0.1, box_h: 0.075, border: 0.005, ..default() };
+        let items: Vec<(String, u8)> = [("KFMod.Knife", 1), ("KFMod.Single", 2), ("KFMod.Syringe", 5), ("KFMod.Welder", 5)]
+            .iter()
+            .map(|(c, g)| (c.to_string(), *g))
+            .collect();
+        let b = weapon_bar_boxes(&inv, Vec2::new(2560.0, 1440.0), &items, Some("KFMod.Single"));
+        assert_eq!(b.len(), 6);
+        // Knife at x = 0.22 x 2560 = 563.2, 256 x 192.
+        assert!((b[0].screen.min.x - 563.2).abs() < 0.01 && (b[0].screen.width() - 256.0).abs() < 0.01 && (b[0].screen.height() - 192.0).abs() < 0.01);
+        assert!(b[1].highlighted && !b[0].highlighted);
+        // Groups 3 and 4 are empty strips, 48 tall.
+        assert!(b[2].class.is_none() && (b[2].screen.height() - 48.0).abs() < 0.01);
+        // Welder under the syringe in the fifth column.
+        assert!((b[5].screen.min.y - 192.0).abs() < 0.01 && (b[5].screen.min.x - b[4].screen.min.x).abs() < 0.01);
+    }
+
     #[test]
     fn vomit_wobble() {
         let o = Oscillator { rate: [1.5, 0.5], phase: [0.0; 2], amplitude: [0.03; 2], kind: [1, 0] };

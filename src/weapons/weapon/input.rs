@@ -392,6 +392,30 @@ pub(super) fn try_zoom_in(w: &mut Weapons, in_air: bool, reason: &str, mode: &st
     }
 }
 
+/// Pawn.PendingWeapon = `next` and the weapon in hand is put down (slot
+/// keys, the weapon bar, quick heal, the flashlight key). While putting a
+/// weapon down, the new choice replaces the pending one.
+fn select_weapon(w: &mut Weapons, next: usize) {
+    match w.action {
+        Action::PutDown { .. } => w.action = Action::PutDown { next },
+        Action::Grenade { .. } => {}
+        _ if next != w.current => {
+            // KFWeapon.PutDown: a one-round reload is interrupted; any
+            // other reload refuses the switch.
+            interrupt_reload(w, "switch");
+            if w.action == Action::Reload {
+                runlog::kv("switch_refused", &format!("weapon={} reason=reloading", w.defs[w.current].item_name));
+            } else {
+                zoom_out(w, true, "switch");
+                w.pending_swings.clear();
+                w.firing = [false; 2];
+                set_action(w, Action::PutDown { next });
+            }
+        }
+        _ => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)] // Bevy system parameters
 pub(super) fn weapon_input(
     time: Res<Time>,
@@ -426,7 +450,7 @@ pub(super) fn weapon_input(
         Res<crate::game::healing::Teammates>,
         MessageWriter<crate::game::healing::HealTeammate>,
     ),
-    (mut scripted_held, aim_in): (
+    (mut scripted_held, aim_in, mut bar): (
         Local<[bool; 2]>,
         (
             Local<(bool, u32)>,
@@ -434,6 +458,7 @@ pub(super) fn weapon_input(
             Res<crate::game::menus::MenuState>,
             Res<crate::game::buy_menu::BuyMenu>,
         ),
+        ResMut<super::weapon_bar::WeaponBar>,
     ),
 ) {
     let Some(mut w) = weapons else {
@@ -447,6 +472,8 @@ pub(super) fn weapon_input(
     // Dead (a network game goes on without this player until the wave
     // ends): no weapon.
     if health.dead {
+        // Ours: the bar closes (KF only stops drawing it without a pawn).
+        bar.hide(time.elapsed_secs(), "death");
         w.firing = [false; 2];
         // Pawn.Died: the weapon is gone; the new pawn's starts not aiming.
         zoom_out(&mut w, true, "death");
@@ -540,15 +567,17 @@ pub(super) fn weapon_input(
             runlog::kv("weapon_slot_key", &format!("group={group} choice={:?}", choice.map(|i| w.defs[i].item_name)));
         }
     }
+    // The wheel (User.ini MouseWheelUp=NextWeapon, MouseWheelDown=
+    // PrevWeapon): KFPlayerController sends both to the HUD, which opens
+    // the weapon bar and moves its highlight; nothing switches until Fire
+    // (weapon_bar.rs).
+    bar.items = w.defs.iter().filter(|d| !d.gone && (1..=5).contains(&d.group)).map(|d| (d.class.clone(), d.group)).collect();
     let wheel = scroll.delta.y;
-    let pending = match w.action {
-        Action::PutDown { next } => next,
-        _ => w.current,
-    };
+    let in_hand = w.defs[w.current].class.clone();
     if wheel > 0.0 || scripted("next") {
-        choice = step_weapon(&slots(&w.defs), pending, true);
+        bar.step(time.elapsed_secs(), &in_hand, true);
     } else if wheel < 0.0 || scripted("prev") {
-        choice = step_weapon(&slots(&w.defs), pending, false);
+        bar.step(time.elapsed_secs(), &in_hand, false);
     }
     // KFPawn.QuickHeal (Q): hurt, a Syringe charged to 95% or more: bring
     // it out (or, if it is in hand, inject now).
@@ -627,24 +656,7 @@ pub(super) fn weapon_input(
         }
     }
     if let Some(next) = choice {
-        match w.action {
-            Action::PutDown { .. } => w.action = Action::PutDown { next },
-            Action::Grenade { .. } => {}
-            _ if next != w.current => {
-                // KFWeapon.PutDown: a one-round reload is interrupted; any
-                // other reload refuses the switch.
-                interrupt_reload(&mut w, "switch");
-                if w.action == Action::Reload {
-                    runlog::kv("switch_refused", &format!("weapon={} reason=reloading", w.defs[w.current].item_name));
-                } else {
-                    zoom_out(&mut w, true, "switch");
-                    w.pending_swings.clear();
-                    w.firing = [false; 2];
-                    set_action(&mut w, Action::PutDown { next });
-                }
-            }
-            _ => {}
-        }
+        select_weapon(&mut w, next);
     }
     // KFPawn.ThrowGrenade (G): a frag in stock, the weapon's next shot due
     // within 0.1 s, not reloading (a one-round reload is interrupted).
@@ -746,6 +758,26 @@ pub(super) fn weapon_input(
         (grabbed && mouse.just_pressed(buttons[i].0)) || scripted(buttons[i].1) || pressed_by_script[i]
     });
     let mut held = held;
+    // KFPlayerController.Fire while the weapon bar is shown: HUD.SelectWeapon
+    // (hide it; the highlighted weapon becomes the pending one, the one in
+    // hand is put down) and bFire = 0, so the click does not shoot.
+    if pressed[0] && bar.shown {
+        bar.hide(now, "fire");
+        bar.swallow_fire = true;
+        let pick = bar.highlighted.as_deref().and_then(|c| owned_index(&w, c)).filter(|&i| w.defs[i].group > 0);
+        runlog::kv("weapon_bar_select", &format!("weapon={} from={}", pick.map_or("none", |i| w.defs[i].item_name), w.defs[w.current].item_name));
+        if let Some(next) = pick {
+            select_weapon(&mut w, next);
+        }
+    }
+    if bar.swallow_fire {
+        if held[0] {
+            held[0] = false;
+            pressed[0] = false;
+        } else {
+            bar.swallow_fire = false;
+        }
+    }
     if force_alt {
         held[1] = true;
         pressed[1] = true;

@@ -7355,3 +7355,46 @@ Mouse Lag". Unit tests not run by me.
 **Result:** Build passes; clippy 1 warning (`boss.rs` test helper `rolls`, already in main). HoE: `difficulty level=hoe game_difficulty=7`, `wave_start ... wave_max_monsters=20 difficulty_mod=1.7 zeds=34`, 34 zeds spawned; Clot `health=227 health_max=227.5 head_health=43.75 melee_damage=7 ground_speed=136.5` (130 x 1.75 cut; 6 x 1.3125 = 7.875 -> 7; 105 x 1.3), Gorefast `health=437 melee_damage=19 ground_speed=156`; dosh starts at 100, Clot kill 7, Gorefast 13 (12 x 0.65 x 1.75 = 13.65). Beginner: zeds=14, Clot `health=65 head_health=12.5 melee_damage=1 ground_speed=99.75`, Gorefast melee 3, start 300, Clot kill 24, Gorefast 42, wave 2 countdown 90. No flag: Normal, the same numbers as before (Clot 130/4/105, zeds=20, kill 12, countdown 60).
 **Still broken / not tested:** Unit tests not run (refused). Launcher spinner, lobby and scoreboard names not looked at. Network sharing (host Hard, joiner without the flag) not tested. Player count is still "one player" everywhere (KF's NumPlayers rules). D2 not done: zed behaviour by difficulty (charge chances, Scrake/Fleshpound rage, Husk fire rate and fire resistance, crossbow resistance, AI skill), ReduceDamage self-damage at <= 3, pickup respawn times, Sharpshooter Dualies on HoE. The squad wait x 0.85 has a unit test (not run) and was not checked in a run.
 **Next:** You run the tests and try the launcher; then D2.
+## 2026-10-08 Weapon selection bar (the boxes along the top of the screen)
+
+**Changed:** new `src/weapons/weapon/weapon_bar.rs` (bar state, KF's
+next/previous rule); `src/weapons/weapon/input.rs` (the wheel opens the
+bar and moves the highlight instead of switching at once; Fire while it
+is shown takes the highlighted weapon and does not shoot; the switch rule
+moved, unchanged, into `select_weapon`); `src/weapons/weapon/mod.rs`
+(module, resource); `src/game/menus/mod.rs` (Escape while the bar is shown
+only hides it); `src/game/hud.rs` (layout and textures from
+HUDKillingFloor's defaults, every weapon's HudImage / SelectedHudImage or
+their `...Ref` names, the drawing, logs; quad pool 160 -> 320);
+docs/DESIGN.md "The weapon selection bar".
+**Why:** KF's weapon bar was missing. Copied from
+HUDKillingFloor.DrawInventory / ShowInventory / NextWeapon / PrevWeapon /
+SelectWeapon / HideInventory and KFPlayerController.NextWeapon /
+PrevWeapon / Fire / ShowMidGameMenu. KF has no timeout (only Fire and
+Escape hide it) and the number keys do not touch it, so ours does the same.
+**Tested how:** headless KF-WestLondon at 2560 x 1440: `--input
+150:next,160:prev --screenshot 200` (looked at, next to
+`references/weapon_top_hud.jpg`); `--input
+150:next,160:next,180:fire,300:next,310:pause_menu,340:fire --frames 420`;
+at 1280 x 720 `--input 150:prev,160:fire,300:fire,330:pause_menu
+--frames 380`; `--give AK47AssaultRifle,Shotgun,Machete,Deagle,LAW
+--input 200:next,210:next --screenshot 240`. Clippy: 0 warnings.
+**Result:** `hud_weapon_bar x=0.22 y=0 box_w=0.1 box_h=0.075 border=0.005
+fade=0.3 background=256x128 ... weapons_with_images=47/48`;
+`weapon_bar_layout window=2560x1440 boxes=6 Knife:(563,0)-(819,192)
+Single*:(819,0)-(1075,192) empty:(1075,0)-(1331,48)
+empty:(1331,0)-(1587,48) Syringe:(1587,0)-(1843,192)
+Welder:(1587,192)-(1843,384)`, the same places as the screenshot.
+Fire: `weapon_bar shown=false ... reason=fire`, `weapon_bar_select
+weapon=Welder from=9mm Tactical`, put-down then Welder select; the
+selecting click gave no `melee_swing` with the knife, the next click did.
+Escape with the bar shown: `reason=escape`, no pause menu; with it hidden
+the pause menu opened (`menu_action id=pause.open`).
+**Still broken / not tested:** a real mouse wheel and button (the virtual
+display has none; driven by the `next` / `prev` / `fire` test actions);
+the fade's look (logs only); `cargo test` was refused for me, so the new
+unit tests have not been run. Escape hiding the bar still lets the mouse
+go (the camera's cursor release does not know about the bar); click to
+take it back. Ours: the bar closes on death. DrawTileStretched is the same
+guess the menus use. Not played by you.
+**Next:** your play test with the wheel.
