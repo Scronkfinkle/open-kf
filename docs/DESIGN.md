@@ -7236,10 +7236,28 @@ step 1.
   lobby opens again (in a network game always; in single player when
   the game started in the lobby). Name, perk, level and character stay.
 - Network: the host's shared game record (`NetGame`) carries the map and
-  a travel number. When the host travels it raises the number, marks
-  everyone not ready and restarts KF's lobby timer; clients that see the
-  new number load the map in place and stay connected. Door, pickup and
-  zed messages carry the travel number of their map, so a message about
-  the old map that arrives late is dropped. The connection timeout is
-  20 s so a map load does not drop anyone. A player who joins later
-  loads whatever map the host is on.
+  a travel number. A travel is checked before anyone is told: the map
+  must be installed (any spelling is turned into the install's file
+  name; a missing one is replaced by the map list's next map). When the
+  host's travel really starts it raises the number, marks everyone not
+  ready and restarts KF's lobby timer; clients that see the new number
+  load the map in place and stay connected (a client that does not have
+  the map quits with a message, as at the join). Every message about one
+  map (door, pickup and zed state; pickup notices, hits, kill credits,
+  start spots, projectile copies; the vote window) carries the travel
+  number of the sender's map, and the other side drops one about
+  another map. Ready also carries it, so a Ready sent before a client
+  loaded the new map does not count there. While the match is over
+  (`NetGame.match_over`) a player who joins waits in the lobby; during a
+  vote they see the window and their vote counts (KF's NumPlayers).
+- A map load freezes the game for one long frame, and nothing is sent
+  during it. Measured on this machine, all 37 maps with a client
+  attached: the longest frame was 4.3 s (KF-Clandestine; most maps 1-3
+  s). The connection timeout is 20 s (tested: a host frozen 15 s keeps
+  its clients, 25 s drops them; a player can connect while the host is
+  frozen). A slower disk or CPU that makes a load longer than 20 s would
+  drop the clients; a keep-alive while loading would need the load moved
+  off the main thread.
+- A player who joins later loads whatever map the host is on; one who
+  typed another map (no answer from the host's query port) loads the
+  host's in place.

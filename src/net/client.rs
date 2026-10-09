@@ -16,7 +16,9 @@ use crate::engine::runlog;
 /// Give up when not connected after this many seconds.
 const CONNECT_TIMEOUT: f32 = 15.0;
 /// netcode's timeout (seconds without a packet, both ways): longer than a
-/// map load (game/travel.rs freezes the game while it loads).
+/// map load (game/travel.rs freezes the game while it loads; nothing is
+/// sent in that frame). Measured: the longest load frame of all 37 maps
+/// was 4.3 s here (KF-Clandestine; `net_long_frame` in the log).
 const CONNECTION_TIMEOUT: i32 = 20;
 
 pub(super) fn build(app: &mut App, server: SocketAddr) {
