@@ -1793,6 +1793,33 @@ fn mesh_materials(install: &Install, file: &str, name: &str) -> Result<bool, Str
         .ok_or("mesh not found")?;
     let sm = ue_assets::static_mesh::read_static_mesh(&lp.pkg, i).map_err(|e| e.to_string())?;
     let h = ObjectHandle { package: lp.clone(), export: i };
+    // Geometry: vertex count, bounds (mesh units) and the UV range of each
+    // UV channel (how often a texture repeats across the mesh).
+    let uv_ranges: Vec<String> = sm
+        .uvs
+        .iter()
+        .map(|ch| {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in ch {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+            format!("({:.2},{:.2})..({:.2},{:.2})", lo[0], lo[1], hi[0], hi[1])
+        })
+        .collect();
+    println!(
+        "vertices={} bounds=({:.0},{:.0},{:.0})..({:.0},{:.0},{:.0}) uv_ranges=[{}]",
+        sm.positions.len(),
+        sm.bounds.min[0],
+        sm.bounds.min[1],
+        sm.bounds.min[2],
+        sm.bounds.max[0],
+        sm.bounds.max[1],
+        sm.bounds.max[2],
+        uv_ranges.join(" ")
+    );
     for (si, sec) in sm.sections.iter().enumerate() {
         let rf = sm.materials.get(si).copied().unwrap_or(ObjectRef::Null);
         let m = ue_assets::material::resolve(&set, &h, rf);
