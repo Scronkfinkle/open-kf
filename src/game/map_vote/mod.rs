@@ -9,7 +9,7 @@
 //! single-player game, and neither do we unless `MapVoteSettings`
 //! says so (`single_player`, set by `--vote-test`).
 //!
-//! **For the map change (plan step 3)**, the hooks are:
+//! **The map change** (game/travel.rs) uses these hooks:
 //! - `MapVoteSettings` (a `VoteConfig`): KF's settings; `enabled` and
 //!   `time_limit` come from the launcher / `--map-vote` (main.rs).
 //! - Write `StartMapVote { candidates, current_map }` where KF calls
@@ -57,7 +57,7 @@ pub struct CastMapVote {
     pub map: String,
 }
 
-/// A map won (host / single player). Step 3 travels to it.
+/// A map won (host / single player). game/travel.rs travels to it.
 #[derive(Message, Clone, Debug)]
 pub struct MapVoteFinished {
     pub map: String,
@@ -158,7 +158,7 @@ impl Plugin for MapVotePlugin {
             .add_message::<CastMapVote>()
             .add_message::<MapVoteFinished>()
             .add_systems(Startup, setup)
-            .add_systems(Update, (vote_test, start_vote, follow_players, cast_votes, tick, publish, announce, travel_not_wired).chain().in_set(MapVoteSystems));
+            .add_systems(Update, (vote_test, start_vote, follow_players, cast_votes, tick, publish, announce).chain().in_set(MapVoteSystems));
     }
 }
 
@@ -338,13 +338,5 @@ fn announce(time: Res<Time<Real>>, mut vote: ResMut<MapVote>, mut finished: Mess
     runlog::kv("map_vote_won", &format!("text=\"{}\" role={:?}", rules::won_text(&result.map), vote.role));
     if vote.role != VoteRole::Client {
         finished.write(MapVoteFinished { map: result.map.clone(), reason: result.reason });
-    }
-}
-
-/// Until the map change is built (plan step 3) nothing travels: the
-/// winner is only logged.
-fn travel_not_wired(mut finished: MessageReader<MapVoteFinished>) {
-    for f in finished.read() {
-        runlog::kv("map_vote_travel", &format!("map={} reason={} travel=not_wired", f.map, f.reason.word()));
     }
 }

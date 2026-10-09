@@ -7826,3 +7826,43 @@ normal join was run); `PickupNotice`s are not stamped with the map
 quits as before; a slow machine's load longer than 20 s would drop the
 client; not played by you; Windows not tested.
 **Next:** map voting at the travel moment.
+## 2026-10-09 Map voting decides the next map in network games (map rotation step 4 wiring)
+
+**Changed:** `game/map_vote/mod.rs`: the `travel_not_wired` stand-in is
+gone; game/travel.rs (already holding the branch since the single-player
+commit) sends `StartMapVote` at the travel moment when voting is on and
+the game is a network host (or with the `--vote-test` switch in single
+player), travels on `MapVoteFinished` (`map_vote_travel ...
+travel=wired`), and falls back to the map list when the vote did not
+start. `game/travel.rs`: the vote is cleared in `PostMapLoad` too, so the
+vote window's PreUpdate check does not reopen it over the new lobby for a
+moment (seen in the first run: `menu_open page=MapVote time_left=0` right
+after the load); a `menu_open page=Lobby reason=new_map` line.
+**Why:** plan step 4 wiring (KF: RestartGame -> VotingHandler
+HandleRestartGame holds the travel; standalone games never vote).
+**Tested how:** host + client as in the network commit, host with
+`--map-vote --vote-time 10`, client `vote:KF-Offices` every 30 frames;
+then a third game (`Late`) joining the host after two map changes; single
+player with `--map-vote`. cargo test, clippy.
+**Result:** host `travel_decide vote=true` t=54.17, `map_vote_start
+maps=37` t=54.24, `map_vote_open` t=60.22 (6 s later), window on both
+(`menu_open page=MapVote maps=37 time_left=10`), client
+`net_map_vote_request_sent map=KF-Offices`, host `map_vote_cast
+peer=12643316123063299142 map=KF-Offices voted=1/2`, `map_vote_end
+winner=KF-Offices reason=time_up` t=70.22, `map_vote_travel ...
+travel=wired`, `net_travel_announce travel=1 map=KF-Offices reason=vote`;
+both loaded KF-Offices (`travel_done ... load_seconds=1.13` / `1.05`),
+the client saw "KF-Offices(KF) has won !", both readied and `net_match_start
+players=2` on KF-Offices. After the fix (second run): no MapVote window
+after the load; the next vote (host alone) had `disabled=[KF-Offices]`
+(RepeatLimit) and `winner=KF-Hell reason=no_votes_random`, travelled
+there. Late joiner after two travels: `net_query_answer host_map=KF-Farm`,
+`net_game_info same_map=true host_travel=2`, `net_doors_received doors=41
+travel=2`, `net_pickups_received shown=17 travel=2`, joined the running
+match. Single player with `--map-vote`: `travel_decide vote=false
+vote_enabled=true host=false`, map list's KF-Manor. 350 + 39 tests pass;
+clippy: only the old boss.rs test warning.
+**Still broken / not tested:** a client joining during a vote (the
+state is resent every 2 s, not run); votes from 3+ players; the host's own
+vote at the travel moment (only the client voted); not played by you.
+**Next:** stop the old map's music at the unload.

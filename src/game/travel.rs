@@ -286,11 +286,14 @@ fn fresh_player_on_new_map(
     options: Res<crate::game::waves::GameOptions>,
     mut net: ResMut<crate::net::lobby::NetLobby>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
-    vet: Res<crate::game::perks::Veterancy>,
+    (vet, mut vote): (Res<crate::game::perks::Veterancy>, ResMut<MapVote>),
 ) {
     if epoch.first() {
         return;
     }
+    // The vote is over (now, before the vote window's PreUpdate check
+    // could open it again over the lobby).
+    vote.clear();
     let was = (health.health, health.dead, health.deaths, kills.0);
     health.dead = false;
     health.health = 100.0;
@@ -311,6 +314,7 @@ fn fresh_player_on_new_map(
     let lobby = options.mode == crate::game::waves::GameMode::Waves && (lobby_settings.open || net.active);
     if lobby {
         menus.stack.push(crate::game::menus::Page::Lobby);
+        runlog::kv("menu_open", "page=Lobby reason=new_map");
         if let Ok(mut c) = cursor.single_mut() {
             c.grab_mode = CursorGrabMode::None;
             c.visible = true;
