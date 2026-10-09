@@ -186,8 +186,11 @@ fn counts(world: &mut World) -> String {
     let entities = world.query_filtered::<(), Without<IsResource>>().iter(world).count();
     let scoped = world.query_filtered::<(), With<MapScoped>>().iter(world).count();
     format!(
-        "rss_mb={} entities={entities} map_scoped={scoped} meshes={} images={} materials={} baked_materials={} modulate_materials={} blend_materials={}",
+        "rss_mb={} {} {} {} entities={entities} map_scoped={scoped} meshes={} images={} materials={} baked_materials={} modulate_materials={} blend_materials={}",
         rss_mb().map_or("?".to_string(), |m| m.to_string()),
+        heap_mb(),
+        gpu_mb(world),
+        world.get_non_send::<crate::audio::mixer::SoundBank>().map_or(String::new(), |b| b.stats()),
         assets::<Mesh>(world),
         assets::<Image>(world),
         assets::<StandardMaterial>(world),
@@ -226,6 +229,60 @@ fn rss_mb() -> Option<u64> {
     let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
     let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
     Some(kb / 1024)
+}
+
+/// The C allocator's view (Linux): `heap_used_mb` is memory the program
+/// holds (allocated and not freed yet), `heap_free_mb` memory freed but
+/// kept by the allocator. If `rss_mb` grows over map changes while
+/// `heap_used_mb` stays flat, nothing of ours is kept: it is the
+/// allocator's leftovers (fragmentation).
+fn heap_mb() -> String {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        #[repr(C)]
+        #[allow(dead_code)]
+        struct MallInfo2 {
+            arena: usize,
+            ordblks: usize,
+            smblks: usize,
+            hblks: usize,
+            hblkhd: usize,
+            usmblks: usize,
+            fsmblks: usize,
+            uordblks: usize,
+            fordblks: usize,
+            keepcost: usize,
+        }
+        unsafe extern "C" {
+            /// glibc 2.33+: totals over all arenas.
+            fn mallinfo2() -> MallInfo2;
+        }
+        // SAFETY: returns a plain struct by value; no pointers involved.
+        let m = unsafe { mallinfo2() };
+        let mb = |b: usize| b / (1024 * 1024);
+        format!("heap_used_mb={} heap_free_mb={}", mb(m.uordblks + m.hblkhd), mb(m.fordblks))
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        String::from("heap_used_mb=? heap_free_mb=?")
+    }
+}
+
+/// GPU memory as the graphics library's allocator sees it (Vulkan, DX12):
+/// `gpu_used_mb` in live buffers and textures, `gpu_reserved_mb` in the
+/// memory blocks it took from the driver, and how many of each.
+fn gpu_mb(world: &World) -> String {
+    let report = world.get_resource::<bevy::render::renderer::RenderDevice>().and_then(|d| d.wgpu_device().generate_allocator_report());
+    match report {
+        Some(r) => format!(
+            "gpu_used_mb={} gpu_reserved_mb={} gpu_allocations={} gpu_blocks={}",
+            r.total_allocated_bytes / (1024 * 1024),
+            r.total_reserved_bytes / (1024 * 1024),
+            r.allocations.len(),
+            r.blocks.len()
+        ),
+        None => String::from("gpu_used_mb=?"),
+    }
 }
 
 /// The per-map resources' sizes, to see that each load starts clean
