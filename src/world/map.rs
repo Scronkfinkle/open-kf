@@ -333,6 +333,10 @@ struct Loader<'a> {
     /// the StandardMaterial `material` returned for them.
     modulate_materials: &'a mut Assets<crate::render::particles::ModulateMaterial>,
     blend_materials: &'a mut Assets<crate::render::particles::BlendMaterial>,
+    /// Reflective materials (render/env_map.rs) and their cubemaps, by
+    /// Cubemap path.
+    env_materials: &'a mut Assets<crate::render::env_map::EnvMaterial>,
+    cubemap_cache: HashMap<String, Option<Handle<Image>>>,
     special: HashMap<AssetId<StandardMaterial>, SpecialMaterial>,
 }
 
@@ -345,6 +349,10 @@ enum SpecialMaterial {
     /// FB_Translucent / FB_Brighten): the texture added to the scene behind,
     /// fogged toward black.
     Additive(Handle<crate::render::particles::BlendMaterial>),
+    /// A texture blended with an environment map by a mask (Combiner
+    /// CO_AlphaBlend_With_Mask with a TexEnvMap): render/env_map.rs.
+    /// Placed meshes only; BSP surfaces keep the plain texture.
+    Env(Handle<crate::render::env_map::EnvMaterial>),
 }
 
 impl SpecialMaterial {
@@ -352,6 +360,7 @@ impl SpecialMaterial {
         match self {
             SpecialMaterial::Modulate(_) => "modulate",
             SpecialMaterial::Additive(_) => "additive",
+            SpecialMaterial::Env(_) => "env",
         }
     }
 }
@@ -604,6 +613,103 @@ impl Loader<'_> {
         result
     }
 
+    /// The reflective material for `base` (a StandardMaterial with the
+    /// texture) and its environment map; None if the cubemap or the mask
+    /// cannot be uploaded.
+    fn env_material(
+        &mut self,
+        base: &Handle<StandardMaterial>,
+        env: &ue_assets::material::EnvBlend,
+    ) -> Option<Handle<crate::render::env_map::EnvMaterial>> {
+        let cubemap = self.cubemap(env)?;
+        let (mask, _) = self.texture(&env.mask)?;
+        let mut base = self.materials.get(base)?.clone();
+        // The extension computes the colour; the base only samples the
+        // texture, handles the alpha mode and fog.
+        base.unlit = true;
+        Some(self.env_materials.add(bevy::pbr::ExtendedMaterial {
+            base,
+            extension: crate::render::env_map::EnvExt {
+                flags: crate::render::env_map::flags(env),
+                cubemap,
+                mask,
+            },
+        }))
+    }
+
+    /// The Cubemap's six faces as one cube texture (layers in Faces order,
+    /// taken as the GPU's +X, -X, +Y, -Y, +Z, -Z: assumed, as in Direct3D),
+    /// decoded to RGBA. Mips
+    /// while every face has them. None if a face cannot be decoded or the
+    /// faces are not square and of one size.
+    fn cubemap(&mut self, env: &ue_assets::material::EnvBlend) -> Option<Handle<Image>> {
+        let key = env.cubemap.path();
+        if let Some(cached) = self.cubemap_cache.get(&key) {
+            return cached.clone();
+        }
+        let result = (|| {
+            let mut faces: Vec<Vec<Vec<u8>>> = Vec::new();
+            let mut size = 0usize;
+            for f in &env.faces {
+                let tex = read_texture(&f.package.pkg, f.export).ok()?;
+                let palette = match tex.palette_ref {
+                    ObjectRef::Null => None,
+                    rf => self.set.resolve(&f.package, rf).and_then(|p| read_palette(&p.package.pkg, p.export).ok()),
+                };
+                let mip0 = tex.mips.first()?;
+                if mip0.width != mip0.height || (size != 0 && mip0.width != size) {
+                    return None;
+                }
+                size = mip0.width;
+                let mut mips = Vec::new();
+                for (k, mip) in tex.mips.iter().enumerate() {
+                    if mip.width != (size >> k).max(1) || mip.height != (size >> k).max(1) {
+                        break;
+                    }
+                    let Some(rgba) = decode_rgba(tex.format, mip, palette.as_deref()) else {
+                        break;
+                    };
+                    mips.push(rgba);
+                }
+                if mips.is_empty() {
+                    return None;
+                }
+                faces.push(mips);
+            }
+            let levels = faces.iter().map(Vec::len).min()?;
+            // Layer by layer, each with its mips (wgpu's default order).
+            let mut data = Vec::new();
+            for face in &faces {
+                for mip in &face[..levels] {
+                    data.extend_from_slice(mip);
+                }
+            }
+            let mut image = Image::new_uninit(
+                Extent3d { width: size as u32, height: size as u32, depth_or_array_layers: 6 },
+                TextureDimension::D2,
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            self.texture_bytes += data.len();
+            image.data = Some(data);
+            image.texture_descriptor.mip_level_count = levels as u32;
+            image.texture_view_descriptor = Some(bevy::render::render_resource::TextureViewDescriptor {
+                dimension: Some(bevy::render::render_resource::TextureViewDimension::Cube),
+                ..default()
+            });
+            image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                mag_filter: ImageFilterMode::Linear,
+                min_filter: ImageFilterMode::Linear,
+                mipmap_filter: ImageFilterMode::Linear,
+                ..default()
+            });
+            runlog::kv("cubemap_uploaded", &format!("cubemap={key} size={size} mips={levels} bytes={}", image.data.as_ref().map_or(0, Vec::len)));
+            Some(self.images.add(image))
+        })();
+        self.cubemap_cache.insert(key, result.clone());
+        result
+    }
+
     /// A Bevy material for an Unreal material reference. `None` means "do not
     /// draw" (invisible materials). The size is the texture size for BSP UVs.
     fn material(
@@ -690,6 +796,35 @@ impl Loader<'_> {
                 let m = self.blend_materials.add(crate::render::particles::BlendMaterial { texture: image, draw_style: 3 });
                 self.special.insert(handle.id(), SpecialMaterial::Additive(m));
             }
+            // A texture blended with an environment map (KF-Manor's lake):
+            // drawn with the reflection (render/env_map.rs). Without a
+            // texture, a cubemap or the mask it stays the plain material.
+            if let Some(env) = &simple.env
+                && simple.texture.is_some()
+                && simple.blend != Blend::Additive
+                && !simple.modulate
+                && let Some(m) = self.env_material(&handle, env)
+            {
+                self.special.insert(handle.id(), SpecialMaterial::Env(m));
+            }
+            if let Some(env) = &simple.env {
+                runlog::kv(
+                    "material_env",
+                    &format!(
+                        "material={} cubemap={} faces=[{}] env_input={} mask={} invert_mask={} space={} texture={} blend={:?} drawn={}",
+                        from.package.pkg.object_path(rf),
+                        env.cubemap.path(),
+                        env.faces.iter().map(|f| f.path()).collect::<Vec<_>>().join(","),
+                        if env.env_is_material2 { "Material2" } else { "Material1" },
+                        env.mask.path(),
+                        env.invert_mask,
+                        if env.camera_space { "camera" } else { "world" },
+                        simple.texture.as_ref().map_or("none".into(), |t| t.path()),
+                        simple.blend,
+                        self.special.get(&handle.id()).map_or("standard", SpecialMaterial::kind)
+                    ),
+                );
+            }
             if let Some([r, g, b]) = simple.tint {
                 let drawn = self.special.get(&handle.id()).map_or("standard", SpecialMaterial::kind);
                 runlog::kv(
@@ -750,6 +885,13 @@ impl MeshBuilder {
     }
 }
 
+/// The asset stores of the materials in `SpecialMaterial`.
+type SpecialMaterialAssets<'w> = (
+    ResMut<'w, Assets<crate::render::particles::ModulateMaterial>>,
+    ResMut<'w, Assets<crate::render::particles::BlendMaterial>>,
+    ResMut<'w, Assets<crate::render::env_map::EnvMaterial>>,
+);
+
 // Bevy systems receive each resource as a parameter, so long lists are normal.
 #[allow(clippy::too_many_arguments)]
 fn load_map(
@@ -767,10 +909,7 @@ fn load_map(
     compressed: Option<Res<CompressedImageFormatSupport>>,
     graphics: Option<Res<crate::engine::graphics::GraphicsSettings>>,
     mut baked_materials: ResMut<Assets<crate::render::baked::BakedMaterial>>,
-    (mut modulate_materials, mut blend_materials): (
-        ResMut<Assets<crate::render::particles::ModulateMaterial>>,
-        ResMut<Assets<crate::render::particles::BlendMaterial>>,
-    ),
+    (mut modulate_materials, mut blend_materials, mut env_materials): SpecialMaterialAssets,
     black_lightmap: Option<Res<crate::render::baked::BlackLightmap>>,
 ) {
     let started = Instant::now();
@@ -827,6 +966,8 @@ fn load_map(
         baked_cache: HashMap::new(),
         modulate_materials: &mut modulate_materials,
         blend_materials: &mut blend_materials,
+        env_materials: &mut env_materials,
+        cubemap_cache: HashMap::new(),
         special: HashMap::new(),
         textures_uploaded: 0,
         texture_bytes: 0,
@@ -844,7 +985,7 @@ fn load_map(
     let mut sky_zone: Option<(u8, String)> = None;
     let (mut sky_lo, mut sky_hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut sky_polys = 0usize;
-    let (mut bsp_modulate_polys, mut bsp_additive_polys) = (0usize, 0usize);
+    let (mut bsp_modulate_polys, mut bsp_additive_polys, mut bsp_env_polys) = (0usize, 0usize, 0usize);
     if let Some(m) = contents.bsp_model {
         let level_handle = ObjectHandle {
             package: lp.clone(),
@@ -1006,6 +1147,7 @@ fn load_map(
                     match loader.special.get(&mat.id()) {
                         Some(SpecialMaterial::Modulate(_)) => bsp_modulate_polys += 1,
                         Some(SpecialMaterial::Additive(_)) => bsp_additive_polys += 1,
+                        Some(SpecialMaterial::Env(_)) => bsp_env_polys += 1,
                         None => {}
                     }
                     // Polygons facing into the sky zone belong to the sky layer.
@@ -1507,11 +1649,21 @@ fn load_map(
             };
             // Modulated and additive: drawn over the scene behind, neither
             // lit nor baked (assumed: KF's lighting does not reach them).
-            if let Some(special) = loader.special.get(&material.id()).cloned() {
+            // Reflective materials only on meshes with baked colours (their
+            // light); the others keep the plain lit or unlit material.
+            if let Some(special) = loader.special.get(&material.id()).cloned().filter(|s| !matches!(s, SpecialMaterial::Env(_)) || lit.is_some()) {
                 let mut e = commands.spawn((Mesh3d(part.mesh.clone()), transform, MapGeometry, bevy::light::NotShadowCaster));
                 match &special {
                     SpecialMaterial::Modulate(m) => e.insert(MeshMaterial3d(m.clone())),
                     SpecialMaterial::Additive(m) => e.insert(MeshMaterial3d(m.clone())),
+                    // Reflections are lit like the rest of the colour: the
+                    // mesh copy with the baked colours, if it has one.
+                    SpecialMaterial::Env(m) => {
+                        if let Some(lit) = &lit {
+                            e.insert(Mesh3d(lit[pi].clone()));
+                        }
+                        e.insert(MeshMaterial3d(m.clone()))
+                    }
                 };
                 if in_sky {
                     e.insert(RenderLayers::layer(SKY_LAYER));
@@ -1519,9 +1671,11 @@ fn load_map(
                 runlog::kv(
                     "mesh_special",
                     &format!(
-                        "kind={} actor={} section={} unlit={} in_sky={in_sky} at_unreal=({:.0}, {:.0}, {:.0})",
+                        "kind={} actor={} mesh={} skin={} section={} unlit={} in_sky={in_sky} at_unreal=({:.0}, {:.0}, {:.0})",
                         special.kind(),
                         lp.pkg.object_name(ObjectRef::Export(actor.export)),
+                        lp.pkg.object_path(actor.mesh),
+                        actor.skins.get(part.section).map_or("none".into(), |&s| lp.pkg.object_path(s)),
                         part.section,
                         actor.unlit,
                         actor.location[0],
@@ -1683,7 +1837,8 @@ fn load_map(
         "textures_loaded",
         &format!(
             "uploaded={} compressed={} bc_supported={} failed={} megabytes={:.1} materials={} materials_without_texture={} anisotropy={} \
-             modulate_materials={} additive_materials={} bsp_modulate_polys={bsp_modulate_polys} bsp_additive_polys={bsp_additive_polys}",
+             modulate_materials={} additive_materials={} bsp_modulate_polys={bsp_modulate_polys} bsp_additive_polys={bsp_additive_polys} \
+             env_materials={} bsp_env_polys={bsp_env_polys}",
             loader.textures_uploaded,
             loader.textures_compressed,
             loader.bc_supported,
@@ -1693,7 +1848,8 @@ fn load_map(
             loader.materials_without_texture,
             loader.anisotropy,
             loader.special.values().filter(|m| matches!(m, SpecialMaterial::Modulate(_))).count(),
-            loader.special.values().filter(|m| matches!(m, SpecialMaterial::Additive(_))).count()
+            loader.special.values().filter(|m| matches!(m, SpecialMaterial::Additive(_))).count(),
+            loader.special.values().filter(|m| matches!(m, SpecialMaterial::Env(_))).count()
         ),
     );
 

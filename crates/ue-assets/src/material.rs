@@ -47,9 +47,102 @@ pub struct SimpleMaterial {
     /// cones: a white cone texture times a purple, red, green... colour).
     /// Only the map loader reads it; the other loaders ignore it.
     pub tint: Option<[f32; 3]>,
+    /// A Combiner that blends a texture with an environment map (a
+    /// TexEnvMap over a Cubemap) by a mask's alpha. `texture` stays the
+    /// other input's texture; loaders that do not draw reflections ignore
+    /// this and draw `texture` alone, as before.
+    pub env: Option<EnvBlend>,
+}
+
+/// A reflection blended into a material (Combiner CO_AlphaBlend_With_Mask
+/// with a TexEnvMap input). How KF draws it: colour = Material2 x a +
+/// Material1 x (1 - a), a = the Mask's alpha (1 - alpha with InvertMask);
+/// the environment map is looked up with the view direction reflected
+/// about the surface normal, in world space (EM_WorldSpace) or camera
+/// space (EM_CameraSpace). The result is then lit like any diffuse colour.
+#[derive(Clone)]
+pub struct EnvBlend {
+    /// The Cubemap's six Faces (+X, -X, +Y, -Y, +Z, -Z), each a texture.
+    pub faces: Vec<ObjectHandle>,
+    /// The Cubemap object, for logging and caching.
+    pub cubemap: ObjectHandle,
+    /// The environment map is Material2 (else Material1).
+    pub env_is_material2: bool,
+    /// The texture whose alpha weights the blend.
+    pub mask: ObjectHandle,
+    pub invert_mask: bool,
+    /// TexEnvMap EnvMapType EM_CameraSpace (else EM_WorldSpace).
+    pub camera_space: bool,
 }
 
 const MAX_DEPTH: usize = 8;
+
+/// Combiner CO_AlphaBlend_With_Mask (Engine.Combiner's EColorOperation).
+const CO_ALPHABLEND_WITH_MASK: u8 = 5;
+
+/// Follows modifiers (TexPanner, TexOscillator, ...) from `h` to a
+/// TexEnvMap over a Cubemap: (the Cubemap, EM_CameraSpace).
+fn env_map_of(set: &PackageSet, h: &ObjectHandle, depth: usize) -> Option<(ObjectHandle, bool)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let pkg = &h.package.pkg;
+    let props = read_export_properties(pkg, h.export).ok()?;
+    let next = match props.get(pkg, "Material") {
+        Some(Value::Object(rf)) => set.resolve(&h.package, *rf)?,
+        _ => return None,
+    };
+    if h.class_name() == "TexEnvMap" && next.class_name() == "Cubemap" {
+        let camera = matches!(props.get(pkg, "EnvMapType"), Some(Value::Byte(1)));
+        return Some((next, camera));
+    }
+    // Only modifiers wrap one material in `Material`.
+    if matches!(h.class_name(), "Shader" | "Combiner" | "FinalBlend" | "MaterialSwitch" | "Texture" | "Cubemap") {
+        return None;
+    }
+    env_map_of(set, &next, depth + 1)
+}
+
+/// The six face textures of a Cubemap (Faces[0..6]); None if any is missing.
+fn cubemap_faces(set: &PackageSet, cubemap: &ObjectHandle) -> Option<Vec<ObjectHandle>> {
+    let pkg = &cubemap.package.pkg;
+    let props = read_export_properties(pkg, cubemap.export).ok()?;
+    (0..6)
+        .map(|i| match props.get_at(pkg, "Faces", i) {
+            Some(Value::Object(rf)) if *rf != ObjectRef::Null => set.resolve(&cubemap.package, *rf),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A Combiner's reflection blend (see `EnvBlend`), if it has one: operation
+/// CO_AlphaBlend_With_Mask, one input leading to a TexEnvMap over a Cubemap
+/// with six faces, and a Mask leading to a texture.
+fn combiner_env(set: &PackageSet, h: &ObjectHandle, props: &crate::properties::PropertyList) -> Option<EnvBlend> {
+    let pkg = &h.package.pkg;
+    if !matches!(props.get(pkg, "CombineOperation"), Some(Value::Byte(CO_ALPHABLEND_WITH_MASK))) {
+        return None;
+    }
+    let input = |name: &str| match props.get(pkg, name) {
+        Some(Value::Object(rf)) if *rf != ObjectRef::Null => set.resolve(&h.package, *rf),
+        _ => None,
+    };
+    let (env_is_material2, (cubemap, camera_space)) = match input("Material1").and_then(|m| env_map_of(set, &m, 0)) {
+        Some(e) => (false, e),
+        None => (true, env_map_of(set, &input("Material2")?, 0)?),
+    };
+    let faces = cubemap_faces(set, &cubemap)?;
+    let mut m = SimpleMaterial::default();
+    walk(set, &input("Mask")?, &mut m, 0);
+    Some(EnvBlend {
+        faces,
+        cubemap,
+        env_is_material2,
+        mask: m.texture?,
+        invert_mask: matches!(props.get(pkg, "InvertMask"), Some(Value::Bool(true))),
+        camera_space,
+    })
+}
 
 fn first_array_object(raw: &[u8], skip: usize) -> Option<ObjectRef> {
     let mut r = Reader::new(raw);
@@ -283,6 +376,10 @@ fn walk(set: &PackageSet, h: &ObjectHandle, out: &mut SimpleMaterial, depth: usi
             // Material1, else Material2; also when Material1 ends without a
             // texture (the Stalker's cloak: a rotating environment map).
             let before = out.blend;
+            // The outermost reflection blend wins (nested ones are rare).
+            if out.env.is_none() {
+                out.env = combiner_env(set, h, &props);
+            }
             if !follow("Material1", out) || out.texture.is_none() {
                 follow("Material2", out);
             }
@@ -350,6 +447,33 @@ mod tests {
         assert!((t[0] - 73.0 / 255.0).abs() < 1e-6 && t[1] == 0.0 && (t[2] - 164.0 / 255.0).abs() < 1e-6);
         assert!((multiply_tint(purple, true, false)[2] - 2.0 * 164.0 / 255.0).abs() < 1e-6);
         assert!((multiply_tint(purple, true, true)[0] - 4.0 * 73.0 / 255.0).abs() < 1e-6);
+    }
+
+    /// Against the real install (skipped when none is found): KF-Manor's
+    /// lake material blends the sky cubemap (Material1) with the ripple
+    /// texture (Material2) by the ripple texture's alpha, alpha blended.
+    #[test]
+    fn manor_water_has_env_blend() {
+        let Ok(install) = crate::install::Install::discover() else {
+            eprintln!("no Killing Floor install: skipped");
+            return;
+        };
+        let set = PackageSet::new(&install.root);
+        let Some(h) = set.find_object("KillingFloorManorTextures.Common.ManorWaterFB", Some("FinalBlend")) else {
+            eprintln!("ManorWaterFB not found: skipped");
+            return;
+        };
+        let mut m = SimpleMaterial::default();
+        walk(&set, &h, &mut m, 0);
+        assert_eq!(m.blend, Blend::Translucent);
+        let lower = |o: &ObjectHandle| o.path().to_ascii_lowercase();
+        assert_eq!(m.texture.as_ref().map(lower).as_deref(), Some("killingfloormanortextures.common.manorwateropacity"));
+        let env = m.env.expect("env blend");
+        assert!(!env.env_is_material2 && !env.invert_mask && !env.camera_space);
+        assert_eq!(lower(&env.cubemap), "killingfloormanortextures.common.manorwatercubemap");
+        assert_eq!(env.faces.len(), 6);
+        assert!(env.faces.iter().all(|f| lower(f) == "killingfloormanortextures.common.manorskyenvtex"));
+        assert_eq!(lower(&env.mask), "killingfloormanortextures.common.manorwateropacity");
     }
 
     /// Against the real install (skipped when none is found): KF's purple

@@ -221,6 +221,24 @@ zone/portal visibility culling, emitters.
 - `material.rs` follows Shader → Diffuse, Modifier → Material, Combiner →
   Material1 and MaterialSwitch → Materials[Current] down to a texture, and
   derives opaque, masked, translucent or invisible.
+- **Reflections (environment maps, 2026-10-09).** A Combiner with
+  CombineOperation CO_AlphaBlend_With_Mask whose Material1 or Material2 is
+  a TexEnvMap over a Cubemap (six pictures of the surroundings, one per
+  side of a cube) is recorded as `EnvBlend`. What KF does (its native
+  drawing code; details in the local RE.md): colour = Material2 x a +
+  Material1 x (1 - a), a = the Mask's alpha (1 - alpha with InvertMask);
+  the cubemap is looked up with the view direction reflected about the
+  surface normal (world space for EM_WorldSpace); vertex lighting then
+  multiplies the whole colour, the reflection included. Placed meshes with
+  such a material use `render/env_map.rs` (texture, mask and cube texture,
+  times the baked vertex colours, alpha and fog as before); BSP surfaces
+  keep the plain texture (`bsp_env_polys` counts them). Assumed, not read
+  from KF: the reflection vector is in Unreal's world axes and Faces[0..5]
+  are +X, -X, +Y, -Y, +Z, -Z. Not done: the TexOscillator / TexPanner
+  movement of the textures (the ripples stand still), Combiners that add a
+  reflection (CO_Add_With_Mask_Modulation: shiny metal, ivy) and Shader
+  Specular reflections. Log: `material_env`, `cubemap_uploaded`,
+  `mesh_special kind=env`.
 
 **Rotation convention (partly verified).** Unreal rotators: 65536 units = 360°.
 The formula used is the standard Unreal one. Its forward axis (cos P cos Y,
