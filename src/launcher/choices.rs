@@ -5,6 +5,7 @@
 use crate::engine::graphics::{self, DisplayMode};
 use crate::game::buy_menu::MenuKind;
 use crate::game::difficulty::Difficulty;
+use crate::game::map_rotation::{self, MapRotation, MapVoteConfig};
 use crate::game::perks::Perk;
 use crate::player::character::DEFAULT_CHARACTER;
 
@@ -52,10 +53,15 @@ pub fn perk_word(p: Perk) -> &'static str {
 }
 
 /// Every choice by name, in the order they are saved and logged.
-pub const FIELDS: [&str; 29] = [
+pub const FIELDS: [&str; 33] = [
     "play", "port", "address", "map", "mode", "length", "difficulty", "wave", "name", "perk", "level", "character", "window", "fps", "vsync", "display", "fov", "brightness", "msaa", "anisotropy", "sound", "trader", "extra",
-    "volume", "effects_volume", "music_volume", "aim", "mouse_sensitivity", "invert_mouse",
+    "volume", "effects_volume", "music_volume", "aim", "mouse_sensitivity", "invert_mouse", "map_list", "map_position", "map_vote", "vote_time_limit",
 ];
+
+/// The map rotation lines of the saved file (game/map_rotation.rs). The
+/// game rewrites only these (after a map change, `save_map_rotation`).
+#[allow(dead_code)] // used by save_map_rotation (not wired yet)
+pub const ROTATION_FIELDS: [&str; 2] = ["map_list", "map_position"];
 
 /// The aim line of the saved file (the game rewrites only it).
 pub const AIM_FIELD: &str = "aim";
@@ -193,6 +199,11 @@ pub struct Choices {
     pub mouse_sensitivity: f32,
     /// KF's bInvertMouse: moving the mouse forward looks down.
     pub invert_mouse: bool,
+    /// The map list and its position (`map_list=`, `map_position=`); Solo
+    /// and Host only (a joiner gets the host's maps).
+    pub rotation: MapRotation,
+    /// Map voting on/off and its time (`map_vote=`, `vote_time_limit=`).
+    pub vote: MapVoteConfig,
 }
 
 impl Default for Choices {
@@ -225,6 +236,8 @@ impl Default for Choices {
             aim_hold: false,
             mouse_sensitivity: SENSITIVITY_DEFAULT,
             invert_mouse: false,
+            rotation: MapRotation::default(),
+            vote: MapVoteConfig::default(),
         }
     }
 }
@@ -338,6 +351,10 @@ impl Choices {
             "aim" => aim_word(self.aim_hold).into(),
             "mouse_sensitivity" => format!("{:.2}", self.mouse_sensitivity),
             "invert_mouse" => on_off(self.invert_mouse).into(),
+            "map_list" => map_rotation::map_list_text(&self.rotation.maps),
+            "map_position" => self.rotation.position.to_string(),
+            "map_vote" => on_off(self.vote.enabled).into(),
+            "vote_time_limit" => self.vote.time_limit.to_string(),
             _ => String::new(),
         }
     }
@@ -411,6 +428,12 @@ impl Choices {
             "aim" => self.aim_hold = parse_aim(v)?,
             "mouse_sensitivity" => self.mouse_sensitivity = parse_sensitivity(v)?,
             "invert_mouse" => self.invert_mouse = parse_on_off(v)?,
+            // A position past the list's end goes back to 0 once the whole
+            // file is read (`from_text`), whatever the line order.
+            "map_list" => self.rotation.maps = map_rotation::parse_map_list(v),
+            "map_position" => self.rotation.position = num(v)? as usize,
+            "map_vote" => self.vote.enabled = parse_on_off(v)?,
+            "vote_time_limit" => self.vote.time_limit = map_rotation::parse_vote_time(v)?,
             _ => return Err(format!("unknown choice: {field}")),
         }
         Ok(())
@@ -475,6 +498,7 @@ impl Choices {
             "aim" => self.aim_hold = !self.aim_hold,
             "mouse_sensitivity" => self.mouse_sensitivity = step_sensitivity(self.mouse_sensitivity, d),
             "invert_mouse" => self.invert_mouse = !self.invert_mouse,
+            "map_vote" => self.vote.enabled = !self.vote.enabled,
             _ => {}
         }
     }
@@ -521,6 +545,17 @@ impl Choices {
         // A joiner takes the map, mode, length and difficulty from the host.
         if self.play != PlayType::Join {
             push(&["--map", self.map.trim()]);
+            // The map list and voting: only what differs from KF's
+            // defaults (the game reads the same settings file too).
+            if self.rotation.maps != MapRotation::default().maps {
+                push(&["--map-list", &map_rotation::map_list_text(&self.rotation.maps)]);
+            }
+            if self.vote.enabled {
+                push(&["--map-vote"]);
+            }
+            if self.vote.time_limit != map_rotation::KF_VOTE_TIME_LIMIT {
+                push(&["--vote-time", &self.vote.time_limit.to_string()]);
+            }
             if self.waves {
                 push(&["--mode", "waves", "--length", LENGTHS[self.length.min(2)], "--difficulty", self.difficulty.word()]);
                 if let Some(w) = self.start_wave {
@@ -598,6 +633,8 @@ impl Choices {
                 bad.push(format!("{line} ({e})"));
             }
         }
+        let maps = std::mem::take(&mut c.rotation.maps);
+        c.rotation = c.rotation.with_maps(maps);
         (c, bad)
     }
 }
@@ -977,5 +1014,41 @@ mod tests {
     fn words_split_with_quotes() {
         assert_eq!(split_words("  --god  --name \"Big Al\" \"\" ").unwrap(), s(&["--god", "--name", "Big Al", ""]));
         assert_eq!(command_line(&s(&["--name", "Big Al", "--god"])), "--name \"Big Al\" --god");
+    }
+
+    #[test]
+    fn map_rotation_saved_and_passed() {
+        // An old file without the lines: KF's defaults.
+        let (c, bad) = Choices::from_text("map=KF-Farm\naim=hold\n");
+        assert!(bad.is_empty());
+        assert_eq!((c.rotation.clone(), c.vote), (MapRotation::default(), MapVoteConfig::default()));
+        assert!(!c.to_args(false).unwrap().iter().any(|a| a.starts_with("--map-") || a == "--vote-time"));
+        // Round trip.
+        let mut c = Choices::default();
+        c.rotation = MapRotation::new(s(&["KF-Farm", "KF-Manor"]), 1);
+        c.vote = MapVoteConfig { enabled: true, time_limit: 45 };
+        let back = Choices::from_text(&c.to_text()).0;
+        assert_eq!(back, c);
+        assert!(c.to_text().contains("map_list=KF-Farm,KF-Manor\nmap_position=1\nmap_vote=on\nvote_time_limit=45\n"));
+        let a = c.to_args(false).unwrap();
+        assert!(a.windows(2).any(|w| w == ["--map-list", "KF-Farm,KF-Manor"]));
+        assert!(a.contains(&"--map-vote".to_string()) && a.windows(2).any(|w| w == ["--vote-time", "45"]));
+        // A joiner takes the host's.
+        c.play = PlayType::Join;
+        c.address = "10.0.0.1".into();
+        assert!(!c.to_args(false).unwrap().iter().any(|a| a.starts_with("--map-") || a == "--vote-time"));
+        // A position past the end goes back to 0, whatever the line order.
+        let (c, _) = Choices::from_text("map_position=7\nmap_list=KF-Farm,KF-Manor\n");
+        assert_eq!(c.rotation.position, 0);
+        // An empty list is kept empty (the game then falls back).
+        let (c, bad) = Choices::from_text("map_list=\n");
+        assert!(bad.is_empty() && c.rotation.maps.is_empty());
+        // Bad values are refused, the default stays.
+        let (c, bad) = Choices::from_text("vote_time_limit=1\nmap_vote=maybe\n");
+        assert_eq!((bad.len(), c.vote), (2, MapVoteConfig::default()));
+        // The voting switch.
+        let mut c = Choices::default();
+        c.step("map_vote", 1, &[]);
+        assert!(c.vote.enabled);
     }
 }

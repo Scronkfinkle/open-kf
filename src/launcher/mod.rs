@@ -102,6 +102,35 @@ pub fn save_aim(path: &std::path::Path, hold: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The map rotation and vote switches saved in the settings file
+/// (game/map_rotation.rs), and whether the file had a `map_list=` line
+/// ("file") or not ("default": KF's list, position 0, voting off).
+pub fn read_map_rotation(path: &std::path::Path) -> (crate::game::map_rotation::MapRotation, crate::game::map_rotation::MapVoteConfig, &'static str) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let has = text.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() == "map_list"));
+            let c = Choices::from_text(&text).0;
+            (c.rotation, c.vote, if has { "file" } else { "default" })
+        }
+        Err(_) => (Default::default(), Default::default(), "default"),
+    }
+}
+
+/// The game's save after a map change (KF's MapList SaveConfig): rewrites
+/// only the `map_list=` and `map_position=` lines of the settings file.
+#[allow(dead_code)] // called by the map-change step (not wired yet)
+pub fn save_map_rotation(path: &std::path::Path, r: &crate::game::map_rotation::MapRotation) -> Result<(), String> {
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    let c = Choices { rotation: r.clone(), ..Default::default() };
+    let lines: Vec<(&str, String)> = choices::ROTATION_FIELDS.iter().map(|f| (*f, c.get(f))).collect();
+    let new = choices::with_lines(&old, &lines);
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| std::fs::write(path, new))
+        .map_err(|e| e.to_string())
+}
+
 /// Does this command line open the launcher? Nothing at all, or
 /// `--launcher` first. Any other argument runs the game directly.
 pub fn wanted(args: &[String]) -> bool {
@@ -355,6 +384,11 @@ pub struct Launcher {
     pub map_rows: usize,
     /// Scroll the list to the chosen map on the next draw.
     pub reveal_map: bool,
+    /// The Map box shows the map rotation (else the starting map list).
+    pub show_rotation: bool,
+    /// The rotation list's first shown row, and how many rows fit.
+    pub rot_top: usize,
+    pub rot_rows: usize,
     /// A message under the buttons (why PLAY did nothing, ...).
     pub status: String,
     /// The choices last logged (to log only what changed).
@@ -466,7 +500,7 @@ pub fn run(args: &[String]) -> AppExit {
     };
     let launcher = Launcher {
         choices: load_choices(&opts.settings_path()),
-        maps: list_maps(&install.root),
+        maps: crate::game::map_rotation::list_installed_maps(&install.root),
         characters: crate::player::character::model_select_records(&install.root).into_iter().map(|r| (r.name, r.portrait)).collect(),
         reveal_map: true,
         ini_volumes: crate::audio::mixer::ini_volumes(&install.root),
@@ -523,21 +557,6 @@ pub fn run(args: &[String]) -> AppExit {
 
 #[derive(Resource)]
 struct InstallRoot(std::path::PathBuf);
-
-/// The playable maps in the install's `Maps` folder: every `.rom` but
-/// KF's start-up, intro and main-menu maps.
-fn list_maps(root: &std::path::Path) -> Vec<String> {
-    let mut maps: Vec<String> = std::fs::read_dir(root.join("Maps"))
-        .map(|d| {
-            d.flatten()
-                .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".rom").or_else(|| n.strip_suffix(".ROM"))).map(str::to_string))
-                .filter(|n| !["entry", "kfintro", "kf-menu"].contains(&n.to_ascii_lowercase().as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-    maps.sort_by_key(|m| m.to_ascii_lowercase());
-    maps
-}
 
 fn setup(mut commands: Commands, mut gui: ResMut<Gui>, root: Res<InstallRoot>, launcher: Res<Launcher>, mut images: ResMut<Assets<Image>>) {
     let started = std::time::Instant::now();
@@ -730,12 +749,16 @@ fn input(
             slide_to(l, &hits.0, i, pos.x);
         }
     }
-    // The mouse wheel over the map list scrolls it.
+    // The mouse wheel over the map list (or the rotation) scrolls it.
     if scroll.delta.y != 0.0
         && let Some(pos) = win.physical_cursor_position()
-        && hits.0.iter().any(|(id, r)| id.starts_with("map:") && r.contains(pos))
     {
-        ids.push(format!("maps.scroll:{}", if scroll.delta.y > 0.0 { -3 } else { 3 }));
+        let d = if scroll.delta.y > 0.0 { -3 } else { 3 };
+        if hits.0.iter().any(|(id, r)| id.starts_with("map:") && r.contains(pos)) {
+            ids.push(format!("maps.scroll:{d}"));
+        } else if hits.0.iter().any(|(id, r)| id.starts_with("rot.") && r.contains(pos)) {
+            ids.push(format!("rot.scroll:{d}"));
+        }
     }
     for id in ids {
         apply(&id, l, &opts, &started, &mut exit);
@@ -782,6 +805,23 @@ fn apply(id: &str, l: &mut Launcher, opts: &Options, started: &Started, exit: &m
     } else if let Some(n) = id.strip_prefix("maps.scroll:").and_then(|n| n.parse::<i64>().ok()) {
         let max = l.maps.len().saturating_sub(l.map_rows.max(1)) as i64;
         l.map_top = (l.map_top as i64 + n).clamp(0, max) as usize;
+    } else if let Some(v) = id.strip_prefix("mapview:") {
+        l.show_rotation = v == "rotation";
+    } else if let Some(m) = id.strip_prefix("rot.toggle:") {
+        l.choices.rotation.toggle(m);
+    } else if let Some(i) = id.strip_prefix("rot.up:").and_then(|n| n.parse::<usize>().ok()) {
+        l.choices.rotation.move_entry(i, -1);
+    } else if let Some(i) = id.strip_prefix("rot.down:").and_then(|n| n.parse::<usize>().ok()) {
+        l.choices.rotation.move_entry(i, 1);
+    } else if let Some(n) = id.strip_prefix("rot.scroll:").and_then(|n| n.parse::<i64>().ok()) {
+        let max = rotation_rows(l).len().saturating_sub(l.rot_rows.max(1)) as i64;
+        l.rot_top = (l.rot_top as i64 + n).clamp(0, max) as usize;
+    } else if id == "rot.none" {
+        // A greyed up / down button.
+    } else if id == "rot.reset" {
+        // KF's list (the position kept if it still fits, as SetMaplist).
+        let r = l.choices.rotation.with_maps(crate::game::map_rotation::MapRotation::default().maps);
+        l.choices.rotation = r;
     } else {
         match id {
             "unfocus" => {}
@@ -803,6 +843,15 @@ fn apply(id: &str, l: &mut Launcher, opts: &Options, started: &Started, exit: &m
         }
     }
     runlog::kv("launcher_click", &format!("id={id} focus={:?}", l.focus));
+}
+
+/// The rotation box's rows: the list's maps in order (Some(index)), then
+/// the installed maps not in it (None), sorted.
+pub fn rotation_rows(l: &Launcher) -> Vec<(String, Option<usize>)> {
+    let list = &l.choices.rotation.maps;
+    let mut rows: Vec<(String, Option<usize>)> = list.iter().enumerate().map(|(i, m)| (m.clone(), Some(i))).collect();
+    rows.extend(l.maps.iter().filter(|m| !list.iter().any(|x| x.eq_ignore_ascii_case(m))).map(|m| (m.clone(), None)));
+    rows
 }
 
 /// PLAY: build the arguments, let the game's own parser check them, then
@@ -995,6 +1044,8 @@ mod tests {
             c.brightness = 130;
             c.msaa = 1;
             c.anisotropy = 16;
+            c.rotation = crate::game::map_rotation::MapRotation::new(vec!["KF-Farm".into(), "KF-Manor".into()], 1);
+            c.vote = crate::game::map_rotation::MapVoteConfig { enabled: true, time_limit: 45 };
             let args = c.to_args(true).unwrap();
             let parsed = crate::parse_args(args.clone()).unwrap_or_else(|e| panic!("{play:?}: {e} ({args:?})"));
             assert_eq!(parsed.display, crate::engine::graphics::DisplayMode::Borderless);
@@ -1003,6 +1054,10 @@ mod tests {
             assert_eq!(parsed.name.as_deref(), Some("Big Al"));
             assert!(parsed.mute && parsed.no_vsync);
             assert_eq!(parsed.net.active(), play != PlayType::Solo);
+            // Solo and Host pass the map list and voting; a joiner does not.
+            let host = play != PlayType::Join;
+            assert_eq!(parsed.map_list.is_some(), host);
+            assert_eq!((parsed.map_vote, parsed.vote_time), if host { (Some(true), Some(45)) } else { (None, None) });
         }
         c.extra = "--no-such-option".into();
         assert!(crate::parse_args(c.to_args(false).unwrap()).is_err());
@@ -1056,6 +1111,19 @@ mod tests {
         let mut s = "x".repeat(15);
         Field::Name.type_text(&mut s, "\"yz");
         assert_eq!(s, format!("{}y", "x".repeat(15)));
+    }
+
+    #[test]
+    fn rotation_saved_by_the_game_keeps_other_lines() {
+        let path = std::env::temp_dir().join(format!("openkf-rotation-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "aim=hold\nmap_vote=on\nmap_position=0\n").unwrap();
+        let (r, v, src) = read_map_rotation(&path);
+        assert_eq!((r, v.enabled, src), (crate::game::map_rotation::MapRotation::default(), true, "default"));
+        let r = crate::game::map_rotation::MapRotation::new(vec!["KF-Farm".into(), "KF-Manor".into()], 1);
+        save_map_rotation(&path, &r).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(text, "aim=hold\nmap_vote=on\nmap_position=1\nmap_list=KF-Farm,KF-Manor\n");
     }
 
     #[test]

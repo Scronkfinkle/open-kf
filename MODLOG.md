@@ -7437,3 +7437,48 @@ light's pulse is drawn steady, the 3rd-person light sits at the tip not
 the hand, and the first-person weapon is lit by its own light. Not
 checked against a real KF screenshot.
 **Next:** compare with a KF screenshot of firing in a dark spot.
+
+## 2026-10-09 Map rotation list, map-vote switches, launcher Rotation view
+
+**Changed:** new `src/game/map_rotation.rs`: `MapRotation` (map list +
+position, KF's Maps/MapNum) with `next_map(current, installed)`,
+`MapVoteConfig { enabled, time_limit }`, `list_installed_maps` (moved
+from the launcher). `launcher/choices.rs`: settings lines `map_list=`,
+`map_position=`, `map_vote=`, `vote_time_limit=`; `to_args` adds
+`--map-list`, `--map-vote`, `--vote-time` (Solo/Host, only when not KF's
+default). `main.rs`: those options plus `--no-map-vote`; resources
+`MapRotation` and `MapVoteConfig` inserted at startup (command line over
+the settings file over KF's defaults); log line `map_rotation`.
+`launcher/mod.rs`: `read_map_rotation`, `save_map_rotation` (rewrites
+only the two rotation lines, for the map-change step).
+`launcher/draw.rs`: the Map box has "Starting map" / "Rotation (N)" tabs;
+Rotation shows tick boxes, play order, up/down buttons, "KF's list" and a
+"Map voting" On/Off switch. Not wired into the end of the match yet.
+**Why:** step 2 (map list) and step 5 (launcher) of DESIGN.md "Map
+rotation and map voting without restarting".
+**KF's rule (scripts + inis):** MapList.PreBeginPlay drops empty / not
+installed entries and resets MapNum to 0; GetNextMap finds the current
+map (case-insensitive, then by bare map name) and returns UpdateMapNum(i+1),
+else "blind switch" UpdateMapNum(MapNum+1); UpdateMapNum wraps to 0,
+skips not-installed maps but stops at the old MapNum, saves. RestartGame:
+empty answer -> GetMapName(MapPrefix, "", 1) (native; we take the first
+installed "KF*" map alphabetically, recalled not checked) -> else
+"?Restart". Default list from KillingFloor.ini `[KFmod.KFMaplist]` and
+`[DefaultKF MaplistRecord]` (not Default.ini): KF-BioticsLab, KF-Farm,
+KF-Manor, KF-Offices, KF-WestLondon. bMapVote=False, VoteTimeLimit=30.
+**Tested how:** `cargo test --release` (319 pass; 13 new map_rotation
+tests, choices/launcher/main tests); clippy 0 warnings; headless game runs
+with and without the options; headless launcher with scripted clicks,
+dry-run PLAY and screenshots at 1280x800 and 1920x1080.
+**Result:** `map_rotation list=[KF-BioticsLab,KF-Farm,KF-Manor,KF-Offices,KF-WestLondon] position=0 vote=false vote_time=30 source=default start_map=KF-Farm`;
+with `--map-list KF-Farm,KF-Manor,KF-Aperture --map-vote --vote-time 20`:
+`list=[KF-Farm,KF-Manor,KF-Aperture] position=0 vote=true vote_time=20 source=command_line`;
+from a settings file: `source=file`. Launcher PLAY (dry run):
+`args="--map KF-WestLondon --map-list KF-Manor,KF-BioticsLab,KF-Offices,KF-WestLondon --map-vote --vote-time 45 ..."`,
+saved file has the four new lines.
+**Still broken / not tested:** nothing calls `next_map` yet (the map-change
+step will); the "KF" fallback order is recalled, not read from native code;
+the launcher was not clicked with a real mouse (scripted clicks only); at
+1280x800 the rotation list shows only 3 rows (scrolls).
+**Next:** map-change step calls `next_map` + `save_map_rotation`; voting
+step reads `MapVoteConfig`.

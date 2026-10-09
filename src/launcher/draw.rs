@@ -188,7 +188,21 @@ pub fn draw(p: &mut Painter, l: &mut Launcher) {
             p.scroll_text(menu, &format!("Host:|{t}"), Rect::new(list.min.x, y, list.max.x, list.max.y), WHITE, "HostAnswer");
         }
     } else {
-        map_list(p, l, list, menu);
+        // Two views: the starting map, or the rotation (the maps that
+        // come after it) with map voting.
+        let tabs = Rect::new(list.min.x, list.min.y, list.max.x, list.min.y + rh);
+        let tw = (tabs.width() - gap) / 2.0;
+        let rot_caption = format!("Rotation ({})", c_.rotation.maps.len());
+        for (i, (id, cap, on)) in [("mapview:start", "Starting map", !l.show_rotation), ("mapview:rotation", rot_caption.as_str(), l.show_rotation)].into_iter().enumerate() {
+            let x = tabs.min.x + i as f32 * (tw + gap);
+            p.button(id, Rect::new(x, tabs.min.y, x + tw, tabs.max.y), cap, if on { State::Focused } else { State::Blurry });
+        }
+        let rest = Rect::new(list.min.x, tabs.max.y + gap, list.max.x, list.max.y);
+        if l.show_rotation {
+            rotation_box(p, l, rest, rh, gap, menu, small);
+        } else {
+            map_list(p, l, rest, menu);
+        }
     }
 
     // Column 3: Game, Sound, menus, Audio, then Controls (3 + 2 + 3 + 3
@@ -446,5 +460,84 @@ fn map_list(p: &mut Painter, l: &mut Launcher, r: Rect, font: &str) {
     }
     if n == 0 {
         p.scroll_text(font, "No maps found in the install's Maps folder.", r, NOTE, "MapNone");
+    }
+}
+
+/// The rotation view of the Map box (game/map_rotation.rs): a note, the
+/// list (ticked maps in play order with up / down buttons, then the other
+/// installed maps), then KF's list button and the Map voting switch.
+fn rotation_box(p: &mut Painter, l: &mut Launcher, r: Rect, rh: f32, gap: f32, font: &'static str, small: &'static str) {
+    let hh = p.line_height(small);
+    note(p, Rect::new(r.min.x, r.min.y, r.max.x, r.min.y + hh), "Ticked maps come after the starting map, in this order.", small, DIM, "RotNote");
+    let bottom = Rect::new(r.min.x, r.max.y - rh, r.max.x, r.max.y);
+    let list = Rect::new(r.min.x, r.min.y + hh + gap * 0.5, r.max.x, bottom.min.y - gap);
+    rotation_list(p, l, list, font);
+    let bw = p.text_size(font, "KF's list").x + rh;
+    p.button("rot.reset", Rect::new(bottom.min.x, bottom.min.y, bottom.min.x + bw, bottom.max.y), "KF's list", State::Blurry);
+    let lab = Rect::new(bottom.min.x + bw + gap, bottom.min.y, bottom.min.x + bw + gap + (bottom.width() - bw - gap) * 0.45, bottom.max.y);
+    label(p, lab, "Map voting", fit(p, font, "Map voting", lab.width() - 8.0));
+    let on = l.choices.vote.enabled;
+    spinner(p, "map_vote", Rect::new(lab.max.x, bottom.min.y, bottom.max.x, bottom.max.y), if on { "On" } else { "Off" }, true, font);
+}
+
+/// The rotation's rows: a check box (`rot.toggle:MAP` on the whole row),
+/// the play order, the name; `^` / `v` (`rot.up:I`, `rot.down:I`).
+fn rotation_list(p: &mut Painter, l: &mut Launcher, r: Rect, font: &'static str) {
+    p.fill(r, FIELD_BG, "RotList");
+    let row_h = (p.line_height(font) * 1.35).round();
+    let fit_rows = ((r.height() / row_h).floor() as usize).max(1);
+    l.rot_rows = fit_rows;
+    let rows = super::rotation_rows(l);
+    let n = rows.len();
+    let in_list = l.choices.rotation.maps.len();
+    l.rot_top = l.rot_top.min(n.saturating_sub(fit_rows));
+    let bar_w = 10.0;
+    for (k, (name, idx)) in rows.iter().enumerate().skip(l.rot_top).take(fit_rows) {
+        let y = r.min.y + (k - l.rot_top) as f32 * row_h;
+        let row = Rect::new(r.min.x, y, r.max.x - bar_w - 2.0, y + row_h);
+        if p.hover(row) {
+            p.fill(row, [255, 255, 255, 40], "RotHover");
+        }
+        let bx = (row_h * 0.6).round();
+        let cb = Rect::new(row.min.x + 6.0, y + (row_h - bx) / 2.0, row.min.x + 6.0 + bx, y + (row_h + bx) / 2.0);
+        // A light frame, filled red when ticked.
+        p.fill(cb, [190, 190, 190, 255], "RotCheckFrame");
+        let inner = Rect::new(cb.min.x + 2.0, cb.min.y + 2.0, cb.max.x - 2.0, cb.max.y - 2.0);
+        p.fill(inner, if idx.is_some() { [190, 25, 25, 255] } else { [0, 0, 0, 255] }, "RotCheck");
+        let installed = l.maps.iter().any(|m| m.eq_ignore_ascii_case(name));
+        let (text, color) = match idx {
+            Some(i) if installed => (format!("{}. {name}", i + 1), WHITE),
+            Some(i) => (format!("{}. {name} (not installed)", i + 1), NOTE),
+            None => (name.clone(), DIM),
+        };
+        let bw = row_h;
+        let text_box = Rect::new(cb.max.x + 8.0, y, row.max.x - 2.0 * bw - 6.0, row.max.y);
+        p.text_in(fit(p, font, &text, text_box.width()), &text, text_box, Align::Left, true, color, "RotName");
+        p.hit(&format!("rot.toggle:{name}"), row);
+        if let Some(i) = *idx {
+            let up = Rect::new(row.max.x - 2.0 * bw - 2.0, y + 1.0, row.max.x - bw - 2.0, y + row_h - 1.0);
+            let down = Rect::new(row.max.x - bw, y + 1.0, row.max.x, y + row_h - 1.0);
+            // A greyed button must not let the click through to the row.
+            p.hit("rot.none", up);
+            p.hit("rot.none", down);
+            for (id, b, off) in [(format!("rot.up:{i}"), up, i == 0), (format!("rot.down:{i}"), down, i + 1 == in_list)] {
+                p.button(&id, b, if id.starts_with("rot.up") { "^" } else { "v" }, if off { State::Disabled } else { State::Blurry });
+                if off {
+                    // Greyed as PLAY is.
+                    p.fill(b, [0, 0, 0, 140], "RotArrowOff");
+                }
+            }
+        }
+    }
+    if n > fit_rows {
+        let track = Rect::new(r.max.x - bar_w, r.min.y, r.max.x, r.max.y);
+        p.fill(track, [255, 255, 255, 30], "RotTrack");
+        let h = track.height() * fit_rows as f32 / n as f32;
+        let top = track.min.y + track.height() * l.rot_top as f32 / n as f32;
+        p.fill(Rect::new(track.min.x, top, track.max.x, top + h), [200, 200, 200, 160], "RotThumb");
+    }
+    if in_list == 0 {
+        let msg = Rect::new(r.min.x, r.max.y - p.line_height(font) * 1.5, r.max.x, r.max.y);
+        note(p, msg, "Empty: the game picks the first KF map.", font, NOTE, "RotEmpty");
     }
 }

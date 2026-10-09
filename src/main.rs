@@ -114,6 +114,33 @@ struct Args {
     /// `--invert-mouse` / `--no-invert-mouse` for this run (else the
     /// settings file's, else off).
     invert_mouse: Option<bool>,
+    /// `--map-list A,B,..`: the map rotation for this run (else the
+    /// settings file's `map_list=`, else KF's list). `--map` is the
+    /// starting map; the list is what comes after (game/map_rotation.rs).
+    map_list: Option<Vec<String>>,
+    /// `--map-vote` / `--no-map-vote` (else the settings file's, else off
+    /// as in KF).
+    map_vote: Option<bool>,
+    /// `--vote-time SECONDS` (else the settings file's, else KF's 30).
+    vote_time: Option<u32>,
+}
+
+/// The map rotation and vote switches for this run: the settings file's
+/// (or KF's defaults), with `--map-list` / `--map-vote` / `--vote-time`
+/// over them. `source`: where the list came from (for the log).
+fn map_rotation_settings(args: &Args, settings: &std::path::Path) -> (game::map_rotation::MapRotation, game::map_rotation::MapVoteConfig, &'static str) {
+    let (mut rotation, mut vote, mut source) = launcher::read_map_rotation(settings);
+    if let Some(list) = &args.map_list {
+        rotation = rotation.with_maps(list.clone());
+        source = "command_line";
+    }
+    if let Some(on) = args.map_vote {
+        vote.enabled = on;
+    }
+    if let Some(s) = args.vote_time {
+        vote.time_limit = s;
+    }
+    (rotation, vote, source)
 }
 
 /// When the game opens in KF's lobby (DESIGN.md, "Menus"): `--lobby` /
@@ -244,6 +271,13 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
             }
             "--invert-mouse" => args.invert_mouse = Some(true),
             "--no-invert-mouse" => args.invert_mouse = Some(false),
+            "--map-list" => args.map_list = Some(game::map_rotation::parse_map_list(&it.next().ok_or("--map-list needs map names, e.g. KF-Farm,KF-Manor")?)),
+            "--map-vote" => args.map_vote = Some(true),
+            "--no-map-vote" => args.map_vote = Some(false),
+            "--vote-time" => {
+                let n = it.next().ok_or("--vote-time needs seconds")?;
+                args.vote_time = Some(game::map_rotation::parse_vote_time(&n).map_err(|e| format!("bad --vote-time value: {e}"))?);
+            }
             "--trader-menu" => {
                 let n = it.next().ok_or("--trader-menu needs nu or kf")?;
                 args.trader_menu = buy_menu::MenuKind::parse(&n).ok_or(format!("bad --trader-menu value: {n} (nu or kf)"))?;
@@ -307,7 +341,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--log FILE] [--settings FILE]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--map-list MAP,MAP,..] [--map-vote | --no-map-vote] [--vote-time SECONDS] [--log FILE] [--settings FILE]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -400,6 +434,12 @@ fn main() -> AppExit {
         anisotropy: args.anisotropy.unwrap_or(graphics::DEFAULT_ANISOTROPY),
     };
     graphics_settings.log(args.fps);
+    let settings_path: std::path::PathBuf = args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into();
+    let (map_rotation, map_vote, rotation_source) = map_rotation_settings(&args, &settings_path);
+    runlog::kv(
+        "map_rotation",
+        &format!("list=[{}] position={} vote={} vote_time={} source={rotation_source} start_map={}", map_rotation.maps.join(","), map_rotation.position, map_vote.enabled, map_vote.time_limit, request.map),
+    );
     let mut app = App::new();
     if let Some(c) = camera_override {
         app.insert_resource(c);
@@ -418,6 +458,8 @@ fn main() -> AppExit {
         .insert_resource(engine::mouse::MouseSettings::load(args.settings.clone().unwrap_or_else(|| launcher::SETTINGS_PATH.to_string()).into(), args.sensitivity, args.invert_mouse))
         .insert_resource(args)
         .insert_resource(request)
+        .insert_resource(map_rotation)
+        .insert_resource(map_vote)
         .insert_resource(ClearColor(Color::BLACK)) // KF: black unless the zone clears to its fog colour (world/zones.rs)
         .add_plugins((
             map::MapPlugin,
@@ -639,5 +681,23 @@ mod tests {
         assert!(parse(&["--sensitivity", "26"]).is_err());
         assert!(parse(&["--sensitivity", "fast"]).is_err());
         assert!(parse(&["--sensitivity"]).is_err());
+    }
+
+    #[test]
+    fn map_rotation_options() {
+        let a = parse(&[]).unwrap();
+        assert_eq!((a.map_list.clone(), a.map_vote, a.vote_time), (None, None, None));
+        let a = parse(&["--map", "KF-Farm", "--map-list", "KF-Farm,KF-Manor.rom", "--map-vote", "--vote-time", "20"]).unwrap();
+        assert_eq!(a.map_list, Some(vec!["KF-Farm".to_string(), "KF-Manor".to_string()]));
+        assert_eq!((a.map_vote, a.vote_time), (Some(true), Some(20)));
+        assert_eq!(parse(&["--no-map-vote"]).unwrap().map_vote, Some(false));
+        assert!(parse(&["--map-list"]).is_err());
+        assert!(parse(&["--vote-time", "0"]).is_err());
+        // The command line wins over the settings file; no file: KF's.
+        let missing = std::path::Path::new("work/no-such-settings-file.txt");
+        let (r, v, src) = map_rotation_settings(&parse(&[]).unwrap(), missing);
+        assert_eq!((r, v, src), (Default::default(), Default::default(), "default"));
+        let (r, v, src) = map_rotation_settings(&a, missing);
+        assert_eq!((r.maps.len(), v.enabled, v.time_limit, src), (2, true, 20, "command_line"));
     }
 }
