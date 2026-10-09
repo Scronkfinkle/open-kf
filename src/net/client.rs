@@ -16,13 +16,27 @@ use crate::engine::runlog;
 /// Give up when not connected after this many seconds.
 const CONNECT_TIMEOUT: f32 = 15.0;
 /// netcode's timeout (seconds without a packet, both ways): longer than a
-/// map load (game/travel.rs freezes the game while it loads).
+/// map load (game/travel.rs freezes the game while it loads; nothing is
+/// sent in that frame). Measured: the longest load frame of all 37 maps
+/// was 4.3 s here (KF-Clandestine; `net_long_frame` in the log).
 const CONNECTION_TIMEOUT: i32 = 20;
 
 pub(super) fn build(app: &mut App, server: SocketAddr) {
     app.insert_resource(ClientLink { server, ..default() })
         .add_systems(Startup, connect)
-        .add_systems(Update, (watch_connection, check_game, send_request).chain().before(super::lobby::LobbySystems));
+        .add_systems(Update, (watch_connection, check_game, send_request).chain().before(super::lobby::LobbySystems))
+        .add_systems(Update, take_travel_number.after(crate::game::travel::TravelSystems));
+}
+
+/// A travel to the host's map has started: its number is the one this
+/// game is loading (state stamped with it is taken once it is loaded).
+fn take_travel_number(mut started: MessageReader<crate::game::travel::TravelStarted>, mut travel: ResMut<super::NetTravel>) {
+    for s in started.read() {
+        if let Some(t) = s.net_travel {
+            runlog::kv("net_travel_started", &format!("travel={t} map={} loaded={} was_pending={:?}", s.map, travel.loaded, travel.pending));
+            travel.pending = Some(t);
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -136,12 +150,26 @@ fn check_game(
     mut begin: MessageWriter<crate::game::travel::BeginTravel>,
 ) {
     let Ok(g) = game.single() else { return };
+    let installed = || crate::game::map_rotation::installed_name(&g.map, &crate::game::map_rotation::list_installed_maps(&map.install_root));
     if link.game_checked {
         if g.travel != travel.seen {
             runlog::kv("net_travel_received", &format!("travel={} was={} map={} my_map={} my_peer={:?}", g.travel, travel.seen, g.map, map.map, lobby.my_peer));
             travel.seen = g.travel;
-            travel.pending = Some(g.travel);
-            begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "host".into() });
+            // Not ready for the new map (the host has made everyone not
+            // ready); my next request says so at once.
+            lobby.reset_for_new_map();
+            if installed().is_none() {
+                // As at the join: the host's map is not here; staying would
+                // leave this game on the old map with every state dropped.
+                runlog::kv("net_map_missing", &format!("host_map={} my_map={} when=travel action=quit", g.map, map.map));
+                eprintln!("error: the host went to {}, which is not installed here (this game is on {}).", g.map, map.map);
+                lobby.quit_requested = true;
+                exit.write(AppExit::error());
+                return;
+            }
+            // `pending` is set when the travel really starts (`take_travel_number`):
+            // one asked for during a load waits for it.
+            begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "host".into(), net_travel: Some(g.travel) });
         }
         return;
     }
@@ -161,11 +189,13 @@ fn check_game(
         travel.loaded = g.travel;
         return;
     }
-    let installed = map.install_root.join("Maps").join(format!("{}.rom", g.map)).is_file();
+    let installed = installed().is_some();
     runlog::kv("net_map_mismatch", &format!("host_map={} my_map={} installed={installed} action={}", g.map, map.map, if installed { "travel" } else { "quit" }));
     if installed {
-        travel.pending = Some(g.travel);
-        begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "join".into() });
+        // The map loaded here is none of the host's: take no map state
+        // (stamped with the host's number) until the host's map is loaded.
+        travel.loaded = super::NOT_A_HOST_MAP;
+        begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "join".into(), net_travel: Some(g.travel) });
     } else {
         eprintln!("error: the host plays {}, which is not installed here (this game loaded {}).", g.map, map.map);
         lobby.quit_requested = true;

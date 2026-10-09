@@ -35,7 +35,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use crate::engine::runlog;
 use crate::game::end_game::RestartGame;
 use crate::game::loading_screen::{HideLoadingScreen, LoadingScreenShown, ShowLoadingScreen};
-use crate::game::map_rotation::{MapRotation, list_installed_maps};
+use crate::game::map_rotation::{MapRotation, installed_name, list_installed_maps};
 use crate::game::map_vote::{MapVote, MapVoteFinished, MapVoteSettings, MapVoteSystems, StartMapVote};
 use crate::net::NetMode;
 use crate::world::map::MapRequest;
@@ -59,6 +59,26 @@ pub struct BeginTravel {
     pub map: String,
     /// For the log: "rotation", "vote", "host", "join".
     pub reason: String,
+    /// A network client: the host's travel number for this map
+    /// (`NetGame::travel`), which becomes this game's once the travel
+    /// really starts (a travel asked for during a load waits).
+    pub net_travel: Option<u32>,
+}
+
+impl BeginTravel {
+    pub fn new(map: String, reason: &str) -> Self {
+        BeginTravel { map, reason: reason.into(), net_travel: None }
+    }
+}
+
+/// A travel has really started (the loading screen is going up), sent
+/// once per travel: the host announces it to the clients then
+/// (net/server.rs), a client takes its travel number (net/client.rs).
+#[derive(Message, Clone, Debug)]
+pub struct TravelStarted {
+    pub map: String,
+    pub reason: String,
+    pub net_travel: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -84,7 +104,13 @@ pub struct Travel {
     /// A travel asked for while a map was loading (a network client told
     /// twice in a row): done after it.
     queued: Option<BeginTravel>,
+    /// Travels refused by the map change in a row (the restart is asked
+    /// again a few times, then the game stays on its map).
+    failures: u32,
 }
+
+/// Refused travels in a row before the game stops asking for another.
+const MAX_FAILURES: u32 = 3;
 
 impl Travel {
     /// A vote, a loading screen or a load is in progress.
@@ -104,8 +130,9 @@ impl Plugin for TravelPlugin {
         app.init_resource::<Travel>()
             .init_resource::<RotationSave>()
             .add_message::<BeginTravel>()
+            .add_message::<TravelStarted>()
             .add_systems(crate::world::map_change::PostMapLoad, fresh_player_on_new_map)
-            .add_systems(Update, (decide, follow_vote, begin, start_load, finish).chain().in_set(TravelSystems).after(MapVoteSystems));
+            .add_systems(Update, (test_travel, decide, follow_vote, begin, start_load, finish).chain().in_set(TravelSystems).after(MapVoteSystems));
     }
 }
 
@@ -132,6 +159,20 @@ fn is_client(mode: &Option<Res<NetMode>>) -> bool {
 
 fn is_host(mode: &Option<Res<NetMode>>) -> bool {
     mode.as_deref().is_some_and(|m| matches!(m, NetMode::Host { .. }))
+}
+
+/// Test action "travel:MAP" (ours; single player and host): travel to
+/// MAP now, as after a match (tests of back-to-back travels).
+fn test_travel(script: Res<crate::weapons::weapon::ScriptedInput>, frames: Res<FrameCount>, mode: Option<Res<NetMode>>, mut begin: MessageWriter<BeginTravel>) {
+    for (_, a) in script.0.iter().filter(|(f, _)| *f == frames.0) {
+        let Some(map) = a.strip_prefix("travel:") else { continue };
+        if is_client(&mode) {
+            runlog::kv("travel_test", &format!("map={map} refused=client"));
+            continue;
+        }
+        runlog::kv("travel_test", &format!("map={map} frame={}", frames.0));
+        begin.write(BeginTravel::new(map.to_string(), "test"));
+    }
 }
 
 /// GameInfo.RestartGame: vote or map list (single player and host).
@@ -170,7 +211,7 @@ fn decide(
         return;
     }
     let map = next_from_rotation(&mut rotation, &request, &save);
-    begin.write(BeginTravel { map, reason: "rotation".into() });
+    begin.write(BeginTravel::new(map, "rotation"));
 }
 
 /// The vote's winner, or the map list when the vote did not start.
@@ -194,7 +235,7 @@ fn follow_vote(
     };
     if let Some(f) = winner {
         runlog::kv("map_vote_travel", &format!("map={} reason={} travel=wired", f.map, f.reason.word()));
-        begin.write(BeginTravel { map: f.map, reason: "vote".into() });
+        begin.write(BeginTravel::new(f.map, "vote"));
         travel.state = TravelState::Idle;
         return;
     }
@@ -203,22 +244,62 @@ fn follow_vote(
     if frames.0 > since + 1 && !vote.holds_travel() {
         runlog::kv("travel_vote_skipped", "fallback=map_list");
         let map = next_from_rotation(&mut rotation, &request, &save);
-        begin.write(BeginTravel { map, reason: "rotation".into() });
+        begin.write(BeginTravel::new(map, "rotation"));
         travel.state = TravelState::Idle;
     }
 }
 
-/// A travel begins: the loading screen goes up.
-fn begin(mut begins: MessageReader<BeginTravel>, mut travel: ResMut<Travel>, mut show: MessageWriter<ShowLoadingScreen>, request: Res<MapRequest>, frames: Res<FrameCount>) {
-    let Some(b) = begins.read().last().cloned() else { return };
+/// A travel begins: the map is checked (and spelt as the install spells
+/// it), the loading screen goes up, the trader menu closes (KF closes the
+/// menus on a travel; the other pages close with the load,
+/// `fresh_player_on_new_map`). Only then is it announced to the clients
+/// (`TravelStarted`), so they are never sent to a map the host cannot load.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
+fn begin(
+    mut begins: MessageReader<BeginTravel>,
+    mut travel: ResMut<Travel>,
+    mut show: MessageWriter<ShowLoadingScreen>,
+    request: Res<MapRequest>,
+    frames: Res<FrameCount>,
+    mut buy_menu: ResMut<crate::game::buy_menu::BuyMenu>,
+    mut started: MessageWriter<TravelStarted>,
+    (mut rotation, save): (ResMut<MapRotation>, Res<RotationSave>),
+) {
+    let Some(mut b) = begins.read().last().cloned() else { return };
+    let installed = list_installed_maps(&request.install_root);
+    match installed_name(&b.map, &installed) {
+        Some(m) => b.map = m,
+        None if b.net_travel.is_some() => {
+            // A client: the host's map is not installed here (net/client.rs
+            // quits before this).
+            runlog::kv("travel_refused", &format!("map={} reason=not_installed side=client", b.map));
+            return;
+        }
+        None => {
+            // The single player / host: the map list's next map, else this
+            // map again (KF's "?Restart").
+            let next = next_from_rotation(&mut rotation, &request, &save);
+            let map = installed_name(&next, &installed).unwrap_or_else(|| request.map.clone());
+            runlog::kv("travel_map_missing", &format!("map={} reason={} instead={map}", b.map, b.reason));
+            b.map = map;
+        }
+    }
     if matches!(travel.state, TravelState::Loading { .. }) {
         runlog::kv("travel_queued", &format!("map={} reason={} state={:?}", b.map, b.reason, travel.state));
         travel.queued = Some(b);
         return;
     }
+    if buy_menu.open {
+        // Closed now, a few frames before the load, so its own close
+        // (classic_menu.rs / numenu.rs: the mouse captured again) runs
+        // before the new map's lobby frees the mouse.
+        buy_menu.open = false;
+        runlog::kv("buy_menu", "open=false reason=travel");
+    }
     runlog::kv("travel_begin", &format!("from={} to={} reason={} frame={}", request.map, b.map, b.reason, frames.0));
     travel.began = Some((std::time::Instant::now(), request.map.clone(), b.reason.clone()));
     travel.state = TravelState::Showing { map: b.map.clone() };
+    started.write(TravelStarted { map: b.map.clone(), reason: b.reason.clone(), net_travel: b.net_travel });
     show.write(ShowLoadingScreen { map: b.map });
 }
 
@@ -245,6 +326,7 @@ fn finish(
     mut hide: MessageWriter<HideLoadingScreen>,
     mut vote: ResMut<MapVote>,
     mut again: MessageWriter<BeginTravel>,
+    (mut over, mut net_travel): (ResMut<crate::game::end_game::MatchOver>, ResMut<crate::net::NetTravel>),
 ) {
     let done = loaded.read().last().cloned();
     let TravelState::Loading { map, asked, epoch: before } = travel.state.clone() else { return };
@@ -252,6 +334,7 @@ fn finish(
     if let Some(m) = done {
         travel.state = TravelState::Idle;
         travel.done += 1;
+        travel.failures = 0;
         hide.write(HideLoadingScreen);
         vote.clear();
         runlog::kv(
@@ -259,11 +342,19 @@ fn finish(
             &format!("from={from} to={} reason={reason} load={} load_seconds={:.2} total_seconds={:.2} travels={} frame={}", m.map, m.load, m.seconds, since.elapsed().as_secs_f32(), travel.done, frames.0),
         );
     } else if frames.0 > asked + 2 && epoch.load == before {
-        // ChangeMap refused (no such map): stay on this one.
+        // ChangeMap refused (the map went missing since `begin` checked
+        // it): stay on this one, with no travel number waiting, and ask
+        // for the restart again (another map) a few times.
         travel.state = TravelState::Idle;
+        travel.failures += 1;
         hide.write(HideLoadingScreen);
         vote.clear();
-        runlog::kv("travel_failed", &format!("map={map} reason=map_change_refused frame={}", frames.0));
+        net_travel.pending = None;
+        let retry = travel.failures < MAX_FAILURES && over.active();
+        if retry {
+            over.allow_restart();
+        }
+        runlog::kv("travel_failed", &format!("map={map} reason=map_change_refused failures={} restart_again={retry} frame={}", travel.failures, frames.0));
     }
     if travel.state == TravelState::Idle
         && let Some(q) = travel.queued.take()
@@ -312,18 +403,20 @@ fn fresh_player_on_new_map(
     net.want_ready = false;
     net.reset_for_new_map();
     let lobby = options.mode == crate::game::waves::GameMode::Waves && (lobby_settings.open || net.active);
+    // The lobby needs the mouse; without it the game view takes it again
+    // (a page closed above, e.g. the pause menu, had freed it).
+    let mut cursor_state = "unchanged";
+    if let Ok(mut c) = cursor.single_mut() {
+        (c.grab_mode, c.visible, cursor_state) = if lobby { (CursorGrabMode::None, true, "free") } else { (CursorGrabMode::Locked, false, "captured") };
+    }
     if lobby {
         menus.stack.push(crate::game::menus::Page::Lobby);
         runlog::kv("menu_open", "page=Lobby reason=new_map");
-        if let Ok(mut c) = cursor.single_mut() {
-            c.grab_mode = CursorGrabMode::None;
-            c.visible = true;
-        }
     }
     runlog::kv(
         "new_map_player",
         &format!(
-            "load={} health={:.0}->{:.0} dead={}->false deaths={}->0 kills={}->0 perk={} closed_pages=[{}] lobby={lobby} lobby_reason={}",
+            "load={} health={:.0}->{:.0} dead={}->false deaths={}->0 kills={}->0 perk={} closed_pages=[{}] lobby={lobby} lobby_reason={} cursor={cursor_state}",
             epoch.load,
             was.0,
             health.health,
@@ -332,7 +425,7 @@ fn fresh_player_on_new_map(
             was.3,
             vet.vet.label(),
             pages.join(","),
-            if net.active { "net_game" } else { lobby_settings.reason }
+            if net.active { "net_game" } else { lobby_settings.reason },
         ),
     );
 }

@@ -20,13 +20,16 @@ use lightyear::prelude::*;
 
 use super::NetMode;
 use super::pawns::RemotePawn;
-use super::protocol::{GameChannel, KillCredit, NetGame, NetPlayer, NetWave, PlayerEvent, ProjectileFx, ZedChannel, ZedSnapshot};
+use super::protocol::{GameChannel, KillCredit, NetGame, NetPlayer, NetWave, PlayerEvent, ProjectileFx, Stamped, ZedChannel, ZedSnapshot};
 use super::server::PlayerSlot;
 use crate::engine::coords::SCALE;
 use crate::engine::runlog;
 use crate::game::combat::NetHit;
 use crate::player::body::PawnState;
 use crate::zeds::zed::{PuppetFeed, PuppetSample, Zed, ZedNet, ZedSystems};
+
+/// This game's link to the host (a client game).
+type FromHost = (With<Client>, Without<LinkOf>);
 
 /// Snapshots per second (as the pawn updates).
 const SEND_RATE: f32 = 20.0;
@@ -112,17 +115,19 @@ fn feed_remote_players(pawns: Query<(&RemotePawn, &PawnState)>, mut remote: ResM
 /// Clients' hits on zeds: the same `damage_zed` call on the host's zed,
 /// with that client's perk (prototype rule: the client is trusted).
 fn receive_hits(
-    mut links: Query<(Entity, &mut MessageReceiver<NetHit>), With<ClientOf>>,
+    mut links: Query<(Entity, &mut MessageReceiver<Stamped<NetHit>>), With<ClientOf>>,
     players: Query<(&NetPlayer, &PlayerSlot)>,
     mut zeds: Query<&mut Zed>,
     mut kills: ResMut<crate::game::combat::KillCount>,
+    travel: Res<super::NetTravel>,
 ) {
     for (link, mut rx) in &mut links {
         let Some(peer) = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer) else {
             rx.receive().for_each(drop);
             continue;
         };
-        for hit in rx.receive() {
+        // A hit on another map's zed (zeds are numbered per map): dropped.
+        for hit in rx.receive().filter_map(|m| travel.accept_from_client(m, "zed_hit")) {
             let Some(mut z) = zeds.iter_mut().find(|z| z.id as u32 == hit.zed) else {
                 runlog::kv("net_zed_hit_dropped", &format!("peer={peer} zed={} reason=no_such_zed", hit.zed));
                 continue;
@@ -154,7 +159,7 @@ fn receive_hits(
 
 /// A client's kill: their kill count and dosh (KF's ScoreKill on their
 /// PRI), sent to their game; this game's player gets nothing for it.
-fn credit_kills(mut zeds: Query<&mut Zed>, players: Query<(&NetPlayer, &PlayerSlot)>, mut senders: Query<&mut MessageSender<KillCredit>, RemoteLinks>) {
+fn credit_kills(mut zeds: Query<&mut Zed>, players: Query<(&NetPlayer, &PlayerSlot)>, mut senders: Query<&mut MessageSender<Stamped<KillCredit>>, RemoteLinks>, travel: Res<super::NetTravel>) {
     for mut z in &mut zeds {
         let Some(peer) = z.net.damaged_by else { continue };
         if !z.is_dead() || !z.killed_by_player || z.kill_paid {
@@ -162,7 +167,7 @@ fn credit_kills(mut zeds: Query<&mut Zed>, players: Query<(&NetPlayer, &PlayerSl
         }
         z.kill_paid = true;
         let credit = KillCredit { zed_id: z.id as u32, scoring_value: z.scoring_value, headshot: z.headshot_kill };
-        let sent = link_of(&players, peer).and_then(|l| senders.get_mut(l).ok()).map(|mut tx| tx.send::<GameChannel>(credit)).is_some();
+        let sent = link_of(&players, peer).and_then(|l| senders.get_mut(l).ok()).map(|mut tx| tx.send::<GameChannel>(travel.stamp(credit))).is_some();
         runlog::kv("net_kill_credit", &format!("peer={peer} zed={} scoring_value={} sent={sent}", z.id, z.scoring_value));
     }
 }
@@ -173,7 +178,8 @@ fn forward_player_events(
     mut pushes: MessageReader<crate::player::walk::PlayerPush>,
     mut grabs: MessageReader<crate::game::combat::RemoteGrab>,
     players: Query<(&NetPlayer, &PlayerSlot)>,
-    mut senders: Query<&mut MessageSender<PlayerEvent>, RemoteLinks>,
+    mut senders: Query<&mut MessageSender<Stamped<PlayerEvent>>, RemoteLinks>,
+    travel: Res<super::NetTravel>,
 ) {
     let mut out: Vec<(u64, PlayerEvent)> = Vec::new();
     for h in hits.read() {
@@ -201,7 +207,7 @@ fn forward_player_events(
         out.push((g.peer, PlayerEvent::Grab { seconds: g.seconds, zed_id: g.zed_id as u32 }));
     }
     for (peer, ev) in out {
-        let sent = link_of(&players, peer).and_then(|l| senders.get_mut(l).ok()).map(|mut tx| tx.send::<GameChannel>(ev.clone())).is_some();
+        let sent = link_of(&players, peer).and_then(|l| senders.get_mut(l).ok()).map(|mut tx| tx.send::<GameChannel>(travel.stamp(ev.clone()))).is_some();
         runlog::kv("net_player_event_sent", &format!("peer={peer} sent={sent} event={ev:?}"));
     }
 }
@@ -211,7 +217,8 @@ fn forward_player_events(
 fn forward_projectiles(
     mut globs: MessageReader<crate::zeds::vomit::SpawnVomit>,
     mut fireballs: MessageReader<crate::zeds::fireball::SpawnFireball>,
-    mut senders: Query<&mut MessageSender<ProjectileFx>, RemoteLinks>,
+    mut senders: Query<&mut MessageSender<Stamped<ProjectileFx>>, RemoteLinks>,
+    travel: Res<super::NetTravel>,
 ) {
     let mut out: Vec<ProjectileFx> = globs.read().map(|g| ProjectileFx::Bile { at: g.at.to_array(), velocity: g.velocity.to_array(), zed_id: g.zed_id as u32 }).collect();
     out.extend(fireballs.read().map(|f| ProjectileFx::Fireball {
@@ -223,7 +230,7 @@ fn forward_projectiles(
     for p in out {
         let mut clients = 0;
         for mut tx in &mut senders {
-            tx.send::<GameChannel>(p.clone());
+            tx.send::<GameChannel>(travel.stamp(p.clone()));
             clients += 1;
         }
         runlog::kv("net_projectile_sent", &format!("clients={clients} {p:?}"));
@@ -486,12 +493,12 @@ fn feed_puppets(time: Res<Time<Real>>, zed_time: Res<crate::game::zed_time::ZedT
 }
 
 /// My hits on puppets go to the host.
-fn send_hits(mut zeds: Query<&mut Zed>, mut tx: Query<&mut MessageSender<NetHit>, MyConnection>) {
+fn send_hits(mut zeds: Query<&mut Zed>, mut tx: Query<&mut MessageSender<Stamped<NetHit>>, MyConnection>, travel: Res<super::NetTravel>) {
     let Ok(mut tx) = tx.single_mut() else { return };
     for mut z in &mut zeds {
         for hit in std::mem::take(&mut z.net.hits) {
             runlog::kv("net_zed_hit_sent", &format!("zed={} weapon={} damage={:.1} headshot={} puppet_health_now={:.1}", hit.zed, hit.weapon, hit.damage, hit.headshot, z.health.max(0.0)));
-            tx.send::<GameChannel>(hit);
+            tx.send::<GameChannel>(travel.stamp(hit));
         }
     }
 }
@@ -500,15 +507,17 @@ fn send_hits(mut zeds: Query<&mut Zed>, mut tx: Query<&mut MessageSender<NetHit>
 /// game's own).
 #[allow(clippy::type_complexity)] // Bevy system parameters
 fn receive_player_events(
-    mut rx: Query<&mut MessageReceiver<PlayerEvent>, (With<Client>, Without<LinkOf>)>,
+    mut rx: Query<&mut MessageReceiver<Stamped<PlayerEvent>>, (With<Client>, Without<LinkOf>)>,
     mut damage: MessageWriter<crate::game::combat::PlayerDamaged>,
     mut push: MessageWriter<crate::player::walk::PlayerPush>,
     mut pinned: ResMut<crate::game::combat::PlayerPinned>,
     vet: Res<crate::game::perks::Veterancy>,
     mut healed: MessageWriter<crate::game::healing::HealedByTeammate>,
+    travel: Res<super::NetTravel>,
 ) {
     for mut r in &mut rx {
-        for ev in r.receive() {
+        // A hit or heal from another map: dropped.
+        for ev in r.receive().filter_map(|m| travel.accept_from_host(m, "player_event")) {
             runlog::kv("net_player_event", &format!("{ev:?}"));
             match ev {
                 PlayerEvent::Hurt { amount, zed_id, kind, armor_stops, dam_type, source, dam } => {
@@ -540,12 +549,13 @@ fn receive_player_events(
 /// fireball.rs leave a client's projectiles harmless).
 #[allow(clippy::type_complexity)] // Bevy system parameters
 fn receive_projectiles(
-    mut rx: Query<&mut MessageReceiver<ProjectileFx>, (With<Client>, Without<LinkOf>)>,
+    mut rx: Query<&mut MessageReceiver<Stamped<ProjectileFx>>, (With<Client>, Without<LinkOf>)>,
     mut globs: MessageWriter<crate::zeds::vomit::SpawnVomit>,
     mut fireballs: MessageWriter<crate::zeds::fireball::SpawnFireball>,
+    travel: Res<super::NetTravel>,
 ) {
     for mut r in &mut rx {
-        for p in r.receive() {
+        for p in r.receive().filter_map(|m| travel.accept_from_host(m, "projectile")) {
             runlog::kv("net_projectile", &format!("{p:?}"));
             match p {
                 ProjectileFx::Bile { at, velocity, zed_id } => {
@@ -563,13 +573,15 @@ fn receive_projectiles(
 /// The host credited me with a kill: kill count and dosh (dosh.rs's
 /// ScoreKill, as for my own kills in single player).
 fn receive_kill_credits(
-    mut rx: Query<&mut MessageReceiver<KillCredit>, (With<Client>, Without<LinkOf>)>,
+    mut rx: Query<&mut MessageReceiver<Stamped<KillCredit>>, FromHost>,
     mut kills: ResMut<crate::game::combat::KillCount>,
     mut dosh: ResMut<crate::game::dosh::Dosh>,
     options: Res<crate::game::waves::GameOptions>,
+    travel: Res<super::NetTravel>,
 ) {
     for mut r in &mut rx {
-        for c in r.receive() {
+        // A kill on the old map (the new map's count starts at 0): dropped.
+        for c in r.receive().filter_map(|m| travel.accept_from_host(m, "kill_credit")) {
             kills.0 += 1;
             let paid = dosh.kill(c.scoring_value, options.length);
             runlog::kv("dosh", &format!("reason=kill_credit zed={} amount={paid:.0} total={:.0} team={:.0} kills={} headshot={}", c.zed_id, dosh.score, dosh.team, kills.0, c.headshot));

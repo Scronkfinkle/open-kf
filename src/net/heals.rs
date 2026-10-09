@@ -12,7 +12,7 @@ use lightyear::prelude::*;
 
 use super::NetMode;
 use super::lobby::NetLobby;
-use super::protocol::{GameChannel, HealRequest, NetPawn, NetPlayer, PlayerEvent};
+use super::protocol::{GameChannel, HealRequest, NetPawn, NetPlayer, PlayerEvent, Stamped};
 use super::server::PlayerSlot;
 use crate::engine::runlog;
 use crate::game::healing::{HealTeammate, HealedByTeammate, Teammate, Teammates};
@@ -49,9 +49,9 @@ fn fill_teammates(lobby: Res<NetLobby>, pawns: Query<&NetPawn>, players: Query<&
 }
 
 /// Client: my heals go to the host.
-fn send_heals(mut heals: MessageReader<HealTeammate>, mut tx: Query<&mut MessageSender<HealRequest>, MyConnection>) {
+fn send_heals(mut heals: MessageReader<HealTeammate>, mut tx: Query<&mut MessageSender<Stamped<HealRequest>>, MyConnection>, travel: Res<super::NetTravel>) {
     for h in heals.read() {
-        let sent = tx.single_mut().map(|mut tx| tx.send::<GameChannel>(HealRequest { target: h.peer, amount: h.heal_sum, source: h.source.to_string() })).is_ok();
+        let sent = tx.single_mut().map(|mut tx| tx.send::<GameChannel>(travel.stamp(HealRequest { target: h.peer, amount: h.heal_sum, source: h.source.to_string() }))).is_ok();
         runlog::kv("net_heal_sent", &format!("target={} amount={} source={} sent={sent}", h.peer, h.heal_sum, h.source));
     }
 }
@@ -61,12 +61,13 @@ fn send_heals(mut heals: MessageReader<HealTeammate>, mut tx: Query<&mut Message
 #[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn route_heals(
     mut own: MessageReader<HealTeammate>,
-    mut links: Query<(Entity, &mut MessageReceiver<HealRequest>), With<ClientOf>>,
+    mut links: Query<(Entity, &mut MessageReceiver<Stamped<HealRequest>>), With<ClientOf>>,
     players: Query<(&NetPlayer, &PlayerSlot)>,
     records: Query<&NetPlayer>,
     lobby: Res<NetLobby>,
-    mut senders: Query<&mut MessageSender<PlayerEvent>, RemoteLinks>,
+    mut senders: Query<&mut MessageSender<Stamped<PlayerEvent>>, RemoteLinks>,
     mut healed: MessageWriter<HealedByTeammate>,
+    travel: Res<super::NetTravel>,
 ) {
     let name_of = |peer: u64| records.iter().find(|p| p.peer == peer).map_or_else(|| "Player".to_string(), |p| p.name.clone());
     let mut out: Vec<(u64, f32, String, String)> = Vec::new();
@@ -76,7 +77,8 @@ fn route_heals(
     }
     for (link, mut rx) in &mut links {
         let from = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
-        for r in rx.receive() {
+        // A heal given on another map: dropped.
+        for r in rx.receive().filter_map(|m| travel.accept_from_client(m, "heal_request")) {
             let Some(from) = from else { continue };
             // Trusting, as the zed hits: at most a syringe's 20 x 1.75.
             out.push((r.target, r.amount.clamp(0.0, 100.0), name_of(from), r.source));
@@ -91,7 +93,7 @@ fn route_heals(
         let link = players.iter().find(|(p, _)| p.peer == target).map(|(_, s)| s.link);
         let sent = link
             .and_then(|l| senders.get_mut(l).ok())
-            .map(|mut tx| tx.send::<GameChannel>(PlayerEvent::Healed { amount, healer: healer.clone(), source: source.clone() }))
+            .map(|mut tx| tx.send::<GameChannel>(travel.stamp(PlayerEvent::Healed { amount, healer: healer.clone(), source: source.clone() })))
             .is_some();
         runlog::kv("net_heal_routed", &format!("target={target} amount={amount} healer=\"{healer}\" source={source} sent={sent}"));
     }

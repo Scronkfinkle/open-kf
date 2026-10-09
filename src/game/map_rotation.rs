@@ -99,6 +99,14 @@ fn is_installed(map: &str, installed: &[String]) -> bool {
     installed.iter().any(|m| same_map(m, map))
 }
 
+/// The map as the install spells it (its file name without `.rom`), for
+/// any spelling of it (`kf-farm`, `KF-Farm.rom`): the map loader opens
+/// `Maps/<name>.rom` and Linux file names are case-sensitive. None: not
+/// installed.
+pub fn installed_name(map: &str, installed: &[String]) -> Option<String> {
+    installed.iter().find(|m| same_map(m, map)).cloned()
+}
+
 /// A `--map-list` / `map_list=` value: names separated by commas, blanks
 /// dropped, `.rom` removed. An empty text is an empty list.
 pub fn parse_map_list(v: &str) -> Vec<String> {
@@ -238,7 +246,8 @@ pub fn list_installed_maps(root: &std::path::Path) -> Vec<String> {
     let mut maps: Vec<String> = std::fs::read_dir(root.join("Maps"))
         .map(|d| {
             d.flatten()
-                .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".rom").or_else(|| n.strip_suffix(".ROM"))).map(str::to_string))
+                // Only `.rom`: the map loader opens `<name>.rom`.
+                .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".rom")).map(str::to_string))
                 .filter(|n| !["entry", "kfintro", "kf-menu"].contains(&n.to_ascii_lowercase().as_str()))
                 .collect()
         })
@@ -327,6 +336,17 @@ mod tests {
         assert_eq!(r.next_map("KF-Farm", &all_installed()), "KF-Aperture");
         // Nothing installed with the prefix: the same map again.
         assert_eq!(r.next_map("KF-Farm", &s(&["Other"])), "KF-Farm");
+    }
+
+    #[test]
+    fn installed_spelling() {
+        assert_eq!(installed_name("kf-farm", &all_installed()), Some("KF-Farm".into()));
+        assert_eq!(installed_name("KF-FARM.ROM", &all_installed()), Some("KF-Farm".into()));
+        assert_eq!(installed_name("KF-Nowhere", &all_installed()), None);
+        // The list keeps its own spelling; the travel takes the install's.
+        let mut r = MapRotation::new(s(&["kf-farm", "kf-manor"]), 0);
+        let next = r.next_map("KF-Farm", &all_installed());
+        assert_eq!(installed_name(&next, &all_installed()), Some("KF-Manor".into()));
     }
 
     #[test]

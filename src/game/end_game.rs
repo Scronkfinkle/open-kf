@@ -51,6 +51,13 @@ impl MatchOver {
     pub fn active(&self) -> bool {
         self.ended_at.is_some()
     }
+
+    /// The travel this match's restart asked for failed: the restart is
+    /// asked again (the end screen's timer has run out, so at once), and
+    /// game/travel.rs picks another map.
+    pub fn allow_restart(&mut self) {
+        self.restart_sent = false;
+    }
 }
 
 /// The match is over and the game should go on (GameInfo.RestartGame):

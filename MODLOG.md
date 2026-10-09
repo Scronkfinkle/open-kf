@@ -7954,3 +7954,110 @@ allocators not tested with this change. A map sound that is also played
 by something that never preloads it is just loaded again when needed.
 **Next:** if the 0.4 MB per change matters later: a counting allocator
 by size class to see what kind of allocation stays.
+## 2026-10-09 Map change gaps: menus at travel, stamped messages, refused travels, joins, votes, load freeze
+
+**Changed:** (one commit each, branch `mapchange/gaps`)
+1. `game/travel.rs`: the trader menu closes when a travel begins; after
+   the load the mouse is freed for the lobby or captured for play
+   (`new_map_player ... cursor=`).
+2. `net/protocol.rs` `Stamped<T>`: pickup notices, projectile copies,
+   kill credits, player events, start spots (host to client) and door,
+   pickup, drop, heal, zed-hit requests (client to host) carry the
+   sender's map travel number; the other side drops another map's
+   (`net_other_map_dropped`). PROTOCOL_ID 000C.
+3. `net/map_vote.rs`: `MapVoteState` stamped; a client that loaded the
+   next map first drops the old vote (it reopened the window). 000D.
+4. `TravelStarted` (travel.rs): a client's pending travel number is set
+   when its travel really starts (not when told, which broke two travels
+   in a row); the host announces once per started travel. Test action
+   `travel:MAP` (single player / host).
+5. Travel checks the map in `begin` before announcing: any spelling ->
+   the install's file name (`map_rotation::installed_name`), a missing
+   map -> the list's next map; a refused load asks for the restart again
+   (3 times) and clears the pending number. `list_installed_maps` takes
+   only `.rom`.
+6. `net/client.rs`: a client without the host's next map quits with a
+   message (as at the join).
+7. `main.rs`: `--map-list` equal to the settings file's list (the
+   launcher's) still saves the position.
+8. `map_vote/rules.rs`: time up with no map that can win -> `NoWinner`,
+   the vote ends, the map list decides (was a hang). Unit test.
+9. `LobbyRequest.travel`: Ready counts only for the host's current map;
+   a client resets Ready when told of a travel; `NetGame.match_over`: a
+   player joining a finished match waits in the lobby. 000E.
+10. Clippy follow-up (names, a type alias).
+11. A client that joined with another map than the host's takes no map
+    state until it has loaded the host's (`NOT_A_HOST_MAP`).
+12. `net/mod.rs`: `net_long_frame` log (frames > 0.25 s, network games).
+13. DESIGN.md.
+**Why:** the gaps left by the travel work, and the reviewer's 9 bugs on
+`mapchange-review`.
+**Tested how:** headless runs with scratch settings/logs in work/gaps
+(scripts `g.sh`, `mp.sh`, not committed), ports 7761-7801; cargo test,
+clippy.
+**Result:**
+- Trader menu at travel (single player, `--lobby`): before, `buy_menu
+  open=false ... in_shop=false` only on the new map, then
+  `classic_menu_close` captured the mouse over the new lobby; after,
+  `buy_menu open=false reason=travel` at `travel_begin`,
+  `classic_menu_close` before the load, `cursor=free` with the lobby.
+  Pause menu open at travel (no lobby): `closed_pages=[Pause]`,
+  `pause paused=false`, `cursor=captured`, Escape opens it again later.
+- Win path: single player `--wave 5`, `kill_boss`: `boss_killed`,
+  `game_end result=won`, `end_game result=survived`, restart by timer,
+  travel to KF-Manor. Host + client: the client saw `end_game
+  result=survived`, both travelled, readied, played the next match; the
+  client's `warp_pickup` pickups before and after (`net_pickup_notice_sent
+  ... travel=0` / `travel=1`, `net_pickup_taken ... yours=true`).
+- 3 players voting: host + client on KF-Offices with the third on
+  KF-Hell -> `voted=2/3`, `map_vote_end winner=KF-Offices
+  reason=majority`. Second vote, three different maps (host's own last)
+  -> `voted=3/3 ... reason=all_voted tie=true` (random among the three).
+  Another run: two votes at time up -> `reason=time_up tie=true`.
+- Join during a vote: the joiner got the window at once (`menu_open
+  page=MapVote time_left=25`), `map_vote_players players=3`; a later vote
+  made `voted=2/3` (would have been 2/2 = all voted without the joiner),
+  the joiner's vote ended it (`3/3 all_voted`). Joiner pressing Ready
+  after the end: `match_started=true match_over=true`, no
+  `net_local_match_start` until the next map.
+- Join while the host loads: a player started the moment the host began
+  loading KF-Clandestine (load frame 3.89 s): its query already answered
+  KF-Clandestine, it connected after the freeze, `same_map=true
+  host_travel=1`. Host frozen with SIGSTOP 8 s while a player connected:
+  connected right after (`after_s=4.31`).
+- Map mismatch at the join (host on KF-Manor, its query port taken by a
+  silent socket, client `--map KF-Farm`): `net_query_failed ...
+  map_given=true`, `net_map_mismatch ... action=travel`, KF-Manor loaded
+  in place, match joined. First run showed KF-Manor's doors/pickups
+  applied while KF-Farm was still loaded (fix 11); after it,
+  `net_doors_dropped travel=0 loaded=4294967295` until the load.
+- Refused travel (lowercase `travel:kf-manor`, before fix 5):
+  `map_change_refused`, `travel_failed`, the client stuck with
+  `pending=Some(2)` dropping 600+ messages. After: `travel_begin ...
+  to=KF-Manor`, `--map-list kf-farm,kf-manor` travels to KF-Manor,
+  `travel:KF-Nowhere` -> `travel_map_missing ... instead=KF-Farm`.
+- Two travels 3-8 frames apart (4 pairs): the client always ended on
+  the second map with its doors (`net_doors_received doors=19 travel=8`).
+  The "queued during a load" case was never reached (the second number
+  always arrived after the load).
+- Client without KF-Manor (`KF_ROOT` = a folder of links to the install
+  minus KF-Manor): `net_map_missing ... when=travel action=quit`, "error:
+  the host went to KF-Manor, which is not installed here".
+- `--map-list KF-Farm,KF-Manor` equal to the file's: `source=file`,
+  `saved=true`, file `map_position=1`.
+- Load freeze (gap 7): host + client through all 37 maps (`travel:`
+  every 150 frames), no disconnect; longest frame 4.27 s (KF-Clandestine),
+  then KF-MountainPass 3.9, KF-AbusementPark 3.8 (load_seconds max 3.2).
+  SIGSTOP on the host: 15 s kept both clients, 25 s dropped them
+  (`ConnectionTimedOut`). Timeout kept at 20 s; a keep-alive would need
+  the load off the main thread (not done).
+- 353 + 39 tests pass (3 new); clippy: only the old boss.rs warning.
+**Still broken / not tested:** the refused-load retry (needs a map file
+to vanish between the check and the load); the queued second travel on
+a client; a vote with no possible winner in a real game (unit test
+only); trader menu open at travel in a network game (single player
+only); `--wave N` applies again on every new map (a test option; the
+next map starts at wave N, not 1); after the load `NetGame.match_over`
+is true for about 0.5 s (match not started, no effect seen); zed time
+commands are not stamped; not played by you; Windows not tested.
+**Next:** your play test of a network game through a vote and a map change.

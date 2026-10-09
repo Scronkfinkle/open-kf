@@ -50,7 +50,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_000B;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_000E;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -72,11 +72,42 @@ pub struct NetTravel {
     pub known: bool,
 }
 
+/// `NetTravel::loaded` of a client that joined with another map than the
+/// host's, until it has loaded the host's.
+pub const NOT_A_HOST_MAP: u32 = u32::MAX;
+
 impl NetTravel {
     /// Does map state stamped `travel` belong to the map loaded here? A
     /// client accepts nothing before it knows the host's number.
     pub fn current(&self, travel: u32) -> bool {
         self.known && travel == self.loaded && self.pending.is_none_or(|p| p == travel)
+    }
+}
+
+impl NetTravel {
+    /// A message about the map loaded here, for the other side.
+    pub fn stamp<T>(&self, msg: T) -> protocol::Stamped<T> {
+        protocol::Stamped { travel: self.loaded, msg }
+    }
+
+    /// Host: a client's message, if it is about the map loaded here (a
+    /// client still on the old map, or one that loaded the new map first,
+    /// may send one about another map).
+    pub fn accept_from_client<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
+        if m.travel == self.loaded {
+            return Some(m.msg);
+        }
+        crate::engine::runlog::kv("net_other_map_dropped", &format!("what={what} from=client travel={} loaded={}", m.travel, self.loaded));
+        None
+    }
+
+    /// Client: the host's message, if it is about the map loaded here.
+    pub fn accept_from_host<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
+        if self.current(m.travel) {
+            return Some(m.msg);
+        }
+        crate::engine::runlog::kv("net_other_map_dropped", &format!("what={what} from=host travel={} loaded={} pending={:?}", m.travel, self.loaded, self.pending));
+        None
     }
 }
 
@@ -175,6 +206,7 @@ impl Plugin for NetPlugin {
         // system fails with "LastConfirmedInput does not exist".
         app.add_systems(Startup, |mut commands: Commands| commands.insert_resource(lightyear::prelude::PredictionManager::default()));
         app.add_systems(First, keep_zed_time_speed.before(bevy::time::TimeSystems));
+        app.add_systems(Update, log_long_frames);
         app.add_systems(crate::world::map_change::PostMapLoad, travel_loaded);
         lobby::build(app);
         pawns::build(app, &self.mode);
@@ -234,6 +266,22 @@ fn update_query_info(q: Res<QueryInfo>, players: Res<server::NetPlayers>, game: 
     }
 }
 
+/// A frame this long sends nothing (lightyear sends once a frame): the
+/// other side sees that much silence. Map loads are the long ones; the
+/// netcode timeout (`client.rs` CONNECTION_TIMEOUT) must be longer.
+const LONG_FRAME: f32 = 0.25;
+
+/// Logs frames longer than `LONG_FRAME` (network games only), with the
+/// longest so far.
+fn log_long_frames(time: Res<Time<Real>>, frames: Res<bevy::diagnostic::FrameCount>, request: Res<crate::world::map::MapRequest>, mut longest: Local<f32>) {
+    let d = time.delta_secs();
+    if d < LONG_FRAME {
+        return;
+    }
+    *longest = longest.max(d);
+    crate::engine::runlog::kv("net_long_frame", &format!("seconds={d:.2} longest={:.2} frame={} map={}", *longest, frames.0, request.map));
+}
+
 /// lightyear sets the speed of Bevy's game clock (`Time<Virtual>`) at the
 /// end of every frame (its clock synchronisation), which undid zed time
 /// (game/zed_time.rs slows that same clock to 0.2). Just before the clock
@@ -272,5 +320,11 @@ mod tests {
         // Map 1 loaded: only its state.
         t.loaded = t.pending.take().unwrap();
         assert!(!t.current(0) && t.current(1));
+        // Joined with another map than the host's travel 0: nothing until
+        // the host's map is loaded.
+        let mut t = NetTravel { known: true, loaded: NOT_A_HOST_MAP, pending: Some(0), seen: 0 };
+        assert!(!t.current(0));
+        t.loaded = t.pending.take().unwrap();
+        assert!(t.current(0));
     }
 }
