@@ -10,7 +10,7 @@
 //!
 //! Without a sound device the game runs silent (logged `audio_device`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -124,6 +124,10 @@ pub struct PreloadSounds {
     /// For the log, e.g. the weapon class.
     pub what: String,
     pub sounds: Vec<String>,
+    /// The map's own sounds (its ambient sounds, emitters, scripted
+    /// sounds): dropped from the bank when the map is unloaded, unless a
+    /// shared preload (weapons, zeds, trader) asked for them too.
+    pub per_map: bool,
 }
 
 /// Actor.AmbientSound: a sound that loops for as long as the entity has
@@ -222,31 +226,80 @@ type Entry = Arc<Vec<(Arc<Clip>, f32)>>;
 /// `Rc`), so it lives on the main thread.
 pub struct SoundBank {
     set: PackageSet,
-    cache: HashMap<String, Option<Entry>>,
+    cache: HashMap<String, Cached>,
+    /// Lowercase names the current map preloaded (`PreloadSounds::per_map`).
+    map_sounds: HashSet<String>,
+    /// Lowercase names a shared preload asked for: kept across maps.
+    shared: HashSet<String>,
     rng: u32,
+}
+
+/// A looked-up sound (None: not found) and the packages it was read from
+/// (lowercase), so a package can be closed when no cached sound needs it.
+struct Cached {
+    entry: Option<Entry>,
+    packages: Vec<String>,
 }
 
 impl SoundBank {
     fn new(root: PathBuf) -> Self {
         // A fixed seed, as elsewhere in the project (runs repeat exactly).
-        SoundBank { set: PackageSet::new(&root), cache: HashMap::new(), rng: 0x2545_f491 }
+        SoundBank { set: PackageSet::new(&root), cache: HashMap::new(), map_sounds: HashSet::new(), shared: HashSet::new(), rng: 0x2545_f491 }
+    }
+
+    /// For the map-change logs: sounds cached, their decoded size, and the
+    /// packages the bank holds open.
+    pub fn stats(&self) -> String {
+        let clips: usize = self.cache.values().filter_map(|c| c.entry.as_ref()).flat_map(|e| e.iter()).map(|(c, _)| c.samples.len() * 4).sum();
+        format!("sound_bank={} sound_bank_mb={} sound_packages={}", self.cache.len(), clips / (1024 * 1024), self.set.loaded_count())
     }
 
     fn lookup(&mut self, name: &str) -> Option<Entry> {
         let key = name.to_ascii_lowercase();
-        if let Some(e) = self.cache.get(&key) {
-            return e.clone();
+        if let Some(c) = self.cache.get(&key) {
+            return c.entry.clone();
         }
+        let mut packages: Vec<String> = name.split_once('.').map(|(p, _)| p.to_ascii_lowercase()).into_iter().collect();
         let entry = self.set.find_object(name, None).and_then(|h| {
             let mut clips = Vec::new();
-            self.collect(&h, &mut clips, 0);
+            self.collect(&h, &mut clips, &mut packages, 0);
             (!clips.is_empty()).then(|| Arc::new(clips))
         });
         if entry.is_none() {
             runlog::kv("sound_missing", &format!("sound={name}"));
         }
-        self.cache.insert(key, entry.clone());
+        packages.sort();
+        packages.dedup();
+        self.cache.insert(key, Cached { entry: entry.clone(), packages });
         entry
+    }
+
+    /// A preload: remembers whether the names belong to the map or are
+    /// shared (see `release_map_sounds`).
+    fn note_preload(&mut self, names: &[String], per_map: bool) {
+        let to = if per_map { &mut self.map_sounds } else { &mut self.shared };
+        to.extend(names.iter().map(|n| n.to_ascii_lowercase()));
+    }
+
+    /// At a map unload: drops the map's own sounds (not the shared ones)
+    /// and closes the packages no cached sound is read from any more.
+    /// Voices still playing keep their clip (`Arc`) until they end, so
+    /// nothing that plays is cut. Returns (sounds, packages) released.
+    fn release_map_sounds(&mut self) -> (usize, usize) {
+        let mut released = 0;
+        let mut candidates: HashSet<String> = HashSet::new();
+        for key in std::mem::take(&mut self.map_sounds) {
+            if self.shared.contains(&key) {
+                continue;
+            }
+            if let Some(c) = self.cache.remove(&key) {
+                released += 1;
+                candidates.extend(c.packages);
+            }
+        }
+        let needed: HashSet<&String> = self.cache.values().flat_map(|c| c.packages.iter()).collect();
+        let closed = candidates.iter().filter(|p| !needed.contains(p)).filter(|p| self.set.forget(p)).count();
+        (released, closed)
     }
 
     /// Actor.GetSoundDuration: seconds (a group: its first member).
@@ -256,8 +309,9 @@ impl SoundBank {
 
     /// Adds a Sound's clip, or every member of a SoundGroup (groups may
     /// hold groups; depth-limited).
-    fn collect(&self, h: &ObjectHandle, out: &mut Vec<(Arc<Clip>, f32)>, depth: u32) {
+    fn collect(&self, h: &ObjectHandle, out: &mut Vec<(Arc<Clip>, f32)>, packages: &mut Vec<String>, depth: u32) {
         let pkg = &h.package.pkg;
+        packages.push(h.package.name.to_ascii_lowercase());
         match h.class_name() {
             "Sound" => match ue_assets::sound::read_sound(pkg, h.export) {
                 Ok(s) => match ue_assets::sound::decode_wav(&s.data) {
@@ -279,7 +333,7 @@ impl SoundBank {
                 Ok(members) => {
                     for rf in members {
                         if let Some(m) = self.set.resolve(&h.package, rf).filter(|_| rf != ObjectRef::Null) {
-                            self.collect(&m, out, depth + 1);
+                            self.collect(&m, out, packages, depth + 1);
                         }
                     }
                 }
@@ -712,6 +766,7 @@ impl Plugin for AudioPlugin {
             .add_message::<PlaySound>()
             .add_message::<PreloadSounds>()
             .add_systems(Update, test_sounds)
+            .add_systems(crate::world::map_change::MapUnload, release_map_sounds)
             .add_systems(PostUpdate, (preload_sounds, play_sounds, sync_ambient_sounds, update_voices).chain().after(bevy::transform::TransformSystems::Propagate));
     }
 }
@@ -742,8 +797,15 @@ fn test_sounds(
     }
 }
 
+/// Map unload: the old map's sounds leave the bank (`SoundBank::release_map_sounds`).
+fn release_map_sounds(mut bank: NonSendMut<SoundBank>) {
+    let (sounds, packages) = bank.release_map_sounds();
+    runlog::kv("sound_bank_release", &format!("sounds={sounds} packages={packages} {}", bank.stats()));
+}
+
 fn preload_sounds(mut requests: MessageReader<PreloadSounds>, mut bank: NonSendMut<SoundBank>) {
     for req in requests.read() {
+        bank.note_preload(&req.sounds, req.per_map);
         let started = std::time::Instant::now();
         let found = req.sounds.iter().filter(|s| bank.lookup(s).is_some()).count();
         runlog::kv(
@@ -1058,5 +1120,27 @@ mod tests {
         let played = out.chunks(2).filter(|f| f[0] != 0.0).count();
         assert_eq!(played, 19);
     }
-}
 
+    #[test]
+    fn map_sounds_leave_the_bank_at_unload_shared_ones_stay() {
+        let mut bank = SoundBank::new(std::path::PathBuf::from("/nonexistent"));
+        let clip = |n: usize| Arc::new(vec![(Arc::new(Clip { rate: 100, channels: 1, samples: vec![0.0; n], loop_points: None }), 1.0)]);
+        let put = |bank: &mut SoundBank, key: &str, pkg: &str| {
+            bank.cache.insert(key.into(), Cached { entry: Some(clip(10)), packages: vec![pkg.into()] });
+        };
+        put(&mut bank, "mapamb.wind", "mapamb");
+        put(&mut bank, "kf_9mmsnd.9mm_fire", "kf_9mmsnd");
+        put(&mut bank, "both.drip", "both");
+        bank.note_preload(&["MapAmb.Wind".into(), "Both.Drip".into()], true);
+        bank.note_preload(&["KF_9MMSnd.9mm_Fire".into(), "Both.Drip".into()], false);
+        // A voice still playing the map's clip keeps it alive.
+        let playing = bank.lookup("MapAmb.Wind").unwrap();
+        assert_eq!(bank.release_map_sounds().0, 1);
+        assert!(!bank.cache.contains_key("mapamb.wind"));
+        assert!(bank.cache.contains_key("kf_9mmsnd.9mm_fire"));
+        assert!(bank.cache.contains_key("both.drip"), "also asked for by a shared preload");
+        assert_eq!(playing[0].0.frames(), 10);
+        // Nothing left to release until the next map preloads its sounds.
+        assert_eq!(bank.release_map_sounds().0, 0);
+    }
+}

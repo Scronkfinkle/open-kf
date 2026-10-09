@@ -104,7 +104,7 @@ pub(super) fn send_weapon_sounds(
             sounds.extend(def.model.all_notify_sounds());
             sounds.sort();
             sounds.dedup();
-            preload.write(crate::audio::mixer::PreloadSounds { what: def.class.clone(), sounds });
+            preload.write(crate::audio::mixer::PreloadSounds { what: def.class.clone(), sounds, per_map: false });
         }
     }
 }

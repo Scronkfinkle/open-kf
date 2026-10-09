@@ -212,7 +212,7 @@ pub(super) fn animate_zeds(
             list.extend(v.ambient.as_ref().map(|a| a.sound.clone()));
             list.sort();
             list.dedup();
-            preload.write(crate::audio::mixer::PreloadSounds { what: c.name.clone(), sounds: list });
+            preload.write(crate::audio::mixer::PreloadSounds { what: c.name.clone(), sounds: list, per_map: false });
         }
     }
     let dt = time.delta_secs();

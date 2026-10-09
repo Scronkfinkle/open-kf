@@ -192,6 +192,13 @@ impl PackageSet {
         v
     }
 
+    /// Closes a loaded package (lowercase or any case name): the next use
+    /// opens it again. Handles still held elsewhere keep their copy alive.
+    /// Returns whether it was loaded.
+    pub fn forget(&self, name: &str) -> bool {
+        self.loaded.borrow_mut().remove(&name.to_ascii_lowercase()).flatten().is_some()
+    }
+
     pub fn loaded_count(&self) -> usize {
         self.loaded.borrow().values().filter(|v| v.is_some()).count()
     }
