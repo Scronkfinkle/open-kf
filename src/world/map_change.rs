@@ -187,7 +187,7 @@ fn counts(world: &mut World) -> String {
     let scoped = world.query_filtered::<(), With<MapScoped>>().iter(world).count();
     format!(
         "rss_mb={} {} {} {} entities={entities} map_scoped={scoped} meshes={} images={} materials={} baked_materials={} modulate_materials={} blend_materials={}",
-        rss_mb().map_or("?".to_string(), |m| m.to_string()),
+        rss_mb().unwrap_or_else(|| "?".to_string()),
         heap_mb(),
         gpu_mb(world),
         world.get_non_send::<crate::audio::mixer::SoundBank>().map_or(String::new(), |b| b.stats()),
@@ -223,12 +223,16 @@ fn release_freed_memory() {
 }
 
 /// The game's resident memory in MB (Linux: /proc/self/status VmRSS;
-/// elsewhere None), to see whether map changes leak.
-fn rss_mb() -> Option<u64> {
+/// elsewhere None), to see whether map changes leak. With `swap_mb`: the
+/// part the system moved to swap, which VmRSS no longer counts (a busy
+/// machine can make `rss_mb` fall while nothing was freed).
+fn rss_mb() -> Option<String> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
-    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb / 1024)
+    let mb = |key: &str| -> Option<u64> {
+        let line = status.lines().find(|l| l.starts_with(key))?;
+        Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? / 1024)
+    };
+    Some(format!("{} swap_mb={}", mb("VmRSS:")?, mb("VmSwap:").map_or("?".to_string(), |s| s.to_string())))
 }
 
 /// The C allocator's view (Linux): `heap_used_mb` is memory the program
