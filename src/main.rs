@@ -142,8 +142,12 @@ struct Args {
 fn map_rotation_settings(args: &Args, settings: &std::path::Path) -> (game::map_rotation::MapRotation, game::map_rotation::MapVoteConfig, &'static str) {
     let (mut rotation, mut vote, mut source) = launcher::read_map_rotation(settings);
     if let Some(list) = &args.map_list {
+        // The launcher passes the settings file's own list (it differs
+        // from KF's): that one is still the file's, and its position is
+        // saved after each map. Another list is for this run only.
+        let same = source == "file" && list.len() == rotation.maps.len() && list.iter().zip(&rotation.maps).all(|(a, b)| a.eq_ignore_ascii_case(b));
         rotation = rotation.with_maps(list.clone());
-        source = "command_line";
+        source = if same { "file" } else { "command_line" };
     }
     if let Some(on) = args.map_vote {
         vote.enabled = on;
@@ -734,6 +738,16 @@ mod tests {
         assert_eq!((a.map_vote, a.vote_time), (Some(true), Some(20)));
         assert_eq!(parse(&["--no-map-vote"]).unwrap().map_vote, Some(false));
         assert!(parse(&["--map-list"]).is_err());
+        // The launcher's --map-list is the settings file's own list: the
+        // position is still saved there (RotationSave.save).
+        let file = std::env::temp_dir().join(format!("open-kf-rotation-test-{}.txt", std::process::id()));
+        std::fs::write(&file, "map_list=KF-Farm,KF-Manor\nmap_position=1\n").unwrap();
+        let same = parse(&["--map-list", "KF-Farm,KF-Manor"]).unwrap();
+        let (r, _, source) = map_rotation_settings(&same, &file);
+        assert_eq!((r.position, source), (1, "file"));
+        let other = parse(&["--map-list", "KF-Farm,KF-Offices"]).unwrap();
+        assert_eq!(map_rotation_settings(&other, &file).2, "command_line");
+        let _ = std::fs::remove_file(&file);
         assert!(parse(&["--vote-time", "0"]).is_err());
         // The command line wins over the settings file; no file: KF's.
         let missing = std::path::Path::new("work/no-such-settings-file.txt");
