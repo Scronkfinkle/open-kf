@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [package]
 name = "open-kf"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 
