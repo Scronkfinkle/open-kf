@@ -484,6 +484,7 @@ const MIN_TIME_BETWEEN_PAIN_ANIMS: f32 = 0.5;
 const STUN_TIME: f32 = 1.0;
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 pub struct Zed {
     pub id: usize,
     class: usize,

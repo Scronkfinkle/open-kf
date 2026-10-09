@@ -443,8 +443,11 @@ pub struct BuyMenuPlugin;
 
 impl Plugin for BuyMenuPlugin {
     fn build(&self, app: &mut App) {
+        use crate::world::map_change::MapResourceExt;
         app.init_resource::<BuyMenu>()
             .init_resource::<ShopCatalogue>()
+            // The map loader inserts the map's (waves mode; world/map_change.rs).
+            .reset_on_map_unload::<ShopCatalogue>()
             .init_resource::<ShopInventory>()
             .add_message::<ShopRequest>()
             .add_plugins((crate::game::numenu::NuMenuPlugin, crate::game::classic_menu::ClassicMenuPlugin))

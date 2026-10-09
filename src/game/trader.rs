@@ -240,7 +240,11 @@ pub struct TraderPlugin;
 
 impl Plugin for TraderPlugin {
     fn build(&self, app: &mut App) {
+        use crate::world::map_change::MapResourceExt;
+        // The map loader inserts the map's shops (waves mode;
+        // world/map_change.rs).
         app.init_resource::<Shops>()
+            .reset_on_map_unload::<Shops>()
             .add_systems(Update, shop_touch.after(crate::game::waves::wave_timer));
     }
 }

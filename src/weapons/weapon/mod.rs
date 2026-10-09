@@ -138,7 +138,7 @@ impl Plugin for WeaponPlugin {
                     .before(crate::engine::camera::follow_sky),
             )
             .insert_non_send(WeaponAssets::default())
-            .add_systems(PostStartup, load_weapons.after(crate::engine::camera::spawn_camera))
+            .add_systems(PostStartup, load_weapons) // the camera exists: the first map loaded in Startup (world/map_change.rs)
             .add_message::<crate::player::character::ChangeCharacter>()
             .add_systems(Update, (sync_perk, new_pawn_inventory, respawn_inventory, shop_requests, sleeve::change_character).chain().before(weapon_input))
             .add_systems(

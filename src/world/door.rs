@@ -13,6 +13,7 @@ use ue_assets::properties::Rotator;
 use crate::world::collision::{GameLayer, TriSoup};
 use crate::engine::coords::{self, SCALE};
 use crate::engine::runlog;
+use crate::world::map_change::MapResourceExt;
 
 /// Filled by the map loader; turned into `Doors` once colliders can spawn.
 #[derive(Resource, Default)]
@@ -296,6 +297,16 @@ fn door_net(
     }
 }
 
+/// A map change: the door states sent and applied belong to the old
+/// map's doors (the role stays).
+fn forget_net_doors(mut net: ResMut<DoorNet>) {
+    net.outgoing.clear();
+    net.incoming.clear();
+    net.state.clear();
+    net.from_host = None;
+    net.applied.clear();
+}
+
 pub struct DoorPlugin;
 
 impl Plugin for DoorPlugin {
@@ -304,11 +315,16 @@ impl Plugin for DoorPlugin {
             .init_resource::<Doors>()
             .init_resource::<WeldView>()
             .init_resource::<DoorNet>()
+            // Per map (world/map_change.rs).
+            .reset_on_map_unload::<DoorSetup>()
+            .reset_on_map_unload::<Doors>()
+            .reset_on_map_unload::<WeldView>()
+            .add_systems(crate::world::map_change::MapUnload, forget_net_doors)
             .add_message::<WeldHit>()
             .add_message::<ZedDoorHit>()
             .add_message::<DoorBlast>()
             .add_message::<RespawnDoors>()
-            .add_systems(PostStartup, spawn_doors)
+            .add_systems(crate::world::map_change::PostMapLoad, spawn_doors)
             .add_systems(Update, (door_net, use_and_touch, aim_at_door, weld_hits, zed_door_hits, respawn_doors, move_doors, door_path_costs, door_sounds).chain());
     }
 }
@@ -697,6 +713,7 @@ fn spawn_doors(mut commands: Commands, mut setup: ResMut<DoorSetup>, mut doors: 
                 door_layers(&s.info),
                 Transform::from_translation(coords::pos(pos)).with_rotation(rotation_of(rot)),
                 Name::new(s.info.name.clone()),
+                crate::world::map_change::MapScoped,
             ));
             if trader {
                 e.insert(TraderDoorCollider);
@@ -1709,17 +1726,17 @@ fn door_path_costs(
     mut doors: ResMut<Doors>,
     nav: Option<ResMut<crate::world::nav::NavNetwork>>,
     mut next: Local<Vec<f32>>,
-    mut done: Local<bool>,
+    (epoch, mut done): (Res<crate::world::map_change::MapEpoch>, Local<crate::world::map_change::OncePerMap>),
 ) {
     let Some(mut nav) = nav else {
         return;
     };
-    if nav.points.is_empty() || doors.doors.is_empty() || frames.0 < 5 {
+    if nav.points.is_empty() || doors.doors.is_empty() || epoch.frames_since(&frames) < 5 {
         return;
     }
     let now = time.elapsed_secs();
-    if !*done {
-        *done = true;
+    if !done.done(&epoch) {
+        done.set(&epoch);
         let mut found = 0usize;
         let mut names = Vec::new();
         let mask = SpatialQueryFilter::from_mask([GameLayer::Door, GameLayer::DoorTraces]);

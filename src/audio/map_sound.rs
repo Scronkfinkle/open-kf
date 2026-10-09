@@ -40,7 +40,13 @@ pub struct MapSoundPlugin;
 
 impl Plugin for MapSoundPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SpawnSounds>().add_systems(Startup, load_map_sounds).add_systems(Update, (random_sounds, spawn_sounds));
+        use crate::world::map_change::MapResourceExt;
+        // Per map (world/map_change.rs): loaded with the map, the sound
+        // entities are `MapScoped`.
+        app.init_resource::<SpawnSounds>()
+            .reset_on_map_unload::<SpawnSounds>()
+            .add_systems(crate::world::map_change::MapLoad, load_map_sounds)
+            .add_systems(Update, (random_sounds, spawn_sounds));
     }
 }
 
@@ -136,7 +142,7 @@ fn load_map_sounds(mut commands: Commands, request: Res<crate::world::map::MapRe
             Some(Value::Vector(v)) => *v,
             _ => [0.0; 3],
         };
-        let mut e = commands.spawn((Transform::from_translation(crate::engine::coords::pos(location)), Name::new(format!("map sound {}", pkg.object_name(ObjectRef::Export(i))))));
+        let mut e = commands.spawn((Transform::from_translation(crate::engine::coords::pos(location)), Name::new(format!("map sound {}", pkg.object_name(ObjectRef::Export(i)))), crate::world::map_change::MapScoped));
         if let Some(sound) = ambient {
             loops += 1;
             sounds.push(sound.clone());
@@ -258,8 +264,9 @@ fn random_sounds(time: Res<Time>, mut actors: Query<(&Transform, &mut RandomSoun
 /// spawns: once, at the start): SLOT_Interact, its Volume; bAttenuate
 /// false = not faded by distance (played at the listener; a guess at the
 /// native flag).
-fn spawn_sounds(frames: Res<bevy::diagnostic::FrameCount>, mut spawn: ResMut<SpawnSounds>, mut out: MessageWriter<PlaySound>) {
-    if frames.0 < 30 || spawn.0.is_empty() {
+fn spawn_sounds(frames: Res<bevy::diagnostic::FrameCount>, epoch: Res<crate::world::map_change::MapEpoch>, mut spawn: ResMut<SpawnSounds>, mut out: MessageWriter<PlaySound>) {
+    // 30 frames after the map loaded.
+    if epoch.frames_since(&frames) < 30 || spawn.0.is_empty() {
         return;
     }
     for (sound, volume, attenuate, at) in std::mem::take(&mut spawn.0) {

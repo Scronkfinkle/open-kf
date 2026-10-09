@@ -529,9 +529,17 @@ pub struct ActorLightPlugin;
 
 impl Plugin for ActorLightPlugin {
     fn build(&self, app: &mut App) {
+        use crate::world::map_change::MapResourceExt;
         app.init_resource::<DynamicLights>()
             .init_resource::<LightStats>()
-            .add_systems(PostStartup, build_actor_lights)
+            // Per map (world/map_change.rs): the map's lights, and the
+            // light caches of actors that outlive the map (the player's
+            // body and weapon), which index the old map's lights.
+            .remove_on_map_unload::<MapLightList>()
+            .remove_on_map_unload::<ActorLights>()
+            .reset_on_map_unload::<LightStats>()
+            .add_systems(crate::world::map_change::MapUnload, forget_map_lights)
+            .add_systems(crate::world::map_change::PostMapLoad, build_actor_lights)
             .add_systems(Update, (calibrate, survey))
             .add_systems(
                 PostUpdate,
@@ -542,6 +550,16 @@ impl Plugin for ActorLightPlugin {
                     // screen get their vertex colours.
                     .after(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
             );
+    }
+}
+
+/// A map change: actors kept across it start their light cache again.
+fn forget_map_lights(mut actors: Query<&mut ActorLight>) {
+    for mut a in &mut actors {
+        a.slots.clear();
+        a.used.clear();
+        a.started = false;
+        a.version = a.version.wrapping_add(1);
     }
 }
 

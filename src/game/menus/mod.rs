@@ -157,6 +157,7 @@ impl Plugin for MenusPlugin {
             .init_resource::<MenuData>()
             .init_resource::<MenuHits>()
             .init_resource::<LobbySettings>()
+            .add_systems(crate::world::map_change::PostMapLoad, load_map_texts)
             .add_systems(PostStartup, load_menus)
             .add_systems(
                 PreUpdate,
@@ -164,6 +165,22 @@ impl Plugin for MenusPlugin {
             )
             .add_systems(Update, request_previews)
             .add_systems(PostUpdate, (sync_previews, draw_menus).chain().after(crate::player::body::PreviewSystems));
+    }
+}
+
+/// The map's title and description for the lobby (with each map:
+/// world/map_change.rs).
+fn load_map_texts(request: Res<crate::world::map::MapRequest>, mut data: ResMut<MenuData>, epoch: Res<crate::world::map_change::MapEpoch>) {
+    let root = &request.install_root;
+    let map_int = gui::read_latin1(&root.join("System").join(format!("{}.int", request.map)));
+    data.map_title = gui::ini_value(&map_int, "LevelInfo0", "Title").unwrap_or_else(|| request.map.clone());
+    let ucl = gui::read_latin1(&root.join("System").join(format!("{}.ucl", request.map)));
+    data.map_description = gui::ini_value(&map_int, "LevelSummary", "Description")
+        .or_else(|| ucl.split("FallbackDesc=\"").nth(1).and_then(|s| s.split('"').next()).map(str::to_string))
+        .unwrap_or_default();
+    // The first map's are logged with the rest of the menu data.
+    if !epoch.first() {
+        runlog::kv("menu_map_text", &format!("map_title=\"{}\" description_chars={}", data.map_title, data.map_description.chars().count()));
     }
 }
 
@@ -182,12 +199,7 @@ fn load_menus(
     let started = std::time::Instant::now();
     let root = &request.install_root;
     data.texts = PerkTexts::load(root);
-    let map_int = gui::read_latin1(&root.join("System").join(format!("{}.int", request.map)));
-    data.map_title = gui::ini_value(&map_int, "LevelInfo0", "Title").unwrap_or_else(|| request.map.clone());
-    let ucl = gui::read_latin1(&root.join("System").join(format!("{}.ucl", request.map)));
-    data.map_description = gui::ini_value(&map_int, "LevelSummary", "Description")
-        .or_else(|| ucl.split("FallbackDesc=\"").nth(1).and_then(|s| s.split('"').next()).map(str::to_string))
-        .unwrap_or_default();
+    // The map's title and description: `load_map_texts`, with each map.
     // KF's fresh-install default name (System/defuser.ini); the user's
     // own User.ini is not read (as for the character).
     let defuser = gui::read_latin1(&root.join("System").join("defuser.ini"));

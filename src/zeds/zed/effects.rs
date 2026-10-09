@@ -393,6 +393,10 @@ pub(super) fn burn_zeds(
                     let id = z.id as u32;
                     let opts = crate::render::particles::SpawnOptions { persistent: true, ..default() };
                     z.burn_fx = crate::render::particles::spawn_effect_with(&mut commands, lib, &mut meshes, BURN_EFFECT, ue, Mat3::IDENTITY, id, opts);
+                    // The zed's: gone with the map.
+                    if let Some(e) = z.burn_fx {
+                        commands.entity(e).insert(crate::world::map_change::MapScoped);
+                    }
                     runlog::kv("zed_burn_fx", &format!("zed={} started={}", z.id, z.burn_fx.is_some()));
                 }
             }

@@ -94,8 +94,24 @@ pub struct BulletFxPlugin;
 
 impl Plugin for BulletFxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<BulletFx>().init_resource::<Tracers>().add_systems(Update, bullet_fx);
+        app.add_message::<BulletFx>()
+            .init_resource::<Tracers>()
+            .add_systems(crate::world::map_change::MapUnload, forget_zed_tracers)
+            .add_systems(Update, bullet_fx);
     }
+}
+
+/// A map change (world/map_change.rs): the zeds' tracer emitters go with
+/// their zeds; shots still waiting are dropped. The players' stay.
+fn forget_zed_tracers(mut commands: Commands, mut tracers: ResMut<Tracers>) {
+    tracers.waiting.clear();
+    tracers.emitters.retain(|shooter, e| {
+        let keep = !matches!(shooter, Shooter::Zed(_));
+        if !keep {
+            commands.entity(*e).try_despawn();
+        }
+        keep
+    });
 }
 
 /// The frame of an effect whose X axis points along `d` (Unreal).

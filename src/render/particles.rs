@@ -146,7 +146,13 @@ impl Plugin for ParticlePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<ModulateMaterial>::default())
             .add_plugins(MaterialPlugin::<BlendMaterial>::default())
+            // The library of effect classes stays for the whole run; the
+            // map's placed emitters ("map:<name>" entries and
+            // `MapEmitters`) are per map (world/map_change.rs).
+            .init_resource::<EffectLibrary>()
             .add_systems(PostStartup, load_library)
+            .add_systems(crate::world::map_change::MapUnload, forget_map_emitters)
+            .add_systems(crate::world::map_change::PostMapLoad, load_map_emitters)
             .add_systems(Update, spawn_map_emitters)
             .add_systems(PostUpdate, update_effects);
         app.world_mut()
@@ -359,6 +365,16 @@ pub struct LoadedEffect {
 /// The loaded effects, by class path (e.g. "KFMod.DismembermentJetHead").
 #[derive(Resource, Default)]
 pub struct EffectLibrary(HashMap<String, Arc<LoadedEffect>>);
+
+impl EffectLibrary {
+    /// How many effects are loaded (class effects and the map's emitters).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// The key prefix of the map's placed emitters in `EffectLibrary`.
+const MAP_KEY: &str = "map:";
 
 /// A running effect. `frame` is its location and axes in Unreal world space;
 /// whoever it is attached to updates it.
@@ -602,9 +618,11 @@ fn alpha_mode(draw_style: u8) -> AlphaMode {
     }
 }
 
+/// The effect classes (once per run). The map's emitters are already in
+/// the library (`load_map_emitters` runs in the map load, before this).
 fn load_library(
-    mut commands: Commands,
     request: Res<MapRequest>,
+    mut library: ResMut<EffectLibrary>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut modulate: ResMut<Assets<ModulateMaterial>>,
@@ -613,7 +631,6 @@ fn load_library(
     let started = std::time::Instant::now();
     let set = PackageSet::new(&request.install_root);
     let defaults = ClassDefaults::new(&set);
-    let mut library = EffectLibrary::default();
     for class in EFFECT_CLASSES {
         let effect = match read_emitter_class(&set, &defaults, class) {
             Ok(e) => e,
@@ -625,8 +642,28 @@ fn load_library(
         let loaded = load_effect(effect, class, &set, &mut images, &mut materials, &mut modulate, &mut blend);
         library.0.insert(class.to_string(), Arc::new(loaded));
     }
-    // Emitters placed in the map (fires, smoke...): loaded under
-    // "map:<name>" and spawned once by `spawn_map_emitters`.
+    runlog::kv("effects_ready", &format!("count={} seconds={:.2}", library.0.len(), started.elapsed().as_secs_f64()));
+}
+
+/// A map change: the old map's emitters leave the library.
+fn forget_map_emitters(mut commands: Commands, mut library: ResMut<EffectLibrary>) {
+    library.0.retain(|k, _| !k.starts_with(MAP_KEY));
+    commands.remove_resource::<MapEmitters>();
+}
+
+/// Emitters placed in the map (fires, smoke...): loaded under
+/// "map:<name>" and spawned once per map by `spawn_map_emitters`.
+fn load_map_emitters(
+    mut commands: Commands,
+    request: Res<MapRequest>,
+    mut library: ResMut<EffectLibrary>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut modulate: ResMut<Assets<ModulateMaterial>>,
+    mut blend: ResMut<Assets<BlendMaterial>>,
+) {
+    let set = PackageSet::new(&request.install_root);
+    let defaults = ClassDefaults::new(&set);
     let mut placed = MapEmitters::default();
     let path = request.install_root.join("Maps").join(format!("{}.rom", request.map));
     if let Ok(map) = set.load_path(&path) {
@@ -654,7 +691,7 @@ fn load_library(
                 Some(ue_assets::properties::Value::Rotator(r)) => r,
                 _ => Rotator::default(),
             };
-            let key = format!("map:{name}");
+            let key = format!("{MAP_KEY}{name}");
             let loaded = load_effect(effect, &key, &set, &mut images, &mut materials, &mut modulate, &mut blend);
             library.0.insert(key.clone(), Arc::new(loaded));
             placed.0.push((key, location, rotation));
@@ -663,8 +700,6 @@ fn load_library(
         runlog::kv("map_emitters", &format!("loaded={ok} failed={} [{}]", failed.len(), failed.iter().take(8).cloned().collect::<Vec<_>>().join(" | ")));
     }
     commands.insert_resource(placed);
-    runlog::kv("effects_ready", &format!("count={} seconds={:.2}", library.0.len(), started.elapsed().as_secs_f64()));
-    commands.insert_resource(library);
 }
 
 /// Builds a loaded effect (materials, meshes) from an emitter definition.
@@ -744,13 +779,13 @@ fn spawn_map_emitters(
     placed: Option<Res<MapEmitters>>,
     zones: Option<Res<crate::world::zones::Zones>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut done: Local<bool>,
+    (epoch, mut done): (Res<crate::world::map_change::MapEpoch>, Local<crate::world::map_change::OncePerMap>),
 ) {
     let (Some(library), Some(placed)) = (library, placed) else { return };
-    if *done {
+    if done.done(&epoch) {
         return;
     }
-    *done = true;
+    done.set(&epoch);
     let mut sky = 0;
     for (i, (key, location, rotation)) in placed.0.iter().enumerate() {
         let in_sky = zones.as_deref().is_some_and(|z| {
@@ -971,6 +1006,12 @@ pub fn spawn_effect_with(
             axes.col(0).z
         ),
     );
+    // A one-off effect belongs to the map (gone at a map change); a
+    // persistent one to its owner, who removes it (owners that are map
+    // things tag theirs).
+    if !persistent {
+        commands.entity(parent).insert(crate::world::map_change::MapScoped);
+    }
     commands.entity(parent).insert(ParticleEffect {
         persistent,
         frame: (location, axes),

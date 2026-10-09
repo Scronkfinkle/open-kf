@@ -130,6 +130,10 @@ struct Args {
     /// `--loading-test MAP`: show the loading screen for MAP over the
     /// running map (game/loading_screen.rs, `LoadingTest`).
     loading_test: Option<String>,
+    /// `--map-hop A,B,C` (testing): load these maps one after another in
+    /// the running game, every `--map-hop-every N` frames (default 300).
+    map_hop: Vec<String>,
+    map_hop_every: Option<u32>,
 }
 
 /// The map rotation and vote switches for this run: the settings file's
@@ -325,6 +329,21 @@ fn parse_args(list: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 }
                 args.fps = Some(v);
             }
+            "--map-hop" => {
+                let n = it.next().ok_or("--map-hop needs map names, e.g. KF-Farm,KF-Manor")?;
+                args.map_hop = n.split(',').map(|m| m.trim().trim_end_matches(".rom").to_string()).filter(|m| !m.is_empty()).collect();
+                if args.map_hop.is_empty() {
+                    return Err(format!("bad --map-hop value: {n}"));
+                }
+            }
+            "--map-hop-every" => {
+                let n = it.next().ok_or("--map-hop-every needs a number of frames")?;
+                let v: u32 = n.parse().map_err(|_| format!("bad --map-hop-every value: {n}"))?;
+                if v == 0 {
+                    return Err("--map-hop-every must be at least 1".into());
+                }
+                args.map_hop_every = Some(v);
+            }
             "--autowalk" => {
                 let n = it.next().ok_or("--autowalk needs seconds")?;
                 args.autowalk = Some(n.parse().map_err(|_| format!("bad --autowalk value: {n}"))?);
@@ -353,7 +372,7 @@ fn main() -> AppExit {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--map-list MAP,MAP,..] [--map-vote | --no-map-vote] [--vote-time SECONDS] [--log FILE] [--settings FILE] [--vote-test FRAME] [--loading-test MAP]");
+            eprintln!("error: {e}\nusage: open-kf [--map NAME] [--frames N] [--camera X,Y,Z,YAW,PITCH] [--screenshot F1,F2,..] [--input FRAME:ACTION,..] [--fly] [--autowalk SECONDS] [--zed] [--gorefast] [--always-sever] [--zed-at X,Y,Z] [--spawn NAME] [--god] [--give all|CLASS,..] [--fps N] [--window WxH] [--display windowed|borderless|fullscreen] [--fov DEG] [--brightness PERCENT] [--msaa 0|2|4|8] [--anisotropy 1|2|4|8|16] [--mode waves|debug] [--length short|normal|long] [--difficulty beginner|normal|hard|suicidal|hoe] [--wave N] [--mute] [--no-vsync] [--character NAME] [--behind-view] [--behind-yaw DEG] [--perk NAME] [--perk-level 0-6] [--lobby | --no-lobby] [--name NAME] [--host [PORT] | --join ADDR[:PORT]] [--trader-menu nu|kf] [--sensitivity 0.25-25] [--invert-mouse | --no-invert-mouse] [--map-list MAP,MAP,..] [--map-vote | --no-map-vote] [--vote-time SECONDS] [--log FILE] [--settings FILE] [--vote-test FRAME] [--loading-test MAP] [--map-hop MAP,MAP,.. [--map-hop-every FRAMES]]");
             runlog::kv("error", &format!("reason=\"{e}\""));
             return AppExit::error();
         }
@@ -459,6 +478,11 @@ fn main() -> AppExit {
     }
     if let Some(map) = args.loading_test.clone() {
         app.insert_resource(game::loading_screen::LoadingTest { map });
+    }
+    if !args.map_hop.is_empty() {
+        let every = args.map_hop_every.unwrap_or(300);
+        runlog::kv("map_hop_plan", &format!("maps=[{}] every_frames={every}", args.map_hop.join(" ")));
+        app.insert_resource(world::map_change::MapHop::new(args.map_hop.clone(), every));
     }
     let exit = app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -716,5 +740,15 @@ mod tests {
         assert_eq!((r, v, src), (Default::default(), Default::default(), "default"));
         let (r, v, src) = map_rotation_settings(&a, missing);
         assert_eq!((r.maps.len(), v.enabled, v.time_limit, src), (2, true, 20, "command_line"));
+    }
+
+    #[test]
+    fn map_hop_options() {
+        let a = parse(&["--map-hop", "KF-Farm, KF-Manor.rom", "--map-hop-every", "120"]).unwrap();
+        assert_eq!(a.map_hop, vec!["KF-Farm".to_string(), "KF-Manor".to_string()]);
+        assert_eq!(a.map_hop_every, Some(120));
+        assert!(parse(&["--map-hop", ","]).is_err());
+        assert!(parse(&["--map-hop-every", "0"]).is_err());
+        assert!(parse(&["--map-hop"]).is_err());
     }
 }

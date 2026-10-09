@@ -325,7 +325,9 @@ pub struct NavPlugin;
 
 impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<NavNetwork>().add_systems(Update, check_links_once);
+        use crate::world::map_change::MapResourceExt;
+        // The map loader inserts the map's network (world/map_change.rs).
+        app.init_resource::<NavNetwork>().reset_on_map_unload::<NavNetwork>().add_systems(Update, check_links_once);
     }
 }
 
@@ -340,12 +342,13 @@ fn check_links_once(
     spatial: SpatialQuery,
     names: Query<&Name>,
     mut nav: ResMut<NavNetwork>,
-    mut done: Local<bool>,
+    (epoch, mut done): (Res<crate::world::map_change::MapEpoch>, Local<crate::world::map_change::OncePerMap>),
 ) {
-    if *done || frames.0 < 5 || nav.points.is_empty() {
+    // Once per map, 5 frames after it loaded.
+    if done.done(&epoch) || epoch.frames_since(&frames) < 5 || nav.points.is_empty() {
         return;
     }
-    *done = true;
+    done.set(&epoch);
     let started = std::time::Instant::now();
     let (mut ok, mut failed) = (0usize, Vec::new());
     let mut kept = Vec::with_capacity(nav.links.len());

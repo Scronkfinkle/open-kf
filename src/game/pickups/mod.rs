@@ -344,9 +344,15 @@ pub struct PickupPlugin;
 
 impl Plugin for PickupPlugin {
     fn build(&self, app: &mut App) {
+        use crate::world::map_change::MapResourceExt;
         app.init_resource::<Pickups>()
             .init_resource::<PickupNet>()
             .init_resource::<LocalTouch>()
+            // Per map (world/map_change.rs): the map loader inserts the
+            // map's `Pickups`; the drawn ones are `MapScoped`.
+            .reset_on_map_unload::<Pickups>()
+            .reset_on_map_unload::<LocalTouch>()
+            .add_systems(crate::world::map_change::MapUnload, |mut models: NonSendMut<PickupModels>| *models = PickupModels::default())
             .insert_non_send(PickupModels::default())
             .add_message::<PickupUse>()
             .add_message::<PickupUsed>()
@@ -1454,7 +1460,7 @@ fn sync_visuals(
             ensure_class(&mut pickups.classes, set, &defaults, &s.class);
         }
         let Some(c) = pickups.class(&s.class).cloned() else {
-            models.drawn.insert(s.id, Drawn { entity: commands.spawn(Transform::default()).id(), class: s.class.clone(), cull: 0.0, scale: Vec3::ONE, rotation: Rotator::default() });
+            models.drawn.insert(s.id, Drawn { entity: commands.spawn((Transform::default(), crate::world::map_change::MapScoped)).id(), class: s.class.clone(), cull: 0.0, scale: Vec3::ONE, rotation: Rotator::default() });
             continue;
         };
         let spot = (s.id < DYNAMIC_ID_BASE).then(|| pickups.spots.get(s.id as usize)).flatten();
@@ -1476,6 +1482,7 @@ fn sync_visuals(
                 // Lit by the map (render/actor_light.rs), with the class's
                 // AmbientGlow (KFWeaponPickup 40) and MaxLights.
                 crate::render::actor_light::ActorLight::new(format!("pickup_{}", s.id), Vec3::ZERO, c.max_lights.max(1) as usize, c.ambient_glow),
+                crate::world::map_change::MapScoped,
             ))
             .id();
         let offset = coords::pos([-c.pre_pivot[0], -c.pre_pivot[1], -c.pre_pivot[2]]);

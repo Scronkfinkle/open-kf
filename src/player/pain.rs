@@ -78,7 +78,9 @@ pub struct PainPlugin;
 
 impl Plugin for PainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PainVolumes>().add_message::<LevelDamageZed>().add_systems(Update, pain_and_kill_z);
+        use crate::world::map_change::MapResourceExt;
+        // The map loader inserts the map's (world/map_change.rs).
+        app.init_resource::<PainVolumes>().reset_on_map_unload::<PainVolumes>().add_message::<LevelDamageZed>().add_systems(Update, pain_and_kill_z);
     }
 }
 

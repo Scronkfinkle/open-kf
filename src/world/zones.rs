@@ -11,6 +11,7 @@ use ue_assets::bsp::Model;
 
 use crate::engine::coords::SCALE;
 use crate::engine::runlog;
+use crate::world::map_change::{MapEpoch, OncePerMap};
 
 /// A zone's fog (DistanceFogStart / End in Unreal units, colour as RGBA).
 #[derive(Clone, Debug)]
@@ -151,7 +152,14 @@ pub struct ZonesPlugin;
 
 impl Plugin for ZonesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PlayerZone>().init_resource::<FogBlend>().add_systems(Update, track_player_zone);
+        use crate::world::map_change::MapResourceExt;
+        // Per map (world/map_change.rs): the map loader inserts `Zones`.
+        app.init_resource::<PlayerZone>()
+            .init_resource::<FogBlend>()
+            .remove_on_map_unload::<Zones>()
+            .reset_on_map_unload::<PlayerZone>()
+            .reset_on_map_unload::<FogBlend>()
+            .add_systems(Update, track_player_zone);
     }
 }
 
@@ -159,13 +167,19 @@ impl Plugin for ZonesPlugin {
 fn track_player_zone(
     zones: Option<Res<Zones>>,
     mut player: ResMut<PlayerZone>,
-    (mut clear, mut blend): (ResMut<ClearColor>, ResMut<FogBlend>),
-    time: Res<Time>,
+    (mut clear, mut blend, time): (ResMut<ClearColor>, ResMut<FogBlend>, Res<Time>),
     mut commands: Commands,
     cams: Query<(Entity, &Transform, Option<&DistanceFog>), With<crate::engine::camera::FlyCamera>>,
-    (mut last, mut applied): (Local<Option<usize>>, Local<Option<FogValues>>),
+    (mut last, mut applied, mut seen): (Local<Option<usize>>, Local<Option<FogValues>>, Local<OncePerMap>),
+    epoch: Res<MapEpoch>,
 ) {
     let Some(zones) = zones else { return };
+    // A new map: its zone numbers are not the old map's.
+    if !seen.done(&epoch) {
+        seen.set(&epoch);
+        *last = None;
+        *applied = None;
+    }
     let Ok((cam, t, drawn)) = cams.single() else { return };
     let p = t.translation / SCALE;
     let zone = zones.bsp.point_zone([-p.z, p.x, p.y]);

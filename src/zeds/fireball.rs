@@ -138,6 +138,7 @@ pub struct SpawnFireball {
 struct FireballModel([Option<PieceModel>; 2]);
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct Fireball {
     id: u32,
     kind: Projectile,

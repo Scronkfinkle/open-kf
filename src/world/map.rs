@@ -280,18 +280,29 @@ fn log_map_features(pkg: &ue_assets::package::Package) {
     );
 }
 
-/// Every map entity gets this, so they can be counted or removed later.
+/// The map's own geometry (BSP, static meshes, terrain, the sun). Every
+/// such entity is also `MapScoped` (world/map_change.rs), which is what
+/// removes it at a map change.
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 pub struct MapGeometry;
 
 pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SpawnPoint>()
+        use crate::world::map_change::{MapLoad, MapResourceExt};
+        app.add_plugins(crate::world::map_change::MapChangePlugin)
+            .init_resource::<SpawnPoint>()
             .init_resource::<PlayerStarts>()
             .init_resource::<SkyInfo>()
-            .add_systems(Startup, load_map);
+            // Per map (world/map_change.rs): what `load_map` fills.
+            .reset_on_map_unload::<SpawnPoint>()
+            .reset_on_map_unload::<PlayerStarts>()
+            .reset_on_map_unload::<SkyInfo>()
+            .remove_on_map_unload::<LevelTitle>()
+            .remove_on_map_unload::<crate::render::actor_light::CalibrationSamples>()
+            .add_systems(MapLoad, load_map);
     }
 }
 

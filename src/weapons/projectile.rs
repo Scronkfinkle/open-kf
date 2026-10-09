@@ -163,6 +163,7 @@ pub enum PenRule {
 /// A stuck Crossbow bolt (CrossbowArrow state OnWall): touching it (within
 /// 25 units) picks it up if the Crossbow has room (ProcessTouch).
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct StuckBolt {
     pos: Vec3,
     life: f32,
@@ -335,6 +336,7 @@ fn sound_at(sound: &'static str, at: Vec3) -> crate::audio::mixer::PlaySound {
 /// touches; a zed or the level makes it Explode: a ROBulletHitEffect and
 /// nothing else (its HurtRadius is empty), so it never hurts zeds.
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct PlayerDart {
     pos: Vec3,
     vel: Vec3,
@@ -370,6 +372,7 @@ const FUEL_FLAME: &str = "KFMod.FuelFlame";
 const FUEL_FLAME_TIME: f32 = 1.0;
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct PlayerFlame {
     pos: Vec3,
     vel: Vec3,
@@ -387,12 +390,14 @@ struct PlayerFlame {
 
 /// An effect to Kill after a time (FuelFlame).
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct KillEffectAfter {
     effect: Entity,
     time: f32,
 }
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct PlayerExplosive {
     pos: Vec3,
     vel: Vec3,
@@ -409,6 +414,7 @@ struct PlayerExplosive {
 }
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct PlayerProjectile {
     pos: Vec3,
     vel: Vec3,
@@ -1783,6 +1789,7 @@ pub enum ThrownKind {
 }
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct PlayerThrown {
     pos: Vec3,
     vel: Vec3,

@@ -118,6 +118,7 @@ pub struct GoreAssets {
 }
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct Piece {
     id: usize,
     motion: Motion,

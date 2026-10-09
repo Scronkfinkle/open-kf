@@ -76,11 +76,15 @@ pub struct GlassPlugin;
 
 impl Plugin for GlassPlugin {
     fn build(&self, app: &mut App) {
+        use crate::world::map_change::MapResourceExt;
         app.init_resource::<GlassSetup>()
             .init_resource::<Glass>()
+            // Per map (world/map_change.rs).
+            .reset_on_map_unload::<GlassSetup>()
+            .reset_on_map_unload::<Glass>()
             .add_message::<GlassDamage>()
             .add_message::<GlassBump>()
-            .add_systems(PostStartup, spawn_glass)
+            .add_systems(crate::world::map_change::PostMapLoad, spawn_glass)
             .add_systems(Update, damage_glass);
     }
 }
@@ -99,6 +103,7 @@ fn spawn_glass(mut commands: Commands, mut setup: ResMut<GlassSetup>, mut glass:
                     Transform::from_translation(s.translation).with_rotation(s.rotation),
                     GlassCollider(i),
                     Name::new(s.info.name.clone()),
+                    crate::world::map_change::MapScoped,
                 ))
                 .id()
         });

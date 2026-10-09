@@ -11,6 +11,7 @@ use bevy::prelude::*;
 
 use crate::engine::coords::SCALE;
 use crate::engine::runlog;
+use crate::world::map_change::{MapEpoch, MapResourceExt, MapScoped, OncePerMap, PostMapLoad};
 
 /// Triangles collected for one collider.
 #[derive(Default)]
@@ -156,7 +157,10 @@ impl Plugin for CollisionPlugin {
             .insert_resource(Gravity(Vec3::NEG_Y * GRAVITY * SCALE))
 
             .init_resource::<CollisionGeometry>()
-            .add_systems(PostStartup, spawn_colliders)
+            // Per map (world/map_change.rs): the loader fills it again.
+            .reset_on_map_unload::<CollisionGeometry>()
+            .remove_on_map_unload::<crate::render::decals::DecalSurfaces>()
+            .add_systems(PostMapLoad, spawn_colliders)
             .add_systems(Update, check_colliders_once);
     }
 }
@@ -187,6 +191,7 @@ fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
             Collider::trimesh(soup.vertices, soup.triangles),
             Transform::IDENTITY,
             Name::new(format!("collision_{name}")),
+            MapScoped,
         ));
     }
     let (mut volumes, mut volume_triangles) = (0usize, 0usize);
@@ -216,6 +221,7 @@ fn spawn_colliders(mut commands: Commands, mut geo: ResMut<CollisionGeometry>) {
             CollisionLayers::new(layers.iter().fold(LayerMask::NONE, |m, l| m | *l), LayerMask::ALL),
             Transform::IDENTITY,
             Name::new(label),
+            MapScoped,
         ));
         volumes += 1;
     }
@@ -270,12 +276,13 @@ fn check_colliders_once(
     spatial: SpatialQuery,
     geo: Res<CollisionGeometry>,
     names: Query<&Name>,
-    mut done: Local<bool>,
+    (epoch, mut done): (Res<MapEpoch>, Local<OncePerMap>),
 ) {
-    if *done || frames.0 < 5 {
+    // Once per map, 5 frames after it loaded.
+    if done.done(&epoch) || epoch.frames_since(&frames) < 5 {
         return;
     }
-    *done = true;
+    done.set(&epoch);
     let max = 300.0 * SCALE;
     let mut dists: Vec<f32> = Vec::new();
     let mut misses = 0usize;

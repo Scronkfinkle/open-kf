@@ -60,7 +60,9 @@ impl Plugin for FlyCameraPlugin {
         // Runs after map loading so the spawn point is known.
         app.init_resource::<ViewFov>()
             .init_resource::<crate::engine::mouse::MouseSettings>()
-            .add_systems(PostStartup, spawn_camera)
+            // With each map (world/map_change.rs): the first map spawns
+            // the camera, later maps move it to their start.
+            .add_systems(crate::world::map_change::PostMapLoad, spawn_camera)
             .add_systems(Update, (grab_cursor, look, scripted_turn, fly, follow_sky, log_camera).chain());
     }
 }
@@ -177,6 +179,12 @@ fn kf_projection(fov: f32) -> Projection {
     })
 }
 
+/// The player's camera at the map's start (`--camera` overrides it on the
+/// first map only), and the sky camera if the map has a sky zone. The
+/// first map spawns the player's camera; later maps move it (it carries
+/// the player: walker, weapon...) and reset its walk. The sky camera
+/// belongs to the map (`MapScoped`).
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 pub fn spawn_camera(
     mut commands: Commands,
     spawn: Res<SpawnPoint>,
@@ -184,29 +192,41 @@ pub fn spawn_camera(
     over: Option<Res<CameraOverride>>,
     settings: Res<crate::engine::graphics::GraphicsSettings>,
     mut view_fov: ResMut<ViewFov>,
+    epoch: Res<crate::world::map_change::MapEpoch>,
+    mut existing: Query<(&mut Transform, &mut FlyCamera, &mut Camera, Option<&mut crate::player::walk::Walker>)>,
 ) {
-    // The player's field of view (`--fov`); iron sights zoom from it.
-    view_fov.0 = settings.fov;
     let f = spawn.forward.normalize_or(Vec3::NEG_Z);
     let (mut yaw, mut pitch) = ((-f.x).atan2(-f.z), f.y.clamp(-1.0, 1.0).asin());
     let mut position = spawn.position;
-    if let Some(o) = over {
+    if let Some(o) = over.filter(|_| epoch.first()) {
         position = crate::engine::coords::pos(o.unreal_position);
         yaw = o.yaw;
         pitch = o.pitch;
     }
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+    let clear_color = if sky.camera_position.is_some() { ClearColorConfig::None } else { ClearColorConfig::Default };
+    if let Ok((mut t, mut cam, mut camera, walker)) = existing.single_mut() {
+        // A later map: the same camera, at the new start.
+        *t = Transform::from_translation(position).with_rotation(rotation);
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        camera.clear_color = clear_color;
+        if let Some(mut w) = walker {
+            *w = crate::player::walk::Walker { center: position - Vec3::Y * crate::player::walk::kf::EYE_HEIGHT * crate::engine::coords::SCALE, ..default() };
+        }
+        spawn_sky_camera(&mut commands, &sky, rotation, settings.fov);
+        runlog::kv("camera_placed", &format!("position={position} yaw={yaw:.3} pitch={pitch:.3} sky_camera={:?} load={}", sky.camera_position, epoch.load));
+        return;
+    }
+    // The player's field of view (`--fov`); iron sights zoom from it.
+    view_fov.0 = settings.fov;
     commands.spawn((
         Camera3d::default(),
         Camera {
             order: 0,
             // With a sky zone, the sky camera has already filled the screen;
             // drawing on top of it leaves the sky visible through gaps.
-            clear_color: if sky.camera_position.is_some() {
-                ClearColorConfig::None
-            } else {
-                ClearColorConfig::Default
-            },
+            clear_color,
             ..default()
         },
         kf_projection(settings.fov),
@@ -216,21 +236,7 @@ pub fn spawn_camera(
         Transform::from_translation(position).with_rotation(rotation),
         FlyCamera { yaw, pitch, speed: 8.0 },
     ));
-    if let Some(sky_pos) = sky.camera_position {
-        let mut cam = commands.spawn((
-            Camera3d::default(),
-            Camera { order: -1, ..default() },
-            kf_projection(settings.fov),
-            bevy::core_pipeline::tonemapping::Tonemapping::None,
-            Transform::from_translation(sky_pos).with_rotation(rotation),
-            RenderLayers::layer(SKY_LAYER),
-            SkyCamera,
-        ));
-        // KF fogs the sky view with the sky zone's own fog.
-        if let Some(f) = &sky.fog {
-            cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
-        }
-    }
+    spawn_sky_camera(&mut commands, &sky, rotation, settings.fov);
     runlog::kv(
         "camera_spawned",
         &format!(
@@ -240,6 +246,25 @@ pub fn spawn_camera(
             sky.camera_position
         ),
     );
+}
+
+/// The sky zone's camera (a map thing: `MapScoped`).
+fn spawn_sky_camera(commands: &mut Commands, sky: &SkyInfo, rotation: Quat, fov: f32) {
+    let Some(sky_pos) = sky.camera_position else { return };
+    let mut cam = commands.spawn((
+        Camera3d::default(),
+        Camera { order: -1, ..default() },
+        kf_projection(fov),
+        bevy::core_pipeline::tonemapping::Tonemapping::None,
+        Transform::from_translation(sky_pos).with_rotation(rotation),
+        RenderLayers::layer(SKY_LAYER),
+        SkyCamera,
+        crate::world::map_change::MapScoped,
+    ));
+    // KF fogs the sky view with the sky zone's own fog.
+    if let Some(f) = &sky.fog {
+        cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
+    }
 }
 
 #[allow(clippy::type_complexity)] // Bevy system parameters

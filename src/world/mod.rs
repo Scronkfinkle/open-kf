@@ -1,6 +1,7 @@
 //! The map: loading the level, its collision, zones, navigation, spawn and physics volumes, doors and breakable glass.
 
 pub mod map;
+pub mod map_change;
 pub mod collision;
 pub mod zones;
 pub mod nav;

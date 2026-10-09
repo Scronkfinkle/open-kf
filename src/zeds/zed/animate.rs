@@ -257,6 +257,8 @@ pub(super) fn animate_zeds(
                             ..default()
                         };
                         if let Some(e) = crate::render::particles::spawn_effect_with(&mut commands, lib, &mut meshes, "ROEffects.MuzzleFlash3rdMG", frame.0, frame.1, seed, options) {
+                            // The zed's: gone with the map.
+                            commands.entity(e).insert(crate::world::map_change::MapScoped);
                             z.mg_flash = Some(e);
                             z.effects.push((e, anchor));
                         }

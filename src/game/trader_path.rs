@@ -201,7 +201,11 @@ pub struct TraderPathPlugin;
 
 impl Plugin for TraderPathPlugin {
     fn build(&self, app: &mut App) {
+        use crate::world::map_change::MapResourceExt;
+        // The whisps fly in the map (reset with it, world/map_change.rs);
+        // the trail mesh and its material stay.
         app.init_resource::<TraderPath>()
+            .reset_on_map_unload::<TraderPath>()
             .add_systems(PostStartup, spawn_trail_mesh)
             .add_systems(Update, (switch_and_spawn, fly).chain())
             .add_systems(PostUpdate, draw_trail.before(bevy::transform::TransformSystems::Propagate));
