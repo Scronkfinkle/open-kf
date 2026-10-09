@@ -206,6 +206,7 @@ impl Plugin for NetPlugin {
         // system fails with "LastConfirmedInput does not exist".
         app.add_systems(Startup, |mut commands: Commands| commands.insert_resource(lightyear::prelude::PredictionManager::default()));
         app.add_systems(First, keep_zed_time_speed.before(bevy::time::TimeSystems));
+        app.add_systems(Update, log_long_frames);
         app.add_systems(crate::world::map_change::PostMapLoad, travel_loaded);
         lobby::build(app);
         pawns::build(app, &self.mode);
@@ -263,6 +264,22 @@ fn update_query_info(q: Res<QueryInfo>, players: Res<server::NetPlayers>, game: 
         crate::engine::runlog::kv("net_query_map", &format!("map={} was={}", g.map, info.map));
         info.map = g.map.clone();
     }
+}
+
+/// A frame this long sends nothing (lightyear sends once a frame): the
+/// other side sees that much silence. Map loads are the long ones; the
+/// netcode timeout (`client.rs` CONNECTION_TIMEOUT) must be longer.
+const LONG_FRAME: f32 = 0.25;
+
+/// Logs frames longer than `LONG_FRAME` (network games only), with the
+/// longest so far.
+fn log_long_frames(time: Res<Time<Real>>, frames: Res<bevy::diagnostic::FrameCount>, request: Res<crate::world::map::MapRequest>, mut longest: Local<f32>) {
+    let d = time.delta_secs();
+    if d < LONG_FRAME {
+        return;
+    }
+    *longest = longest.max(d);
+    crate::engine::runlog::kv("net_long_frame", &format!("seconds={d:.2} longest={:.2} frame={} map={}", *longest, frames.0, request.map));
 }
 
 /// lightyear sets the speed of Bevy's game clock (`Time<Virtual>`) at the
