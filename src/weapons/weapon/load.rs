@@ -948,6 +948,7 @@ pub(super) fn load_weapons(
         zoom_time: 0.25,
         rng: 0x2545_F491_4F6C_DD1D,
         fx_shots: Vec::new(),
+        muzzle: Default::default(),
         hand_frames: Vec::new(),
         dual_left: [false; 2],
         sounds: Vec::new(),
@@ -1249,6 +1250,15 @@ pub(super) fn load_weapon(
         t.log(class_path);
         t
     });
+    // The muzzle-flash light (muzzle_light.rs): the weapon class's own
+    // light (first person), and what its AttachmentClass lets through.
+    let muzzle_light = crate::weapons::muzzle_light::LightDef::read(defaults, &class);
+    let attachment_rule = match get("AttachmentClass") {
+        Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
+        _ => None,
+    }
+    .map(|a| crate::weapons::muzzle_light::AttachmentRule::read(defaults, &a))
+    .unwrap_or_default();
     let alt_ammo_h = mode_class(1).and_then(|c| match defaults.get(&c, "AmmoClass") {
         Some((Value::Object(r), rp)) if r != ObjectRef::Null => set.resolve(&rp, r),
         _ => None,
@@ -1268,6 +1278,8 @@ pub(super) fn load_weapon(
         base_reload_rate: float("ReloadRate", 1.0),
         base_reload_anim_rate: float("ReloadAnimRate", 1.0),
         torch,
+        muzzle_light,
+        attachment_rule,
         class: class_path.to_string(),
         item_name,
         group,

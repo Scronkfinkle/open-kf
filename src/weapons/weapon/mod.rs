@@ -28,6 +28,7 @@ mod inventory;
 mod sounds;
 mod welder_screen;
 mod torch;
+mod muzzle_light;
 mod perk;
 mod sleeve;
 mod pickup;
@@ -142,7 +143,7 @@ impl Plugin for WeaponPlugin {
             .add_systems(Update, (sync_perk, new_pawn_inventory, respawn_inventory, shop_requests, sleeve::change_character).chain().before(weapon_input))
             .add_systems(
                 Update,
-                (weapon_input, torch_update, animate_weapon, update_welder_screen, torch_beam.in_set(crate::weapons::flashlight::FlashlightBeamSet), weapon_fire_fx, weapon_loop_sound, send_weapon_sounds)
+                (weapon_input, torch_update, animate_weapon, update_welder_screen, torch_beam.in_set(crate::weapons::flashlight::FlashlightBeamSet), weapon_fire_fx, muzzle_light::local_muzzle_light.in_set(crate::weapons::muzzle_light::MuzzleLightTrigger), weapon_loop_sound, send_weapon_sounds)
                     .chain()
                     .after(crate::engine::camera::follow_sky),
             )
@@ -151,7 +152,8 @@ impl Plugin for WeaponPlugin {
             .init_resource::<drop::WeaponDrops>()
             .add_systems(Update, drop::drop_input.after(weapon_input).before(crate::game::pickups::PickupSystems::Rules))
             .add_systems(Update, drop::drop_results.after(crate::game::pickups::PickupSystems::Rules).before(crate::game::pickups::PickupSystems::Touch))
-            .add_plugins(crate::weapons::flashlight::FlashlightPlugin);
+            .add_plugins(crate::weapons::flashlight::FlashlightPlugin)
+            .add_plugins(crate::weapons::muzzle_light::MuzzleLightPlugin);
     }
 }
 
@@ -333,6 +335,10 @@ struct WeaponDef {
     never_throw: bool,
     /// bTorchEnabled: the weapon's flashlight (torch.rs).
     torch: Option<TorchDef>,
+    /// The weapon's muzzle-flash light (its class's Light* defaults; None:
+    /// none) and its attachment's rules (muzzle_light.rs).
+    muzzle_light: Option<crate::weapons::muzzle_light::LightDef>,
+    attachment_rule: crate::weapons::muzzle_light::AttachmentRule,
     /// The class chain and pickup class, for the perks.
     perk: crate::game::perks::PerkWeapon,
     /// The ammo classes (primary, the alt fire's own), for AddExtraAmmoFor.
@@ -876,6 +882,9 @@ struct Weapons {
     rng: u64,
     /// Shots whose flash and shell are still to be triggered: the hand.
     fx_shots: Vec<usize>,
+    /// The muzzle light's view of the weapon: where the first-person
+    /// weapon is and the shots already seen (muzzle_light.rs).
+    muzzle: muzzle_light::LocalMuzzle,
     /// Per hand of the current weapon: the flash bone frame (Unreal world
     /// origin and axes, as last posed: where tracers start,
     /// KFWeapon.GetEffectStart) and the shell ejector frame.

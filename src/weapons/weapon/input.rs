@@ -152,6 +152,7 @@ pub(super) fn weld_fire(w: &mut Weapons, mode: usize, fm: &FireMode, door: Optio
     play_firing(w, mode, false);
     w.shots_this_press[mode] += 1;
     w.fire_count += 1;
+    w.muzzle.shot(mode);
     // WeldFire.Timer: MyDamage x the perk's GetWeldSpeedModifier (an int;
     // UnWeldFire inherits it).
     let weld_speed = w.vet.weld_speed();
@@ -1125,6 +1126,7 @@ pub(super) fn weapon_input(
             w.boomstick_pending = Some(t);
         }
         w.fire_count += 1;
+        w.muzzle.shot(mode);
         // Dual pistols: the hand whose turn it is (DualiesFire.ModeDoFire).
         let dual_side = if w.aiming { 1 } else { 0 };
         let hand = usize::from(w.defs[cur].dual && mode == 0 && w.dual_left[dual_side]);

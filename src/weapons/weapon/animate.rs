@@ -232,6 +232,9 @@ pub(super) fn animate_weapon(
     // The flashlight's LightBone (torch.rs).
     let light = main_cam.single().ok().and_then(|main| light_frame(&w.defs[w.current], &bones, part_translation, main));
     w.torch.frame = light;
+    // The first-person weapon's location (the muzzle light shines from it,
+    // as KF's Weapon actor's own light).
+    w.muzzle.weapon_pos = main_cam.single().ok().map(|main| main.transform_point(part_translation));
     let def = &w.defs[w.current];
 
     *log_timer += dt;

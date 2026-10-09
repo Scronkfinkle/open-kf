@@ -7064,3 +7064,96 @@ flashlight and the bar); `menus/mod.rs`: Escape hides a shown bar;
 none and is never in the bar), `draw_weapon_bar`, a 2560 x 1440 layout
 unit test; the HUD's quad pool went from 160 to 320. At 2560 x 1440 the
 boxes are 256 x 192 from x = 563, as in the reference screenshot.
+
+## Muzzle-flash light (planned 2026-10-08: ML1-ML3)
+
+When a gun fires in KF, the flash briefly lights the walls, floor and
+zeds around it. Until now ours only drew the flash sprite.
+
+### What KF does (scripts and class defaults, checked 2026-10-08)
+
+- **Who turns it on.** Not the fire mode: the weapon's third-person
+  attachment. KFWeaponAttachment.ThirdPersonEffects runs on every change
+  of FlashCount (every shot) on every machine, also for your own gun
+  (your attachment exists, hidden). If FlashCount > 0 and
+  bDoFiringEffects it calls WeaponLight (then the 3rd-person flash and
+  shell). WeaponLight (xWeaponAttachment, same in KFWeaponAttachment):
+  if the shooter is seen in **first person** the *first-person weapon*
+  gets bDynamicLight = true (so the weapon class's light shines);
+  otherwise the *attachment* does. Then SetTimer(0.15): Timer turns both
+  off again. Every shot restarts the 0.15 s, so a full-auto burst keeps
+  the light on until 0.15 s after the last shot.
+- **No light:** melee (KFMeleeAttachment: bDoFiringEffects = false),
+  PipeBombAttachment and BlowerThrowerAttachment (WeaponLight is empty).
+  The alt fire of SingleAttachment, ShotgunAttachment, DualiesAttachment
+  and NailGunAttachment (FiringMode 1: the flashlight button) returns
+  before any effect.
+- **The light** (an Unreal light is a few numbers on any actor):
+  KFWeapon and KFWeaponAttachment both default to LightType 1 (steady),
+  LightEffect 13 (LE_NonIncidence: the surface's angle does not matter),
+  LightHue 30, LightSaturation 150 (a warm orange-white), LightBrightness
+  255, LightRadius 10 (= 25 x (10 + 1) = 275 Unreal units, 5.5 m).
+  Weapons whose first-person light is switched off (LightType 0,
+  LightBrightness 0): Crossbow, M99, M79, M32, Huskgun, SeekerSix, ZEDGun,
+  Crossbuzzsaw, SealSqueal harpoon (and subclasses). SingleAttachment
+  (the pistols' 3rd-person light): LightType 2 (pulse), LightRadius 0
+  (25 units).
+- **Where:** at the actor that carries it: the first-person weapon's
+  location (KF draws it at the eye + PlayerViewOffset, about 20-30 units
+  from the eye), or the attachment on the pawn's hand.
+- Not in the scripts (native renderer): how a dynamic light falls off on
+  walls. UE2 dynamic lights cast no shadows (they light through thin
+  walls).
+
+### Our design
+
+- `src/weapons/muzzle_light.rs` (the world side, like flashlight.rs): a
+  `MuzzleLight` component on every pawn that can shoot: its light values
+  (read from the class defaults), where it is this frame, and a 0.15 s
+  timer. `flash()` restarts the timer. One Bevy point light per pawn,
+  made once and hidden while off (no spawning per shot), no shadows.
+  While on, the same light is also pushed into `DynamicLights`, so
+  (a) baked meshes near it switch to the lit material (`BakedSwap`,
+  render/baked.rs) exactly as for the flashlight, and (b) zeds, bodies
+  and the first-person weapon get it as vertex light (actor_light.rs).
+- Local player (`src/weapons/weapon/muzzle_light.rs`): on each new shot
+  (the shot counter that also feeds FlashCount) apply the attachment's
+  rules above, then `flash()`; the light values are the *weapon* class's
+  (first person); the position is the first-person weapon's location.
+- Other players (`player/body/fire_fx.rs`): the same on their FlashCount
+  changes, with the *attachment* class's light values, at the
+  attachment's tip.
+- **Unit conversion, same as the flashlight glow and the map lights:**
+  colour = hue colour (`hue_colour`) x LightBrightness / 255 x 0.82 (the
+  native colour scale actors use). Actors: as a map light of that colour
+  (Smooth falloff over the radius, x2 hardware gain). Walls (Bevy point
+  light): range = 1.12 x radius; strength set so that a wall facing the
+  light at 0.3 x radius gets the UE2 value there (colour x falloff x
+  K = 2, made linear), with `lumens_for` from flashlight.rs. **Guess**:
+  Bevy's light falls off with 1/d^2, UE2's with the radius curve, so
+  the match is exact only at 0.3 x radius (brighter closer, dimmer near
+  the edge). Bevy also uses the surface angle (LE_NonIncidence ignores
+  it). LT_Pulse (the 3rd-person pistol light) is drawn steady.
+- `KF_MUZZLE_LIGHT=0` switches it off (to measure the frame-time cost).
+- Logs: `muzzle_light_setup weapon=... type=... radius=... brightness=...
+  color=...` once per weapon; `muzzle_light weapon=... on=true|false
+  radius=... brightness=... color=... ons=N offs=N` on each switch;
+  `frame_stats` for the cost.
+
+### Steps
+
+- **ML1** world side + local player.
+- **ML2** other players' attachments.
+- **ML3** logs, headless test at a dark spot, frame time, MODLOG.
+
+### As built (ML1-ML3, 2026-10-08; headless runs, not played by you)
+
+As planned. `weapons/muzzle_light.rs` (world side, 3 unit tests),
+`weapons/weapon/muzzle_light.rs` (local player), `player/body/fire_fx.rs`
+(other players, not tested: needs a network game). The light is placed
+in Update after the flashlight's system (which clears `DynamicLights`).
+Measured on KF-WestLondon's tunnel (AK-47, 30-round burst, 2 runs each,
+`muzzle_light_burst` log): 38.3 / 38.1 ms per frame with the light,
+37.2 / 40.1 ms with `KF_MUZZLE_LIGHT=0`: no cost above the noise. While
+on, 33 baked meshes switch to the lit material there (`baked_swap`).
+A Clot 118 units ahead: drawn light 0.35 with, 0.24 without.

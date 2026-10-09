@@ -105,6 +105,11 @@ impl Flashlight {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FlashlightBeamSet;
 
+/// `place_lights` (it clears `DynamicLights` each frame; other dynamic
+/// lights, such as the muzzle light, are added after it).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlashlightLights;
+
 /// The world lights made for one holder.
 #[derive(Component)]
 struct FlashlightRig {
@@ -116,7 +121,7 @@ pub struct FlashlightPlugin;
 
 impl Plugin for FlashlightPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (battery_timer, place_lights.after(FlashlightBeamSet)));
+        app.add_systems(Update, (battery_timer, place_lights.after(FlashlightBeamSet).in_set(FlashlightLights)));
     }
 }
 
@@ -163,7 +168,7 @@ fn world_radius(r: f32) -> f32 {
 /// Bevy lumens that light a surface facing the light, `metres` away,
 /// to `linear` x its texture (Bevy: albedo x lumens / 4 pi / pi / d^2 x
 /// exposure x the range window).
-fn lumens_for(linear: f32, metres: f32, range: f32) -> f32 {
+pub fn lumens_for(linear: f32, metres: f32, range: f32) -> f32 {
     let window = (1.0 - (metres / range).powi(4)).clamp(0.0, 1.0).powi(2).max(0.05);
     let pi = std::f32::consts::PI;
     linear * 4.0 * pi * pi * metres * metres / Exposure::default().exposure() / window

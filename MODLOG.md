@@ -7398,3 +7398,42 @@ go (the camera's cursor release does not know about the bar); click to
 take it back. Ours: the bar closes on death. DrawTileStretched is the same
 guess the menus use. Not played by you.
 **Next:** your play test with the wheel.
+
+## 2026-10-08 Muzzle flashes light the surroundings (ML1-ML3)
+
+**Changed:** new `src/weapons/muzzle_light.rs` (the light: values from
+class defaults, one hidden Bevy point light per pawn, 0.15 s timer, added
+to `DynamicLights` while on) and `src/weapons/weapon/muzzle_light.rs`
+(your own shots); `weapon/input.rs` records each shot's fire mode,
+`weapon/animate.rs` the first-person weapon's location, `weapon/load.rs`
++ `weapon/mod.rs` read each weapon's light and its attachment's rules;
+`player/body/load.rs` + `fire_fx.rs`: other players' attachment light;
+`flashlight.rs`: `lumens_for` shared, its light system in a named set.
+DESIGN.md "Muzzle-flash light"; test-views.md row.
+**Why:** firing lit nothing; in KF the flash lights walls, floor and zeds.
+**KF's rule (scripts + defaults):** KFWeaponAttachment.ThirdPersonEffects
+-> WeaponLight on every shot: in first person the weapon's own light
+(KFWeapon: steady, hue 30, saturation 150, brightness 255, radius 10 =
+275 units), else the attachment's; SetTimer(0.15) turns it off, each shot
+restarts it. None for melee (bDoFiringEffects false), pipe bomb, blower,
+the torch alt fire of 9mm/dualies/shotgun/nailgun, and weapons with
+LightType 0 (Crossbow, M99, M79, M32, Huskgun, SeekerSix, ZEDGun,
+Crossbuzzsaw, SealSqueal).
+**Tested how:** headless KF-WestLondon tunnel, AK-47 burst, light on vs
+`KF_MUZZLE_LIGHT=0`, screenshots; 9mm alt fire / knife / crossbow run;
+clippy.
+**Result:** `muzzle_light ... on=true lumens=189081 range_m=6.16`, off 0.15 s
+after the last shot; `baked_swap lit_meshes=33`; first-person weapon drawn
+light 0.35 -> 0.48; a Clot 118 units away 0.24 -> 0.35 (the screenshot
+shows it lit). 9mm shot: on for 4 frames; torch alt fire, knife, crossbow:
+no light. Frame time over the burst: 38.3 / 38.1 ms lit, 37.2 / 40.1 ms
+unlit (no measurable cost). Clippy: 0 warnings.
+**Still broken / not tested:** other players' light (needs a network
+game); `cargo test` not run by me (refused by the permission system).
+Guesses: the Bevy light matches UE2's strength only at 0.3 x radius
+(1/d^2 vs UE2's curve: surfaces within ~1 m look brighter than KF), it
+uses the surface angle (LE_NonIncidence does not), the 3rd-person pistol
+light's pulse is drawn steady, the 3rd-person light sits at the tip not
+the hand, and the first-person weapon is lit by its own light. Not
+checked against a real KF screenshot.
+**Next:** compare with a KF screenshot of firing in a dark spot.

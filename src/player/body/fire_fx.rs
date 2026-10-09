@@ -5,8 +5,10 @@
 //! KF runs this on every machine that does not own the weapon:
 //! - KFWeaponAttachment.ThirdPersonEffects (on each FlashCount change):
 //!   DoFlashEmitter spawns the attachment's mMuzFlashClass once, attaches it
-//!   to the `tip` bone, and calls SpawnParticle(1) per shot. WeaponLight's
-//!   dynamic light is not done.
+//!   to the `tip` bone, and calls SpawnParticle(1) per shot.
+//!   WeaponLight: the attachment's own light for 0.15 s
+//!   (weapons/muzzle_light.rs), here at the `tip` bone (KF: the
+//!   attachment's origin, in the hand; **approximation**).
 //! - WeaponFire / KFFire.PlayFiring on a non-owner: FireSound (the owner
 //!   hears StereoFireSound instead), SLOT_Interact, TransientSoundVolume,
 //!   TransientSoundRadius, pitch 1 +- RandomPitchAdjustAmt x FRand. At the
@@ -25,6 +27,7 @@ use super::{PawnBody, PawnState};
 use crate::audio::mixer::{AmbientSound, Emitter, PlaySound, Slot};
 use crate::engine::runlog;
 use crate::render::particles::{EffectLibrary, ParticleEffect, SpawnOptions};
+use crate::weapons::muzzle_light::MuzzleLight;
 
 /// Per remote pawn: the shots seen, the flash emitter, the fire loop.
 #[derive(Default)]
@@ -78,6 +81,7 @@ pub(super) fn remote_fire_effects(
     mut effects: Query<&mut ParticleEffect>,
     mut sounds: MessageWriter<PlaySound>,
     mut state: Local<HashMap<Entity, RemoteFire>>,
+    mut muzzles: Query<&mut MuzzleLight>,
 ) {
     let mut seen = Vec::new();
     for (e, s, body) in &pawns {
@@ -100,6 +104,19 @@ pub(super) fn remote_fire_effects(
         let mode = usize::from(s.firing_mode.min(1));
         let Some(a) = att else { continue };
         let class = body.weapon_class.clone().unwrap_or_default();
+        // WeaponLight (the attachment's light, seen in third person).
+        match muzzles.get_mut(e) {
+            Ok(mut m) => {
+                m.set_weapon(&a.class, a.light, &body.who);
+                m.pos = body.tip.filter(|_| !s.dead).map(|(p, _)| crate::engine::coords::pos(p.to_array()));
+                if shots > 0 && shots < 100 && !s.dead && a.light_rule.allows(s.firing_mode) {
+                    m.flash();
+                }
+            }
+            Err(_) => {
+                commands.entity(e).insert(MuzzleLight::default());
+            }
+        }
         let fs = &a.fire_sounds[mode];
         if shots > 0 && shots < 100 && !s.dead {
             fx.shots += shots;

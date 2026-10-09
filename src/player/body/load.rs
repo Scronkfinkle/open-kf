@@ -130,6 +130,10 @@ pub(super) struct AttachmentDef {
     pub tip: Option<(Quat, Vec3)>,
     /// What other players hear when this weapon fires (per fire mode).
     pub fire_sounds: [RemoteFireSound; 2],
+    /// The attachment's own light (WeaponLight seen in third person) and
+    /// which shots turn it on (weapons/muzzle_light.rs).
+    pub light: Option<crate::weapons::muzzle_light::LightDef>,
+    pub light_rule: crate::weapons::muzzle_light::AttachmentRule,
 }
 
 /// The fire sounds other players hear (WeaponFire / KFFire.PlayFiring on a
@@ -501,6 +505,8 @@ fn load_attachment(
         _ => RemoteFireSound::default(),
     });
     Ok(AttachmentDef {
+        light: crate::weapons::muzzle_light::LightDef::read(defaults, &class),
+        light_rule: crate::weapons::muzzle_light::AttachmentRule::read(defaults, &class),
         muzzle_flash,
         tip,
         fire_sounds,

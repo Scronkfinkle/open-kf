@@ -217,7 +217,7 @@ impl Plugin for BodyPlugin {
                     load::load_attachments,
                     animate::spawn_bodies,
                     animate::animate_bodies,
-                    fire_fx::remote_fire_effects,
+                    fire_fx::remote_fire_effects.in_set(crate::weapons::muzzle_light::MuzzleLightTrigger),
                 )
                     .chain()
                     .in_set(BodySystems)
