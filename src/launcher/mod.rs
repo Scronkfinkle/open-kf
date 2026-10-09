@@ -26,7 +26,8 @@ use choices::{Choices, PlayType, command_line};
 const LOG_PATH: &str = "logs/launcher.log";
 /// The saved choices, next to `logs/` (gitignored: not in the whitelist).
 /// The game reads and writes its volume lines too (`read_volumes`,
-/// `save_volumes`), and its aim line (`read_aim`, `save_aim`).
+/// `save_volumes`), its aim line (`read_aim`, `save_aim`) and its mouse
+/// lines (`read_mouse`, `save_mouse`).
 pub const SETTINGS_PATH: &str = "settings/launcher.txt";
 
 /// The volumes saved in the settings file, and whether the file had them
@@ -46,6 +47,31 @@ pub fn read_volumes(path: &std::path::Path) -> (choices::Volumes, &'static str) 
 pub fn save_volumes(path: &std::path::Path, v: &choices::Volumes) -> Result<(), String> {
     let old = std::fs::read_to_string(path).unwrap_or_default();
     let new = choices::with_volume_lines(&old, v);
+    path.parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|_| std::fs::write(path, new))
+        .map_err(|e| e.to_string())
+}
+
+/// The mouse settings saved in the settings file (sensitivity, invert),
+/// and whether the file had a mouse line ("file") or not ("default":
+/// KF's sensitivity 3, not inverted).
+pub fn read_mouse(path: &std::path::Path) -> ((f32, bool), &'static str) {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let has = text.lines().any(|l| l.split_once('=').is_some_and(|(k, _)| choices::MOUSE_FIELDS.contains(&k.trim())));
+            let c = Choices::from_text(&text).0;
+            ((c.mouse_sensitivity, c.invert_mouse), if has { "file" } else { "default" })
+        }
+        Err(_) => ((choices::SENSITIVITY_DEFAULT, false), "default"),
+    }
+}
+
+/// The game's save: rewrites only the mouse lines of the settings file.
+pub fn save_mouse(path: &std::path::Path, sensitivity: f32, invert: bool) -> Result<(), String> {
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    let new = choices::with_mouse_lines(&old, sensitivity, invert);
     path.parent()
         .filter(|d| !d.as_os_str().is_empty())
         .map_or(Ok(()), std::fs::create_dir_all)

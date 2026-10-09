@@ -59,6 +59,7 @@ impl Plugin for FlyCameraPlugin {
     fn build(&self, app: &mut App) {
         // Runs after map loading so the spawn point is known.
         app.init_resource::<ViewFov>()
+            .init_resource::<crate::engine::mouse::MouseSettings>()
             .add_systems(PostStartup, spawn_camera)
             .add_systems(Update, (grab_cursor, look, scripted_turn, fly, follow_sky, log_camera).chain());
     }
@@ -285,20 +286,64 @@ fn grab_cursor(
     }
 }
 
+/// Mouse look, as KF's (engine/mouse.rs): raw counts x sensitivity x the
+/// FOV scale (the view's FOV / 90, or 24 / 90 through a 3D scope), up /
+/// down flipped by invert mouse. Test action `mouse_move:DX;DY` feeds raw
+/// counts through the same code (the virtual display has no mouse) and
+/// logs the turn.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 pub fn look(
     motion: Res<AccumulatedMouseMotion>,
     cursor: Query<&CursorOptions, With<PrimaryWindow>>,
     mut cams: Query<(&mut Transform, &mut FlyCamera)>,
+    settings: Res<crate::engine::mouse::MouseSettings>,
+    fov: Res<ViewFov>,
+    scope: Option<Res<crate::weapons::scope::ScopeRequest>>,
+    script: Option<Res<crate::weapons::weapon::ScriptedInput>>,
+    frames: Res<bevy::diagnostic::FrameCount>,
 ) {
+    use crate::engine::mouse;
     let grabbed = cursor.single().is_ok_and(|c| c.grab_mode != CursorGrabMode::None);
-    if !grabbed || motion.delta == Vec2::ZERO {
+    let mut delta = if grabbed { motion.delta } else { Vec2::ZERO };
+    let mut scripted = Vec2::ZERO;
+    for (_, a) in script.iter().flat_map(|s| s.0.iter()).filter(|(f, _)| *f == frames.0) {
+        if let Some(v) = a.strip_prefix("mouse_move:") {
+            match v.split_once(';').map(|(x, y)| (x.trim().parse::<f32>(), y.trim().parse::<f32>())) {
+                Some((Ok(x), Ok(y))) => scripted += Vec2::new(x, y),
+                _ => runlog::kv("mouse_look", &format!("action={a} refused=not_dx_dy")),
+            }
+        }
+    }
+    delta += scripted;
+    if delta == Vec2::ZERO {
         return;
     }
+    let scope_drawn = scope.is_some_and(|s| s.active);
+    let scale = mouse::fov_scale(fov.0, scope_drawn);
+    let (dyaw, dpitch) = mouse::look_delta(delta, settings.sensitivity, settings.invert, scale);
     for (mut t, mut cam) in &mut cams {
-        let sensitivity = 0.002;
-        cam.yaw -= motion.delta.x * sensitivity;
-        cam.pitch = (cam.pitch - motion.delta.y * sensitivity).clamp(-1.54, 1.54);
+        let (yaw0, pitch0) = (cam.yaw, cam.pitch);
+        cam.yaw += dyaw;
+        cam.pitch = (cam.pitch + dpitch).clamp(-1.54, 1.54);
         t.rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw, cam.pitch, 0.0);
+        if scripted != Vec2::ZERO {
+            // Degrees as KF counts them: yaw right and pitch up positive.
+            runlog::kv(
+                "mouse_look",
+                &format!(
+                    "counts=({},{}) {} fov={:.2} scope={scope_drawn} fov_scale={scale:.4} degrees_per_count={:.5} yaw_change_deg={:.4} pitch_change_deg={:.4} yaw_deg={:.3} pitch_deg={:.3}",
+                    delta.x,
+                    delta.y,
+                    settings.describe(),
+                    fov.0,
+                    mouse::radians_per_count(settings.sensitivity, scale).to_degrees(),
+                    -(cam.yaw - yaw0).to_degrees(),
+                    (cam.pitch - pitch0).to_degrees(),
+                    cam.yaw.to_degrees(),
+                    cam.pitch.to_degrees(),
+                ),
+            );
+        }
     }
 }
 

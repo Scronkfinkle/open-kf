@@ -3,6 +3,7 @@
 pub mod coords;
 pub mod runlog;
 pub mod camera;
+pub mod mouse;
 pub mod view_target;
 pub mod screenshot;
 pub mod record;

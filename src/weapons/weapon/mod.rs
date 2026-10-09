@@ -193,7 +193,7 @@ fn publish_pawn_weapon(
 /// line ahead ("zed_line_far": 700-900 away), "cycle_zed" = press N,
 /// "spawn_<kind>" = spawn that zed, "hurt_zeds" = 100 damage to every zed,
 /// "kill_boss" = the Patriarch dies, "warp_shop" = stand in the current shop,
-/// "turn:DEG" = turn the view, "aim_zed" = look at the nearest zed's head,
+/// "turn:DEG" = turn the view, "mouse_move:DX;DY" = raw mouse counts through mouse look (engine/mouse.rs), "mouse_sensitivity:X" / "invert_mouse:on|off" / "sensitivity_click:FRACTION" / "invert_click:on|off" = the mouse settings (menus), "aim_zed" = look at the nearest zed's head,
 /// "add_dosh" = + 5000, "buy_menu" / "menu_*" / "buy:C" / "sell:C" /
 /// "ammo_fill:C" / "ammo_clip:C" = the buy menu, buy_menu.rs).
 #[derive(Resource, Default, Clone)]
