@@ -7866,3 +7866,21 @@ clippy: only the old boss.rs test warning.
 state is resent every 2 s, not run); votes from 3+ players; the host's own
 vote at the travel moment (only the client voted); not played by you.
 **Next:** stop the old map's music at the unload.
+## 2026-10-09 The old map's music stops at a map change
+
+**Changed:** `audio/music.rs`: the `MapUnload` step (`stop_on_unload`)
+also drops the playing song (its handle stops the stream) and any fade,
+logged `music_stop reason=map_unload`.
+**Why:** the lifecycle branch noted that the old map's song played on
+until the new map's first wave cue.
+**Tested how:** headless single player, `--map KF-Farm --mode waves`
+with a 2-map list in a scratch settings file, `kill_player` at frame 150
+and `fire` inputs from frame 200 (travel to KF-Manor).
+**Result:** `music_play song=KF_TheEdge` t=9.42, `map_change from=KF-Farm
+to=KF-Manor` t=21.05 and `music_stop song=KF_TheEdge reason=map_unload`
+the same moment; KF-Manor's own `music_cue Calm(0) song=KF_SinSoma`
+t=23.74 when its wave game starts. Not listened to (`--mute`; the stop is
+the same handle drop the song switch uses).
+**Still broken / not tested:** no fade-out (KF's level change cuts the
+music too, as far as known: not checked against the game).
+**Next:** DESIGN.md.

@@ -87,9 +87,21 @@ impl Plugin for MusicPlugin {
         // (world/map_change.rs); a map without one has no handler.
         app.add_message::<MusicCue>()
             .init_resource::<Music>()
-            .add_systems(crate::world::map_change::MapUnload, |mut music: ResMut<Music>| music.handler = None)
+            .add_systems(crate::world::map_change::MapUnload, stop_on_unload)
             .add_systems(crate::world::map_change::MapLoad, load_song_handler)
             .add_systems(Update, run_music);
+    }
+}
+
+/// A map change: the old map's song stops (KF's music stops with its
+/// level; the new map's trigger starts its own). Dropping the handle
+/// stops the stream.
+fn stop_on_unload(mut music: ResMut<Music>) {
+    music.handler = None;
+    music.fade_out = None;
+    music.fade_in = None;
+    if let Some((old, _)) = music.active.take() {
+        runlog::kv("music_stop", &format!("song={old} reason=map_unload"));
     }
 }
 
