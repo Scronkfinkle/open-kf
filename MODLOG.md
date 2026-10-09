@@ -7678,3 +7678,22 @@ check. The end-of-match restart after the refactor is not re-run (same
 field values). The lobby, a network match, GPU memory and Windows not
 tested.
 **Next:** step 2 (map list, next map at the end of a match).
+## 2026-10-09 Map vote settings: one copy (map rotation wiring, item 1)
+
+**Changed:** `game/map_rotation.rs`: `MapVoteConfig` is no longer a game
+resource, only the two settings-file / command-line switches (`map_vote=`,
+`vote_time_limit=`); `MapVoteConfig::settings()` makes the game's
+`MapVoteSettings` from them (KF's other vote values kept). `main.rs`
+inserts `MapVoteSettings` instead of `MapVoteConfig`, so `--map-vote` /
+`--vote-time` / the launcher now reach the vote. `game/map_vote/mod.rs`:
+its copy of `installed_maps` removed; `map_rotation::list_installed_maps`
+is the one list of installed maps.
+**Why:** two settings resources for the same thing, and the vote never
+saw `--map-vote` (it read its own default, off).
+**Tested how:** release build; `cargo test --release --workspace`;
+headless run `--map KF-Farm --map-vote --vote-time 20 --frames 30`.
+**Result:** `map_vote_settings role=Local enabled=true ... time_limit=20`
+(before: `enabled=false time_limit=30` whatever the options). 349 + 39
+tests pass.
+**Still broken / not tested:** nothing travels yet (next commits).
+**Next:** single-player travel at the end of a match.

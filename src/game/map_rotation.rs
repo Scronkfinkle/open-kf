@@ -60,10 +60,12 @@ impl Default for MapRotation {
     }
 }
 
-/// The map-vote switches (KF's xVoting.xVotingHandler bMapVote and
-/// VoteTimeLimit). Inserted at startup; the voting step (step 4) and the
-/// wiring step read it. Off by default, as in KF.
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+/// The map-vote switches the launcher and the command line set (KF's
+/// xVoting.xVotingHandler bMapVote and VoteTimeLimit): the two lines of
+/// the settings file. Not a game resource: at startup they fill the one
+/// the game reads, `game::map_vote::MapVoteSettings` ([`Self::settings`]),
+/// which holds KF's other vote values too. Off by default, as in KF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapVoteConfig {
     pub enabled: bool,
     /// Seconds the vote lasts.
@@ -73,6 +75,13 @@ pub struct MapVoteConfig {
 impl Default for MapVoteConfig {
     fn default() -> Self {
         MapVoteConfig { enabled: false, time_limit: KF_VOTE_TIME_LIMIT }
+    }
+}
+
+impl MapVoteConfig {
+    /// The game's vote settings: KF's values with these two switches.
+    pub fn settings(&self) -> crate::game::map_vote::MapVoteSettings {
+        crate::game::map_vote::MapVoteSettings { enabled: self.enabled, time_limit: self.time_limit, ..Default::default() }
     }
 }
 

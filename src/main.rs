@@ -499,7 +499,7 @@ fn main() -> AppExit {
         .insert_resource(args)
         .insert_resource(request)
         .insert_resource(map_rotation)
-        .insert_resource(map_vote)
+        .insert_resource(map_vote.settings())
         .insert_resource(ClearColor(Color::BLACK)) // KF: black unless the zone clears to its fog colour (world/zones.rs)
         .add_plugins((
             map::MapPlugin,

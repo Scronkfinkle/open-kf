@@ -10,8 +10,8 @@
 //! says so (`single_player`, set by `--vote-test`).
 //!
 //! **For the map change (plan step 3)**, the hooks are:
-//! - `MapVoteSettings` (a `VoteConfig`): KF's settings; set `enabled`
-//!   from the launcher / `--map-vote`.
+//! - `MapVoteSettings` (a `VoteConfig`): KF's settings; `enabled` and
+//!   `time_limit` come from the launcher / `--map-vote` (main.rs).
 //! - Write `StartMapVote { candidates, current_map }` where KF calls
 //!   HandleRestartGame (the end screen's 14 s, or the host's Fire after
 //!   5 s). It returns nothing; if voting is off it logs
@@ -35,7 +35,9 @@ use crate::net::NetMode;
 use rules::{MapHistory, VoteEvent, VoteSession, VoteView, XorShift};
 pub use rules::{EndReason, VoteConfig};
 
-/// The vote settings (KF's defaults; off).
+/// The vote settings (KF's defaults; off). The one copy the game reads:
+/// main.rs inserts it from the settings file and `--map-vote` /
+/// `--vote-time` (`map_rotation::MapVoteConfig::settings`).
 pub type MapVoteSettings = VoteConfig;
 
 /// Start a vote (KF: GameInfo.RestartGame -> VotingHandler
@@ -180,21 +182,6 @@ fn setup(mut vote: ResMut<MapVote>, mode: Option<Res<NetMode>>, mut settings: Re
     );
 }
 
-/// The playable maps in the install's Maps folder (as the launcher lists
-/// them: every `.rom` but the start-up, intro and menu maps), sorted.
-pub fn installed_maps(root: &std::path::Path) -> Vec<String> {
-    let mut maps: Vec<String> = std::fs::read_dir(root.join("Maps"))
-        .map(|d| {
-            d.flatten()
-                .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".rom").or_else(|| n.strip_suffix(".ROM"))).map(str::to_string))
-                .filter(|n| !["entry", "kfintro", "kf-menu"].contains(&n.to_ascii_lowercase().as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-    maps.sort_by_key(|m| m.to_ascii_lowercase());
-    maps
-}
-
 /// `--vote-test N`: the vote starts at frame N with the installed maps.
 /// The current map is put in the history first (as if a vote had chosen
 /// it), so RepeatLimit's disabled map shows.
@@ -204,7 +191,7 @@ fn vote_test(test: Res<MapVoteTest>, frames: Res<bevy::diagnostic::FrameCount>, 
     }
     vote.history.play_map(&request.map);
     runlog::kv("map_vote_test", &format!("frame={} history_seeded={}", frames.0, request.map));
-    start.write(StartMapVote { candidates: installed_maps(&request.install_root), current_map: request.map.clone() });
+    start.write(StartMapVote { candidates: crate::game::map_rotation::list_installed_maps(&request.install_root), current_map: request.map.clone() });
 }
 
 /// A rule's random number.
