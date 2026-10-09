@@ -224,6 +224,11 @@ pub enum VoteEvent {
     MidGameStarted,
     /// lmsgMapWon: a map has won; the windows close and the game travels.
     Finished(VoteResult),
+    /// Ours: the time is up and no map can win (every map disabled, e.g.
+    /// by RepeatLimit on a small install). KF's vote would wait forever
+    /// (TimeLeft goes below 0 and is only checked at 0); ours ends and
+    /// the game goes to the map list's next map.
+    NoWinner,
 }
 
 /// lmsgMapWon with KF's `%mapname%`: the map and the game's acronym.
@@ -377,9 +382,13 @@ impl VoteSession {
         if matches!(self.time_left, 60 | 30 | 20 | 10) {
             events.push(VoteEvent::CountDown(self.time_left));
         }
-        if self.time_left == 0 {
+        if self.time_left <= 0 {
             // "if no-one has voted a random map will be choosen"
             events.extend(self.tally(true, rng));
+            if self.result.is_none() {
+                self.timer_running = false;
+                events.push(VoteEvent::NoWinner);
+            }
         }
         events
     }
@@ -819,6 +828,27 @@ mod tests {
         // Rand(5) = 1 is KF-Farm (disabled), then 3 = KF-Offices.
         let ev = s.tick(&mut seq(&[1, 3]));
         assert_eq!(ev, vec![VoteEvent::Finished(VoteResult { map: "KF-Offices".into(), reason: EndReason::NoVotes, tie: false })]);
+    }
+
+    #[test]
+    fn time_up_with_no_map_that_can_win_ends_the_vote() {
+        let mut h = MapHistory::default();
+        h.play_map("KF-Farm");
+        // The only map is disabled by RepeatLimit: no default map.
+        let mut s = VoteSession::new(on(), &maps(&["KF-Farm"]), &h, "KF-Farm");
+        s.set_players([0], &mut never);
+        assert!(s.handle_restart_game());
+        let mut events = Vec::new();
+        for _ in 0..1000 {
+            if !s.timer_running {
+                break;
+            }
+            events.extend(s.tick(&mut |_| 0));
+        }
+        assert_eq!(events.last(), Some(&VoteEvent::NoWinner));
+        assert!(!s.timer_running && s.view().result.is_none());
+        // Nothing more happens afterwards.
+        assert!(s.tick(&mut |_| 0).is_empty());
     }
 
     #[test]

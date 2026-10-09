@@ -305,6 +305,14 @@ fn handle(events: Vec<VoteEvent>, vote: &mut MapVote) {
             VoteEvent::OpenWindows => runlog::kv("map_vote_open", &format!("time_left={}", vote.session.as_ref().map_or(0, |s| s.time_left))),
             VoteEvent::CountDown(n) => runlog::kv("map_vote_countdown", &format!("time_left={n}")),
             VoteEvent::MidGameStarted => runlog::kv("map_vote_mid_game", "event=started"),
+            VoteEvent::NoWinner => {
+                // The vote no longer holds the travel: game/travel.rs goes
+                // to the map list's next map; the windows close.
+                runlog::kv("map_vote_end", "winner=none reason=no_map_can_win");
+                vote.session = None;
+                vote.view = None;
+                vote.changed = true;
+            }
             VoteEvent::Finished(r) => {
                 // History.PlayMap at the win.
                 vote.history.play_map(&r.map);
