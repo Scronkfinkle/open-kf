@@ -83,7 +83,13 @@ pub struct MusicPlugin;
 
 impl Plugin for MusicPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<MusicCue>().init_resource::<Music>().add_systems(Startup, load_song_handler).add_systems(Update, run_music);
+        // The map's KFMusicTrigger is read with each map
+        // (world/map_change.rs); a map without one has no handler.
+        app.add_message::<MusicCue>()
+            .init_resource::<Music>()
+            .add_systems(crate::world::map_change::MapUnload, |mut music: ResMut<Music>| music.handler = None)
+            .add_systems(crate::world::map_change::MapLoad, load_song_handler)
+            .add_systems(Update, run_music);
     }
 }
 

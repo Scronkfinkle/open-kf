@@ -25,6 +25,7 @@ use crate::engine::coords::{self, SCALE};
 use crate::world::map::MapRequest;
 use crate::render::particles::{self, ModulateMaterial};
 use crate::engine::runlog;
+use crate::world::map_change::MapResourceExt;
 
 /// Grid cell size for looking up level triangles, Bevy metres.
 const CELL: f32 = 4.0;
@@ -195,6 +196,7 @@ struct DecalClass {
 struct DecalLibrary(HashMap<DecalKind, DecalClass>);
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct Decal {
     id: u32,
     age: f32,
@@ -238,7 +240,11 @@ impl Plugin for DecalPlugin {
             .init_resource::<DecalLibrary>()
             .init_resource::<MapProjectors>()
             .init_resource::<PendingMapDecals>()
-            .add_systems(PostStartup, (load_decals, load_map_decals))
+            // Per map (world/map_change.rs); the decal classes stay.
+            .reset_on_map_unload::<MapProjectors>()
+            .reset_on_map_unload::<PendingMapDecals>()
+            .add_systems(PostStartup, load_decals)
+            .add_systems(crate::world::map_change::PostMapLoad, load_map_decals)
             .add_systems(Update, (ragdoll_streaks, spawn_map_decals))
             .add_systems(PostUpdate, (spawn_decals, fade_decals));
     }
@@ -440,7 +446,7 @@ fn spawn_map_decals(mut commands: Commands, mut pending: ResMut<PendingMapDecals
                 .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
                 .with_inserted_indices(Indices::U32(p.indices)),
         );
-        let mut e = commands.spawn((Mesh3d(mesh), Transform::from_translation(base), bevy::light::NotShadowCaster, Name::new(i.name.clone())));
+        let mut e = commands.spawn((Mesh3d(mesh), Transform::from_translation(base), bevy::light::NotShadowCaster, Name::new(i.name.clone()), crate::world::map_change::MapScoped));
         match d.material {
             MapDecalMaterial::Modulate(m) => e.insert(MeshMaterial3d(m)),
             MapDecalMaterial::Standard(m, _) => e.insert(MeshMaterial3d(m)),

@@ -53,6 +53,7 @@ pub struct SpawnVomit {
 struct GlobModel(Option<PieceModel>);
 
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 struct Glob {
     id: u32,
     zed_id: usize,

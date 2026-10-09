@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use crate::engine::camera::FlyCamera;
 use crate::engine::coords::SCALE;
 use crate::player::pawn_collision::{Cylinder, clip_move, overlap, push_apart};
+use crate::world::map_change::MapResourceExt;
 use crate::engine::runlog;
 
 /// Pawn.Bob default (clamped to +-0.01 in CheckBob).
@@ -139,8 +140,10 @@ impl Plugin for WalkPlugin {
             .init_resource::<WalkSettings>()
             .init_resource::<ViewBob>()
             .init_resource::<crate::world::physvol::PhysicsVolumes>()
+            // The map loader inserts the map's (world/map_change.rs).
+            .reset_on_map_unload::<crate::world::physvol::PhysicsVolumes>()
             .insert_resource(MoveMode::Fly)
-            .add_systems(PostStartup, apply_start_mode.after(crate::engine::camera::spawn_camera))
+            .add_systems(PostStartup, apply_start_mode) // the camera exists: the first map loaded in Startup (world/map_change.rs)
             .add_systems(
                 Update,
                 (toggle_mode, walk)
@@ -855,7 +858,8 @@ fn walk(
         t.translation = w.center + Vec3::Y * (w.eye.height * SCALE + 2.0 * bob.up) + 2.0 * bob.side;
 
         // Twice a second: position, speed and ground state.
-        if w.time - *last_log >= 0.1 {
+        // (A new walker, e.g. at a new map's start: its time starts at 0.)
+        if w.time - *last_log >= 0.1 || w.time < *last_log {
             *last_log = w.time;
             let c = w.center / SCALE;
             runlog::kv(

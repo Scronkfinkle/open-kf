@@ -273,6 +273,7 @@ impl MeshFrame {
 
 /// Marks a ragdoll body (one part).
 #[derive(Component)]
+#[require(crate::world::map_change::MapScoped)]
 pub struct RagdollBody;
 
 /// A live ragdoll, on the dead zed's entity.
@@ -465,7 +466,7 @@ pub fn spawn(
                 joint.twist_limit = Some(AngleLimit::new(-twist, twist));
 
 
-                commands.spawn((joint, joint_damping())).id()
+                commands.spawn((joint, joint_damping(), crate::world::map_change::MapScoped)).id()
             }
             JointKind::Hinge { low, high, limited } => {
                 let mut joint = RevoluteJoint::new(e1, e2)
@@ -477,7 +478,7 @@ pub fn spawn(
                 }
 
 
-                commands.spawn((joint, joint_damping())).id()
+                commands.spawn((joint, joint_damping(), crate::world::map_change::MapScoped)).id()
             }
         };
         joints.push(id);

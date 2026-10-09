@@ -60,7 +60,9 @@ pub struct ShopkeeperPlugin;
 
 impl Plugin for ShopkeeperPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ShopkeeperModels>().add_systems(Update, (animate_shopkeepers, log_shop_traders));
+        use crate::world::map_change::MapResourceExt;
+        // Spawned by the map loader; per map (world/map_change.rs).
+        app.init_resource::<ShopkeeperModels>().reset_on_map_unload::<ShopkeeperModels>().add_systems(Update, (animate_shopkeepers, log_shop_traders));
     }
 }
 
@@ -244,6 +246,7 @@ pub fn spawn_shopkeepers(
                 Name::new(name.clone()),
                 keeper,
                 light,
+                crate::world::map_change::MapScoped,
             ))
             .id();
         for (mesh, material) in parts {
@@ -304,12 +307,12 @@ fn animate_shopkeepers(
 /// hers (Shop.MyTrader; the last one found wins). KF also needs the shop
 /// visible from her (VisibleCollidingActors); not checked here. Logged once,
 /// wave mode only (the shops are loaded there).
-fn log_shop_traders(shops: Option<Res<crate::game::trader::Shops>>, keepers: Query<&Shopkeeper>, mut done: Local<bool>) {
+fn log_shop_traders(shops: Option<Res<crate::game::trader::Shops>>, keepers: Query<&Shopkeeper>, (epoch, mut done): (Res<crate::world::map_change::MapEpoch>, Local<crate::world::map_change::OncePerMap>)) {
     let Some(shops) = shops else { return };
-    if *done || keepers.is_empty() || shops.shops.is_empty() {
+    if done.done(&epoch) || keepers.is_empty() || shops.shops.is_empty() {
         return;
     }
-    *done = true;
+    done.set(&epoch);
     let lines: Vec<String> = shops
         .shops
         .iter()

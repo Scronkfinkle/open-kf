@@ -7437,3 +7437,88 @@ light's pulse is drawn steady, the 3rd-person light sits at the tip not
 the hand, and the first-person weapon is lit by its own light. Not
 checked against a real KF screenshot.
 **Next:** compare with a KF screenshot of firing in a dark spot.
+
+## 2026-10-09 Map lifecycle: unload and load maps inside the running game (map rotation step 1)
+
+**Changed:** new `src/world/map_change.rs`: the map's life cycle. API for
+the next steps: the `ChangeMap { map }` message (ask for a map), the
+`MapLoaded { map, load, seconds }` message (a load finished; the first
+map at startup too), the `MapScoped` component (on every entity of the
+map; despawned with its children at the unload), three schedules
+`MapUnload` / `MapLoad` / `PostMapLoad`, `MapEpoch` (which load, from
+which frame), `OncePerMap` ("done once" flags that come back with each
+map), and `reset_on_map_unload` / `remove_on_map_unload` for per-map
+resources. One exclusive system runs a change: `MapUnload` (resources
+reset or removed), despawn every `MapScoped` entity, drop freed assets,
+give freed memory back to the system, then `MapLoad` (was Startup:
+`load_map`, map sounds, music trigger) and `PostMapLoad` (was
+PostStartup: colliders, doors, glass, actor lights, placed decals, map
+emitters, menu map title, the camera). Startup only sends the first
+`ChangeMap`, so the first map goes through the same path. Entities a
+load spawns without the tag are tagged anyway and logged
+(`map_load_untagged`; none on any map).
+Per plugin: tags on colliders, door/glass colliders, decals, map sounds,
+shopkeepers, pickups, the sky cameras (main and scope), one-off particle
+effects, zeds, gibs, ragdolls and joints, fireballs, vomit, projectiles
+(`#[require(MapScoped)]` on their components); resets of Doors,
+DoorSetup, WeldView, Glass, GlassSetup, CollisionGeometry, DecalSurfaces,
+MapProjectors, NavNetwork, Zones, PlayerZone, FogBlend, PainVolumes,
+PhysicsVolumes, Shops, ShopCatalogue, GameData, Pickups, LocalTouch,
+PickupModels, ShopkeeperModels, MapLightList, ActorLights, LightStats,
+MapEmitters (+ the "map:" effects), SpawnSounds, TraderPath, SpawnPoint,
+PlayerStarts, SkyInfo, LevelTitle, the music trigger, zed tracers and the
+door network state; light caches of the player's body/weapon emptied (they
+index the old map's lights). Once-per-map checks (collision, nav links,
+door path nodes, shop traders, map emitters, zone fog) wait 5 frames after
+each load as they did after startup. The camera is spawned by the first
+map and moved by later ones (walker reset; `--camera` only on the first).
+A map change starts a new match (`WaveGame::for_new_match`, shared with
+the restart after a match: dosh back to the start, pickups set up again).
+Debug option `--map-hop A,B,C --map-hop-every N` (default 300 frames).
+New log lines: `map_change`, `map_unload`, `map_lifecycle_loaded`,
+`map_settled` (60 frames later), `camera_placed`, `wave_game_reset`,
+`scope_sky`, `menu_map_text`, `map_hop`, `map_change_refused`; the
+lifecycle lines carry `rss_mb` and entity / asset counts.
+**Why:** map rotation and voting without restarting the game (DESIGN.md,
+"Map rotation and map voting", step 1).
+**Tested how:** headless runs, release build. (a) KF-Farm, 600 frames,
+old binary vs new: every one-off log line identical (only an entity id in
+`body_spawned` differs; counts differ with run length). (b) `--map-hop`
+Farm -> Manor -> WestLondon -> BioticsLab -> Offices -> Farm -> Manor ->
+Manor. (c) the same in waves mode with `--input N:next_wave`. (d) one run
+through all 34 maps (and KF-WestLondon / AliensTunnel again), waves mode;
+26 load lines of KF-Bedlam, KF-Suburbia, KF-Clandestine compared with a
+single-map run of the old binary. (e) host + client on one machine
+(`--host 7741`, `--join 127.0.0.1:7741`). cargo test (308 + 39 pass, 2
+new: startup + change + refused map; OncePerMap), clippy.
+**Result:** after every unload: `entities=3517 meshes=120 materials=196
+images=721` (the same after all 36 changes). Same map, same counts each
+time: KF-Farm settled load 1 `entities=7218 meshes=3355 images=913
+materials=430`, load 6 `7224 / 3355 / 913 / 430`; KF-Manor three times
+`5949 / 2251 / 869 / 354`; KF-WestLondon loads 1, 34, 36 `5849/5855 /
+2002 / 1020 / 485`. Waves: on each new map `wave_game_reset`, `dosh
+reason=new_game total=250`, `pickup_setup reason=match_start`, 20
+`zed_spawned` in wave 1, `collision_check`, `nav_link_check`,
+`door_path_nodes`, `shop_traders` again; the player stands at the new
+start (`walk ... on_ground=true` at KF-Manor (2745, -1081, -4545)). All 34
+maps load; the 26 compared lines are identical to the single-map runs.
+Network: client `net_game_info same_map=true`, host lobby lists both.
+Clippy: 0 warnings in the game; 1 in test code (`zeds/boss.rs:1009`,
+not touched here).
+**Failure found and fixed:** the first all-maps run was killed by the
+system at 16.5 GB (out of memory) on the 27th map. Bevy's asset counts
+were flat, but the C allocator kept each old map's freed memory in its
+per-thread pools (with `MALLOC_ARENA_MAX=2` the growth mostly stopped).
+Now the unload calls `malloc_trim` (Linux): KF-Farm <-> KF-Manor x5:
+memory after each unload 1709 -> 1976 MB (was 3519 -> 6359 MB without);
+the all-maps run completes; memory after an unload levels off at about
+2.6 GB (a single KF-Farm run: 3.4 GB in play).
+**Still broken / not tested:** about 30 MB more memory per change remains
+(cause not found; the sound bank also keeps every map's sounds). The old
+map's music keeps playing until the new map's wave cues another song.
+`PickupNet` and the clients' doors/pickups are not reset (network map
+change is step 3); a client changing map alone would fail the host's map
+check. The end-of-match restart after the refactor is not re-run (same
+field values). The lobby, a network match, GPU memory and Windows not
+tested.
+**Next:** step 2 (map list, next map at the end of a match).

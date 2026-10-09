@@ -372,6 +372,18 @@ impl Default for WaveGame {
 }
 
 impl WaveGame {
+    /// GameInfo.RestartGame's fresh state: everything back to the start,
+    /// `restarts` counted up (dosh.rs and the pickups start again when it
+    /// changes), `waves_ended` kept. Used by the restart after a match and
+    /// by a map change.
+    fn for_new_match(&self) -> WaveGame {
+        WaveGame {
+            restarts: self.restarts + 1,
+            waves_ended: self.waves_ended,
+            ..default()
+        }
+    }
+
     /// One log line whenever the HUD's wave circle changes (phase, wave,
     /// zeds left, countdown), to compare a host's and a client's HUD.
     fn log_hud(&mut self) {
@@ -557,8 +569,32 @@ impl Plugin for GamePlugin {
             .add_message::<ClearZeds>()
             .add_message::<KillStuckZed>()
             .add_message::<BossDied>()
+            // Per map (world/map_change.rs): the map loader inserts the
+            // map's GameData in waves mode; a new map starts a new match.
+            .add_systems(crate::world::map_change::MapUnload, |mut commands: Commands| commands.remove_resource::<GameData>())
+            .add_systems(crate::world::map_change::PostMapLoad, new_match_on_new_map)
             .add_systems(Update, wave_timer);
     }
+}
+
+/// A map change (not the first map): a new match on the new map, as
+/// RestartGame does (the zeds went with the old map). The wave timer starts
+/// it as at the start of a run (`game_start`, `--wave` honoured).
+fn new_match_on_new_map(
+    epoch: Res<crate::world::map_change::MapEpoch>,
+    options: Res<GameOptions>,
+    mut game: ResMut<WaveGame>,
+    mut hud: ResMut<WaveHud>,
+    mut view_target: ResMut<crate::engine::view_target::ViewTarget>,
+) {
+    if epoch.first() || options.mode != GameMode::Waves {
+        return;
+    }
+    let before = (game.phase, game.wave_num);
+    *game = game.for_new_match();
+    hud.0.clear();
+    view_target.set(None, "map_change");
+    runlog::kv("wave_game_reset", &format!("reason=map_change load={} was_phase={:?} was_wave={} restarts={}", epoch.load, before.0, before.1 + 1, game.restarts));
 }
 
 type PlayerQuery<'w, 's> = Query<'w, 's, (&'static Transform, Option<&'static crate::player::walk::Walker>), With<crate::engine::camera::FlyCamera>>;
@@ -651,17 +687,10 @@ pub fn wave_timer(
         || script.0.iter().any(|(f, a)| *f == frames.0 && a == "restart_game");
     if restart && matches!(g.phase, Phase::Won | Phase::Lost) {
         *g = WaveGame {
-            restarts: g.restarts + 1,
-            music_playing: false,
-            calm_music_playing: false,
-            did_moving_message: false,
-            did_almost_open_message: false,
-            kills_at_wave_start: 0,
-            waves_ended: g.waves_ended,
             deaths_at_start: Some(health.deaths),
             final_wave: data.waves.len(),
             next_tick: now + 1.0,
-            ..default()
+            ..g.for_new_match()
         };
         clear.write(ClearZeds);
         view_target.set(None, "restart");

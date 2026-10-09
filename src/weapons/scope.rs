@@ -37,7 +37,9 @@ pub struct ScopePlugin;
 impl Plugin for ScopePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScopeRequest>()
-            .add_systems(PostStartup, spawn_scope.after(crate::engine::camera::spawn_camera))
+            .add_systems(PostStartup, spawn_scope) // the camera exists: the first map loaded in Startup (world/map_change.rs)
+            // A later map: its own sky camera (world/map_change.rs).
+            .add_systems(crate::world::map_change::PostMapLoad, rebuild_scope_sky)
             .add_systems(PostUpdate, update_scope.before(bevy::transform::TransformSystems::Propagate));
     }
 }
@@ -57,6 +59,8 @@ pub struct ScopeRequest {
 #[derive(Resource)]
 pub struct ScopeView {
     pub lens_material: Handle<StandardMaterial>,
+    /// The image the scope cameras draw into (a new map's sky camera too).
+    target: RenderTarget,
 }
 
 #[derive(Component)]
@@ -67,6 +71,50 @@ struct ScopeSkyCamera;
 
 #[derive(Component)]
 struct ScopeReticle;
+
+fn scope_projection() -> Projection {
+    Projection::from(PerspectiveProjection {
+        fov: 12f32.to_radians(),
+        aspect_ratio: 1.0,
+        near: 0.01,
+        ..default()
+    })
+}
+
+/// The scope's sky camera, if the map has a sky zone (a map thing:
+/// `MapScoped`).
+fn spawn_scope_sky(commands: &mut Commands, sky: &SkyInfo, target: &RenderTarget) {
+    let Some(sky_pos) = sky.camera_position else { return };
+    let mut sky_cam = commands.spawn((
+        Camera3d::default(),
+        Camera {
+            order: -3,
+            is_active: false,
+            ..default()
+        },
+        target.clone(),
+        scope_projection(),
+        Transform::from_translation(sky_pos),
+        RenderLayers::layer(SKY_LAYER),
+        ScopeSkyCamera,
+        crate::world::map_change::MapScoped,
+    ));
+    // The sky zone's own fog, as on the main sky camera.
+    if let Some(f) = &sky.fog {
+        sky_cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
+    }
+}
+
+/// A later map (the scope exists already): the new map's sky camera, and
+/// the world camera drawing over it or clearing.
+fn rebuild_scope_sky(mut commands: Commands, sky: Res<SkyInfo>, view: Option<Res<ScopeView>>, mut cams: Query<&mut Camera, With<ScopeCamera>>) {
+    let Some(view) = view else { return };
+    spawn_scope_sky(&mut commands, &sky, &view.target);
+    for mut c in &mut cams {
+        c.clear_color = if sky.camera_position.is_some() { ClearColorConfig::None } else { ClearColorConfig::Default };
+    }
+    runlog::kv("scope_sky", &format!("sky_camera={}", sky.camera_position.is_some()));
+}
 
 fn spawn_scope(
     mut commands: Commands,
@@ -82,33 +130,7 @@ fn spawn_scope(
         None,
     ));
     let target = RenderTarget::Image(ImageRenderTarget::from(image.clone()));
-    let projection = || {
-        Projection::from(PerspectiveProjection {
-            fov: 12f32.to_radians(),
-            aspect_ratio: 1.0,
-            near: 0.01,
-            ..default()
-        })
-    };
-    if let Some(sky_pos) = sky.camera_position {
-        let mut sky_cam = commands.spawn((
-            Camera3d::default(),
-            Camera {
-                order: -3,
-                is_active: false,
-                ..default()
-            },
-            target.clone(),
-            projection(),
-            Transform::from_translation(sky_pos),
-            RenderLayers::layer(SKY_LAYER),
-            ScopeSkyCamera,
-        ));
-        // The sky zone's own fog, as on the main sky camera.
-        if let Some(f) = &sky.fog {
-            sky_cam.insert(crate::world::zones::distance_fog(f.start, f.end, f.color));
-        }
-    }
+    spawn_scope_sky(&mut commands, &sky, &target);
     let cam = commands
         .spawn((
             Camera3d::default(),
@@ -123,8 +145,8 @@ fn spawn_scope(
                 },
                 ..default()
             },
-            target,
-            projection(),
+            target.clone(),
+            scope_projection(),
             Transform::default(),
             RenderLayers::from_layers(&[0, SCOPE_LAYER]),
             ScopeCamera,
@@ -156,7 +178,7 @@ fn spawn_scope(
         double_sided: true,
         ..default()
     });
-    commands.insert_resource(ScopeView { lens_material });
+    commands.insert_resource(ScopeView { lens_material, target });
     runlog::kv("scope_ready", &format!("size={SCOPE_SIZE} sky_camera={}", sky.camera_position.is_some()));
 }
 
