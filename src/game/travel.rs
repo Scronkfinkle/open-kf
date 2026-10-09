@@ -208,13 +208,29 @@ fn follow_vote(
     }
 }
 
-/// A travel begins: the loading screen goes up.
-fn begin(mut begins: MessageReader<BeginTravel>, mut travel: ResMut<Travel>, mut show: MessageWriter<ShowLoadingScreen>, request: Res<MapRequest>, frames: Res<FrameCount>) {
+/// A travel begins: the loading screen goes up, the trader menu closes
+/// (KF closes the menus on a travel; the other pages close with the load,
+/// `fresh_player_on_new_map`).
+fn begin(
+    mut begins: MessageReader<BeginTravel>,
+    mut travel: ResMut<Travel>,
+    mut show: MessageWriter<ShowLoadingScreen>,
+    request: Res<MapRequest>,
+    frames: Res<FrameCount>,
+    mut buy_menu: ResMut<crate::game::buy_menu::BuyMenu>,
+) {
     let Some(b) = begins.read().last().cloned() else { return };
     if matches!(travel.state, TravelState::Loading { .. }) {
         runlog::kv("travel_queued", &format!("map={} reason={} state={:?}", b.map, b.reason, travel.state));
         travel.queued = Some(b);
         return;
+    }
+    if buy_menu.open {
+        // Closed now, a few frames before the load, so its own close
+        // (classic_menu.rs / numenu.rs: the mouse captured again) runs
+        // before the new map's lobby frees the mouse.
+        buy_menu.open = false;
+        runlog::kv("buy_menu", "open=false reason=travel");
     }
     runlog::kv("travel_begin", &format!("from={} to={} reason={} frame={}", request.map, b.map, b.reason, frames.0));
     travel.began = Some((std::time::Instant::now(), request.map.clone(), b.reason.clone()));
@@ -312,18 +328,20 @@ fn fresh_player_on_new_map(
     net.want_ready = false;
     net.reset_for_new_map();
     let lobby = options.mode == crate::game::waves::GameMode::Waves && (lobby_settings.open || net.active);
+    // The lobby needs the mouse; without it the game view takes it again
+    // (a page closed above, e.g. the pause menu, had freed it).
+    let mut cursor_state = "unchanged";
+    if let Ok(mut c) = cursor.single_mut() {
+        (c.grab_mode, c.visible, cursor_state) = if lobby { (CursorGrabMode::None, true, "free") } else { (CursorGrabMode::Locked, false, "captured") };
+    }
     if lobby {
         menus.stack.push(crate::game::menus::Page::Lobby);
         runlog::kv("menu_open", "page=Lobby reason=new_map");
-        if let Ok(mut c) = cursor.single_mut() {
-            c.grab_mode = CursorGrabMode::None;
-            c.visible = true;
-        }
     }
     runlog::kv(
         "new_map_player",
         &format!(
-            "load={} health={:.0}->{:.0} dead={}->false deaths={}->0 kills={}->0 perk={} closed_pages=[{}] lobby={lobby} lobby_reason={}",
+            "load={} health={:.0}->{:.0} dead={}->false deaths={}->0 kills={}->0 perk={} closed_pages=[{}] lobby={lobby} lobby_reason={} cursor={cursor_state}",
             epoch.load,
             was.0,
             health.health,
@@ -332,7 +350,7 @@ fn fresh_player_on_new_map(
             was.3,
             vet.vet.label(),
             pages.join(","),
-            if net.active { "net_game" } else { lobby_settings.reason }
+            if net.active { "net_game" } else { lobby_settings.reason },
         ),
     );
 }
