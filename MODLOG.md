@@ -8128,3 +8128,49 @@ does not light reflective meshes; not compared with the real game; not
 played by you.
 **Next:** your look at the Manor ponds (command in test-views.md); then
 maybe animated TexOscillator/TexPanner for map materials.
+
+## 2026-10-09 KF-Offices start: walking over the brick piles
+
+**Changed:** `src/player/walk.rs` (`Mover`: edge contacts under the
+cylinder, landing while falling); docs/DESIGN.md ("Edge contacts under the
+cylinder"); docs/test-views.md (brick walk row).
+**Why:** you got stuck on the bricks at the KF-Offices start; in KF you
+walk right over them.
+**What the bricks are:** StaticMeshActors with KillingFloorStatics.BrickPile
+(18 units tall, DrawScale 1) and Brick (8 units), no collision overrides:
+StaticMeshActor defaults bCollideActors / bBlockActors true, the mesh's
+one section EnableCollision=true. So they block in KF too; KF steps over
+them (lower than the 35-unit step). Not a map feature we failed to
+simulate.
+**Cause:** our sweeps report the touched triangle's own normal. Coming
+down on a brick's top edge, that is the brick's vertical side, so the
+step-up's downward sweep saw a wall, gave up, and the speed fell to 4,
+then 0 (`walk_blocked by=collision_meshes normal_bevy=(1.00, 0.05, 0.03)`
+at (-21..-37, 1205) for 3 s). Unreal walks with a flat-bottomed box,
+which counts such an edge as floor.
+**Fix:** contacts on the cylinder's flat bottom/top inside the rim take the
+face's normal (up/down); rim contacts in a downward sweep with a too-steep
+normal look for walkable ground one unit outside / inside the rim (short
+rays down); falling lands on any walkable surface touched in the slide,
+not only the last one. General, also for zeds and the path checks.
+**Tested how:** `--autowalk` lanes across the bricks (start Y 1450 and
+1400, X -21, -105, -60, 10), before/after; KF's own path links checked by
+our cylinder (`nav_link_check`) on all 35 KF- maps, old vs new binary;
+`cargo test` (354 + 42 pass); clippy: only the old boss.rs warning.
+**Result:** before: X -21 stuck at Y 1205 (both starts), X -105 stuck at
+Y 929. After: all 8 lanes cross the brick area at speed 198 (height up to
+-1126 on the piles) and stop at Y 715-870 (X 10 lanes: the map's
+BlockingVolume27; what stops the others there is not checked). KF reachspecs walkable: 80654 -> 81087 of 86658
+(not walkable 6004 -> 5571), more on every map, fewer on none
+(KF-Stronghold +84, KF-Icebreaker +60, KF-Offices +3).
+**Dead ends:** (1) only the flat-face rule: the X -21 lane passed but
+others still stuck on rim contacts. (2) Rim rule probing only inside the
+rim: found nothing (the brick top is outside the rim). Probing both sides
+works. While testing, found the player hanging in the air at (18, 835)
+with falling speed growing to -1568 (touched floor, then wall; only the
+wall counted): fixed by the landing rule above.
+**Still broken / not tested:** one in about 8 runs still slows for 0.2-0.7
+s on a brick whose face is truly steep (normal 0.39 up), then continues.
+Whether individual links switched from walkable to not walkable is not
+checked (only totals). Not compared with the real game; not played by you.
+**Next:** your walk over the bricks (test-views.md row).

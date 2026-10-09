@@ -562,6 +562,38 @@ verified**): max step height 35, minimum walkable floor normal Z 0.7.
    height 44 + 50 above the ground), then moves at about 200 units/s until
    blocked.
 
+### Edge contacts under the cylinder (2026-10-09, branch fix/offices-bricks-rain)
+
+The brick piles at the KF-Offices start (KillingFloorStatics.BrickPile, 18
+units tall; Brick, 8 units) are plain StaticMeshActors: they block players
+(StaticMeshActor defaults bCollideActors, bBlockActors; the mesh's one
+section has EnableCollision), and KF walks over them because they are
+lower than the 35-unit step. Ours stopped dead on them: a sweep that
+touches a triangle at its edge reports that triangle's own normal, and for
+a brick the touched triangle is often its vertical side, touched at its
+top edge. The step-up's "come back down" sweep then saw a wall under the
+player instead of the brick's top, gave up, and the player stood still
+(speed 4, then 0).
+
+Unreal's collision for walking is a flat-bottomed box, and a box that
+comes down on an edge is stopped by its own bottom face: the contact
+counts as floor. Ours now does the same for the cylinder (`Mover`,
+player/walk.rs; zeds and the path checks use it too):
+- a contact on the flat bottom (or top) of the cylinder, inside the rim,
+  takes the cylinder's face as its normal (straight up or down);
+- a contact on the bottom's rim, in a sweep going down, whose normal is
+  too steep to stand on, looks for the surface next to it: short rays
+  straight down one unit outside and one unit inside the rim. A walkable
+  surface there at the bottom's height is the floor; a real steep slope
+  stays a slope.
+- While falling, the pawn lands if any surface touched in the slide is
+  walkable (it took only the last one: falling down along a wall onto the
+  floor touched the floor and then the wall, and the pawn hung in the air
+  with its falling speed growing).
+Tolerances (0.1 unit for "on the face", the one-unit probes) are ours.
+Check: KF's own path links (reachspecs) that our cylinder can walk went up
+on every map, none went down (`nav_link_check`).
+
 ### Player movement details from KF (2026-10-08, branch fix/player-movement)
 
 Seven fixes, one commit each, in this order. All values come from KF's

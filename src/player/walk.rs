@@ -107,6 +107,17 @@ pub struct PlayerAddVelocity {
     pub velocity: Vec3,
 }
 
+/// How close (Unreal units) a contact must be to the cylinder's flat top or
+/// bottom, and how far inside its rim, to count as a contact on that face
+/// (see `Mover::cap_contact`). Ours, chosen above float noise.
+const CAP_TOLERANCE: f32 = 0.1;
+/// `Mover::rim_floor`'s probes: how far out from and in from the rim, and
+/// how far above and below the bottom's height they look (Unreal units;
+/// ours).
+const RIM_PROBE_SIDE: f32 = 1.0;
+const RIM_PROBE_UP: f32 = 0.5;
+const RIM_PROBE_DOWN: f32 = 1.5;
+
 /// KFPawn Mass.
 const PLAYER_MASS: f32 = 400.0;
 
@@ -209,6 +220,9 @@ pub struct Mover<'a, 'w, 's> {
     shape: Collider,
     /// What blocks this cylinder (`player_filter` or `zed_filter`).
     filter: SpatialQueryFilter,
+    /// The cylinder's radius and half-height, metres.
+    radius: f32,
+    half_height: f32,
 }
 
 pub struct Hit {
@@ -225,6 +239,8 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
             spatial,
             shape: Collider::cylinder(radius * SCALE, 2.0 * half_height * SCALE),
             filter,
+            radius: radius * SCALE,
+            half_height: half_height * SCALE,
         }
     }
 
@@ -276,7 +292,24 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
             .cast_shape(&self.shape, from, Quat::IDENTITY, dir3, &config, &self.filter)
             .map(|h| {
                 // Make the normal face against the motion (trimesh triangles are two-sided).
-                let n = if h.normal1.dot(dir) > 0.0 { -h.normal1 } else { h.normal1 };
+                let mut n = if h.normal1.dot(dir) > 0.0 { -h.normal1 } else { h.normal1 };
+                // Touched on the flat bottom or top of the cylinder, away
+                // from its rim: the level is touched with an edge or a
+                // corner (a face would meet the rim first), and the hit
+                // takes the cylinder's face as its normal (straight up or
+                // down). This is how Unreal's flat-faced collision boxes
+                // report such contacts; the triangle's own normal (e.g. a
+                // brick's vertical side, touched at its top edge) made a
+                // walkable top look like a wall.
+                let centre = from + dir * h.distance;
+                if let Some(cap) = self.cap_contact(centre, h.point2) {
+                    n = Vec3::Y * cap;
+                } else if dir.y < -0.5
+                    && n.y < kf::MIN_FLOOR_NORMAL_Y
+                    && let Some(floor) = self.rim_floor(centre, h.point2)
+                {
+                    n = floor;
+                }
                 Hit {
                     distance: h.distance,
                     normal: n.normalize_or_zero(),
@@ -285,10 +318,56 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
             })
     }
 
+    /// Whether a contact point on the cylinder (centred at `centre`) lies
+    /// on its bottom (-1.0) or top (1.0) face, more than a tenth of a unit
+    /// inside the rim.
+    fn cap_contact(&self, centre: Vec3, point: Vec3) -> Option<f32> {
+        let tol = CAP_TOLERANCE * SCALE;
+        let d = point - centre;
+        if d.with_y(0.0).length() > self.radius - tol {
+            return None;
+        }
+        if (d.y + self.half_height).abs() < tol {
+            Some(1.0)
+        } else if (d.y - self.half_height).abs() < tol {
+            Some(-1.0)
+        } else {
+            None
+        }
+    }
+
+    /// A contact on the rim of the cylinder's bottom (e.g. the rim coming
+    /// down on a brick's top edge, whose vertical side is what the hit
+    /// reports): the walkable surface next to the contact at the bottom's
+    /// height, if there is one. Short rays straight down, one unit outside
+    /// and one unit inside the rim. On a slope too steep to walk the rays
+    /// find the slope itself (or nothing), so it stays a slope.
+    fn rim_floor(&self, centre: Vec3, point: Vec3) -> Option<Vec3> {
+        let tol = CAP_TOLERANCE * SCALE;
+        let d = point - centre;
+        let out = d.with_y(0.0);
+        if (d.y + self.half_height).abs() > tol || out.length() < self.radius - 2.0 * tol {
+            return None;
+        }
+        let out = out.normalize_or_zero() * RIM_PROBE_SIDE * SCALE;
+        [point + out, point - out].into_iter().find_map(|p| {
+            let start = p + Vec3::Y * RIM_PROBE_UP * SCALE;
+            let hit = self.spatial.cast_ray(start, Dir3::NEG_Y, (RIM_PROBE_UP + RIM_PROBE_DOWN) * SCALE, true, &self.filter)?;
+            let n = if hit.normal.y < 0.0 { -hit.normal } else { hit.normal };
+            (n.y >= kf::MIN_FLOOR_NORMAL_Y).then_some(n)
+        })
+    }
+
     /// Moves by `delta`, sliding along anything hit (up to 4 surfaces).
     /// Returns the new position and the last surface normal hit.
-    pub fn slide(&self, mut pos: Vec3, mut delta: Vec3) -> (Vec3, Option<Hit>) {
-        let mut last = None;
+    pub fn slide(&self, pos: Vec3, delta: Vec3) -> (Vec3, Option<Hit>) {
+        let (pos, mut hits) = self.slide_all(pos, delta);
+        (pos, hits.pop())
+    }
+
+    /// `slide`, returning every surface hit, in order.
+    pub fn slide_all(&self, mut pos: Vec3, mut delta: Vec3) -> (Vec3, Vec<Hit>) {
+        let mut hits = Vec::new();
         for _ in 0..4 {
             let len = delta.length();
             if len < 1e-6 {
@@ -304,11 +383,11 @@ impl<'a, 'w, 's> Mover<'a, 'w, 's> {
                     pos += dir * hit.distance;
                     let remaining = delta * (1.0 - hit.distance / len);
                     delta = remaining - hit.normal * remaining.dot(hit.normal);
-                    last = Some(hit);
+                    hits.push(hit);
                 }
             }
         }
-        (pos, last)
+        (pos, hits)
     }
 
     /// Ground movement: slide, and if a wall blocks, try stepping up onto it.
@@ -754,7 +833,13 @@ fn walk(
                     w.velocity.x = step.x / h - zone_velocity.x;
                     w.velocity.z = step.z / h - zone_velocity.z;
                 }
-                let (pos, hit) = mover.slide(w.center, step);
+                // Lands on a walkable floor touched anywhere in the slide,
+                // not only on the last surface: falling down along a wall
+                // onto the floor touches the floor and then the wall again,
+                // and taking only the wall left the pawn hanging in the air
+                // with its falling speed growing.
+                let (pos, hits) = mover.slide_all(w.center, step);
+                let hit = hits.iter().rposition(|h| h.normal.y >= kf::MIN_FLOOR_NORMAL_Y).or(hits.len().checked_sub(1)).map(|i| &hits[i]);
                 w.center = pos;
                 w.air_max_y = w.air_max_y.max(w.center.y);
                 if let Some(n) = hit.map(|h| h.normal) {
