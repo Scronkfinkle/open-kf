@@ -7157,3 +7157,66 @@ Measured on KF-WestLondon's tunnel (AK-47, 30-round burst, 2 runs each,
 37.2 / 40.1 ms with `KF_MUZZLE_LIGHT=0`: no cost above the noise. While
 on, 33 baked meshes switch to the lit material there (`baked_swap`).
 A Clot 118 units ahead: drawn light 0.35 with, 0.24 without.
+
+## Map rotation and map voting without restarting (planned 2026-10-09)
+
+**Goal:** at the end of a match the game moves to the next map by itself, in
+single player and in multiplayer, without anyone closing the game. Everyone
+stays connected; the lobby opens again on the new map. Map voting as in KF.
+
+**What KF does** (read in its scripts and inis; details in MODLOG):
+- The match ends (squad wiped, or the Patriarch / last wave beaten). The
+  end screen shows; 14 s later (EndTimeDelay 4 + RestartWait 10) the game
+  goes to the next map. The host (or the single player) may press Fire
+  after 5 s to go early. Remote clients cannot.
+- The next map comes from a map list (default: KF-BioticsLab, KF-Farm,
+  KF-Manor, KF-Offices, KF-WestLondon). The position after the current map
+  is used; it wraps round, skips maps that are not installed, and is saved.
+  A current map that is not in the list moves the position on by one.
+- Map voting exists but is off by default (bMapVote=False). When on: the
+  vote window opens 5 s after the end (ScoreBoardDelay); voting lasts
+  VoteTimeLimit (30 s in the ini); it ends early when everyone has voted;
+  if nobody voted a random map is picked; ties are broken at random,
+  avoiding the current map. "<map> has won !" is announced.
+- While the new map loads players see KF's server loading screen (not
+  the "Deploying to" one, which KF's map loading only uses for a ladder
+  game): KF background art, the map's preview picture with title and
+  author, ". . . LOADING", the map name and a random hint. Then the lobby. Name and perk are kept;
+  cash goes back to the starting amount; kills, deaths and Ready are reset.
+- KF's clients disconnect and reconnect on every map change. **We do
+  better: our clients stay connected** and load the map in place.
+
+**How we do it:** the map becomes something that can be unloaded and
+loaded again inside the running game (today it is loaded once at startup
+by ~25 separate one-time steps).
+
+Steps (each its own branch, revertible on its own):
+
+1. **Map lifecycle.** A `MapScoped` tag on every entity that belongs to
+   the map (geometry, colliders, doors, glass, lights, decals, emitters,
+   map sounds, traders, pickups, zeds, gibs, projectiles). The one-time
+   startup steps become a load sequence that runs whenever a `ChangeMap`
+   request arrives: unload (despawn tagged entities, remove per-map
+   resources, clear "done once" flags) then load. Startup simply sends the
+   first `ChangeMap`. Test: a debug option that hops through several maps
+   in one run and logs entity / asset counts after each load (flat counts =
+   nothing leaked), plus every map still loads as before.
+2. **Map list + next map (single player).** The map list, KF's
+   GetNextMap rules, the position saved in our own settings file (never in
+   KF's inis). At the end of the match, Fire after 5 s / the 14 s timer
+   sends `ChangeMap(next)` instead of restarting on the same map.
+3. **Multiplayer map change.** The host announces the next map (shared
+   match state gets the next map and a travel counter). Everyone unloads
+   and loads it while staying connected. The lobby is reset (match not
+   started, nobody ready) and opens again; cash, kills and deaths reset;
+   name, perk and character are kept. Doors and pickups are synced again.
+4. **Map voting.** KF's xVoting rules: pure logic module with unit tests,
+   the vote window (list of maps, vote counts, time left), the client to
+   host vote message and the shared vote state. Off by default as in KF;
+   a launcher/command-line switch turns it on.
+5. **Loading screen and launcher.** KF's loading screen while a map
+   loads; launcher settings for the map list and map voting.
+
+Steps 1, 4 (logic, window, messages) and the map-list part of 2 and 5 can
+be built in parallel; steps 2 (wiring), 3 and the loading screen wait for
+step 1.
