@@ -72,6 +72,10 @@ pub struct NetTravel {
     pub known: bool,
 }
 
+/// `NetTravel::loaded` of a client that joined with another map than the
+/// host's, until it has loaded the host's.
+pub const NOT_A_HOST_MAP: u32 = u32::MAX;
+
 impl NetTravel {
     /// Does map state stamped `travel` belong to the map loaded here? A
     /// client accepts nothing before it knows the host's number.
@@ -299,5 +303,11 @@ mod tests {
         // Map 1 loaded: only its state.
         t.loaded = t.pending.take().unwrap();
         assert!(!t.current(0) && t.current(1));
+        // Joined with another map than the host's travel 0: nothing until
+        // the host's map is loaded.
+        let mut t = NetTravel { known: true, loaded: NOT_A_HOST_MAP, pending: Some(0), seen: 0 };
+        assert!(!t.current(0));
+        t.loaded = t.pending.take().unwrap();
+        assert!(t.current(0));
     }
 }

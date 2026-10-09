@@ -190,6 +190,9 @@ fn check_game(
     let installed = installed().is_some();
     runlog::kv("net_map_mismatch", &format!("host_map={} my_map={} installed={installed} action={}", g.map, map.map, if installed { "travel" } else { "quit" }));
     if installed {
+        // The map loaded here is none of the host's: take no map state
+        // (stamped with the host's number) until the host's map is loaded.
+        travel.loaded = super::NOT_A_HOST_MAP;
         begin.write(crate::game::travel::BeginTravel { map: g.map.clone(), reason: "join".into(), net_travel: Some(g.travel) });
     } else {
         eprintln!("error: the host plays {}, which is not installed here (this game loaded {}).", g.map, map.map);
