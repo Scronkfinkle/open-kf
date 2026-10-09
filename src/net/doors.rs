@@ -9,7 +9,7 @@ use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::*;
 
 use super::NetMode;
-use super::protocol::{DoorStates, GameChannel, NetPlayer};
+use super::protocol::{DoorStates, GameChannel, NetPlayer, Stamped};
 use super::server::PlayerSlot;
 use crate::engine::runlog;
 use crate::world::door::{DoorNet, DoorRequest, DoorRole};
@@ -29,10 +29,11 @@ pub(super) fn build(app: &mut App, mode: &NetMode) {
     }
 }
 
-fn receive_door_requests(mut links: Query<(Entity, &mut MessageReceiver<DoorRequest>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<DoorNet>) {
+fn receive_door_requests(mut links: Query<(Entity, &mut MessageReceiver<Stamped<DoorRequest>>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<DoorNet>, travel: Res<super::NetTravel>) {
     for (link, mut rx) in &mut links {
         let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
-        for r in rx.receive() {
+        // A door of another map (by number): dropped.
+        for r in rx.receive().filter_map(|m| travel.from_client(m, "door_request")) {
             match peer {
                 Some(p) => net.incoming.push((p, r)),
                 None => runlog::kv("door_request_dropped", &format!("link={link:?} reason=no_player")),
@@ -73,14 +74,14 @@ fn send_door_states(
 }
 
 #[allow(clippy::type_complexity)] // Bevy system parameters
-fn send_door_requests(mut net: ResMut<DoorNet>, mut tx: Query<&mut MessageSender<DoorRequest>, (With<Client>, With<Connected>, Without<LinkOf>)>) {
+fn send_door_requests(mut net: ResMut<DoorNet>, mut tx: Query<&mut MessageSender<Stamped<DoorRequest>>, (With<Client>, With<Connected>, Without<LinkOf>)>, travel: Res<super::NetTravel>) {
     if net.outgoing.is_empty() {
         return;
     }
     let Ok(mut tx) = tx.single_mut() else { return };
     for r in std::mem::take(&mut net.outgoing) {
-        runlog::kv("net_door_request_sent", &format!("{r:?}"));
-        tx.send::<GameChannel>(r);
+        runlog::kv("net_door_request_sent", &format!("{r:?} travel={}", travel.loaded));
+        tx.send::<GameChannel>(travel.stamp(r));
     }
 }
 

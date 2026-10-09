@@ -209,6 +209,17 @@ pub struct PickupStates {
     pub shown: Vec<crate::game::pickups::ShownPickup>,
 }
 
+/// A message about one map (a door, pickup, zed, hit or start spot,
+/// which are numbered per map) with the `NetGame::travel` of the map its
+/// sender had loaded. Across a map change a late one would hit the new
+/// map's thing with the same number; the receiver drops it instead
+/// (`NetTravel::from_client` / `from_host`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Stamped<T> {
+    pub travel: u32,
+    pub msg: T,
+}
+
 /// Reliable, ordered: lobby requests must all arrive, in order.
 pub struct LobbyChannel;
 
@@ -231,20 +242,20 @@ pub fn register(app: &mut App) {
     app.register_message::<LobbyRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<PawnUpdate>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<ZedSnapshot>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<PlayerEvent>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<KillCredit>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<crate::game::combat::NetHit>().add_direction(NetworkDirection::ClientToServer);
-    app.register_message::<PlayerStartMsg>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<ProjectileFx>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<Stamped<PlayerEvent>>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<Stamped<KillCredit>>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<Stamped<crate::game::combat::NetHit>>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<Stamped<PlayerStartMsg>>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<Stamped<ProjectileFx>>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<DoorStates>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<crate::world::door::DoorRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<Stamped<crate::world::door::DoorRequest>>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<crate::game::zed_time::ZedTimeCommand>().add_direction(NetworkDirection::ServerToClient);
     app.register_message::<super::zedtime::ZedTimeRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<PickupStates>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<crate::game::pickups::PickupRequest>().add_direction(NetworkDirection::ClientToServer);
-    app.register_message::<crate::game::pickups::PickupNotice>().add_direction(NetworkDirection::ServerToClient);
-    app.register_message::<crate::game::pickups::DropRequest>().add_direction(NetworkDirection::ClientToServer);
-    app.register_message::<HealRequest>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<Stamped<crate::game::pickups::PickupRequest>>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<Stamped<crate::game::pickups::PickupNotice>>().add_direction(NetworkDirection::ServerToClient);
+    app.register_message::<Stamped<crate::game::pickups::DropRequest>>().add_direction(NetworkDirection::ClientToServer);
+    app.register_message::<Stamped<HealRequest>>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<super::map_vote::MapVoteRequest>().add_direction(NetworkDirection::ClientToServer);
     app.register_message::<super::map_vote::MapVoteState>().add_direction(NetworkDirection::ServerToClient);
     app.add_channel::<LobbyChannel>(ChannelSettings { mode: ChannelMode::OrderedReliable(ReliableSettings::default()), ..default() })

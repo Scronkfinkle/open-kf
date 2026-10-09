@@ -10,7 +10,7 @@ use lightyear::prelude::server::ClientOf;
 use lightyear::prelude::*;
 
 use super::NetMode;
-use super::protocol::{GameChannel, NetPlayer, PickupStates};
+use super::protocol::{GameChannel, NetPlayer, PickupStates, Stamped};
 use super::server::PlayerSlot;
 use crate::engine::runlog;
 use crate::game::pickups::{DropRequest, HostNotice, PickupNet, PickupNotice, PickupRequest, PickupSystems, Pickups, ShownPickup};
@@ -35,10 +35,10 @@ pub(super) fn build(app: &mut App, mode: &NetMode) {
     }
 }
 
-fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<PickupRequest>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>) {
+fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<Stamped<PickupRequest>>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
     for (link, mut rx) in &mut links {
         let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
-        for r in rx.receive() {
+        for r in rx.receive().filter_map(|m| travel.from_client(m, "pickup_request")) {
             match peer {
                 Some(p) => net.incoming.push((p, r)),
                 None => runlog::kv("pickup_request_dropped", &format!("link={link:?} reason=no_player")),
@@ -47,10 +47,10 @@ fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<PickupRequest
     }
 }
 
-fn receive_drops(mut links: Query<(Entity, &mut MessageReceiver<DropRequest>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>) {
+fn receive_drops(mut links: Query<(Entity, &mut MessageReceiver<Stamped<DropRequest>>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
     for (link, mut rx) in &mut links {
         let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
-        for r in rx.receive() {
+        for r in rx.receive().filter_map(|m| travel.from_client(m, "drop_request")) {
             match peer {
                 Some(p) => net.drop_incoming.push((p, r)),
                 None => runlog::kv("drop_request_dropped", &format!("link={link:?} reason=no_player")),
@@ -59,18 +59,20 @@ fn receive_drops(mut links: Query<(Entity, &mut MessageReceiver<DropRequest>), W
     }
 }
 
-fn send_drops(mut net: ResMut<PickupNet>, mut tx: Query<&mut MessageSender<DropRequest>, MyConnection>) {
+fn send_drops(mut net: ResMut<PickupNet>, mut tx: Query<&mut MessageSender<Stamped<DropRequest>>, MyConnection>, travel: Res<super::NetTravel>) {
     if net.drop_outgoing.is_empty() {
         return;
     }
     let Ok(mut tx) = tx.single_mut() else { return };
     for r in std::mem::take(&mut net.drop_outgoing) {
         runlog::kv("net_drop_request_sent", &format!("token={} why={:?} class={} gives={}", r.token, r.why, r.class, r.gives.label()));
-        tx.send::<GameChannel>(r);
+        tx.send::<GameChannel>(travel.stamp(r));
     }
 }
 
-fn send_notices(mut net: ResMut<PickupNet>, players: Query<(&NetPlayer, &PlayerSlot)>, mut senders: Query<(Entity, &mut MessageSender<PickupNotice>), RemoteLinks>) {
+fn send_notices(mut net: ResMut<PickupNet>, players: Query<(&NetPlayer, &PlayerSlot)>, mut senders: Query<(Entity, &mut MessageSender<Stamped<PickupNotice>>), RemoteLinks>, travel: Res<super::NetTravel>) {
+    // Each notice is about the map loaded now.
+    let stamp = |notice: PickupNotice| travel.stamp(notice);
     for n in std::mem::take(&mut net.notices) {
         match n {
             HostNotice::Taken { taker, id, class, location, gives } => {
@@ -78,19 +80,19 @@ fn send_notices(mut net: ResMut<PickupNet>, players: Query<(&NetPlayer, &PlayerS
                 for (link, mut tx) in &mut senders {
                     let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
                     let yours = peer.is_some() && peer == taker;
-                    tx.send::<GameChannel>(PickupNotice::Taken { id, class: class.clone(), location, gives: gives.clone(), yours });
+                    tx.send::<GameChannel>(stamp(PickupNotice::Taken { id, class: class.clone(), location, gives: gives.clone(), yours }));
                     sent.push(format!("{}:{yours}", peer.map_or("?".into(), |p| p.to_string())));
                 }
-                runlog::kv("net_pickup_notice_sent", &format!("id={id} class={class} taker={} to=[{}]", taker.map_or("host".into(), |t| t.to_string()), sent.join(" ")));
+                runlog::kv("net_pickup_notice_sent", &format!("id={id} class={class} travel={} taker={} to=[{}]", travel.loaded, taker.map_or("host".into(), |t| t.to_string()), sent.join(" ")));
             }
             HostNotice::Dropped { peer, token, id, reason } => {
                 let link = players.iter().find(|(p, _)| p.peer == peer).map(|(_, s)| s.link);
-                let sent = link.and_then(|l| senders.get_mut(l).ok()).map(|(_, mut tx)| tx.send::<GameChannel>(PickupNotice::Dropped { token, id, reason: reason.clone() })).is_some();
+                let sent = link.and_then(|l| senders.get_mut(l).ok()).map(|(_, mut tx)| tx.send::<GameChannel>(stamp(PickupNotice::Dropped { token, id, reason: reason.clone() }))).is_some();
                 runlog::kv("net_drop_answer_sent", &format!("peer={peer} token={token} id={} reason={reason} sent={sent}", id.map_or("none".into(), |i| i.to_string())));
             }
             HostNotice::Denied { peer, id, reason } => {
                 let link = players.iter().find(|(p, _)| p.peer == peer).map(|(_, s)| s.link);
-                let sent = link.and_then(|l| senders.get_mut(l).ok()).map(|(_, mut tx)| tx.send::<GameChannel>(PickupNotice::Denied { id, reason: reason.clone() })).is_some();
+                let sent = link.and_then(|l| senders.get_mut(l).ok()).map(|(_, mut tx)| tx.send::<GameChannel>(stamp(PickupNotice::Denied { id, reason: reason.clone() }))).is_some();
                 runlog::kv("net_pickup_denied_sent", &format!("peer={peer} id={id} reason={reason} sent={sent}"));
             }
         }
@@ -118,14 +120,14 @@ fn send_states(time: Res<Time<Real>>, pickups: Res<Pickups>, travel: Res<super::
     *last = (list, now, clients);
 }
 
-fn send_requests(mut net: ResMut<PickupNet>, mut tx: Query<&mut MessageSender<PickupRequest>, MyConnection>) {
+fn send_requests(mut net: ResMut<PickupNet>, mut tx: Query<&mut MessageSender<Stamped<PickupRequest>>, MyConnection>, travel: Res<super::NetTravel>) {
     if net.outgoing.is_empty() {
         return;
     }
     let Ok(mut tx) = tx.single_mut() else { return };
     for r in std::mem::take(&mut net.outgoing) {
-        runlog::kv("net_pickup_request_sent", &format!("id={} class={}", r.id, r.class));
-        tx.send::<GameChannel>(r);
+        runlog::kv("net_pickup_request_sent", &format!("id={} class={} travel={}", r.id, r.class, travel.loaded));
+        tx.send::<GameChannel>(travel.stamp(r));
     }
 }
 
@@ -147,9 +149,10 @@ fn receive_states(mut rx: Query<&mut MessageReceiver<PickupStates>, (With<Client
     }
 }
 
-fn receive_notices(mut rx: Query<&mut MessageReceiver<PickupNotice>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<PickupNet>) {
+fn receive_notices(mut rx: Query<&mut MessageReceiver<Stamped<PickupNotice>>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
     for mut r in &mut rx {
-        for n in r.receive() {
+        // About another map (sent before or during a map change): dropped.
+        for n in r.receive().filter_map(|m| travel.from_host(m, "pickup_notice")) {
             net.received.push(n);
         }
     }

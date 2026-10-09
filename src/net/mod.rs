@@ -50,7 +50,7 @@ pub const MAX_PLAYERS: usize = 6;
 /// The netcode protocol number. Games built with a different number (a
 /// different version of our network code) refuse to connect to each other.
 /// Raise it whenever `protocol.rs` changes.
-pub const PROTOCOL_ID: u64 = 0x4F4B_4600_000B;
+pub const PROTOCOL_ID: u64 = 0x4F4B_4600_000C;
 /// netcode.io's 32-byte connection key. All zeros on purpose: this is a
 /// LAN / direct-IP prototype with no access control (anyone who can reach
 /// the port can join). It is not a secret and not a credential.
@@ -77,6 +77,33 @@ impl NetTravel {
     /// client accepts nothing before it knows the host's number.
     pub fn current(&self, travel: u32) -> bool {
         self.known && travel == self.loaded && self.pending.is_none_or(|p| p == travel)
+    }
+}
+
+impl NetTravel {
+    /// A message about the map loaded here, for the other side.
+    pub fn stamp<T>(&self, msg: T) -> protocol::Stamped<T> {
+        protocol::Stamped { travel: self.loaded, msg }
+    }
+
+    /// Host: a client's message, if it is about the map loaded here (a
+    /// client still on the old map, or one that loaded the new map first,
+    /// may send one about another map).
+    pub fn from_client<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
+        if m.travel == self.loaded {
+            return Some(m.msg);
+        }
+        crate::engine::runlog::kv("net_other_map_dropped", &format!("what={what} from=client travel={} loaded={}", m.travel, self.loaded));
+        None
+    }
+
+    /// Client: the host's message, if it is about the map loaded here.
+    pub fn from_host<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
+        if self.current(m.travel) {
+            return Some(m.msg);
+        }
+        crate::engine::runlog::kv("net_other_map_dropped", &format!("what={what} from=host travel={} loaded={} pending={:?}", m.travel, self.loaded, self.pending));
+        None
     }
 }
 

@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use lightyear::prelude::*;
 
 use super::lobby::NetLobby;
-use super::protocol::{GameChannel, NetGame, NetPawn, NetPlayer, PlayerStartMsg};
+use super::protocol::{GameChannel, NetGame, NetPawn, NetPlayer, PlayerStartMsg, Stamped};
 use super::server::PlayerSlot;
 use super::NetMode;
 use crate::engine::camera::FlyCamera;
@@ -144,7 +144,8 @@ fn assign_starts(
     health: Res<crate::game::combat::PlayerHealth>,
     spatial: SpatialQuery,
     mut local: MessageWriter<MoveToStart>,
-    mut senders: Query<&mut MessageSender<PlayerStartMsg>, (With<lightyear::prelude::server::ClientOf>, With<Connected>)>,
+    mut senders: Query<&mut MessageSender<Stamped<PlayerStartMsg>>, (With<lightyear::prelude::server::ClientOf>, With<Connected>)>,
+    travel: Res<super::NetTravel>,
 ) {
     if !net_game.iter().any(|g| g.match_started) || starts.0.is_empty() {
         return;
@@ -223,7 +224,7 @@ fn assign_starts(
             local.write(MoveToStart { msg: msg.clone() });
             true
         } else {
-            senders.get_mut(link).map(|mut tx| tx.send::<GameChannel>(msg.clone())).is_ok()
+            senders.get_mut(link).map(|mut tx| tx.send::<GameChannel>(travel.stamp(msg.clone()))).is_ok()
         };
         state.placed.insert(peer);
         state.last_start.insert(peer, i);
@@ -259,9 +260,10 @@ fn dead_view(health: Res<crate::game::combat::PlayerHealth>, mut view: ResMut<cr
 }
 
 /// Client: the host's start spots for my player.
-fn receive_starts(mut rx: Query<&mut MessageReceiver<PlayerStartMsg>, (With<Client>, Without<LinkOf>)>, mut out: MessageWriter<MoveToStart>) {
+fn receive_starts(mut rx: Query<&mut MessageReceiver<Stamped<PlayerStartMsg>>, (With<Client>, Without<LinkOf>)>, mut out: MessageWriter<MoveToStart>, travel: Res<super::NetTravel>) {
     for mut r in &mut rx {
-        for msg in r.receive() {
+        // A start spot on another map: dropped.
+        for msg in r.receive().filter_map(|m| travel.from_host(m, "player_start")) {
             runlog::kv("net_start_received", &format!("{msg:?}"));
             out.write(MoveToStart { msg });
         }
