@@ -1,4 +1,4 @@
-//! The game rules: waves, damage and health, dosh, the trader and shop (and the trader woman), the HUD, zed time, the end of the match, the menus (lobby, perk page, pause menu), pickups (weapons, ammo, vests lying in the map), the map list (which map comes next), map voting.
+//! The game rules: waves, damage and health, dosh, the trader and shop (and the trader woman), the HUD, zed time, the end of the match, the loading screen, the menus (lobby, perk page, pause menu), pickups (weapons, ammo, vests lying in the map), the map list (which map comes next), map voting.
 
 pub mod waves;
 pub mod difficulty;
@@ -14,6 +14,7 @@ pub mod classic_menu;
 pub mod hud;
 pub mod zed_time;
 pub mod end_game;
+pub mod loading_screen;
 pub mod perks;
 pub mod healing;
 pub mod menus;

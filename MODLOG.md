@@ -7538,3 +7538,59 @@ Not played by you.
 **Next:** step 3: send `StartMapVote` where the game would travel, travel
 on `MapVoteFinished`, then `MapVote::clear()`; `--map-vote` sets
 `MapVoteSettings.enabled`.
+## 2026-10-09 Loading screen (map rotation step 5, screen only)
+
+**Changed:** new `src/game/loading_screen.rs` (the screen, its messages
+`ShowLoadingScreen` -> `LoadingScreenShown` -> `HideLoadingScreen`, and the
+`--loading-test MAP` debug option); `src/main.rs` (option, plugin);
+`src/game/mod.rs`. Not wired into the map change yet (that waits for the
+map lifecycle branch).
+**Why:** a map load freezes the game for a few seconds; KF shows a loading
+screen meanwhile. The screen must be on the display before the load starts:
+the module sends `LoadingScreenShown` after 3 drawn frames, the load starts
+on it, and the last drawn frame stays up while the game is frozen.
+**KF's rule (scripts, defaults, native code):** KF's ini names two loading
+screens. The engine draws LoadingClass (ROServerLoading, "Deploying to
+<map>") only for a single-player ladder game with TeamScreen=true, which
+KF never plays; every other map load uses ConnectingMenuClass,
+GUI2K4.UT2K4ServerLoading (details in the local RE.md). So KF shows: a
+random background from defuser.ini's Backgrounds
+(2k4Menus.Loading.loadingscreen1, 2, 2, 4: the KF logo pictures), its
+top-left 1024 x 768 texels over the screen; ". . . LOADING" right-aligned
+to 0.99 of the width at 0.48 down and the map name ("KF-WestLondon":
+folder and extension removed) at 0.6, both in UT2LargeFont; a random
+KFHints line (KFMod.int, 15 hints) wrapped to 0.05-0.98 of the width at
+0.8 down, lines right-aligned, fntUT2k4SmallHeader; the map's
+LevelSummary screenshot (a random picture of its MaterialSequence) in a
+box 3/7 of the screen, right of centre near the top, with the title
+(System/<map>.int [LevelSummary] Title) and "By <author>" on it
+(KFMod.LoadingInfoImage). Text white at the canvas font scale 0.9. Font
+sizes step at widths 800, 1024, 1280, 1600 (native GUIFont rule). The
+first commit on the branch drew the ROServerLoading version ("Deploying
+to K F- West London": its AddSpaces puts a space before every capital and
+strips only "RO-"); the second commit replaced it.
+**Tested how:** `cargo test --release` (6 new tests: StripMap, the
+10-try background pick, KFHints parsing, layout at 1920x1080 and
+800x560, font size steps, hint wrapping); headless
+`--map KF-Farm --loading-test KF-WestLondon` at 1280x720, KF-Manor and a
+missing map at 1920x1080; screenshots; clippy.
+**Result:** `loading_screen_show map=KF-WestLondon
+background=2k4Menus.Loading.loadingscreen2 texels=1024x1024 picks=1
+map_name="KF-WestLondon" preview=...westlondonpreview_2
+preview_texels=512x256 title="KF-WestLondon" author="Tripwire
+Interactive" load_ms=25.3` at frame 20, `loading_screen_shown
+frames_shown=3 frame=22`, test freeze 1500 ms at frame 23,
+`loading_screen_hide frames_shown=63 frame=83`; the screenshot at frame 30
+(taken after the freeze) shows the screen, the one at frame 100 the game.
+Layout at 1920x1080: preview (1028,46)-(1851,509), fonts ROBtsrmVr22 /
+ROArial22DS / ROArial18DS. Missing map: background, texts and hint, no
+preview. Two runs picked different backgrounds, previews and hints.
+311 tests pass. Clippy: no warnings from this change (one older one in
+zeds/boss.rs tests).
+**Still broken / not tested:** not wired to a real map change; not
+compared with a real KF screenshot; the hint wrapping (native in KF) is
+assumed to break on spaces; only a 1.5 s stand-in freeze was tested, not
+a real map load; not checked which screen KF shows at game start (KF
+first loads its menu map, and maps named "Menu..." get no screen).
+**Next:** the map-change wiring step: send `ShowLoadingScreen`, load on
+`LoadingScreenShown`, send `HideLoadingScreen` once the map is loaded.
