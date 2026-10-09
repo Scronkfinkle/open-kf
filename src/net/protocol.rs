@@ -221,7 +221,7 @@ pub struct PickupStates {
 /// which are numbered per map) with the `NetGame::travel` of the map its
 /// sender had loaded. Across a map change a late one would hit the new
 /// map's thing with the same number; the receiver drops it instead
-/// (`NetTravel::from_client` / `from_host`).
+/// (`NetTravel::accept_from_client` / `accept_from_host`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Stamped<T> {
     pub travel: u32,

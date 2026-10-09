@@ -29,6 +29,9 @@ use crate::game::waves::{Phase, WaveGame};
 use crate::player::walk::Walker;
 use crate::world::map::{PlayerStarts, SpawnPoint, StartSpot};
 
+/// This game's link to the host (a client game).
+type FromHost = (With<Client>, Without<LinkOf>);
+
 /// KFGameType.InitGame MinRespawnCash for the game's difficulty (Normal 200).
 fn min_respawn_cash() -> f32 {
     crate::game::difficulty::current().min_respawn_cash()
@@ -260,10 +263,10 @@ fn dead_view(health: Res<crate::game::combat::PlayerHealth>, mut view: ResMut<cr
 }
 
 /// Client: the host's start spots for my player.
-fn receive_starts(mut rx: Query<&mut MessageReceiver<Stamped<PlayerStartMsg>>, (With<Client>, Without<LinkOf>)>, mut out: MessageWriter<MoveToStart>, travel: Res<super::NetTravel>) {
+fn receive_starts(mut rx: Query<&mut MessageReceiver<Stamped<PlayerStartMsg>>, FromHost>, mut out: MessageWriter<MoveToStart>, travel: Res<super::NetTravel>) {
     for mut r in &mut rx {
         // A start spot on another map: dropped.
-        for msg in r.receive().filter_map(|m| travel.from_host(m, "player_start")) {
+        for msg in r.receive().filter_map(|m| travel.accept_from_host(m, "player_start")) {
             runlog::kv("net_start_received", &format!("{msg:?}"));
             out.write(MoveToStart { msg });
         }

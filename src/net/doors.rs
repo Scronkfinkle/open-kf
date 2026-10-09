@@ -33,7 +33,7 @@ fn receive_door_requests(mut links: Query<(Entity, &mut MessageReceiver<Stamped<
     for (link, mut rx) in &mut links {
         let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
         // A door of another map (by number): dropped.
-        for r in rx.receive().filter_map(|m| travel.from_client(m, "door_request")) {
+        for r in rx.receive().filter_map(|m| travel.accept_from_client(m, "door_request")) {
             match peer {
                 Some(p) => net.incoming.push((p, r)),
                 None => runlog::kv("door_request_dropped", &format!("link={link:?} reason=no_player")),

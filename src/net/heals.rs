@@ -78,7 +78,7 @@ fn route_heals(
     for (link, mut rx) in &mut links {
         let from = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
         // A heal given on another map: dropped.
-        for r in rx.receive().filter_map(|m| travel.from_client(m, "heal_request")) {
+        for r in rx.receive().filter_map(|m| travel.accept_from_client(m, "heal_request")) {
             let Some(from) = from else { continue };
             // Trusting, as the zed hits: at most a syringe's 20 x 1.75.
             out.push((r.target, r.amount.clamp(0.0, 100.0), name_of(from), r.source));

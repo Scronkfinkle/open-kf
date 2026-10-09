@@ -89,7 +89,7 @@ impl NetTravel {
     /// Host: a client's message, if it is about the map loaded here (a
     /// client still on the old map, or one that loaded the new map first,
     /// may send one about another map).
-    pub fn from_client<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
+    pub fn accept_from_client<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
         if m.travel == self.loaded {
             return Some(m.msg);
         }
@@ -98,7 +98,7 @@ impl NetTravel {
     }
 
     /// Client: the host's message, if it is about the map loaded here.
-    pub fn from_host<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
+    pub fn accept_from_host<T>(&self, m: protocol::Stamped<T>, what: &str) -> Option<T> {
         if self.current(m.travel) {
             return Some(m.msg);
         }

@@ -15,6 +15,9 @@ use super::server::PlayerSlot;
 use crate::engine::runlog;
 use crate::game::pickups::{DropRequest, HostNotice, PickupNet, PickupNotice, PickupRequest, PickupSystems, Pickups, ShownPickup};
 
+/// This game's link to the host (a client game).
+type FromHost = (With<Client>, Without<LinkOf>);
+
 /// Resend the list this often even without a change (seconds).
 const RESEND: f32 = 2.0;
 
@@ -38,7 +41,7 @@ pub(super) fn build(app: &mut App, mode: &NetMode) {
 fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<Stamped<PickupRequest>>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
     for (link, mut rx) in &mut links {
         let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
-        for r in rx.receive().filter_map(|m| travel.from_client(m, "pickup_request")) {
+        for r in rx.receive().filter_map(|m| travel.accept_from_client(m, "pickup_request")) {
             match peer {
                 Some(p) => net.incoming.push((p, r)),
                 None => runlog::kv("pickup_request_dropped", &format!("link={link:?} reason=no_player")),
@@ -50,7 +53,7 @@ fn receive_requests(mut links: Query<(Entity, &mut MessageReceiver<Stamped<Picku
 fn receive_drops(mut links: Query<(Entity, &mut MessageReceiver<Stamped<DropRequest>>), With<ClientOf>>, players: Query<(&NetPlayer, &PlayerSlot)>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
     for (link, mut rx) in &mut links {
         let peer = players.iter().find(|(_, s)| s.link == link).map(|(p, _)| p.peer);
-        for r in rx.receive().filter_map(|m| travel.from_client(m, "drop_request")) {
+        for r in rx.receive().filter_map(|m| travel.accept_from_client(m, "drop_request")) {
             match peer {
                 Some(p) => net.drop_incoming.push((p, r)),
                 None => runlog::kv("drop_request_dropped", &format!("link={link:?} reason=no_player")),
@@ -149,10 +152,10 @@ fn receive_states(mut rx: Query<&mut MessageReceiver<PickupStates>, (With<Client
     }
 }
 
-fn receive_notices(mut rx: Query<&mut MessageReceiver<Stamped<PickupNotice>>, (With<Client>, Without<LinkOf>)>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
+fn receive_notices(mut rx: Query<&mut MessageReceiver<Stamped<PickupNotice>>, FromHost>, mut net: ResMut<PickupNet>, travel: Res<super::NetTravel>) {
     for mut r in &mut rx {
         // About another map (sent before or during a map change): dropped.
-        for n in r.receive().filter_map(|m| travel.from_host(m, "pickup_notice")) {
+        for n in r.receive().filter_map(|m| travel.accept_from_host(m, "pickup_notice")) {
             net.received.push(n);
         }
     }

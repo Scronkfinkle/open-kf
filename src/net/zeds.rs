@@ -28,6 +28,9 @@ use crate::game::combat::NetHit;
 use crate::player::body::PawnState;
 use crate::zeds::zed::{PuppetFeed, PuppetSample, Zed, ZedNet, ZedSystems};
 
+/// This game's link to the host (a client game).
+type FromHost = (With<Client>, Without<LinkOf>);
+
 /// Snapshots per second (as the pawn updates).
 const SEND_RATE: f32 = 20.0;
 /// How far in the past puppets are drawn (seconds; as the remote pawns).
@@ -124,7 +127,7 @@ fn receive_hits(
             continue;
         };
         // A hit on another map's zed (zeds are numbered per map): dropped.
-        for hit in rx.receive().filter_map(|m| travel.from_client(m, "zed_hit")) {
+        for hit in rx.receive().filter_map(|m| travel.accept_from_client(m, "zed_hit")) {
             let Some(mut z) = zeds.iter_mut().find(|z| z.id as u32 == hit.zed) else {
                 runlog::kv("net_zed_hit_dropped", &format!("peer={peer} zed={} reason=no_such_zed", hit.zed));
                 continue;
@@ -514,7 +517,7 @@ fn receive_player_events(
 ) {
     for mut r in &mut rx {
         // A hit or heal from another map: dropped.
-        for ev in r.receive().filter_map(|m| travel.from_host(m, "player_event")) {
+        for ev in r.receive().filter_map(|m| travel.accept_from_host(m, "player_event")) {
             runlog::kv("net_player_event", &format!("{ev:?}"));
             match ev {
                 PlayerEvent::Hurt { amount, zed_id, kind, armor_stops, dam_type, source, dam } => {
@@ -552,7 +555,7 @@ fn receive_projectiles(
     travel: Res<super::NetTravel>,
 ) {
     for mut r in &mut rx {
-        for p in r.receive().filter_map(|m| travel.from_host(m, "projectile")) {
+        for p in r.receive().filter_map(|m| travel.accept_from_host(m, "projectile")) {
             runlog::kv("net_projectile", &format!("{p:?}"));
             match p {
                 ProjectileFx::Bile { at, velocity, zed_id } => {
@@ -570,7 +573,7 @@ fn receive_projectiles(
 /// The host credited me with a kill: kill count and dosh (dosh.rs's
 /// ScoreKill, as for my own kills in single player).
 fn receive_kill_credits(
-    mut rx: Query<&mut MessageReceiver<Stamped<KillCredit>>, (With<Client>, Without<LinkOf>)>,
+    mut rx: Query<&mut MessageReceiver<Stamped<KillCredit>>, FromHost>,
     mut kills: ResMut<crate::game::combat::KillCount>,
     mut dosh: ResMut<crate::game::dosh::Dosh>,
     options: Res<crate::game::waves::GameOptions>,
@@ -578,7 +581,7 @@ fn receive_kill_credits(
 ) {
     for mut r in &mut rx {
         // A kill on the old map (the new map's count starts at 0): dropped.
-        for c in r.receive().filter_map(|m| travel.from_host(m, "kill_credit")) {
+        for c in r.receive().filter_map(|m| travel.accept_from_host(m, "kill_credit")) {
             kills.0 += 1;
             let paid = dosh.kill(c.scoring_value, options.length);
             runlog::kv("dosh", &format!("reason=kill_credit zed={} amount={paid:.0} total={:.0} team={:.0} kills={} headshot={}", c.zed_id, dosh.score, dosh.team, kills.0, c.headshot));
